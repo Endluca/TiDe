@@ -39,13 +39,6 @@ const { Text } = Typography
 
 const emptySnapshot: AppSnapshot = {
   dashboard: null,
-  teachers: [],
-  templates: [],
-  tasks: [],
-  cases: [],
-  queue: [],
-  notifications: [],
-  events: [],
 }
 
 interface NavigationItem {
@@ -93,35 +86,26 @@ const navigationSections: Array<{ key: string; label: string; items: NavigationI
 
 export default function App() {
   const [active, setActive] = useState('ops')
+  const [visitedPages, setVisitedPages] = useState<Set<string>>(() => new Set(['ops']))
   const [collapsed, setCollapsed] = useState(false)
   const [operator, setOperator] = useState<OperatorIdentity | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [snapshot, setSnapshot] = useState<AppSnapshot>(emptySnapshot)
-  const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [navigationContexts, setNavigationContexts] = useState<Record<string, AppNavigationContext>>({})
-  const [visitedPages, setVisitedPages] = useState<Set<string>>(() => new Set(['ops']))
 
   const refresh = useCallback(async () => {
     try {
-      const canReadAudit = operator?.roles.some((role) => role === 'AUDITOR' || role === 'SENIOR_REVIEWER') ?? false
-      const [dashboard, teachers, queue, events] = await Promise.all([
-        api.dashboard(),
-        api.teacherOptions(),
-        api.queue(),
-        canReadAudit ? api.events() : Promise.resolve([]),
-      ])
-      setSnapshot({ dashboard, teachers, templates: [], tasks: [], cases: [], queue, notifications: [], events })
+      const dashboard = await api.dashboard()
+      setSnapshot((current) => ({ ...current, dashboard }))
       setError('')
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) setOperator(null)
       setError(displayError(reason))
       throw reason
-    } finally {
-      setLoading(false)
     }
-  }, [operator])
+  }, [])
 
   const manualRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -175,23 +159,23 @@ export default function App() {
   const renderPage = useCallback((pageKey: string) => {
     const navigationContext = navigationContexts[pageKey] ?? {}
     if (pageKey === 'interventions') return <InterventionCenter initialContext={navigationContext} onNavigate={navigate} canDecideCase={operator?.roles.some((role) => role === 'CASE_OPERATOR' || role === 'SENIOR_REVIEWER') ?? false} />
-    if (pageKey === 'tasks') return <TaskCenter snapshot={snapshot} />
-    if (pageKey === 'outputs') return <OutputCenter snapshot={snapshot} />
+    if (pageKey === 'tasks') return <TaskCenter />
+    if (pageKey === 'outputs') return <OutputCenter />
     if (pageKey === 'teachers') return <Teacher360 initialTeacherId={navigationContext.teacherId} />
     if (pageKey === 'lessons') return <LessonEvidenceCenter initialContext={navigationContext} onNavigate={navigate} />
-    if (pageKey === 'templates') return <TemplateCenter snapshot={snapshot} refresh={refresh} />
+    if (pageKey === 'templates') return <TemplateCenter />
     if (pageKey === 'config') return <ConfigCenter />
-    if (pageKey === 'audit') return <AuditEvents snapshot={snapshot} refresh={refresh} />
+    if (pageKey === 'audit') return <AuditEvents />
     return <OperationalDashboard snapshot={snapshot} refresh={manualRefresh} onNavigate={navigate} />
-  }, [manualRefresh, navigate, navigationContexts, operator?.roles, refresh, snapshot])
+  }, [manualRefresh, navigate, navigationContexts, operator?.roles, snapshot])
 
   async function logout() {
     await api.logout().catch(() => undefined)
     setOperator(null)
     setSnapshot(emptySnapshot)
     setActive('ops')
-    setNavigationContexts({})
     setVisitedPages(new Set(['ops']))
+    setNavigationContexts({})
   }
 
   if (authLoading) {
@@ -202,7 +186,7 @@ export default function App() {
   const updatedAt = snapshot.dashboard?.as_of
     ? dayjs(snapshot.dashboard.as_of).format('MM-DD HH:mm')
     : '等待首次更新'
-  const operatorName = operator.display_name && !/^(test|tester|admin)$/i.test(operator.display_name.trim())
+  const operatorName = operator.display_name && !/^(test|tester|(?:ops[_-]?)?admin)$/i.test(operator.display_name.trim())
     ? operator.display_name
     : '运营用户'
 
@@ -251,12 +235,12 @@ export default function App() {
           </div>
         </Header>
         <Content className="app-content">
-          {loading ? <div className="app-loading"><Spin size="large" tip="正在汇总经营数据…"><div /></Spin></div> : error && !snapshot.dashboard ? (
+          {error && !snapshot.dashboard ? (
             <Result
               status="warning"
               title="经营数据暂时不可用"
               subTitle="系统暂时无法完成本次数据更新，请稍后重试。"
-              extra={<Button type="primary" onClick={() => { setLoading(true); refresh().catch(() => undefined) }}>重新加载</Button>}
+              extra={<Button type="primary" loading={refreshing} onClick={() => manualRefresh().catch(() => undefined)}>重新加载</Button>}
             />
           ) : (
             <Suspense fallback={<div className="page-loading"><Spin tip="正在打开页面…"><div /></Spin></div>}>

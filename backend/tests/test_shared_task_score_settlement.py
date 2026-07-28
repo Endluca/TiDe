@@ -23,10 +23,11 @@ from app.shared_task_score_settlement import (
     ENTRY_TYPE,
     SharedTaskScoreSettlementWorker,
 )
+from app.task_catalog import MANDATORY_TASK_CODES
 
 
 NOW = datetime(2026, 7, 22, 3, 0, tzinfo=timezone.utc)
-TASK_CODES = tuple(f"G{number:02d}" for number in range(1, 11))
+TASK_CODES = MANDATORY_TASK_CODES
 
 
 def _teacher(
@@ -67,7 +68,7 @@ def _teacher(
             "new_teacher_task_score": 0,
             "mandatory_task_assignment_count": 0,
             "mandatory_task_completed_count": 0,
-            "mandatory_task_expected_count": 10,
+            "mandatory_task_expected_count": 9,
         }
         session.add(
             TeacherRecord(
@@ -282,25 +283,25 @@ def _entry_scores(teacher_id: str) -> dict[str, float]:
         return {assignment.task_code: entry.delta_score for entry, assignment in rows}
 
 
-def test_g01_g09_and_all_ten_settle_to_4_10_and_30_with_explicit_cutover() -> None:
+def test_g01_g08_and_all_current_tasks_settle_to_3_5_and_30_with_explicit_cutover() -> None:
     _prepare_config()
     teacher_id = "REAL-SCORE-ALL"
     _teacher(teacher_id, untrusted_score=17)
     assignment_ids = _assignments(
         teacher_id,
-        completed={"G01", "G09"},
+        completed={"G01", "G08"},
     )
 
     first = SharedTaskScoreSettlementWorker(engine).run_once(max_events=10)
     assert first["failed"] == 0
     assert first["settled"] == 2
     assert first["score_entries_created"] == 2
-    assert _entry_scores(teacher_id) == {"G01": 4, "G09": 10}
+    assert _entry_scores(teacher_id) == {"G01": 3, "G08": 5}
 
     with session_scope(engine) as session:
         account = session.get(ScoreAccountRecord, f"{teacher_id}:NEW_TEACHER_TASK")
         assert account is not None
-        assert account.current_score == 14
+        assert account.current_score == 8
         assert account.payload["source_mode"] == "SYSTEM_TASK_STATUS"
         assert account.payload["score_config"]["version_id"]
         assert len(account.payload["score_config"]["payload_sha256"]) == 64
@@ -312,9 +313,9 @@ def test_g01_g09_and_all_ten_settle_to_4_10_and_30_with_explicit_cutover() -> No
         ).all()
         assert len(audits) == 1
         assert audits[0].payload["previous_untrusted_score"] == 17
-        assert audits[0].payload["ledger_score_at_cutover"] == 14
+        assert audits[0].payload["ledger_score_at_cutover"] == 8
 
-        for code in set(TASK_CODES) - {"G01", "G09"}:
+        for code in set(TASK_CODES) - {"G01", "G08"}:
             assignment = session.get(TaskAssignmentRecord, assignment_ids[code])
             assert assignment is not None
             assignment.status = "COMPLETED"
@@ -332,7 +333,7 @@ def test_g01_g09_and_all_ten_settle_to_4_10_and_30_with_explicit_cutover() -> No
 
     second = SharedTaskScoreSettlementWorker(engine).run_once(max_events=20)
     assert second["failed"] == 0
-    assert len(_entry_scores(teacher_id)) == 10
+    assert len(_entry_scores(teacher_id)) == 9
     assert sum(_entry_scores(teacher_id).values()) == 30
     with session_scope(engine) as session:
         account = session.get(ScoreAccountRecord, f"{teacher_id}:NEW_TEACHER_TASK")
@@ -365,20 +366,20 @@ def test_duplicate_completion_event_is_idempotent() -> None:
     repeated = worker.run_once(max_events=10)
     assert repeated["failed"] == 0
     assert repeated["score_entries_created"] == 0
-    assert _entry_scores(teacher_id) == {"G01": 4}
+    assert _entry_scores(teacher_id) == {"G01": 3}
 
 
 def test_completion_persists_task_points_into_current_total_score_fields() -> None:
     _prepare_config()
     teacher_id = "REAL-SCORE-PROJECTION"
     _teacher(teacher_id, with_score_snapshot=True)
-    completed = set(TASK_CODES) - {"G01", "G04"}
+    completed = set(TASK_CODES) - {"G01", "G03"}
     _assignments(teacher_id, completed=completed)
 
     result = SharedTaskScoreSettlementWorker(engine).run_once(max_events=20)
 
     assert result["failed"] == 0
-    assert result["settled"] == 8
+    assert result["settled"] == 7
     with session_scope(engine) as session:
         teacher = session.get(TeacherRecord, teacher_id)
         snapshot = session.get(
@@ -395,7 +396,7 @@ def test_completion_persists_task_points_into_current_total_score_fields() -> No
         assert teacher.payload["external_display_score"] == 97.8
         assert teacher.payload["metric_inputs"][
             "mandatory_task_completed_count"
-        ] == 8
+        ] == 7
 
 
 def test_mock_and_non_completed_events_are_consumed_without_score() -> None:
@@ -445,7 +446,7 @@ def test_mock_and_non_completed_events_are_consumed_without_score() -> None:
         assert statuses == {"PUBLISHED"}
 
 
-def test_real_completion_settles_each_completed_assignment_without_waiting_for_all_ten() -> None:
+def test_real_completion_settles_each_completed_assignment_without_waiting_for_all_tasks() -> None:
     _prepare_config()
     teacher_id = "REAL-SCORE-WAIT"
     _teacher(teacher_id, untrusted_score=19)
@@ -456,11 +457,11 @@ def test_real_completion_settles_each_completed_assignment_without_waiting_for_a
         retry_delay=timedelta(0),
     ).run_once(max_events=1)
     assert result["settled"] == 1
-    assert _entry_scores(teacher_id) == {"G01": 4}
+    assert _entry_scores(teacher_id) == {"G01": 3}
     with session_scope(engine) as session:
         account = session.get(ScoreAccountRecord, f"{teacher_id}:NEW_TEACHER_TASK")
         assert account is not None
-        assert account.current_score == 4
+        assert account.current_score == 3
         assert account.payload["source_mode"] == "SYSTEM_TASK_STATUS"
         event = session.scalar(
             select(OutboxEventRecord).where(
@@ -482,7 +483,7 @@ def test_two_workers_cannot_duplicate_fixed_task_awards() -> None:
     _prepare_config()
     teacher_id = "REAL-SCORE-CONCURRENT"
     _teacher(teacher_id)
-    _assignments(teacher_id, completed={"G01", "G09"})
+    _assignments(teacher_id, completed={"G01", "G08"})
 
     def run_worker() -> dict:
         return SharedTaskScoreSettlementWorker(
@@ -499,10 +500,10 @@ def test_two_workers_cannot_duplicate_fixed_task_awards() -> None:
         retry_delay=timedelta(0),
     ).run_once(max_events=10)
     assert first["claimed"] + second["claimed"] + retry["claimed"] >= 2
-    assert _entry_scores(teacher_id) == {"G01": 4, "G09": 10}
+    assert _entry_scores(teacher_id) == {"G01": 3, "G08": 5}
     with session_scope(engine) as session:
         account = session.get(ScoreAccountRecord, f"{teacher_id}:NEW_TEACHER_TASK")
-        assert account is not None and account.current_score == 14
+        assert account is not None and account.current_score == 8
         assert session.scalar(
             select(func.count()).select_from(ScoreEntryRecord).where(
                 ScoreEntryRecord.teacher_id == teacher_id,

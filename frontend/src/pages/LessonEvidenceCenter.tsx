@@ -97,7 +97,6 @@ export default function LessonEvidenceCenter({
       setLoading(false)
     }
   }, [initialContext?.lessonId, page, riskOnly, teacherId])
-
   const summary = useMemo(() => ({
     riskLessons: lessonPage.items.filter((item) => item.risk_domains.length > 0 || item.signals.length > 0).length,
     teachers: new Set(lessonPage.items.map((item) => item.teacher_id)).size,

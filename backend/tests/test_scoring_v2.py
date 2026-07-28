@@ -52,15 +52,16 @@ def _canonical_teacher(**metric_overrides) -> dict:
         "completed_again_student_15d_cnt": 1,
         "late_cnt": 1,
         "early_cnt": 0,
+        "absent_cnt": 0,
         "real_absent_cnt": 0,
         "severe_redline_event": False,
         "peak_slot_cnt": 40,
         "capacity_milestone_achieved": True,
         "capacity_score": 10,
         "new_teacher_task_score": 30,
-        "mandatory_task_assignment_count": 10,
-        "mandatory_task_completed_count": 10,
-        "mandatory_task_expected_count": 10,
+        "mandatory_task_assignment_count": 9,
+        "mandatory_task_completed_count": 9,
+        "mandatory_task_expected_count": 9,
         "l0_complaint_cnt": 0,
         "class_quality_no_issue_rate": 0.8,
     }
@@ -85,27 +86,35 @@ def _canonical_teacher(**metric_overrides) -> dict:
             l0_complaint_cnt="DERIVED_REAL",
             class_quality_no_issue_rate="DERIVED_REAL",
             severe_redline_event="REAL",
+            absent_cnt="REAL",
             real_absent_cnt="REAL",
         ),
     }
 
 
-def test_v7_perfect_count_formula_external_cap_and_source_modes() -> None:
+def test_v1_moves_perfect_completion_to_reliability_and_uses_nine_mandatory_tasks() -> None:
     teacher = _project(_canonical_teacher())
     dimensions = {item["code"]: item for item in teacher["dimensions"]}
 
-    assert dimensions["USER_FEEDBACK"]["score"] == 23  # 2*5 + 1*5 + 1*8
-    assert dimensions["RELIABILITY"]["score"] == 41  # 18*2 + 5*1
-    assert dimensions["CLASS_QUALITY"]["score"] == 40  # 20*2
-    assert dimensions["CLASS_QUALITY"]["components"][0]["metric"] == "perfect_cnt"
+    assert dimensions["USER_FEEDBACK"]["score"] == 15  # 2*5 + 1*5
+    assert {
+        item["code"] for item in dimensions["USER_FEEDBACK"]["components"]
+    } == {"FEEDBACK_PRAISE", "FEEDBACK_FAVORITE"}
+    assert teacher["metric_inputs"]["completed_again_student_15d_cnt"] == 1
+    assert dimensions["RELIABILITY"]["score"] == 90  # 20*4 + 5*2
+    assert {
+        item["code"] for item in dimensions["RELIABILITY"]["components"]
+    } == {"PERFECT_COMPLETED", "PEAK_COMPLETED"}
+    assert dimensions["CLASS_QUALITY"]["score"] == 0
+    assert dimensions["CLASS_QUALITY"]["components"] == []
     assert dimensions["CAPACITY"]["score"] == 10
     assert dimensions["NEW_TEACHER_TASK"]["score"] == 30
     assert dimensions["USER_FEEDBACK"]["source_mode"] == "REAL"
-    assert dimensions["RELIABILITY"]["source_mode"] == "DERIVED_REAL"
-    assert dimensions["CLASS_QUALITY"]["source_mode"] == "DERIVED_REAL"
+    assert dimensions["RELIABILITY"]["source_mode"] == "REAL"
+    assert dimensions["CLASS_QUALITY"]["source_mode"] == "NOT_APPLICABLE"
     assert teacher["base_score"] == 40
-    assert teacher["raw_total_score"] == teacher["total_score"] == 144
-    assert teacher["external_display_score"] == 144
+    assert teacher["raw_total_score"] == teacher["total_score"] == 145
+    assert teacher["external_display_score"] == 145
     assert teacher["graduation_score_threshold_met"] is True
     assert teacher["graduation_criteria_met"] is True
     assert teacher["graduation_state"] == "GRADUATED"
@@ -114,7 +123,7 @@ def test_v7_perfect_count_formula_external_cap_and_source_modes() -> None:
     assert teacher["gold_criteria_met"] is False
     assert teacher["hard_gates"]["gold"]["met"] is False
     assert teacher["hard_gates"]["gold"]["items"][0]["source_mode"] == "DERIVED_REAL"
-    assert teacher["score_policy_version"] == "v7"
+    assert teacher["score_policy_version"] == "v1"
     assert teacher["score_policy_source"] == "PUBLISHED"
 
 
@@ -157,34 +166,81 @@ def test_external_scale_and_score_threshold_boundaries(
     assert teacher["gold_score_threshold_met"] is gold_met
 
 
-def test_v7_gold_eligibility_has_only_graduation_and_total_score_gates() -> None:
-    def gold_candidate(late_count: int) -> dict:
-        on_time = 10 - late_count
-        non_feedback_score = 40 + 10 * 2 + on_time * 2
+def test_v1_gold_requires_graduation_score_and_three_attendance_gates() -> None:
+    def gold_candidate(
+        *, late_count: int = 1, early_count: int = 0, absent_count: int = 0
+    ) -> dict:
+        non_feedback_score = 40 + 10 * 4
         return _project(
             _canonical_teacher(
                 total_completed_cnt=10,
                 peak_completed_cnt=0,
-                on_time_completed_cnt=on_time,
                 feedback_praise_cnt=(200 - non_feedback_score) / 5,
                 feedback_favorite_cnt=0,
                 completed_again_student_15d_cnt=0,
                 late_cnt=late_count,
+                early_cnt=early_count,
+                absent_cnt=absent_count,
             )
         )
 
-    eligible = gold_candidate(1)
-    also_eligible = gold_candidate(2)
+    eligible = gold_candidate()
+    late_blocked = gold_candidate(late_count=2)
+    early_blocked = gold_candidate(early_count=1)
+    absent_blocked = gold_candidate(absent_count=1)
 
-    assert eligible["raw_total_score"] == also_eligible["raw_total_score"] == 200
+    assert eligible["raw_total_score"] == 200
     assert eligible["gold_score_threshold_met"] is True
     assert eligible["gold_criteria_met"] is True
-    assert also_eligible["gold_score_threshold_met"] is True
-    assert also_eligible["gold_criteria_met"] is True
+    assert late_blocked["gold_criteria_met"] is False
+    assert early_blocked["gold_criteria_met"] is False
+    assert absent_blocked["gold_criteria_met"] is False
     assert [
-        item["code"] for item in also_eligible["hard_gates"]["gold"]["items"]
-    ] == ["REQUIRES_GRADUATION_CRITERIA", "MINIMUM_GOLD_TOTAL_SCORE"]
-    assert also_eligible["hard_gates"]["gold"]["met"] is True
+        item["code"] for item in eligible["hard_gates"]["gold"]["items"]
+    ] == [
+        "REQUIRES_GRADUATION_CRITERIA",
+        "MINIMUM_GOLD_TOTAL_SCORE",
+        "MAXIMUM_LATE_COUNT",
+        "ZERO_EARLY_COUNT",
+        "ZERO_ABSENT_COUNT",
+    ]
+    assert eligible["hard_gates"]["gold"]["met"] is True
+
+
+def test_earned_graduation_and_gold_qualifications_are_never_revoked() -> None:
+    previously_qualified = _project(
+        _canonical_teacher(feedback_praise_cnt=14.8)
+    )
+    assert previously_qualified["graduation_qualified"] is True
+    assert previously_qualified["gold_qualified"] is True
+
+    lowered = _canonical_teacher(
+        peak_slot_cnt=0,
+        capacity_milestone_achieved=False,
+        capacity_score=0,
+        new_teacher_task_score=0,
+        mandatory_task_completed_count=0,
+        feedback_praise_cnt=0,
+        feedback_favorite_cnt=0,
+        completed_again_student_15d_cnt=0,
+        on_time_completed_cnt=0,
+        peak_completed_cnt=0,
+        perfect_cnt=0,
+    )
+    lowered.update(
+        graduation_state="GRADUATED",
+        graduation_qualified=True,
+        gold_qualified=True,
+    )
+
+    recalculated = _project(lowered)
+
+    assert recalculated["raw_total_score"] == 0
+    assert recalculated["graduation_criteria_met"] is False
+    assert recalculated["gold_criteria_met"] is False
+    assert recalculated["graduation_qualified"] is True
+    assert recalculated["gold_qualified"] is True
+    assert recalculated["graduation_state"] == "GRADUATED"
 
 
 def test_l0_complaint_blocks_both_graduation_and_gold() -> None:
@@ -254,7 +310,7 @@ def test_missing_evidence_scores_zero_and_l0_gate_fails_closed() -> None:
     assert feedback["score"] == 0
     assert feedback["source_mode"] == "MISSING_INPUT_ZERO"
     assert quality["score"] == 0
-    assert quality["source_mode"] == "SOURCE_MISSING"
+    assert quality["source_mode"] == "NOT_APPLICABLE"
     assert l0_gate["actual"] == 0
     assert l0_gate["met"] is False
     assert l0_gate["source_mode"] == "SOURCE_MISSING"
@@ -346,8 +402,8 @@ def test_optional_supply_points_cannot_replace_mandatory_growth_for_graduation()
         _canonical_teacher(
             capacity_score=10,
             new_teacher_task_score=20,
-            mandatory_task_assignment_count=9,
-            mandatory_task_completed_count=9,
+            mandatory_task_assignment_count=8,
+            mandatory_task_completed_count=8,
             feedback_praise_cnt=10,
         )
     )
@@ -360,8 +416,8 @@ def test_optional_supply_points_cannot_replace_mandatory_growth_for_graduation()
     assert projected["base_score"] == 30
     assert projected["raw_total_score"] >= 100
     assert mandatory_gate["metric"] == "mandatory_task_completed_count"
-    assert mandatory_gate["actual"] == 9
-    assert mandatory_gate["threshold"] == 10
+    assert mandatory_gate["actual"] == 8
+    assert mandatory_gate["threshold"] == 9
     assert mandatory_gate["met"] is False
     assert projected["raw_total_score"] >= 100
     assert projected["graduation_criteria_met"] is False
@@ -483,23 +539,29 @@ def test_dashboard_excludes_graduated_and_off_teachers_from_active_count() -> No
     assert dashboard["gold_criteria_met_count"] == 0
     assert dashboard["funnel_by_employment_status"] == {
         "on": {
-            "teacher_count": 1,
-            "graduation_score_reached_count": 1,
-            "graduation_criteria_met_count": 1,
-            "gold_eligible_count": 0,
-        },
+                "teacher_count": 1,
+                "graduation_score_reached_count": 1,
+                "graduation_criteria_met_count": 1,
+                "graduation_qualified_count": 1,
+                "gold_eligible_count": 0,
+                "gold_qualified_count": 0,
+            },
         "off": {
-            "teacher_count": 1,
-            "graduation_score_reached_count": 1,
-            "graduation_criteria_met_count": 1,
-            "gold_eligible_count": 0,
-        },
+                "teacher_count": 1,
+                "graduation_score_reached_count": 1,
+                "graduation_criteria_met_count": 1,
+                "graduation_qualified_count": 1,
+                "gold_eligible_count": 0,
+                "gold_qualified_count": 0,
+            },
         "hei": {
-            "teacher_count": 0,
-            "graduation_score_reached_count": 0,
-            "graduation_criteria_met_count": 0,
-            "gold_eligible_count": 0,
-        },
+                "teacher_count": 0,
+                "graduation_score_reached_count": 0,
+                "graduation_criteria_met_count": 0,
+                "graduation_qualified_count": 0,
+                "gold_eligible_count": 0,
+                "gold_qualified_count": 0,
+            },
     }
 
 
@@ -528,23 +590,29 @@ def test_dashboard_groups_funnel_by_normalized_employment_status() -> None:
     assert set(dashboard["funnel_by_employment_status"]) == {"on", "off", "hei"}
     assert dashboard["funnel_by_employment_status"] == {
         "on": {
-            "teacher_count": 1,
-            "graduation_score_reached_count": 1,
-            "graduation_criteria_met_count": 1,
-            "gold_eligible_count": 1,
-        },
+                "teacher_count": 1,
+                "graduation_score_reached_count": 1,
+                "graduation_criteria_met_count": 1,
+                "graduation_qualified_count": 1,
+                "gold_eligible_count": 1,
+                "gold_qualified_count": 1,
+            },
         "off": {
-            "teacher_count": 1,
-            "graduation_score_reached_count": 1,
-            "graduation_criteria_met_count": 1,
-            "gold_eligible_count": 0,
-        },
+                "teacher_count": 1,
+                "graduation_score_reached_count": 1,
+                "graduation_criteria_met_count": 1,
+                "graduation_qualified_count": 1,
+                "gold_eligible_count": 0,
+                "gold_qualified_count": 0,
+            },
         "hei": {
-            "teacher_count": 1,
-            "graduation_score_reached_count": 1,
-            "graduation_criteria_met_count": 0,
-            "gold_eligible_count": 0,
-        },
+                "teacher_count": 1,
+                "graduation_score_reached_count": 1,
+                "graduation_criteria_met_count": 0,
+                "graduation_qualified_count": 0,
+                "gold_eligible_count": 0,
+                "gold_qualified_count": 0,
+            },
     }
 
 
@@ -573,6 +641,24 @@ def test_dashboard_reads_score_accounts_once_when_no_overrides_exist() -> None:
 
     assert dashboard["teacher_count"] == 2
     assert score_account_reads == [{"T-V2", "T-V2-B"}]
+
+
+def test_dashboard_lightweight_projection_does_not_mutate_teacher_facts() -> None:
+    teacher = _canonical_teacher()
+    teacher["payload"] = {"large_source_record": {"marker": "preserve"}}
+    original = deepcopy(teacher)
+    state = SimpleNamespace(
+        teachers={teacher["teacher_id"]: teacher},
+        tasks={},
+        ops_cases={},
+        executions={},
+        notifications={},
+        shared_assignment_counts=lambda: {"total": 0, "active": 0, "completed": 0},
+    )
+    service = GrowthService(state, config_reader=_reader())  # type: ignore[arg-type]
+
+    assert service.dashboard()["teacher_count"] == 1
+    assert teacher == original
 
 
 def test_task_baseline_incomplete_is_a_dominant_internal_source_mode() -> None:

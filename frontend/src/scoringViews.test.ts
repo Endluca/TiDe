@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from './api'
-import { isOperationalQueueItem, mixedDataAlertDescription, operationalEvidenceSummary, operationalFunnelStages } from './pages/OperationalDashboard'
+import { mixedDataAlertDescription, operationalEvidenceSummary, operationalFunnelStages } from './pages/OperationalDashboard'
 import {
   TEACHER_PAGE_SIZE,
   completionEvidenceLabel,
@@ -9,7 +9,9 @@ import {
   hardGateSourceMeta,
   pendingTeacherPage,
   profileFactDisplay,
+  reconciliationLabel,
   scorePolicyLabel,
+  scoreComponentLabel,
   sourceModeLabel,
   teacherDataCoverageDescription,
   teacherDataModeLabel,
@@ -19,7 +21,7 @@ import {
   visibleGraduationGateItems,
   mixedTeacherDataDescription,
 } from './pages/Teacher360'
-import type { AppSnapshot, Teacher, TeacherOption, TeacherPage } from './types'
+import type { AppSnapshot, Teacher, TeacherPage } from './types'
 
 function teacher(overrides: Partial<Teacher>): Teacher {
   return {
@@ -29,16 +31,9 @@ function teacher(overrides: Partial<Teacher>): Teacher {
   }
 }
 
-function snapshot(teachers: TeacherOption[] = []): AppSnapshot {
+function snapshot(): AppSnapshot {
   return {
     dashboard: null,
-    teachers,
-    templates: [],
-    tasks: [],
-    cases: [],
-    queue: [],
-    notifications: [],
-    events: [],
   }
 }
 
@@ -112,35 +107,13 @@ describe('score projection', () => {
 })
 
 describe('teacher list and dashboard', () => {
-  it('经营总览不把演示队列包装成真实运营待办', () => {
-    expect(isOperationalQueueItem({
-      queue_id: 'MOCK-QUEUE-1',
-      queue_type: 'OPS_REVIEW_CASE',
-      priority: 'P2',
-      teacher_id: 'T-1',
-      title: '演示任务',
-      summary: '供运营行动台检查 Case 展示。',
-      status: 'OPEN',
-      created_at: '2026-07-22T00:00:00Z',
-    })).toBe(false)
-    expect(isOperationalQueueItem({
-      queue_id: 'QUEUE-REAL-1',
-      queue_type: 'OPS_REVIEW_CASE',
-      priority: 'P0',
-      teacher_id: 'T-2',
-      title: '严重投诉待处置',
-      summary: '需要运营核实投诉责任。',
-      status: 'OPEN',
-      created_at: '2026-07-22T00:00:00Z',
-    })).toBe(true)
-  })
-
   it('当前和非当前数据都使用单一产品口径说明证据范围', () => {
-    const currentDescription = mixedDataAlertDescription('v7')
+    const currentDescription = mixedDataAlertDescription('v1')
     expect(currentDescription).toContain('Peak slots')
-    expect(currentDescription).toContain('perfect_cnt')
+    expect(currentDescription).toContain('完美完课')
+    expect(currentDescription).toContain('课堂质量当前无加分项')
     expect(currentDescription).toContain('必修任务基线和完成状态直接读取共享任务表')
-    expect(currentDescription).not.toContain('必修任务状态、L0 投诉记录和缺席责任拆分仍待证据补齐')
+    expect(currentDescription).not.toContain('缺席责任拆分')
     expect(currentDescription).not.toContain('Mock')
 
     const nonCurrentDescription = mixedDataAlertDescription('v3')
@@ -150,11 +123,20 @@ describe('teacher list and dashboard', () => {
   })
 
   it('计分口径只向运营展示当前、非当前或待确认', () => {
-    expect(scorePolicyLabel('v7')).toBe('当前口径')
+    expect(scorePolicyLabel('v1')).toBe('当前口径')
+    expect(scorePolicyLabel('v10')).toBe('非当前数据（只读）')
+    expect(scorePolicyLabel('v9')).toBe('非当前数据（只读）')
+    expect(scorePolicyLabel('v8')).toBe('非当前数据（只读）')
+    expect(scorePolicyLabel('v7')).toBe('非当前数据（只读）')
     expect(scorePolicyLabel('v6')).toBe('非当前数据（只读）')
     expect(scorePolicyLabel('v5')).toBe('非当前数据（只读）')
     expect(scorePolicyLabel('v4')).toBe('非当前数据（只读）')
     expect(scorePolicyLabel(null)).toBe('待确认')
+  })
+
+  it('当前可靠性子项使用业务名称，不向运营暴露旧字段名', () => {
+    expect(scoreComponentLabel({ code: 'PERFECT_COMPLETED', metric: 'perfect_cnt' })).toBe('完美完课')
+    expect(scoreComponentLabel({ code: 'PEAK_COMPLETED', metric: 'peak_completed_cnt' })).toBe('Peak 时段完课')
   })
 
   it('当前出营只展示必修任务、L0 投诉和总分三条门槛', () => {
@@ -165,16 +147,19 @@ describe('teacher list and dashboard', () => {
       { code: 'MINIMUM_COMPLETED_LESSONS', actual: 50, threshold: 10 },
       { code: 'NO_SEVERE_REDLINE', actual: false, threshold: false },
     ]
-    expect(visibleGraduationGateItems(items, 'v7').map((item) => item.code)).toEqual([
+    expect(visibleGraduationGateItems(items, 'v8').map((item) => item.code)).toEqual([
       'ALL_MANDATORY_GROWTH_TASKS_COMPLETED',
       'NO_L0_COMPLAINT',
       'MINIMUM_TOTAL_SCORE',
     ])
     expect(visibleGraduationGateItems(items, 'v4')).toEqual(items)
-    expect(hardGateLabel(items[0])).toBe('G01–G10 必修成长任务全部完成')
+    expect(hardGateLabel(items[0])).toBe('当前 9 项必修成长任务全部完成')
     expect(hardGateLabel(items[1])).toBe('L0 投诉数为 0')
     expect(hardGateLabel(items[2])).toBe('累计总分达到出营要求')
     expect(hardGateLabel(items[4])).toBe('无严重红线记录')
+    expect(hardGateLabel({ code: 'MAXIMUM_LATE_COUNT' })).toBe('迟到次数不超过要求')
+    expect(hardGateLabel({ code: 'ZERO_EARLY_COUNT' })).toBe('早退次数为 0')
+    expect(hardGateLabel({ code: 'ZERO_ABSENT_COUNT' })).toBe('缺席次数为 0')
   })
 
   it('已满足出营资格的金牌复用门槛不误报证据待补', () => {
@@ -255,6 +240,10 @@ describe('teacher list and dashboard', () => {
     expect(sourceModeLabel('TASK_STATUS_INVALID')).toBe('任务模板引用异常')
     expect(sourceModeLabel('COMPLAINT_LEVEL_MAPPING_INCOMPLETE')).toBe('投诉级别映射待补')
     expect(sourceModeLabel('LEGACY_DIMENSION')).toBe('非当前维度数据')
+    expect(reconciliationLabel('PARTIAL')).toBe('部分课程可归因')
+    expect(reconciliationLabel('MISMATCH')).toBe('课程明细与教师汇总不一致')
+    expect(reconciliationLabel('SOURCE_MISSING')).toBe('暂无逐课归因依据')
+    expect(reconciliationLabel('MATCHED')).toBeNull()
   })
 
   it('MIXED 表示多来源合并，不误报为证据缺失', () => {
@@ -279,15 +268,7 @@ describe('teacher list and dashboard', () => {
   })
 
   it('运营看板只信任 dashboard API，不从选择器列表重算', () => {
-    const teacherOptions: TeacherOption[] = teachers.map((item) => ({
-      teacher_id: item.teacher_id,
-      name: item.name,
-      data_mode: item.data_mode ?? 'UNKNOWN',
-      employment_status: item.employment_status ?? null,
-      graduation_state: item.graduation_state ?? 'IN_PROGRESS',
-      task_issuance_blockers: [],
-    }))
-    const current = snapshot(teacherOptions)
+    const current = snapshot()
     current.dashboard = {
       as_of: '2026-07-17T00:00:00Z',
       teacher_count: 1069,

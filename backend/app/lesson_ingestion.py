@@ -33,7 +33,11 @@ from .personalized_rules import (
     evaluate_lesson,
     normalize_text,
 )
-from .teacher_copy import require_english_teacher_copy
+from .teacher_copy import (
+    personalized_task_title,
+    require_english_teacher_copy,
+    with_teacher_evidence,
+)
 
 
 LESSON_SOURCE_SYSTEM = "MANUAL_XLSX:NEW_TEACHER_30D_LESSONS"
@@ -850,7 +854,7 @@ def _build_output_specs(
                 rule_code="TR-FB-BLACKLIST",
                 domain="USER_FEEDBACK",
                 output_type="TEACHER_TASK",
-                title="拉黑问题",
+                title=personalized_task_title("P-FB-BLACKLIST"),
                 priority="P1",
                 why=(
                     f"{len(student_rows)} different students blacklisted this teacher. "
@@ -890,7 +894,10 @@ def _build_output_specs(
                     rule_code="TR-FB-NEGATIVE-REPEAT",
                     domain="USER_FEEDBACK",
                     output_type="TEACHER_TASK",
-                    title=f"差评-{label}问题",
+                    title=personalized_task_title(
+                        "P-FB-NEGATIVE",
+                        label,
+                    ),
                     priority="P1",
                     why=(
                         "The same negative-feedback tag appeared in "
@@ -1124,7 +1131,8 @@ def _lesson_fact_kwargs(
         "is_network_delay_high": row.is_network_delay_high,
         "source_batch_id": batch_id,
         "source_record_id": _source_record_id(batch_id, row.row_number),
-        "valid_for_scoring": False,
+        "valid_for_scoring": row.lifecycle_status.strip().casefold()
+        in {"end", "ended", "complete", "completed", "finished", "已完课", "完课"},
         "evidence_status": "OBSERVED_REAL_SOURCE",
         "data_mode": "REAL",
         "payload": {
@@ -1132,7 +1140,10 @@ def _lesson_fact_kwargs(
             "source_record_id": _source_record_id(batch_id, row.row_number),
             "source_row_number": row.row_number,
             "lesson_local_start_at": row.local_start_at.isoformat(),
-            "score_note": "本批课程事实仅用于个性化任务触发；课程积分仍按已确认教师统计口径结算。",
+            "score_note": (
+                "完课记录可用于课程积分归因；教师维度统计仍是教师总分事实，"
+                "逐课结果只做解释和汇总核对。"
+            ),
         },
         "created_at": imported_at,
         "updated_at": imported_at,
@@ -1313,6 +1324,8 @@ def _materialize_outputs(
     teachers: Mapping[str, TeacherRecord],
     materialized_at: datetime,
     reconcile_existing: bool = False,
+    source_mode: str = "DERIVED_REAL",
+    evidence_context: Mapping[str, Any] | None = None,
 ) -> dict[str, int]:
     counts = Counter(
         task_assignments_created=0,
@@ -1384,16 +1397,21 @@ def _materialize_outputs(
             ],
             "sample_limit": 20,
             "evidence_is_complete_for_lesson_ids": True,
+            "source_mode": source_mode,
+            **dict(evidence_context or {}),
         }
         lesson_sample = ", ".join(lesson_ids[:10])
         sample_suffix = ", ..." if len(lesson_ids) > 10 else ""
         lesson_count = len(lesson_ids)
-        why = require_english_teacher_copy(
-            (
-                f"This task was triggered by {lesson_count} lesson record(s) "
-                f"(Lesson IDs: {lesson_sample}{sample_suffix}). {first.why}"
+        why = with_teacher_evidence(
+            require_english_teacher_copy(
+                (
+                    f"This task was triggered by {lesson_count} lesson record(s) "
+                    f"(Lesson IDs: {lesson_sample}{sample_suffix}). {first.why}"
+                ),
+                field_name="task_assignments.why",
             ),
-            field_name="task_assignments.why",
+            evidence,
         )
         if assignment is None:
             template = templates[first.task_code]
@@ -1420,7 +1438,7 @@ def _materialize_outputs(
                 timezone_source="TEACHER_PROFILE",
                 timezone_verified_at=materialized_at,
                 status_reason_code=None,
-                source_mode="DERIVED_REAL",
+                source_mode=source_mode,
                 dedupe_key=output_dedupe_key,
                 created_by="TRIGGER_CENTER",
                 updated_by="TRIGGER_CENTER",
@@ -1438,6 +1456,11 @@ def _materialize_outputs(
 
     for spec in specs:
         output_id: str | None = None
+        teacher_facing_reason = (
+            with_teacher_evidence(spec.why, spec.evidence)
+            if spec.output_type in {"TEACHER_TASK", "NOTIFICATION"}
+            else spec.why
+        )
         match_status = (
             "PENDING_DATA" if spec.output_type == "PENDING_DATA" else "MATERIALIZED"
         )
@@ -1463,7 +1486,8 @@ def _materialize_outputs(
                             "summary": spec.why,
                             "recommended_action": "核实投诉事实并按现行处罚规则处理。",
                             "evidence": spec.evidence,
-                            "source_mode": "DERIVED_REAL",
+                            "source_mode": source_mode,
+                            **dict(evidence_context or {}),
                             "trigger_rule_version": TRIGGER_RULE_VERSION,
                         },
                         updated_at=materialized_at,
@@ -1472,7 +1496,16 @@ def _materialize_outputs(
                 counts["ops_cases_created"] += 1
         elif spec.output_type == "NOTIFICATION":
             output_id = _stable_id("NOTIF", spec.output_dedupe_key)
-            if session.get(NotificationRecord, output_id) is None:
+            notification_payload = {
+                "title": spec.title,
+                "body": teacher_facing_reason,
+                "evidence": spec.evidence,
+                "source_mode": source_mode,
+                **dict(evidence_context or {}),
+                "trigger_rule_version": TRIGGER_RULE_VERSION,
+            }
+            notification = session.get(NotificationRecord, output_id)
+            if notification is None:
                 session.add(
                     NotificationRecord(
                         notification_id=output_id,
@@ -1488,16 +1521,12 @@ def _materialize_outputs(
                         clicked_at=None,
                         response_due_at=None,
                         failure_reason=None,
-                        payload={
-                            "title": spec.title,
-                            "body": spec.why,
-                            "evidence": spec.evidence,
-                            "source_mode": "DERIVED_REAL",
-                            "trigger_rule_version": TRIGGER_RULE_VERSION,
-                        },
+                        payload=notification_payload,
                     )
                 )
                 counts["notifications_created"] += 1
+            else:
+                notification.payload = notification_payload
         elif spec.output_type == "PENDING_DATA":
             if spec.dedupe_key not in existing_matches:
                 counts["pending_data_matches_created"] += 1
@@ -1521,8 +1550,9 @@ def _materialize_outputs(
             "match_status": match_status,
             "evidence_snapshot": {
                 **spec.evidence,
-                "why": spec.why,
-                "source_mode": "DERIVED_REAL",
+                "why": teacher_facing_reason,
+                "source_mode": source_mode,
+                **dict(evidence_context or {}),
             },
             "materialized_at": (
                 materialized_at if match_status == "MATERIALIZED" else None
@@ -1794,6 +1824,14 @@ def import_lesson_baseline(
             **lesson_batch.payload,
             "import_report": base_result,
         }
+        from .score_read_model import refresh_persisted_score_read_models
+
+        refresh_persisted_score_read_models(
+            session,
+            trigger_type="LESSON_SOURCE_UPDATED",
+            trigger_ref=lesson_batch_id,
+            teacher_ids={item.teacher_id for item in lessons},
+        )
         session.commit()
         return LessonBaselineImportResult(**base_result)
     except Exception:

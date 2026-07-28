@@ -75,7 +75,7 @@ def _destructive_test_domain_reset():
             session.execute(delete(model))
     first_seed = seed_task_catalog(engine)
     repeated_seed = seed_task_catalog(engine)
-    assert first_seed["template_catalog_size"] == 15
+    assert first_seed["template_catalog_size"] == 14
     assert repeated_seed["templates_created"] == 0
     yield
 

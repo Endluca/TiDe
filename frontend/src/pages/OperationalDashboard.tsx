@@ -17,15 +17,10 @@ import {
 import { api } from '../api'
 import { displayError, employmentStatusLabel } from '../domain'
 import { interventionStatusLabel, operationDomainLabel, sortInterventions, summarizeRiskBreakdown } from '../operations'
-import type { AppNavigationContext, AppSnapshot, OperationsIntervention, OperationsOverview, QueueItem } from '../types'
+import type { AppNavigationContext, AppSnapshot, OperationsIntervention, OperationsOverview } from '../types'
 import { PageHeader, PriorityTag, TimeText } from '../components/Common'
 
 const { Text, Title } = Typography
-
-export function isOperationalQueueItem(item: QueueItem): boolean {
-  const text = `${item.queue_id} ${item.title} ${item.summary}`.toLocaleLowerCase()
-  return !text.includes('mock') && !text.includes('模拟') && !text.includes('供运营行动台检查')
-}
 
 function safeRate(value: number | undefined, total: number | undefined): number {
   if (!value || !total || total <= 0) return 0
@@ -42,11 +37,13 @@ export function operationalEvidenceSummary(snapshot: AppSnapshot) {
   const graduationScoreReached = dashboard?.graduation_score_reached_count
     ?? dashboard?.graduation_score_threshold_met_count
     ?? 0
-  const graduationEligible = dashboard?.graduation_criteria_met_count
+  const graduationEligible = dashboard?.graduation_qualified_count
+    ?? dashboard?.graduation_criteria_met_count
   const goldScoreReached = dashboard?.gold_score_reached_count
     ?? dashboard?.gold_score_threshold_met_count
     ?? 0
-  const goldEligible = dashboard?.gold_eligible_count
+  const goldEligible = dashboard?.gold_qualified_count
+    ?? dashboard?.gold_eligible_count
     ?? dashboard?.gold_criteria_met_count
   return { dataModes, employmentStatuses, graduationScoreReached, graduationEligible, goldScoreReached, goldEligible }
 }
@@ -75,9 +72,11 @@ export function operationalFunnelStages(
     ?? (employmentStatus === 'ALL' ? snapshot.dashboard?.teacher_count ?? 0 : 0)
   const graduationScoreReached = selectedFunnel?.graduation_score_reached_count
     ?? (employmentStatus === 'ALL' ? summary.graduationScoreReached : 0)
-  const graduationEligible = selectedFunnel?.graduation_criteria_met_count
+  const graduationEligible = selectedFunnel?.graduation_qualified_count
+    ?? selectedFunnel?.graduation_criteria_met_count
     ?? (employmentStatus === 'ALL' ? summary.graduationEligible ?? 0 : 0)
-  const goldEligible = selectedFunnel?.gold_eligible_count
+  const goldEligible = selectedFunnel?.gold_qualified_count
+    ?? selectedFunnel?.gold_eligible_count
     ?? (employmentStatus === 'ALL' ? summary.goldEligible ?? 0 : 0)
 
   return [
@@ -107,10 +106,10 @@ export function operationalFunnelStages(
 }
 
 export function mixedDataAlertDescription(scorePolicyVersion?: string): string {
-  const currentCoverage = scorePolicyVersion === 'v7'
-    ? '教师基础、完课、Peak slots、准时完课、perfect_cnt 课堂质量和用户反馈已纳入当前视图'
-    : '教师基础、完课、准时完课和用户反馈已纳入当前视图；该记录使用非当前计分口径，仅供读取'
-  return `${currentCoverage}；必修任务基线和完成状态直接读取共享任务表。L0 投诉记录和缺席责任拆分仍按各教师的课程证据覆盖度判断。待补字段不直接用于正式资格判断。`
+  const currentCoverage = scorePolicyVersion === 'v1'
+    ? '教师基础、完课、Peak slots、完美完课、迟到、早退、缺席和用户反馈已纳入当前视图；课堂质量当前无加分项'
+    : '教师基础、完课和用户反馈已纳入当前视图；该记录使用非当前计分口径，仅供读取'
+  return `${currentCoverage}；必修任务基线和完成状态直接读取共享任务表，L0 投诉按课程投诉记录判断。待补字段不会被默认成已满足资格。`
 }
 
 function MetricCard({
@@ -193,7 +192,6 @@ export default function OperationalDashboard({
       setOperationsLoading(false)
     }
   }, [])
-
   const dashboard = snapshot.dashboard
   const evidenceSummary = operationalEvidenceSummary(snapshot)
   const cohortTeacherTotal = dashboard?.teacher_count ?? 0

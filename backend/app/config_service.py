@@ -383,7 +383,20 @@ class ConfigService:
                 and isinstance(current.payload, dict)
                 and isinstance(record.payload, dict)
             ):
-                policy_rank = {"v2": 2, "v3": 3, "v4": 4, "v5": 5, "v6": 6, "v7": 7}
+                policy_rank = {
+                    "v2": 2,
+                    "v3": 3,
+                    "v4": 4,
+                    "v5": 5,
+                    "v6": 6,
+                    "v7": 7,
+                    "v8": 8,
+                    "v9": 9,
+                    "v10": 10,
+                    # v1 is the consolidated current baseline. The numeric
+                    # label restarted after old runtime versions were removed.
+                    "v1": 11,
+                }
                 current_rank = policy_rank.get(str(current.payload.get("policy_version")), 0)
                 candidate_rank = policy_rank.get(str(record.payload.get("policy_version")), 0)
                 if current_rank and candidate_rank < current_rank:
@@ -425,7 +438,23 @@ class ConfigService:
                 to_status=ConfigStatus.PUBLISHED.value,
             )
             session.flush()
-            return self._version_dict(record)
+            recalculation: dict[str, Any] | None = None
+            if record.config_key == ConfigKey.SCORE_GRADUATION.value:
+                from .score_read_model import refresh_persisted_score_read_models
+
+                # Publication and recalculation share one transaction. If the
+                # rebuild fails, the new policy is not made visible.
+                recalculation = refresh_persisted_score_read_models(
+                    session,
+                    trigger_type="SCORE_POLICY_PUBLISHED",
+                    trigger_ref=record.version_id,
+                    score_policy_payload=record.payload,
+                    score_config_version_id=record.version_id,
+                )
+            response = self._version_dict(record)
+            if recalculation is not None:
+                response["recalculation"] = recalculation
+            return response
 
     def retire_version(self, version_id: str, *, actor_id: str) -> dict[str, Any]:
         with self.session_factory() as session, session.begin():

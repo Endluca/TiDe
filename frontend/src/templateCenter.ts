@@ -25,6 +25,8 @@ export function filterTaskTemplates(
       template.why_template,
       template.how_summary,
       template.completion_standard,
+      template.benefit,
+      template.content_status,
     ].join(' ').toLocaleLowerCase()
     return (!needle || searchable.includes(needle))
       && (!filters.stage || template.stage === filters.stage)

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from app.database import engine, session_scope
 from app.db_models import (
+    AuditEventRecord,
     NotificationEventRecord,
     NotificationRecord,
     TaskAssignmentRecord,
@@ -101,3 +102,28 @@ def test_notification_operational_indexes_are_part_of_model_metadata() -> None:
     assert {
         index.name for index in NotificationEventRecord.__table__.indexes
     } >= {"uq_notification_events_notification_request_hash"}
+
+
+def test_audit_reload_uses_authoritative_columns_when_payload_is_legacy() -> None:
+    occurred_at = datetime(2026, 7, 28, 9, 0, tzinfo=timezone.utc)
+    with session_scope(engine) as session:
+        session.add(
+            AuditEventRecord(
+                event_id="AUDIT-LEGACY-PAYLOAD",
+                event_type="TASK_STATUS_CHANGED",
+                teacher_id="T-1001",
+                task_id="TASK-1",
+                case_id=None,
+                occurred_at=occurred_at,
+                actor_type="TEACHER_APP",
+                payload_hash="0" * 64,
+                payload={},
+            )
+        )
+
+    event = DatabaseStore(engine, seed_on_empty=False).events[0]
+
+    assert event["event_id"] == "AUDIT-LEGACY-PAYLOAD"
+    assert event["event_type"] == "TASK_STATUS_CHANGED"
+    assert event["teacher_id"] == "T-1001"
+    assert event["occurred_at"].startswith("2026-07-28T09:00:00")

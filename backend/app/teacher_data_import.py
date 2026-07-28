@@ -36,11 +36,12 @@ from .fixed_growth_baseline import (
     FixedGrowthBaselineError,
     ensure_fixed_growth_assignments,
 )
+from .task_catalog import MANDATORY_TASK_CODES
 
 
 SOURCE_SHEET = "境外教师明细"
 SOURCE_SYSTEM = "MANUAL_XLSX:OVERSEAS_NEW_TEACHER_30D_WIDE"
-SCORE_RULE_VERSION = "new_teacher_30d_20260724_v7"
+SCORE_RULE_VERSION = "new_teacher_30d_20260728_v1"
 SCORE_POLICY_SNAPSHOT = ScoreGraduationConfig.model_validate(
     DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION]
 ).model_dump(mode="json")
@@ -50,8 +51,12 @@ SCORE_POLICY_V2_SNAPSHOT = ScoreGraduationConfig.model_validate(
 CAPACITY_MILESTONE_ID = "CAPACITY_PEAK_SLOT_40"
 CAPACITY_MILESTONE_REASON_CODE = "CAPACITY_MILESTONE_ACHIEVED"
 CAPACITY_MILESTONE_SETTLEMENT_MODE = "FIRST_ACHIEVEMENT_LOCKED"
-CAPACITY_MILESTONE_POLICY_VERSIONS = frozenset({"v4", "v5", "v6", "v7"})
-DIRECT_EXTERNAL_SCALE_POLICY_VERSIONS = frozenset({"v3", "v4", "v5", "v6", "v7"})
+CAPACITY_MILESTONE_POLICY_VERSIONS = frozenset(
+    {"v1", "v4", "v5", "v6", "v7", "v8", "v9", "v10"}
+)
+DIRECT_EXTERNAL_SCALE_POLICY_VERSIONS = frozenset(
+    {"v1", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"}
+)
 
 
 def score_policy_sha256(policy: dict[str, Any]) -> str:
@@ -579,10 +584,10 @@ def _metric_projection(
     )
     late = _as_nonnegative_int(raw, "late_cnt", row_number=row_number)
     early = _as_nonnegative_int(raw, "early_cnt", row_number=row_number)
-    _as_nonnegative_int(raw, "absent_cnt", row_number=row_number)
+    absent = _as_nonnegative_int(raw, "absent_cnt", row_number=row_number)
 
-    # Punctual completion remains a separate reliability input. Classroom
-    # quality uses the source's reviewed perfect-completion count under v5+.
+    # Preserve the historical punctual-completion derivation for v2-v8.
+    # The current v1 reliability rule reads source perfect_cnt directly.
     on_time_completed = max(total_completed - late - early, 0)
     scoring_items = effective_policy["scoring_items"]
     if policy_version in CAPACITY_MILESTONE_POLICY_VERSIONS:
@@ -610,20 +615,21 @@ def _metric_projection(
         "completed_again_student_15d_cnt": rebook,
         "late_cnt": late,
         "early_cnt": early,
-        # The source absent_cnt mixes physical absence, leave and system
-        # cancellation. Keep it in raw_payload, but do not use it as confirmed
-        # real-absence evidence.
+        "absent_cnt": absent,
+        # Legacy physical-absence evidence remains separate. Current v1 Gold uses the
+        # source absent_cnt exactly as delivered, while real_absent_cnt stays a
+        # compatibility placeholder for historical policies.
         "real_absent_cnt": 0,
         "severe_redline_event": False,
         # L0 complaints are derived from the matched lesson/complaint table,
         # not from this teacher-wide source.
         "l0_complaint_cnt": 0,
         "capacity_score": capacity_score_input,
-        # Fixed-task points are settled only from completed G01-G10 assignments.
+        # Fixed-task points are settled only from completed current assignments.
         "new_teacher_task_score": 0,
         "mandatory_task_assignment_count": 0,
         "mandatory_task_completed_count": 0,
-        "mandatory_task_expected_count": 10,
+        "mandatory_task_expected_count": len(MANDATORY_TASK_CODES),
         # Historical compatibility column. The current classroom-quality
         # formula reads perfect_cnt directly and does not use this rate.
         "class_quality_no_issue_rate": 0.0,
@@ -652,6 +658,7 @@ def _metric_projection(
             "completed_again_student_15d_cnt",
             "late_cnt",
             "early_cnt",
+            "absent_cnt",
         )
     }
     metric_provenance["on_time_completed_cnt"] = _provenance(
@@ -660,8 +667,9 @@ def _metric_projection(
         source_fields=["total_completed_cnt", "late_cnt", "early_cnt"],
         batch_id=batch_id,
         note=(
-            f"{policy_version} reproducible backtest convention: max(total_completed_cnt - late_cnt - "
-            "early_cnt, 0); perfect_cnt is retained separately for audit."
+            f"{policy_version} historical compatibility convention: "
+            "max(total_completed_cnt - late_cnt - early_cnt, 0). "
+            "The current v1 reliability score reads perfect_cnt instead."
         ),
     )
     metric_provenance["perfect_cnt"] = _provenance(
@@ -741,7 +749,7 @@ def _metric_projection(
         source_field=None,
         batch_id=batch_id,
         note=(
-            "No completed G01-G10 assignment evidence is connected for this teacher; "
+            "No completed current mandatory assignment evidence is connected for this teacher; "
             "the mandatory-growth score is zero."
         ),
     )
@@ -762,7 +770,7 @@ def _metric_projection(
         source_mode="SYSTEM_CONFIG",
         source_field="task_templates",
         batch_id=batch_id,
-        note="The current mandatory catalog contains G01-G10.",
+        note="The current mandatory catalog contains nine published tasks.",
     )
     metric_provenance["class_quality_no_issue_rate"] = _provenance(
         source_mode="SOURCE_MISSING",
@@ -781,17 +789,26 @@ def _metric_projection(
         metric_inputs["new_teacher_task_score"],
         scoring_items["new_teacher_tasks"]["maximum_points"],
     )
+    reliability_primary_score = (
+        perfect * scoring_items["reliability_perfect"]["points_per_unit"]
+        if "reliability_perfect" in scoring_items
+        else on_time_completed
+        * scoring_items["reliability_on_time"]["points_per_unit"]
+    )
     reliability_score = (
-        on_time_completed * scoring_items["reliability_on_time"]["points_per_unit"]
+        reliability_primary_score
         + peak_completed * scoring_items["reliability_peak"]["points_per_unit"]
     )
     feedback_score = (
         praise * scoring_items["feedback_praise"]["points_per_unit"]
         + favorite * scoring_items["feedback_favorite"]["points_per_unit"]
-        + rebook * scoring_items["feedback_rebook_15d"]["points_per_unit"]
+        + rebook
+        * scoring_items.get("feedback_rebook_15d", {}).get("points_per_unit", 0)
     )
-    classroom_quality_rule = scoring_items["classroom_quality"]
-    if classroom_quality_rule.get("metric") == "perfect_cnt":
+    classroom_quality_rule = scoring_items.get("classroom_quality")
+    if classroom_quality_rule is None:
+        class_quality_score = 0.0
+    elif classroom_quality_rule.get("metric") == "perfect_cnt":
         class_quality_score = perfect * classroom_quality_rule["points_per_unit"]
     else:
         class_quality_score = (
@@ -826,12 +843,20 @@ def _dimensions(metrics: dict[str, Any]) -> list[dict[str, Any]]:
             "score": metrics["reliability_score"],
             "minimum": 0,
             "weight": 0,
-            "data_mode": "DERIVED_REAL",
+            "data_mode": (
+                metrics["metric_provenance"]["perfect_cnt"]["source_mode"]
+                if "reliability_perfect"
+                in SCORE_POLICY_SNAPSHOT["scoring_items"]
+                else "DERIVED_REAL"
+            ),
             "score_rule_version": SCORE_RULE_VERSION,
             "source_fields": [
-                "total_completed_cnt",
-                "late_cnt",
-                "early_cnt",
+                (
+                    "perfect_cnt"
+                    if "reliability_perfect"
+                    in SCORE_POLICY_SNAPSHOT["scoring_items"]
+                    else "on_time_completed_cnt"
+                ),
                 "peak_completed_cnt",
             ],
         },
@@ -846,7 +871,6 @@ def _dimensions(metrics: dict[str, Any]) -> list[dict[str, Any]]:
             "source_fields": [
                 "feedback_praise_cnt",
                 "feedback_favorite_cnt",
-                "completed_again_student_15d_cnt",
             ],
         },
         {
@@ -855,13 +879,28 @@ def _dimensions(metrics: dict[str, Any]) -> list[dict[str, Any]]:
             "score": metrics["class_quality_score"],
             "minimum": 0,
             "weight": 0,
-            "data_mode": metrics["metric_provenance"]["perfect_cnt"]["source_mode"],
+            "data_mode": (
+                metrics["metric_provenance"]["perfect_cnt"]["source_mode"]
+                if "classroom_quality"
+                in SCORE_POLICY_SNAPSHOT["scoring_items"]
+                else "NOT_APPLICABLE"
+            ),
             "score_rule_version": SCORE_RULE_VERSION,
             "formula": (
-                "perfect_cnt * "
-                f"{float(SCORE_POLICY_SNAPSHOT['scoring_items']['classroom_quality']['points_per_unit']):g}"
+                (
+                    "perfect_cnt * "
+                    f"{float(SCORE_POLICY_SNAPSHOT['scoring_items']['classroom_quality']['points_per_unit']):g}"
+                )
+                if "classroom_quality"
+                in SCORE_POLICY_SNAPSHOT["scoring_items"]
+                else None
             ),
-            "source_fields": ["perfect_cnt"],
+            "source_fields": (
+                ["perfect_cnt"]
+                if "classroom_quality"
+                in SCORE_POLICY_SNAPSHOT["scoring_items"]
+                else []
+            ),
         },
         {
             "code": "CAPACITY",
@@ -905,7 +944,15 @@ def _graduation_criteria_met(metrics: dict[str, Any]) -> bool:
     inputs = metrics["metric_inputs"]
     thresholds = SCORE_POLICY_SNAPSHOT["thresholds"]
     gates = SCORE_POLICY_SNAPSHOT["hard_gates"]["graduation"]
-    if SCORE_POLICY_SNAPSHOT["policy_version"] in {"v5", "v6", "v7"}:
+    if SCORE_POLICY_SNAPSHOT["policy_version"] in {
+        "v1",
+        "v5",
+        "v6",
+        "v7",
+        "v8",
+        "v9",
+        "v10",
+    }:
         provenance = metrics["metric_provenance"]
         return bool(
             metrics["raw_total_score"] >= thresholds["graduation_raw_score"]
@@ -974,7 +1021,35 @@ def _teacher_payload(
     gold_criteria_met = bool(
         graduation_criteria_met
         and metrics["raw_total_score"] >= thresholds["gold_raw_score"]
+        and (
+            SCORE_POLICY_SNAPSHOT["policy_version"] not in {"v1", "v9", "v10"}
+            or (
+                inputs["late_cnt"]
+                <= SCORE_POLICY_SNAPSHOT["hard_gates"]["gold"][
+                    "maximum_late_count"
+                ]
+                and inputs["early_cnt"]
+                == SCORE_POLICY_SNAPSHOT["hard_gates"]["gold"][
+                    "maximum_early_count"
+                ]
+                and inputs["absent_cnt"]
+                == SCORE_POLICY_SNAPSHOT["hard_gates"]["gold"][
+                    "maximum_absent_count"
+                ]
+            )
+        )
     )
+    previous_gold_qualified = bool(
+        (existing_payload or {}).get("gold_qualified")
+        or (existing_payload or {}).get("gold_criteria_met")
+    )
+    graduation_qualified = bool(
+        (existing_payload or {}).get("graduation_qualified")
+        or (existing_payload or {}).get("graduation_state") == "GRADUATED"
+        or previous_gold_qualified
+        or graduation_criteria_met
+    )
+    gold_qualified = bool(previous_gold_qualified or gold_criteria_met)
 
     payload = deepcopy(existing_payload or {})
     payload.update(
@@ -1042,17 +1117,18 @@ def _teacher_payload(
             "gold_external_score": thresholds["gold_external_score"],
             "score_policy_version": SCORE_POLICY_SNAPSHOT["policy_version"],
             "graduation_state": (
-                "GRADUATED"
-                if (
-                    (existing_payload or {}).get("graduation_state") == "GRADUATED"
-                    or graduation_criteria_met
-                )
-                else "IN_PROGRESS"
+                "GRADUATED" if graduation_qualified else "IN_PROGRESS"
             ),
             "graduation_criteria_met": graduation_criteria_met,
+            "graduation_qualified": graduation_qualified,
             "gold_criteria_met": gold_criteria_met,
+            "gold_qualified": gold_qualified,
             "score_tier": (
-                "GOLD" if gold_criteria_met else "GRADUATED" if graduation_criteria_met else "IN_PROGRESS"
+                "GOLD"
+                if gold_qualified
+                else "GRADUATED"
+                if graduation_qualified
+                else "IN_PROGRESS"
             ),
             "signals": payload.get("signals", []),
             "lesson_facts": payload.get("lesson_facts", []),
@@ -1089,6 +1165,7 @@ def _teacher_payload(
         ],
         "late_cnt": inputs["late_cnt"],
         "early_cnt": inputs["early_cnt"],
+        "absent_cnt": inputs["absent_cnt"],
         "real_absent_cnt": inputs["real_absent_cnt"],
         "severe_redline_event": inputs["severe_redline_event"],
         "capacity_score": inputs["capacity_score"],
@@ -1333,22 +1410,52 @@ def _repair_existing_batch_policy_metadata(
         )
         repaired_graduation_state = (
             "GRADUATED"
-            if teacher.graduation_state == "GRADUATED" or graduation_criteria_met
+            if (
+                teacher.graduation_state == "GRADUATED"
+                or teacher.gold_qualified
+                or teacher_payload.get("graduation_qualified")
+                or teacher_payload.get("gold_qualified")
+                or graduation_criteria_met
+            )
             else teacher.graduation_state
+        )
+        current_gold_criteria_met = bool(
+            graduation_criteria_met
+            and snapshot.raw_total_score
+            >= float(
+                (snapshot.score_policy_snapshot or {})
+                .get("thresholds", {})
+                .get("gold_raw_score", 200)
+            )
+        )
+        repaired_gold_qualified = bool(
+            teacher.gold_qualified
+            or teacher_payload.get("gold_qualified")
+            or teacher_payload.get("gold_criteria_met")
+            or current_gold_criteria_met
         )
         if (
             teacher_payload.get("score_rule_version") != snapshot.score_rule_version
             or teacher_payload.get("score_policy_sha256") != snapshot.score_policy_sha256
             or teacher_payload.get("graduation_state") != repaired_graduation_state
+            or teacher_payload.get("graduation_qualified")
+            != (repaired_graduation_state == "GRADUATED")
+            or teacher_payload.get("gold_qualified") != repaired_gold_qualified
             or teacher.graduation_state != repaired_graduation_state
+            or teacher.gold_qualified != repaired_gold_qualified
             or profile_payload_changed
             or profile_provenance_changed
         ):
             teacher_payload["score_rule_version"] = snapshot.score_rule_version
             teacher_payload["score_policy_sha256"] = snapshot.score_policy_sha256
             teacher_payload["graduation_state"] = repaired_graduation_state
+            teacher_payload["graduation_qualified"] = (
+                repaired_graduation_state == "GRADUATED"
+            )
+            teacher_payload["gold_qualified"] = repaired_gold_qualified
             teacher.payload = teacher_payload
             teacher.graduation_state = repaired_graduation_state
+            teacher.gold_qualified = repaired_gold_qualified
             teacher.updated_at = now
 
     batch_payload = deepcopy(batch.payload or {})
@@ -1451,7 +1558,12 @@ def recalculate_current_class_quality_scores(
                 "published score policy must use perfect_cnt for classroom quality"
             )
         points_per_unit = float(classroom_quality_rule["points_per_unit"])
-        expected_points_by_policy = {"v5": 1.6, "v6": 1.6, "v7": 2.0}
+        expected_points_by_policy = {
+            "v5": 1.6,
+            "v6": 1.6,
+            "v7": 2.0,
+            "v8": 2.0,
+        }
         expected_points = expected_points_by_policy.get(str(score_policy["policy_version"]))
         if expected_points is None or not math.isclose(
             points_per_unit,
@@ -1544,7 +1656,7 @@ def recalculate_current_class_quality_scores(
                         TaskAssignmentRecord.creator_system == "TRIGGER_CENTER",
                         TaskAssignmentRecord.source_mode == "REAL",
                         TaskAssignmentRecord.task_code.in_(
-                            tuple(f"G{number:02d}" for number in range(1, 11))
+                            MANDATORY_TASK_CODES
                         ),
                     )
                     .group_by(TaskAssignmentRecord.teacher_id)
@@ -1619,13 +1731,13 @@ def recalculate_current_class_quality_scores(
                     "mandatory_task_completed_count": task_counts[
                         "completed_count"
                     ],
-                    "mandatory_task_expected_count": 10,
+                    "mandatory_task_expected_count": len(MANDATORY_TASK_CODES),
                 }
             )
             task_provenance = {
                 "source_mode": (
                     "SYSTEM_TASK_STATUS"
-                    if task_counts["assignment_count"] == 10
+                    if task_counts["assignment_count"] == len(MANDATORY_TASK_CODES)
                     else "TASK_BASELINE_INCOMPLETE"
                 ),
                 "source_field": "task_assignments.status",
@@ -1637,7 +1749,7 @@ def recalculate_current_class_quality_scores(
                 "batch_id": snapshot.batch_id,
                 "note": (
                     "Mandatory-growth points are the configured values of "
-                    "current COMPLETED G01-G10 assignments."
+                    "current COMPLETED mandatory assignments."
                 ),
             }
             metrics["metric_provenance"].update(
@@ -1677,6 +1789,7 @@ def recalculate_current_class_quality_scores(
                 ],
                 "late_cnt": inputs["late_cnt"],
                 "early_cnt": inputs["early_cnt"],
+                "absent_cnt": inputs["absent_cnt"],
                 "real_absent_cnt": inputs["real_absent_cnt"],
                 "severe_redline_event": inputs["severe_redline_event"],
                 "capacity_score": inputs["capacity_score"],
@@ -1972,12 +2085,24 @@ def import_teacher_metrics(
             existing_milestone_entry = _find_capacity_milestone_entry(
                 session, row.teacher_id
             )
+            existing_payload = (
+                deepcopy(existing_teacher.payload)
+                if existing_teacher is not None
+                else None
+            )
+            if existing_payload is not None:
+                existing_payload["graduation_qualified"] = (
+                    existing_teacher.graduation_state == "GRADUATED"
+                )
+                existing_payload["gold_qualified"] = bool(
+                    existing_teacher.gold_qualified
+                )
             teacher_payload, snapshot = _teacher_payload(
                 row,
                 batch_id=batch_id,
                 snapshot_label=normalized_snapshot_label,
                 imported_at=imported_at,
-                existing_payload=existing_teacher.payload if existing_teacher else None,
+                existing_payload=existing_payload,
                 prior_capacity_milestone_achieved=existing_milestone_entry is not None,
             )
             camp_enrollment_id = (
@@ -1994,6 +2119,7 @@ def import_teacher_metrics(
                     timezone=teacher_payload.get("timezone") or "UTC",
                     camp_day=teacher_payload["camp_day"],
                     graduation_state=teacher_payload["graduation_state"],
+                    gold_qualified=bool(teacher_payload["gold_qualified"]),
                     total_score=float(teacher_payload["total_score"]),
                     graduation_threshold=float(teacher_payload["graduation_threshold"]),
                     data_mode="MIXED",
@@ -2056,6 +2182,14 @@ def import_teacher_metrics(
             )
         except FixedGrowthBaselineError as exc:
             raise ImportValidationError(str(exc)) from exc
+        from .score_read_model import refresh_persisted_score_read_models
+
+        refresh_persisted_score_read_models(
+            session,
+            trigger_type="TEACHER_SOURCE_UPDATED",
+            trigger_ref=batch_id,
+            teacher_ids=(row.teacher_id for row in rows),
+        )
 
     return TeacherMetricImportResult(
         batch_id=batch_id,

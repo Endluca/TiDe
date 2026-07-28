@@ -127,4 +127,23 @@ describe('运营与课程接口', () => {
       }),
     )
   })
+
+  it('服务返回非 JSON 错误时不暴露解析异常', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      json: async () => {
+        throw new SyntaxError('Unexpected token')
+      },
+    }))
+
+    await expect(api.operationsInterventions({ type: 'NOTIFICATION' })).rejects.toMatchObject({
+      status: 500,
+      body: {
+        error_code: 'HTTP_500',
+        detail: 'Internal Server Error',
+      },
+    })
+  })
 })

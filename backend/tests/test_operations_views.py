@@ -8,6 +8,7 @@ from app.database import engine, session_scope
 from app.db_models import (
     DataImportBatchRecord,
     LessonFactRecord,
+    NotificationRecord,
     OpsCaseRecord,
     PersonalizedTriggerMatchRecord,
     SourceRecord,
@@ -95,7 +96,12 @@ def _seed_operations_evidence() -> None:
                 creator_system="TRIGGER_CENTER",
                 status="ASSIGNED",
                 priority="P1",
-                why="该课程迟到，请完成出席培训。",
+                why=(
+                    "This lesson recorded a late arrival. "
+                    "Complete the attendance training and quiz. "
+                    f"Evidence: Lesson IDs: LESSON-{teacher_id}; "
+                    "late arrival recorded."
+                ),
                 display_title="出席问题",
                 evidence_snapshot={"lesson_id": lesson_id, "is_late": True},
                 due_at=None,
@@ -240,10 +246,100 @@ def test_operations_overview_and_intervention_drilldown() -> None:
     interventions = client.get("/api/operations/interventions?domain=RELIABILITY")
     assert interventions.status_code == 200
     assert interventions.json()["total"] == 1
+    assert interventions.json()["counts_by_type"] == {"TEACHER_TASK": 1}
     item = interventions.json()["items"][0]
-    assert item["title"] == "出席问题"
+    assert item["title"] == "Attendance Improvement"
     assert item["source_lesson_id"] == "LESSON-REAL-1"
     assert item["status"] == "ASSIGNED"
+
+    combined_outputs = client.get(
+        "/api/operations/interventions",
+        params={
+            "type": "NOTIFICATION,OPS_CASE,PENDING_DATA",
+            "page": 1,
+            "page_size": 2,
+        },
+    )
+    assert combined_outputs.status_code == 200
+    assert combined_outputs.json()["total"] == 2
+    assert combined_outputs.json()["counts_by_type"] == {
+        "OPS_CASE": 1,
+        "PENDING_DATA": 1,
+    }
+    assert len(combined_outputs.json()["items"]) == 2
+
+
+def test_legacy_chinese_notification_copy_is_projected_to_english() -> None:
+    _seed_operations_evidence()
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    notification_id = "NOTIFICATION-LEGACY-CHINESE"
+    with session_scope(engine) as session:
+        session.add(
+            NotificationRecord(
+                notification_id=notification_id,
+                task_id=None,
+                source_ref="legacy-quality-alert:LESSON-REAL-1",
+                teacher_id="T-1001",
+                channel="WEBAPP_INBOX",
+                priority="P1",
+                status="STORED",
+                requested_at=now,
+                stored_at=now,
+                read_at=None,
+                clicked_at=None,
+                response_due_at=None,
+                failure_reason=None,
+                payload={
+                    "title": "课中质量问题",
+                    "body": "该课程检测到：网络延迟过高。请检查并改善上课环境。",
+                    "evidence": {
+                        "lesson_id": "LESSON-REAL-1",
+                        "anomalies": ["网络延迟过高"],
+                    },
+                },
+            )
+        )
+        session.add(
+            PersonalizedTriggerMatchRecord(
+                trigger_match_id="MATCH-NOTIFICATION-LEGACY",
+                trigger_code="TR-QUALITY-IN-CLASS",
+                rule_version="2026-07-22",
+                teacher_id="T-1001",
+                lesson_id="LESSON-REAL-1",
+                source_record_id="SOURCE-LESSON-TEST",
+                complaint_rule_id=None,
+                scope_key="LESSON-REAL-1:quality",
+                dedupe_key="match:notification:legacy",
+                output_type="NOTIFICATION",
+                output_title="课中质量问题",
+                output_id=notification_id,
+                match_status="MATERIALIZED",
+                evidence_snapshot={
+                    "domain": "CLASS_QUALITY",
+                    "priority": "P1",
+                    "why": "该课程检测到课堂质量问题。",
+                    "evidence": {
+                        "lesson_id": "LESSON-REAL-1",
+                        "anomalies": ["网络延迟过高"],
+                    },
+                },
+                matched_at=now,
+                materialized_at=now,
+            )
+        )
+
+    response = client.get(
+        "/api/operations/interventions?type=NOTIFICATION&page=1&page_size=10"
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    item = response.json()["items"][0]
+    assert item["title"] == "In-Class Quality Alert"
+    assert item["why"] == (
+        "An in-class quality issue was detected. "
+        "Review the evidence and improve the class setup. "
+        "Evidence: Lesson IDs: LESSON-REAL-1; quality anomalies: high network delay."
+    )
 
 
 def test_current_ops_todo_excludes_terminal_case_statuses() -> None:

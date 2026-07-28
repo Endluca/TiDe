@@ -13,10 +13,11 @@ from .db_models import (
     TeacherRecord,
 )
 from .teacher_copy import contains_han
+from .task_catalog import MANDATORY_TASK_CODES, MANDATORY_TASK_CODE_SET
 
 
-FIXED_GROWTH_TASK_CODES = tuple(f"G{number:02d}" for number in range(1, 11))
-FIXED_GROWTH_TASK_CODE_SET = frozenset(FIXED_GROWTH_TASK_CODES)
+FIXED_GROWTH_TASK_CODES = MANDATORY_TASK_CODES
+FIXED_GROWTH_TASK_CODE_SET = MANDATORY_TASK_CODE_SET
 FIXED_GROWTH_CREATOR_SYSTEM = "TRIGGER_CENTER"
 FIXED_GROWTH_SOURCE_MODE = "REAL"
 FIXED_GROWTH_TRIGGER_CODE = "NEW_TEACHER_CREATED"
@@ -60,7 +61,7 @@ def _published_fixed_growth_templates(
         or set(templates_by_code) != FIXED_GROWTH_TASK_CODE_SET
     ):
         raise FixedGrowthBaselineError(
-            "FIXED_GROWTH_CATALOG_MUST_CONTAIN_EXACTLY_PUBLISHED_G01_G10"
+            "FIXED_GROWTH_CATALOG_MUST_MATCH_CURRENT_PUBLISHED_TASKS"
         )
 
     total_points = 0.0
@@ -99,7 +100,7 @@ def ensure_fixed_growth_assignments(
     actor_id: str = DEFAULT_FIXED_GROWTH_ACTOR,
     occurred_at: datetime | None = None,
 ) -> FixedGrowthBaselineResult:
-    """Idempotently ensure every new teacher has the complete G01-G10 baseline.
+    """Idempotently ensure every new teacher has the current mandatory baseline.
 
     This function is the reusable application boundary for the current workbook
     import and the future ``API_DAILY`` teacher upsert.  It creates task facts
@@ -144,6 +145,7 @@ def ensure_fixed_growth_assignments(
             select(TaskAssignmentRecord).where(
                 TaskAssignmentRecord.teacher_id.in_(teacher_id_chunk),
                 TaskAssignmentRecord.task_kind == "FIXED_GROWTH",
+                TaskAssignmentRecord.task_code.in_(FIXED_GROWTH_TASK_CODE_SET),
             )
         ).all()
         for assignment in assignments:

@@ -21,11 +21,10 @@ import {
   Typography,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { EyeOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { EyeOutlined, ReloadOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import { displayError } from '../domain'
 import type {
-  AppSnapshot,
   SharedTaskAssignment,
   TaskProgressAssignmentPage,
 } from '../types'
@@ -69,26 +68,24 @@ type TaskDetailState = TaskProgressAssignmentPage & {
   error: string
 }
 
-export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
+export default function TaskCenter() {
   const [progressRows, setProgressRows] = useState<TaskProgressRow[]>([])
   const [detailPages, setDetailPages] = useState<Record<string, TaskDetailState>>({})
   const [loading, setLoading] = useState(false)
   const [hasLoaded, setHasLoaded] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [keyword, setKeyword] = useState('')
+  const [appliedKeyword, setAppliedKeyword] = useState('')
   const [lifecycle, setLifecycle] = useState('')
   const [taskKind, setTaskKind] = useState('')
   const [selected, setSelected] = useState<SharedTaskAssignment>()
-  const teacherNames = useMemo(
-    () => new Map(snapshot.teachers.map((teacher) => [teacher.teacher_id, teacher.name])),
-    [snapshot.teachers],
-  )
-
-  const load = useCallback(async () => {
+  const load = useCallback(async (searchKeyword = '') => {
     setLoading(true)
     setLoadError('')
     try {
-      const response = await api.taskProgress()
+      const response = await api.taskProgress({
+        keyword: searchKeyword.trim() || undefined,
+      })
       setProgressRows(normalizeTaskProgressItems(response.items))
       setDetailPages({})
       setSelected(undefined)
@@ -100,7 +97,6 @@ export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
       setLoading(false)
     }
   }, [])
-
   const loadDetails = useCallback(async (
     item: TaskProgressRow,
     page: number,
@@ -124,6 +120,7 @@ export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
         task_code: item.task_code,
         title: item.title,
         task_kind: item.task_kind,
+        keyword: appliedKeyword || undefined,
         page,
         page_size: pageSize,
       })
@@ -151,11 +148,11 @@ export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
         },
       }))
     }
-  }, [])
+  }, [appliedKeyword])
 
   const filteredRows = useMemo(
-    () => filterTaskProgressRows(progressRows, { keyword, lifecycle, taskKind }),
-    [progressRows, keyword, lifecycle, taskKind],
+    () => filterTaskProgressRows(progressRows, { keyword: '', lifecycle, taskKind }),
+    [progressRows, lifecycle, taskKind],
   )
 
   const summary = useMemo(() => ({
@@ -177,7 +174,7 @@ export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
   const detailColumns: TableColumnsType<SharedTaskAssignment> = [
     {
       title: '教师', key: 'teacher', width: 210,
-      render: (_, item) => <Space direction="vertical" size={2}><Text strong>{item.teacher_name || teacherNames.get(item.teacher_id) || item.teacher_id}</Text><Text code>{item.teacher_id}</Text></Space>,
+      render: (_, item) => <Space direction="vertical" size={2}><Text strong>{item.teacher_name || item.teacher_id}</Text><Text code>{item.teacher_id}</Text></Space>,
     },
     {
       title: '状态', key: 'status', width: 140,
@@ -242,7 +239,7 @@ export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
       eyebrow="任务进展"
       title="任务完成进展"
       description="先按任务查看覆盖与完成情况；需要定位教师时，再展开对应任务查看明细。"
-      actions={<Button icon={<ReloadOutlined />} loading={loading} onClick={() => load()}>更新任务数据</Button>}
+      actions={<Button icon={<ReloadOutlined />} loading={loading} onClick={() => load(appliedKeyword)}>更新任务数据</Button>}
     />
 
     <Row gutter={[12, 12]}>
@@ -254,7 +251,28 @@ export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
 
     <Card>
       <Flex gap={12} wrap>
-        <Input allowClear prefix={<SearchOutlined />} placeholder="搜索任务名称或编号" value={keyword} onChange={(event) => setKeyword(event.target.value)} style={{ width: 300 }} />
+        <Input.Search
+          allowClear
+          enterButton="搜索"
+          loading={loading}
+          placeholder="搜索任务名称、编号或教师 ID"
+          value={keyword}
+          onChange={(event) => {
+            const value = event.target.value
+            setKeyword(value)
+            if (!value && appliedKeyword) {
+              setAppliedKeyword('')
+              void load('')
+            }
+          }}
+          onSearch={(value) => {
+            const normalized = value.trim()
+            setKeyword(normalized)
+            setAppliedKeyword(normalized)
+            void load(normalized)
+          }}
+          style={{ width: 360 }}
+        />
         <Select allowClear placeholder="全部任务类型" value={taskKind || undefined} onChange={(value) => setTaskKind(value || '')} style={{ width: 190 }} options={[{ value: 'FIXED_GROWTH', label: '必修成长' }, { value: 'PERSONALIZED_IMPROVEMENT', label: '个性化改善' }]} />
         <Select
           allowClear
@@ -274,7 +292,7 @@ export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
     </Card>
 
     {loadError
-      ? <Result status="warning" title="任务进展加载失败" subTitle={loadError} extra={<Button onClick={() => load()}>重试</Button>} />
+      ? <Result status="warning" title="任务进展加载失败" subTitle={loadError} extra={<Button onClick={() => load(appliedKeyword)}>重试</Button>} />
       : <Card
         title="按任务查看"
         extra={<Text type="secondary">状态列按任务实例统计；完成率 = 已完成实例 ÷ 任务实例</Text>}
@@ -336,11 +354,12 @@ export default function TaskCenter({ snapshot }: { snapshot: AppSnapshot }) {
       {selected ? <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Flex gap={8} wrap>{statusBadge(selected.status)}<Tag>{selected.task_code}</Tag><Tag color={selected.task_kind === 'FIXED_GROWTH' ? 'purple' : 'blue'}>{selected.task_kind === 'FIXED_GROWTH' ? '必修成长' : '个性化改善'}</Tag><PriorityTag priority={selected.priority} /></Flex>
         <Descriptions bordered size="small" column={1}>
-          <Descriptions.Item label="教师">{selected.teacher_name || teacherNames.get(selected.teacher_id) || '—'} · {selected.teacher_id}</Descriptions.Item>
+          <Descriptions.Item label="教师">{selected.teacher_name || '—'} · {selected.teacher_id}</Descriptions.Item>
           <Descriptions.Item label="任务编号">{selected.task_code}</Descriptions.Item>
           <Descriptions.Item label="为什么产生">{selected.why}</Descriptions.Item>
           <Descriptions.Item label="怎么做">{selected.what_to_do || '见教师端任务执行页'}</Descriptions.Item>
           <Descriptions.Item label="完成标准">{selected.completion_standard || '见教师端任务执行页'}</Descriptions.Item>
+          <Descriptions.Item label="完成后获得">{selected.outcome || '—'}</Descriptions.Item>
           <Descriptions.Item label="截止时间"><TimeText value={selected.due_at} /></Descriptions.Item>
           <Descriptions.Item label="状态时间"><TimeText value={selected.status_changed_at} /></Descriptions.Item>
           <Descriptions.Item label="完成时间"><TimeText value={selected.completed_at} /></Descriptions.Item>

@@ -58,20 +58,27 @@ def list_task_assignments(
     teacher_id: Optional[str] = Query(default=None, min_length=1, max_length=64),
     assignment_status: Optional[str] = Query(default=None, alias="status"),
     task_kind: Optional[str] = Query(default=None),
+    include_mock: bool = Query(default=True),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
-) -> list[dict]:
-    return service.list_assignments(
+) -> dict:
+    return service.list_assignment_page(
         teacher_id=teacher_id,
         status=assignment_status,
         task_kind=task_kind,
+        include_mock=include_mock,
+        page=page,
+        page_size=page_size,
     )
 
 
 @router.get("/task-progress")
 def list_task_progress(
+    keyword: Optional[str] = Query(default=None, max_length=200),
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
 ) -> dict:
-    return service.list_task_progress()
+    return service.list_task_progress(keyword=keyword)
 
 
 @router.get("/task-progress/assignments")
@@ -83,6 +90,7 @@ def list_task_progress_assignments(
     ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
+    keyword: Optional[str] = Query(default=None, max_length=200),
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
 ) -> dict:
     return service.list_task_progress_assignments(
@@ -91,4 +99,5 @@ def list_task_progress_assignments(
         task_kind=task_kind,
         page=page,
         page_size=page_size,
+        keyword=keyword,
     )

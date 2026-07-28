@@ -19,9 +19,20 @@ from .db_models import (
     TaskAssignmentRecord,
     TeacherRecord,
 )
+from .teacher_copy import (
+    normalize_personalized_assignment_title,
+    normalize_teacher_notification_reason,
+    normalize_teacher_notification_title,
+)
 
 
-TERMINAL_TASK_STATUSES = {"COMPLETED", "EXPIRED", "WAIVED", "CANCELLED"}
+TERMINAL_TASK_STATUSES = {
+    "COMPLETED",
+    "FAILED",
+    "EXPIRED",
+    "WAIVED",
+    "CANCELLED",
+}
 TERMINAL_CASE_STATUSES = {"CLOSED", "RESOLVED", "CANCELLED"}
 TERMINAL_NOTIFICATION_STATUSES = {"READ", "CLICKED", "CANCELLED", "FAILED"}
 DOMAIN_META = {
@@ -247,7 +258,14 @@ class OperationsService:
                 )
             )
             if output_type:
-                statement = statement.where(PersonalizedTriggerMatchRecord.output_type == output_type)
+                output_types = {
+                    item.strip()
+                    for item in output_type.split(",")
+                    if item.strip()
+                }
+                statement = statement.where(
+                    PersonalizedTriggerMatchRecord.output_type.in_(output_types)
+                )
             if teacher_id:
                 statement = statement.where(PersonalizedTriggerMatchRecord.teacher_id == teacher_id)
             matches = session.scalars(statement).all()
@@ -334,7 +352,10 @@ class OperationsService:
                     why = str(snapshot.get("why") or item.output_title)
                     priority = str(snapshot.get("priority") or "P1")
                     if item.output_type == "TEACHER_TASK" and (task := tasks.get(item.output_id)):
-                        title = task.display_title or title
+                        title = normalize_personalized_assignment_title(
+                            task.task_code,
+                            task.display_title or title,
+                        )
                         why = task.why
                         priority = task.priority
                     elif item.output_type == "OPS_CASE" and (case := cases.get(item.output_id)):
@@ -342,6 +363,18 @@ class OperationsService:
                     elif item.output_type == "NOTIFICATION" and (
                         notification := notifications.get(item.output_id)
                     ):
+                        payload = (
+                            notification.payload
+                            if isinstance(notification.payload, dict)
+                            else {}
+                        )
+                        title = normalize_teacher_notification_title(
+                            str(payload.get("title") or title)
+                        )
+                        why = normalize_teacher_notification_reason(
+                            str(payload.get("body") or why),
+                            snapshot,
+                        )
                         priority = notification.priority
                     row = {
                         "output_id": item.output_id or item.trigger_match_id,
@@ -390,12 +423,17 @@ class OperationsService:
                 )
             )
             total = len(rows)
+            counts_by_type: dict[str, int] = {}
+            for row in rows:
+                row_type = str(row["output_type"])
+                counts_by_type[row_type] = counts_by_type.get(row_type, 0) + 1
             start = (page - 1) * page_size
             return {
                 "items": rows[start : start + page_size],
                 "total": total,
                 "page": page,
                 "page_size": page_size,
+                "counts_by_type": counts_by_type,
             }
 
     def decide_case(

@@ -19,7 +19,7 @@ import { EyeOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import type { TableColumnsType } from 'antd'
 import { api } from '../api'
 import { displayError } from '../domain'
-import type { AppSnapshot, TaskTemplate } from '../types'
+import type { TaskTemplate } from '../types'
 import { PageHeader } from '../components/Common'
 import {
   filterTaskTemplates,
@@ -42,12 +42,7 @@ function stageLabel(stage: string): string {
   return stageLabels[stage] ?? stage
 }
 
-export default function TemplateCenter({
-  refresh,
-}: {
-  snapshot: AppSnapshot
-  refresh: () => Promise<void>
-}) {
+export default function TemplateCenter() {
   const [templates, setTemplates] = useState<TaskTemplate[]>([])
   const [loading, setLoading] = useState(false)
   const [hasLoaded, setHasLoaded] = useState(false)
@@ -73,7 +68,6 @@ export default function TemplateCenter({
       setLoading(false)
     }
   }, [])
-
   const filtered = useMemo(
     () => filterTaskTemplates(templates, { keyword, stage }),
     [keyword, stage, templates],
@@ -144,16 +138,12 @@ export default function TemplateCenter({
     },
   ]
 
-  async function refreshAll() {
-    await Promise.all([load(), refresh()])
-  }
-
   return <div className="page-shell">
     <PageHeader
       eyebrow="任务与规则"
       title="任务规则"
       description="统一查看必修成长与个性化改善任务的适用阶段、教师动作、完成标准与积分，不在这里修改教师完成状态。"
-      actions={<Button icon={<ReloadOutlined />} loading={loading} onClick={() => refreshAll().catch(() => undefined)}>刷新</Button>}
+      actions={<Button icon={<ReloadOutlined />} loading={loading} onClick={() => load().catch(() => undefined)}>刷新</Button>}
     />
 
     <Alert
@@ -213,6 +203,12 @@ export default function TemplateCenter({
         <Descriptions.Item label="为什么要做">{selected.why_template}</Descriptions.Item>
         <Descriptions.Item label="怎么做">{selected.how_summary}</Descriptions.Item>
         <Descriptions.Item label="完成标准">{selected.completion_standard}</Descriptions.Item>
+        <Descriptions.Item label="完成后获得">{selected.benefit}</Descriptions.Item>
+        <Descriptions.Item label="内容状态">
+          {selected.content_status === 'PENDING_JIAHE'
+            ? <Tag color="orange">待嘉荷补充</Tag>
+            : <Tag color="green">内容已确认</Tag>}
+        </Descriptions.Item>
         <Descriptions.Item label="积分">{taskScoreSummary(selected)}</Descriptions.Item>
         <Descriptions.Item label="责任方">{taskOwnerLabel(selected)}</Descriptions.Item>
       </Descriptions> : null}

@@ -13,6 +13,11 @@ import {
   isScoreGraduationV5,
   isScoreGraduationV6,
   isScoreGraduationV7,
+  isScoreGraduationV8,
+  isScoreGraduationV9,
+  isScoreGraduationV10,
+  isScoreGraduationV1,
+  isConfigurationFormEditable,
   type AgentPolicyPayload,
   type ConfigVersion,
   type ScoreGraduationPayload,
@@ -67,6 +72,10 @@ describe('configuration center governance helpers', () => {
     expect(canEditConfiguration(version('DRAFT'))).toBe(true)
     expect(canEditConfiguration(version('VALIDATED'))).toBe(false)
     expect(canEditConfiguration(version('PUBLISHED'))).toBe(false)
+    expect(isConfigurationFormEditable(version('DRAFT'), true, false)).toBe(true)
+    expect(isConfigurationFormEditable(version('DRAFT'), false, false)).toBe(false)
+    expect(isConfigurationFormEditable(version('DRAFT'), true, true)).toBe(false)
+    expect(isConfigurationFormEditable(version('PUBLISHED'), true, false)).toBe(false)
   })
 
   it('requires a different publisher for high impact config', () => {
@@ -81,7 +90,7 @@ describe('configuration center governance helpers', () => {
     expect(agentEffectivelyEnabled({ ...payload, kill_switch: true })).toBe(false)
   })
 
-  it('识别两项金牌门槛的 v7 当前结构，并兼容读取 v2-v6', () => {
+  it('识别移除15日复约积分的 v8 当前结构，并兼容读取 v2-v7', () => {
     const payload: ScoreGraduationPayload = {
       policy_version: 'v5',
       graduation_effect: 'IMMEDIATE_ON_CRITERIA',
@@ -154,6 +163,58 @@ describe('configuration center governance helpers', () => {
     }
     expect(isScoreGraduationV7(latestPayload)).toBe(true)
     expect(isScoreGraduationV6(latestPayload)).toBe(false)
+    const v8ScoringItems = { ...latestPayload.scoring_items }
+    delete v8ScoringItems.feedback_rebook_15d
+    const v8Payload: ScoreGraduationPayload = {
+      ...latestPayload,
+      policy_version: 'v8',
+      scoring_items: v8ScoringItems,
+    }
+    expect(isScoreGraduationV8(v8Payload)).toBe(true)
+    expect(isScoreGraduationV7(v8Payload)).toBe(false)
+    expect(isScoreGraduationV8(latestPayload)).toBe(false)
+    const v9Payload: ScoreGraduationPayload = {
+      ...v8Payload,
+      policy_version: 'v9',
+      scoring_items: {
+        capacity: v8Payload.scoring_items.capacity,
+        new_teacher_tasks: v8Payload.scoring_items.new_teacher_tasks,
+        feedback_praise: v8Payload.scoring_items.feedback_praise,
+        feedback_favorite: v8Payload.scoring_items.feedback_favorite,
+        reliability_perfect: { points_per_unit: 4 },
+        reliability_peak: { points_per_unit: 2 },
+      },
+      hard_gates: {
+        graduation: v8Payload.hard_gates.graduation,
+        gold: {
+          inherits_graduation: true,
+          maximum_late_count: 1,
+          maximum_early_count: 0,
+          maximum_absent_count: 0,
+        },
+      },
+    }
+    expect(isScoreGraduationV9(v9Payload)).toBe(true)
+    expect(isScoreGraduationV9(v8Payload)).toBe(false)
+    const v10Payload: ScoreGraduationPayload = {
+      ...v9Payload,
+      policy_version: 'v10',
+      hard_gates: {
+        ...v9Payload.hard_gates,
+        graduation: {
+          required_mandatory_task_count: 9,
+          maximum_l0_complaint_count: 0,
+        },
+      },
+    }
+    expect(isScoreGraduationV10(v10Payload)).toBe(true)
+    expect(isScoreGraduationV10(v9Payload)).toBe(false)
+    const v1Payload: ScoreGraduationPayload = {
+      ...v10Payload,
+      policy_version: 'v1',
+    }
+    expect(isScoreGraduationV1(v1Payload)).toBe(true)
+    expect(isScoreGraduationV1(v10Payload)).toBe(false)
     const legacyClassroomQuality = {
       points_per_unit: 2,
       default_achievement_rate: 0.8,

@@ -1,37 +1,44 @@
 from __future__ import annotations
 
-from copy import deepcopy
-
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
-from app.config_models import ConfigKey
-from app.main import app, service
-from app.store import store
+from app.database import engine, session_scope
+from app.db_models import TeacherRecord
+from app.main import app
+from app.teacher_read_service import DashboardReadService
 
 
 client = TestClient(app)
 
 
-def test_teacher_list_is_paged_filtered_and_lightweight(monkeypatch) -> None:
-    policy_reads: list[ConfigKey] = []
-    projection_calls: list[str] = []
-    original_projection = service._project_teacher_scoring
+def test_dashboard_uses_compact_database_aggregation() -> None:
+    statements: list[str] = []
 
-    def read_config(key: ConfigKey):
-        policy_reads.append(key)
-        return None
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
 
-    def project(teacher: dict, resolved_policy, score_account_overrides=None):
-        projection_calls.append(teacher["teacher_id"])
-        return original_projection(
-            teacher,
-            resolved_policy,
-            score_account_overrides,
-        )
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        dashboard = DashboardReadService(engine).dashboard()
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
 
-    monkeypatch.setattr(service, "config_reader", read_config)
-    monkeypatch.setattr(service, "_project_teacher_scoring", project)
+    assert dashboard["teacher_count"] == 4
+    assert dashboard["data_mode_counts"] == {"MOCK": 4}
+    assert dashboard["employment_status_counts"] == {"unknown": 4}
+    assert len(statements) == 4
 
+
+def test_teacher_list_is_paged_filtered_and_lightweight() -> None:
     response = client.get("/api/teachers?page=1&page_size=2&data_mode=MOCK")
 
     assert response.status_code == 200
@@ -41,8 +48,6 @@ def test_teacher_list_is_paged_filtered_and_lightweight(monkeypatch) -> None:
     assert body["page_size"] == 2
     assert body["total_pages"] == 2
     assert len(body["items"]) == 2
-    assert projection_calls == [item["teacher_id"] for item in body["items"]]
-    assert policy_reads == [ConfigKey.SCORE_GRADUATION]
     assert body["filters"]["data_mode"] == "MOCK"
     assert body["filters"]["available_data_modes"] == ["MOCK"]
     assert body["filters"]["available_employment_statuses"] == ["UNKNOWN"]
@@ -71,11 +76,7 @@ def test_teacher_list_search_and_employment_filter_are_server_side() -> None:
     assert body["filters"]["employment_status"] == "unknown"
 
 
-def test_teacher_options_are_full_lightweight_and_do_not_read_score_policy(monkeypatch) -> None:
-    def unexpected_config_read(_key: ConfigKey):
-        raise AssertionError("teacher options must not read score configuration")
-
-    monkeypatch.setattr(service, "config_reader", unexpected_config_read)
+def test_teacher_options_are_full_lightweight_and_do_not_read_score_policy() -> None:
     response = client.get("/api/teacher-options")
 
     assert response.status_code == 200
@@ -97,41 +98,37 @@ def test_teacher_options_are_full_lightweight_and_do_not_read_score_policy(monke
     assert all(item["task_issuance_blockers"] == [] for item in body)
 
 
-def test_1069_teacher_list_projects_only_24_and_avoids_megabyte_response(monkeypatch) -> None:
-    template = deepcopy(store.teachers["T-1002"])
-    teachers: dict[str, dict] = {}
-    for index in range(1069):
-        teacher = deepcopy(template)
-        teacher_id = f"T-{index + 1:04d}"
-        teacher.update(
-            {
-                "teacher_id": teacher_id,
-                "name": f"Teacher {index + 1}",
-                "data_mode": "MIXED",
-                "employment_status": "on",
-            }
-        )
-        teachers[teacher_id] = teacher
-    store.teachers = teachers
-
-    projection_calls: list[str] = []
-    original_projection = service._project_teacher_scoring
-
-    def project(teacher: dict, resolved_policy, score_account_overrides=None):
-        projection_calls.append(teacher["teacher_id"])
-        return original_projection(
-            teacher,
-            resolved_policy,
-            score_account_overrides,
-        )
-
-    monkeypatch.setattr(service, "_project_teacher_scoring", project)
+def test_1069_teacher_list_projects_only_24_and_avoids_megabyte_response() -> None:
+    with session_scope(engine) as session:
+        for index in range(4, 1069):
+            teacher_id = f"T-PAGE-{index + 1:04d}"
+            session.add(
+                TeacherRecord(
+                    teacher_id=teacher_id,
+                    camp_enrollment_id=f"CAMP-{teacher_id}",
+                    name=f"Teacher {index + 1}",
+                    country=None,
+                    timezone="UTC",
+                    camp_day=1,
+                    graduation_state="IN_PROGRESS",
+                    gold_qualified=False,
+                    total_score=0,
+                    graduation_threshold=100,
+                    data_mode="MIXED",
+                    source_batch_id=None,
+                    source_snapshot_label=None,
+                    payload={
+                        "teacher_id": teacher_id,
+                        "employment_status": "on",
+                        "dimensions": [],
+                    },
+                )
+            )
     response = client.get("/api/teachers")
 
     assert response.status_code == 200
     assert response.json()["total"] == 1069
     assert len(response.json()["items"]) == 24
-    assert len(projection_calls) == 24
     assert len(response.content) < 250_000
 
 

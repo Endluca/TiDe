@@ -41,17 +41,23 @@ import {
   currentConfigurations,
   currentConfigOperator,
   currentConfigStatusLabel,
+  isConfigurationFormEditable,
   isLegacyScoreGraduation,
   isScoreGraduationV3,
   isScoreGraduationV4,
   isScoreGraduationV5,
   isScoreGraduationV6,
   isScoreGraduationV7,
+  isScoreGraduationV8,
+  isScoreGraduationV9,
+  isScoreGraduationV10,
+  isScoreGraduationV1,
   type AgentPolicyPayload,
   type ConfigKey,
   type ConfigPayload,
   type ConfigVersion,
   type OperatorIdentity,
+  type ScoreGraduationPayload,
 } from '../configCenter'
 import { PageHeader } from '../components/Common'
 
@@ -90,13 +96,18 @@ async function configRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 
-function ScoreForm({ payload }: { payload: unknown }) {
+function ScoreForm({ payload, editable }: { payload: unknown; editable: boolean }) {
   const legacy = isLegacyScoreGraduation(payload) || isScoreGraduationV3(payload) || isScoreGraduationV4(payload) || isScoreGraduationV5(payload)
   const isV4 = isScoreGraduationV4(payload)
   const isV5 = isScoreGraduationV5(payload)
-  const isCurrent = isScoreGraduationV6(payload) || isScoreGraduationV7(payload)
-  const classroomQualityPoints = isCurrent
-    ? payload.scoring_items.classroom_quality.points_per_unit
+  const isV8 = isScoreGraduationV8(payload)
+  const isV9 = isScoreGraduationV9(payload)
+  const isV10 = isScoreGraduationV10(payload)
+  const isV1 = isScoreGraduationV1(payload)
+  const isCurrentReliability = isV1 || isV9 || isV10
+  const isCurrent = isScoreGraduationV6(payload) || isScoreGraduationV7(payload) || isV8 || isCurrentReliability
+  const classroomQualityPoints = isCurrent && !isCurrentReliability
+    ? (payload as ScoreGraduationPayload).scoring_items.classroom_quality?.points_per_unit
     : undefined
   const hasSupplyMilestone = isV4 || isV5 || isCurrent
   return (
@@ -104,8 +115,12 @@ function ScoreForm({ payload }: { payload: unknown }) {
       <Alert
         type={isCurrent ? 'info' : 'warning'}
         showIcon
-        message={isCurrent ? '当前课堂质量和供给积分均由真实指标结算。' : legacy ? '该计分版本已停用，仅供读取。' : '该草稿的积分结构不完整，暂不可编辑。'}
-        description={isCurrent ? `课堂质量分 = perfect_cnt × ${classroomQualityPoints}；peak_slot_cnt 达到 40 时供给维度获得 10 分。其余原始分仍无封顶，对外显示分 = min(raw, 200)。` : '页面不会静默改写已保存规则；如需调整，请从当前已发布版本新建草稿。'}
+        message={isCurrentReliability ? '当前可靠性和供给积分由真实指标结算；课堂质量暂不计分。' : isCurrent ? '当前课堂质量和供给积分均由真实指标结算。' : legacy ? '该计分版本已停用，仅供读取。' : '该草稿的积分结构不完整，暂不可编辑。'}
+        description={isCurrentReliability
+          ? '可靠性分 = perfect_cnt × 4 + peak_completed_cnt × 2；课堂质量维度保留为 0 分，后续增加计分项。15 日复约仅保留业务事实，不参与积分。'
+          : isCurrent
+            ? `课堂质量分 = perfect_cnt × ${classroomQualityPoints}；peak_slot_cnt 达到 40 时供给维度获得 10 分。${isV8 ? '15 日复约仅保留业务事实，不参与积分。' : ''}其余原始分仍无封顶，对外显示分 = min(raw, 200)。`
+            : '页面不会静默改写已保存规则；如需调整，请从当前已发布版本新建草稿。'}
       />
       <Row gutter={16}>
         <Form.Item name="policy_version" hidden rules={[{ required: true }]}><Input /></Form.Item>
@@ -136,17 +151,17 @@ function ScoreForm({ payload }: { payload: unknown }) {
             </Col>
             <Col xs={24} md={4}>
               <Form.Item name={['scoring_items', 'capacity', 'threshold']} label="达标阈值" rules={[{ required: true }]}>
-                <InputNumber disabled min={0} style={{ width: '100%' }} />
+                <InputNumber disabled={!editable} min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col xs={24} md={4}>
               <Form.Item name={['scoring_items', 'capacity', 'score_value']} label="达标得分" rules={[{ required: true }]}>
-                <InputNumber disabled min={0} style={{ width: '100%' }} />
+                <InputNumber disabled={!editable} min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col xs={24} md={4}>
               <Form.Item name={['scoring_items', 'capacity', 'maximum_points']} label="维度上限" rules={[{ required: true }]}>
-                <InputNumber disabled min={0} style={{ width: '100%' }} />
+                <InputNumber disabled={!editable} min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={24}>
@@ -163,7 +178,13 @@ function ScoreForm({ payload }: { payload: unknown }) {
       <div className="config-dimension-grid config-dimension-header">
         <Text strong>业务计分项</Text><Text strong>计分方式</Text><Text strong>分值</Text><Text strong>数据说明</Text>
       </div>
-      {SCORING_ITEM_META.filter((item) => !(hasSupplyMilestone && item.key === 'capacity')).map((item) => (
+      {SCORING_ITEM_META.filter((item) => (
+        !(hasSupplyMilestone && item.key === 'capacity')
+        && !((isV8 || isCurrentReliability) && item.key === 'feedback_rebook_15d')
+        && !(isCurrentReliability && item.key === 'reliability_on_time')
+        && !(!isCurrentReliability && item.key === 'reliability_perfect')
+        && !(isCurrentReliability && item.key === 'classroom_quality')
+      )).map((item) => (
         <div className="config-dimension-grid" key={item.key}>
           <div><Text strong>{isCurrent && item.key === 'classroom_quality' ? '课堂质量 · 完美完课' : item.label}</Text><Text type="secondary">{item.key}</Text></div>
           <Text>
@@ -176,13 +197,19 @@ function ScoreForm({ payload }: { payload: unknown }) {
                   : '基础项可得上限'}
           </Text>
           <Form.Item name={['scoring_items', item.key, item.field]} rules={[{ required: true }]} noStyle>
-            <InputNumber disabled={isCurrent} min={0.01} step={isCurrent && item.key === 'classroom_quality' ? 0.1 : 1} style={{ width: '100%' }} aria-label={`${item.label}（${item.field === 'maximum_points' ? '分' : `分 / ${item.unit}`}）`} />
+            <InputNumber
+              disabled={!editable || item.key === 'new_teacher_tasks'}
+              min={0.01}
+              step={isCurrent && item.key === 'classroom_quality' ? 0.1 : 1}
+              style={{ width: '100%' }}
+              aria-label={`${item.label}（${item.field === 'maximum_points' ? '分' : `分 / ${item.unit}`}）`}
+            />
           </Form.Item>
           <Text type="secondary">
             {item.key === 'classroom_quality'
               ? isCurrent ? `教师宽表 perfect_cnt × ${classroomQualityPoints}` : '历史版本按替代达成率计算'
               : isCurrent && item.key === 'new_teacher_tasks'
-                ? '读取 task_assignments 中 G01–G10 的 COMPLETED 状态，并累加各任务配置分值'
+                ? '由 G01–G09 已发布任务分值合计，不能在这里单独修改'
                 : item.field === 'maximum_points'
                   ? '仅限制该基础项；课程分累计不受影响'
                   : '真实事件为 0 时得分为 0'}
@@ -190,7 +217,7 @@ function ScoreForm({ payload }: { payload: unknown }) {
         </div>
       ))}
 
-      {isCurrent ? (
+      {isCurrent && !isCurrentReliability ? (
         <Row gutter={16}>
           <Col xs={24} md={12}>
             <Form.Item name={['scoring_items', 'classroom_quality', 'metric']} label="课堂质量指标字段" rules={[{ required: true }]}>
@@ -203,6 +230,13 @@ function ScoreForm({ payload }: { payload: unknown }) {
             </Form.Item>
           </Col>
         </Row>
+      ) : isCurrentReliability ? (
+        <Alert
+          type="info"
+          showIcon
+          message="课堂质量当前无加分项"
+          description="该维度继续保留并对外返回 0 分；不是源数据缺失。后续补充明确的计分项后再发布新版本。"
+        />
       ) : (
         <Row gutter={16}>
           <Col xs={24} md={12}>
@@ -221,9 +255,9 @@ function ScoreForm({ payload }: { payload: unknown }) {
       <Title level={5}>分数线与对外显示封顶</Title>
       <Row gutter={16}>
         {!isCurrent ? <Col xs={24} md={12}><Form.Item name={['thresholds', 'graduation_raw_score']} label="出营累计分数线" rules={[{ required: true }]}><InputNumber min={0.01} style={{ width: '100%' }} /></Form.Item></Col> : null}
-        <Col xs={24} md={12}><Form.Item name={['thresholds', 'graduation_external_score']} label="出营显示分" rules={[{ required: true }]}><InputNumber disabled={isCurrent} min={0.01} max={200} style={{ width: '100%' }} /></Form.Item></Col>
-        <Col xs={24} md={12}><Form.Item name={['thresholds', 'gold_raw_score']} label="金牌累计分数线" rules={[{ required: true }]}><InputNumber disabled={isCurrent} min={0.01} style={{ width: '100%' }} /></Form.Item></Col>
-        <Col xs={24} md={12}><Form.Item name={['thresholds', 'gold_external_score']} label="对外显示封顶" rules={[{ required: true }]}><InputNumber disabled={isCurrent} min={0.01} max={200} style={{ width: '100%' }} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item name={['thresholds', 'graduation_external_score']} label="出营显示分" rules={[{ required: true }]}><InputNumber disabled min={0.01} max={200} style={{ width: '100%' }} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item name={['thresholds', 'gold_raw_score']} label="金牌累计分数线" rules={[{ required: true }]}><InputNumber disabled={!editable} min={0.01} style={{ width: '100%' }} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item name={['thresholds', 'gold_external_score']} label="对外显示封顶" rules={[{ required: true }]}><InputNumber disabled min={0.01} max={200} style={{ width: '100%' }} /></Form.Item></Col>
       </Row>
 
       <Title level={5}>最终出营资格硬门槛</Title>
@@ -237,16 +271,16 @@ function ScoreForm({ payload }: { payload: unknown }) {
             </Col>
             <Col xs={24} md={8}>
               <Form.Item name={['hard_gates', 'graduation', 'maximum_l0_complaint_count']} label="L0 投诉数上限" rules={[{ required: true }]}>
-                <InputNumber disabled min={0} style={{ width: '100%' }} />
+                <InputNumber disabled={!editable} min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
               <Form.Item name={['thresholds', 'graduation_raw_score']} label="累计总分下限" rules={[{ required: true }]}>
-                <InputNumber disabled min={0} style={{ width: '100%' }} />
+                <InputNumber disabled={!editable} min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>
-          <Text type="secondary">三项必须同时满足：G01–G10 全部完成（30 分）、L0 投诉数为 0、累计总分达到 100。</Text>
+          <Text type="secondary">三项必须同时满足：当前 9 项必修成长任务全部完成（30 分）、L0 投诉数为 0、累计总分达到 100。</Text>
         </Card>
       ) : (
         <Row gutter={16}>
@@ -272,8 +306,31 @@ function ScoreForm({ payload }: { payload: unknown }) {
                 <InputNumber disabled min={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
+            {isCurrentReliability ? (
+              <>
+                <Col xs={24} md={8}>
+                  <Form.Item name={['hard_gates', 'gold', 'maximum_late_count']} label="迟到次数上限" rules={[{ required: true }]}>
+                    <InputNumber disabled={!editable} min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Form.Item name={['hard_gates', 'gold', 'maximum_early_count']} label="早退次数上限" rules={[{ required: true }]}>
+                    <InputNumber disabled={!editable} min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Form.Item name={['hard_gates', 'gold', 'maximum_absent_count']} label="缺席次数上限" rules={[{ required: true }]}>
+                    <InputNumber disabled={!editable} min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </>
+            ) : null}
           </Row>
-          <Text type="secondary">两项必须同时满足：已满足出营资格，且累计总分达到 200。</Text>
+          <Text type="secondary">
+            {isCurrentReliability
+              ? '五项必须同时满足：已满足出营资格、累计总分达到 200、迟到不超过 1 次、早退 0 次、缺席 0 次。'
+              : '两项必须同时满足：已满足出营资格，且累计总分达到 200。'}
+          </Text>
         </Card>
       ) : (
         <>
@@ -375,8 +432,15 @@ export default function ConfigCenter() {
   const canManage = operator?.roles.includes('CONFIG_PUBLISHER') ?? false
   const selectedUsesReadOnlyScorePolicy = activeKey === 'SCORE_GRADUATION'
     && Boolean(selected)
+    && !isScoreGraduationV1(selected?.payload)
     && !isScoreGraduationV6(selected?.payload)
     && !isScoreGraduationV7(selected?.payload)
+    && !isScoreGraduationV8(selected?.payload)
+  const formEditable = isConfigurationFormEditable(
+    selected,
+    canManage,
+    selectedUsesReadOnlyScorePolicy,
+  )
 
   const loadVersions = useCallback(async (key: ConfigKey, preferredId?: string) => {
     setLoading(true)
@@ -404,7 +468,6 @@ export default function ConfigCenter() {
       setLoading(false)
     }
   }, [])
-
   useEffect(() => {
     form.resetFields()
     if (selected) form.setFieldsValue(selected.payload as unknown as ConfigFormValues)
@@ -586,10 +649,10 @@ export default function ConfigCenter() {
                 <Form
                   form={form}
                   layout="vertical"
-                  disabled={!canManage || !canEditConfiguration(selected) || (activeKey === 'SCORE_GRADUATION' && !isScoreGraduationV6(selected.payload) && !isScoreGraduationV7(selected.payload))}
+                  disabled={!formEditable}
                   className="config-form"
                 >
-                  {activeKey === 'SCORE_GRADUATION' ? <ScoreForm payload={selected.payload} /> : null}
+                  {activeKey === 'SCORE_GRADUATION' ? <ScoreForm payload={selected.payload} editable={formEditable} /> : null}
                   {activeKey === 'AGENT_POLICY' && agentPayload ? <AgentForm payload={agentPayload} /> : null}
                   {activeKey === 'DELIVERY_POLICY' ? <DeliveryForm /> : null}
                 </Form>

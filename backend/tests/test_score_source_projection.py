@@ -10,10 +10,11 @@ from app.db_models import (
     TeacherRecord,
 )
 from app.store import DatabaseStore
+from app.task_catalog import MANDATORY_TASK_CODES
 
 
 NOW = datetime(2026, 7, 23, 2, 0, tzinfo=timezone.utc)
-TASK_CODES = tuple(f"G{number:02d}" for number in range(1, 11))
+TASK_CODES = MANDATORY_TASK_CODES
 
 
 def _add_teacher(teacher_id: str) -> None:
@@ -122,8 +123,8 @@ def test_mandatory_growth_projection_awards_completed_pinned_templates_immediate
     _add_teacher(complete_teacher)
     _add_fixed_assignments(
         partial_teacher,
-        codes=("G01", "G09"),
-        completed={"G01", "G09"},
+        codes=("G01", "G08"),
+        completed={"G01", "G08"},
     )
     _add_fixed_assignments(
         complete_teacher,
@@ -137,12 +138,12 @@ def test_mandatory_growth_projection_awards_completed_pinned_templates_immediate
 
     partial = values[partial_teacher]["NEW_TEACHER_TASK"]
     assert partial == {
-        "score": 14.0,
+            "score": 8.0,
         "source_mode": "TASK_BASELINE_INCOMPLETE",
         "score_rule_version": "shared-fixed-growth.current-status.v1",
         "assignment_count": 2,
         "completed_count": 2,
-        "expected_count": 10,
+        "expected_count": 9,
     }
 
     complete = values[complete_teacher]["NEW_TEACHER_TASK"]
@@ -150,9 +151,9 @@ def test_mandatory_growth_projection_awards_completed_pinned_templates_immediate
         "score": 30.0,
         "source_mode": "SYSTEM_TASK_STATUS",
         "score_rule_version": "shared-fixed-growth.current-status.v1",
-        "assignment_count": 10,
-        "completed_count": 10,
-        "expected_count": 10,
+        "assignment_count": 9,
+        "completed_count": 9,
+        "expected_count": 9,
     }
 
 
@@ -170,7 +171,7 @@ def test_missing_fixed_baseline_is_internal_initialization_anomaly() -> None:
         "score_rule_version": "shared-fixed-growth.current-status.v1",
         "assignment_count": 0,
         "completed_count": 0,
-        "expected_count": 10,
+        "expected_count": 9,
     }
 
 
@@ -198,7 +199,7 @@ def test_invalid_pinned_task_template_fails_closed_instead_of_using_snapshot_sco
     assert task_score["source_mode"] == "TASK_STATUS_INVALID"
     assert task_score["assignment_count"] == 0
     assert task_score["completed_count"] == 0
-    assert task_score["expected_count"] == 10
+    assert task_score["expected_count"] == 9
 
 
 def test_l0_complaints_are_aggregated_from_real_lesson_level_ranks() -> None:

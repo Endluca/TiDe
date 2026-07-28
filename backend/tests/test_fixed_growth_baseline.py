@@ -18,6 +18,7 @@ from app.fixed_growth_baseline import (
 )
 from app.services import GrowthService
 from app.store import DatabaseStore
+from app.task_catalog import MANDATORY_TASK_CODES
 from app.teacher_copy import contains_han
 
 
@@ -67,13 +68,11 @@ def test_new_teacher_baseline_is_complete_idempotent_and_has_no_notification() -
             .where(TaskAssignmentRecord.teacher_id == teacher_id)
             .order_by(TaskAssignmentRecord.task_code)
         ).all()
-        assert first.created_assignment_count == 10
+        assert first.created_assignment_count == 9
         assert first.existing_assignment_count == 0
         assert second.created_assignment_count == 0
-        assert second.existing_assignment_count == 10
-        assert [item.task_code for item in assignments] == [
-            f"G{number:02d}" for number in range(1, 11)
-        ]
+        assert second.existing_assignment_count == 9
+        assert [item.task_code for item in assignments] == list(MANDATORY_TASK_CODES)
         assert {item.status for item in assignments} == {"ASSIGNED"}
         assert {item.task_kind for item in assignments} == {"FIXED_GROWTH"}
         assert {item.creator_system for item in assignments} == {"TRIGGER_CENTER"}
@@ -91,12 +90,12 @@ def test_incomplete_published_catalog_rolls_back_baseline_creation() -> None:
     teacher_id = "FIXED-BASELINE-CATALOG-ERROR"
     with session_scope(engine) as session:
         _teacher(session, teacher_id)
-        template = session.get(TaskTemplateRecord, "G10:v1")
+        template = session.get(TaskTemplateRecord, "G09:v1")
         assert template is not None
         template.status = "RETIRED"
         with pytest.raises(
             FixedGrowthBaselineError,
-            match="FIXED_GROWTH_CATALOG_MUST_CONTAIN_EXACTLY_PUBLISHED_G01_G10",
+            match="FIXED_GROWTH_CATALOG_MUST_MATCH_CURRENT_PUBLISHED_TASKS",
         ):
             ensure_fixed_growth_assignments(
                 session,
@@ -122,10 +121,10 @@ def test_teacher_detail_reads_the_shared_fixed_task_baseline() -> None:
 
     detail = GrowthService(DatabaseStore(engine)).teacher_detail(teacher_id)
 
-    assert len(detail["task_assignments"]) == 10
-    assert [item["task_code"] for item in detail["task_assignments"]] == [
-        f"G{number:02d}" for number in range(1, 11)
-    ]
+    assert len(detail["task_assignments"]) == 9
+    assert [item["task_code"] for item in detail["task_assignments"]] == list(
+        MANDATORY_TASK_CODES
+    )
     assert {item["status"] for item in detail["task_assignments"]} == {
         "ASSIGNED"
     }

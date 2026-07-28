@@ -1,40 +1,100 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import OperatorIdentity, auth_router, require_roles
 from .auth_models import OperatorRole
+from .audit_service import AuditService
 from .config_routes import router as config_router
-from .database import database_health
-from .services import DomainError, GrowthService
+from .database import database_health, engine
+from .errors import DomainError
+from .output_service import OutputService
+from .services import GrowthService
 from .operations_routes import router as operations_router
-from .store import store
+from .score_read_service import ScoreReadModelNotFound, ScoreReadService
 from .task_routes import router as task_router
+from .teacher_read_service import DashboardReadService, TeacherReadService
+from .runtime_settings import (
+    allowed_hosts,
+    allowed_origins,
+    is_production,
+    validate_production_runtime,
+)
 
 
+validate_production_runtime()
 app = FastAPI(
     title="TIT Growth System Operational API",
     version="current",
     description="Current local API for shared tasks, scoring, operational views, outputs and audit.",
+    docs_url=None if is_production() else "/docs",
+    redoc_url=None if is_production() else "/redoc",
+    openapi_url=None if is_production() else "/openapi.json",
 )
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5174", "http://127.0.0.1:5174"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if configured_hosts := allowed_hosts():
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=list(configured_hosts),
+    )
+if configured_origins := allowed_origins():
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(configured_origins),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 app.include_router(auth_router)
 app.include_router(config_router)
 app.include_router(task_router)
 app.include_router(operations_router)
 
-service = GrowthService(store)
+class _LazyLegacyService:
+    """Test-only compatibility; production routes no longer instantiate it."""
+
+    _instance: Any = None
+
+    def _get(self) -> Any:
+        if self._instance is None:
+            from .store import store
+
+            self._instance = GrowthService(store)
+        return self._instance
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._get(), name)
+
+
+service = _LazyLegacyService()
+score_read_service = ScoreReadService(engine)
+teacher_read_service = TeacherReadService(engine)
+dashboard_read_service = DashboardReadService(engine)
+audit_service = AuditService(engine)
+output_service = OutputService(engine)
+
+
+@app.middleware("http")
+async def add_api_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=()"
+    )
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    if is_production():
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 @app.exception_handler(DomainError)
@@ -68,10 +128,12 @@ async def handle_request_validation_error(_, exc: RequestValidationError) -> JSO
 
 @app.get("/api/health")
 def health() -> dict:
-    data_mode_counts: dict[str, int] = {}
-    for teacher in store.teachers.values():
-        data_mode = str(teacher.get("data_mode") or "MOCK").upper()
-        data_mode_counts[data_mode] = data_mode_counts.get(data_mode, 0) + 1
+    if is_production():
+        return {
+            "status": "ok",
+            "database": {"status": database_health()["status"]},
+        }
+    data_mode_counts = teacher_read_service.data_mode_counts()
     modes = set(data_mode_counts)
     if modes and modes <= {"REAL"}:
         persistence_mode = "persistent_real"
@@ -84,20 +146,21 @@ def health() -> dict:
         "mode": persistence_mode,
         "database": database_health(),
         "data_mode_counts": data_mode_counts,
-        "runtime": {"single_process_required": True},
+        "runtime": {"single_process_required": False},
     }
 
 
 @app.get("/api/health/db")
 def health_database() -> dict:
-    return database_health()
+    result = database_health()
+    return {"status": result["status"]} if is_production() else result
 
 
 @app.get("/api/dashboard")
 def dashboard(
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
 ) -> dict:
-    return service.dashboard()
+    return dashboard_read_service.dashboard()
 
 
 @app.get("/api/teachers")
@@ -109,7 +172,7 @@ def list_teachers(
     employment_status: Optional[str] = Query(default=None),
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
 ) -> dict:
-    return service.list_teachers(
+    return teacher_read_service.list_teachers(
         page=page,
         page_size=page_size,
         keyword=keyword,
@@ -122,7 +185,7 @@ def list_teachers(
 def teacher_options(
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
 ) -> list[dict]:
-    return service.teacher_options()
+    return teacher_read_service.teacher_options()
 
 
 @app.get("/api/teachers/{teacher_id}")
@@ -130,30 +193,73 @@ def teacher_detail(
     teacher_id: str,
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
 ) -> dict:
-    return service.teacher_detail(teacher_id)
+    try:
+        detail = teacher_read_service.teacher_detail(teacher_id)
+    except LookupError as exc:
+        raise DomainError(
+            "TEACHER_NOT_FOUND",
+            "teacher.error.not_found",
+            status_code=404,
+        ) from exc
+    try:
+        scorecard = score_read_service.teacher_scorecard(
+            teacher_id,
+            lesson_page=1,
+            lesson_page_size=1,
+        )
+    except ScoreReadModelNotFound:
+        return detail
+    return {
+        **detail,
+        "raw_total_score": scorecard["raw_total_score"],
+        "total_score": scorecard["raw_total_score"],
+        "external_display_score": scorecard["public_total_score"],
+        "dimensions": scorecard["dimensions"],
+        "score_rule_version": scorecard["score_rule_version"],
+        "score_read_model": {
+            "calculated_at": scorecard["calculated_at"],
+            "source": scorecard["source"],
+        },
+    }
 
 
-@app.get("/api/ops/action-queue")
-def action_queue(
+@app.get("/api/teachers/{teacher_id}/scorecard")
+def teacher_scorecard(
+    teacher_id: str,
+    lesson_page: int = Query(default=1, ge=1),
+    lesson_page_size: int = Query(default=12, ge=1, le=100),
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
-) -> list[dict]:
-    return service.action_queue()
-
-
-@app.get("/api/ops/cases")
-def list_cases(
-    _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
-) -> list[dict]:
-    return service.list_cases()
+) -> dict:
+    try:
+        return score_read_service.teacher_scorecard(
+            teacher_id,
+            lesson_page=lesson_page,
+            lesson_page_size=lesson_page_size,
+        )
+    except ScoreReadModelNotFound as exc:
+        raise DomainError(
+            "TEACHER_NOT_FOUND",
+            "teacher.error.not_found",
+            status_code=404,
+        ) from exc
 
 
 @app.get("/api/events")
 def list_events(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    teacher_id: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None, max_length=200),
     _operator: OperatorIdentity = Depends(
         require_roles(OperatorRole.AUDITOR, OperatorRole.SENIOR_REVIEWER)
     ),
-) -> list[dict]:
-    return service.list_events()
+) -> dict:
+    return audit_service.list_event_page(
+        page=page,
+        page_size=page_size,
+        teacher_id=teacher_id,
+        keyword=keyword,
+    )
 
 
 @app.get("/api/outputs")
@@ -161,16 +267,30 @@ def list_outputs(
     output_type: Optional[str] = Query(default=None, alias="type"),
     status: Optional[str] = Query(default=None),
     teacher_id: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None, max_length=200),
+    operational_only: bool = Query(default=True),
+    include_task_assignments: bool = Query(default=False),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
-) -> list[dict]:
-    return service.list_outputs(type_filter=output_type, status=status, teacher_id=teacher_id)
+) -> dict:
+    return output_service.list_outputs(
+        type_filter=output_type,
+        status=status,
+        teacher_id=teacher_id,
+        keyword=keyword,
+        operational_only=operational_only,
+        include_task_assignments=include_task_assignments,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @app.get("/api/outputs/summary")
 def output_summary(
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
 ) -> dict:
-    return service.output_summary()
+    return output_service.summary()
 
 
 @app.post("/api/outputs/{output_id}/retry")
@@ -180,4 +300,4 @@ def retry_output(
         require_roles(OperatorRole.CASE_OPERATOR, OperatorRole.SENIOR_REVIEWER)
     ),
 ) -> dict:
-    return service.retry_output(output_id, actor_id=operator.operator_id)
+    return output_service.retry_output(output_id, actor_id=operator.operator_id)

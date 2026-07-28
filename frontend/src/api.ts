@@ -1,6 +1,6 @@
 import type {
   ApiErrorBody,
-  AuditEvent,
+  AuditEventPage,
   Dashboard,
   OperatorIdentity,
   LessonEvidencePage,
@@ -11,8 +11,8 @@ import type {
   OutputRecord,
   OutputStatus,
   OutputType,
-  QueueItem,
   SharedTaskAssignment,
+  SharedTaskAssignmentPage,
   TaskProgressAssignmentPage,
   TaskProgressResponse,
   TaskTemplate,
@@ -42,7 +42,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   })
-  const body = (await response.json()) as T | ApiErrorBody
+  let body: T | ApiErrorBody
+  try {
+    body = (await response.json()) as T | ApiErrorBody
+  } catch {
+    throw new ApiError(response.status, {
+      error_code: response.ok ? 'INVALID_JSON_RESPONSE' : `HTTP_${response.status}`,
+      detail: response.statusText || 'The service returned a non-JSON response.',
+    })
+  }
   if (!response.ok) {
     throw new ApiError(response.status, body as ApiErrorBody)
   }
@@ -50,9 +58,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export interface OutputFilters {
-  type?: OutputType
+  type?: OutputType | string
   status?: OutputStatus
   teacher_id?: string
+  keyword?: string
+  operational_only?: boolean
+  include_task_assignments?: boolean
+  page?: number
+  page_size?: number
 }
 
 export interface TeacherListQuery {
@@ -67,14 +80,22 @@ export interface TaskAssignmentFilters {
   teacher_id?: string
   status?: string
   task_kind?: string
+  include_mock?: boolean
+  page?: number
+  page_size?: number
 }
 
 export interface TaskProgressAssignmentQuery {
   task_code: string
   title: string
   task_kind: string
+  keyword?: string
   page?: number
   page_size?: number
+}
+
+export interface TaskProgressQuery {
+  keyword?: string
 }
 
 export interface InterventionFilters {
@@ -148,17 +169,28 @@ export const api = {
     if (filters.teacher_id) query.set('teacher_id', filters.teacher_id)
     if (filters.status) query.set('status', filters.status)
     if (filters.task_kind) query.set('task_kind', filters.task_kind)
+    if (filters.include_mock !== undefined) query.set('include_mock', String(filters.include_mock))
+    if (filters.page !== undefined) query.set('page', String(filters.page))
+    if (filters.page_size !== undefined) query.set('page_size', String(filters.page_size))
     const suffix = query.size ? `?${query.toString()}` : ''
-    return request<SharedTaskAssignment[]>(`/api/task-assignments${suffix}`)
+    return request<SharedTaskAssignmentPage>(`/api/task-assignments${suffix}`)
   },
-  taskProgress: () =>
-    request<TaskProgressResponse>('/api/task-progress', { cache: 'no-store' }),
+  taskProgress: (filters: TaskProgressQuery = {}) => {
+    const query = new URLSearchParams()
+    if (filters.keyword) query.set('keyword', filters.keyword)
+    const suffix = query.size ? `?${query.toString()}` : ''
+    return request<TaskProgressResponse>(
+      `/api/task-progress${suffix}`,
+      { cache: 'no-store' },
+    )
+  },
   taskProgressAssignments: (filters: TaskProgressAssignmentQuery) => {
     const query = new URLSearchParams({
       task_code: filters.task_code,
       title: filters.title,
       task_kind: filters.task_kind,
     })
+    if (filters.keyword) query.set('keyword', filters.keyword)
     if (filters.page !== undefined) query.set('page', String(filters.page))
     if (filters.page_size !== undefined) query.set('page_size', String(filters.page_size))
     return request<TaskProgressAssignmentPage>(
@@ -179,15 +211,32 @@ export const api = {
       body: JSON.stringify({ expected_revision: template.revision }),
     }),
 
-  queue: () => request<QueueItem[]>('/api/ops/action-queue'),
-  events: () => request<AuditEvent[]>('/api/events'),
+  events: (filters: {
+    page?: number
+    page_size?: number
+    teacher_id?: string
+    keyword?: string
+  } = {}) => {
+    const query = new URLSearchParams()
+    if (filters.page !== undefined) query.set('page', String(filters.page))
+    if (filters.page_size !== undefined) query.set('page_size', String(filters.page_size))
+    if (filters.teacher_id) query.set('teacher_id', filters.teacher_id)
+    if (filters.keyword) query.set('keyword', filters.keyword)
+    const suffix = query.size ? `?${query.toString()}` : ''
+    return request<AuditEventPage>(`/api/events${suffix}`, { cache: 'no-store' })
+  },
   outputs: (filters: OutputFilters = {}) => {
     const query = new URLSearchParams()
     if (filters.type) query.set('type', filters.type)
     if (filters.status) query.set('status', filters.status)
     if (filters.teacher_id) query.set('teacher_id', filters.teacher_id)
+    if (filters.keyword) query.set('keyword', filters.keyword)
+    if (filters.operational_only !== undefined) query.set('operational_only', String(filters.operational_only))
+    if (filters.include_task_assignments !== undefined) query.set('include_task_assignments', String(filters.include_task_assignments))
+    if (filters.page !== undefined) query.set('page', String(filters.page))
+    if (filters.page_size !== undefined) query.set('page_size', String(filters.page_size))
     const suffix = query.size ? `?${query.toString()}` : ''
-    return request<OutputRecord[] | OutputListResponse>(`/api/outputs${suffix}`)
+    return request<OutputListResponse>(`/api/outputs${suffix}`)
   },
   retryOutput: (outputId: string) =>
     request<OutputRecord>(`/api/outputs/${encodeURIComponent(outputId)}/retry`, { method: 'POST' }),

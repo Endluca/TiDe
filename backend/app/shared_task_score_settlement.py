@@ -2,7 +2,7 @@
 
 The teacher app owns writes to ``task_assignments``.  A database trigger
 records status changes in the internal outbox, and this worker is
-the only path that turns a REAL G01-G10 completion into score ledger rows.
+the only path that turns a current REAL mandatory completion into score ledger rows.
 Nothing in this module publishes an external message.
 """
 
@@ -32,6 +32,8 @@ from .db_models import (
     TeacherMetricSnapshotRecord,
     TeacherRecord,
 )
+from .task_catalog import MANDATORY_TASK_CODES
+from .score_projection_lock import acquire_score_projection_lock
 
 
 EVENT_TYPE = "task.assignment_changed.shared"
@@ -40,8 +42,10 @@ ACCOUNT_DIMENSION = "NEW_TEACHER_TASK"
 ENTRY_TYPE = "FIXED_TASK_AWARD"
 SYSTEM_SOURCE_MODE = "SYSTEM_TASK_STATUS"
 MAXIMUM_FIXED_GROWTH_POINTS = 30.0
-FIXED_GROWTH_CODES = tuple(f"G{number:02d}" for number in range(1, 11))
-DIRECT_EXTERNAL_SCALE_POLICY_VERSIONS = frozenset({"v3", "v4", "v5", "v6", "v7"})
+FIXED_GROWTH_CODES = MANDATORY_TASK_CODES
+DIRECT_EXTERNAL_SCALE_POLICY_VERSIONS = frozenset(
+    {"v1", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"}
+)
 LEGAL_TASK_STATUSES = frozenset(
     {
         "ASSIGNED",
@@ -120,6 +124,7 @@ class SharedTaskScoreSettlementWorker:
             outbox_id: str | None = None
             try:
                 with self._sessions() as session, session.begin():
+                    acquire_score_projection_lock(session)
                     event = self._claim_next(session)
                     if event is None:
                         break
@@ -397,6 +402,16 @@ class SharedTaskScoreSettlementWorker:
             score_rule_version=score_rule_version,
             config_snapshot=config_snapshot,
         )
+        from .score_read_model import refresh_persisted_score_read_models
+
+        refresh_persisted_score_read_models(
+            session,
+            trigger_type="TASK_STATUS_UPDATED",
+            trigger_ref=assignment.assignment_id,
+            teacher_ids=[teacher.teacher_id],
+            score_policy_payload=config_snapshot["payload"],
+            score_config_version_id=config_snapshot["version_id"],
+        )
         return _Outcome("SETTLED", score_entries_created=created, account_score=ledger_score)
 
     @staticmethod
@@ -539,7 +554,7 @@ class SharedTaskScoreSettlementWorker:
             ),
             "note": (
                 "Mandatory-growth points are the configured values of current "
-                "COMPLETED G01-G10 assignments."
+                "COMPLETED assignments in the current mandatory catalog."
             ),
         }
         input_updates = {

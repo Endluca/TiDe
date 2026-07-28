@@ -14,7 +14,7 @@ from app.shared_task_score_settlement import settle_shared_task_scores_once
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Consume shared-task events and settle REAL G01-G10 scores."
+        description="Consume shared-task events and settle current mandatory scores."
     )
     parser.add_argument("--max-events", type=int, default=100)
     parser.add_argument(

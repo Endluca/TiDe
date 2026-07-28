@@ -45,20 +45,27 @@ cd TiDe
 - 积分与门槛
 - 操作审计
 
-页面进入时不会自动刷新。只有用户主动点击更新按钮，才读取最新数据。
+完成登录后，系统先展示运营台和各页空状态，不自动读取业务数据。只有用户主动点击当前页
+的“更新”按钮，才读取该页最新数据；已访问页面在当前会话中保留，切换页面不会偷偷刷新。
 
 ## 当前业务口径
 
 - `task_assignments` 是任务实例和状态的唯一事实表。
-- 新教师首次进入时，系统幂等初始化 G01–G10，默认状态为 `ASSIGNED`。
-- 当前任务目录只有 10 个固定成长任务和 5 个个性化改善任务；系统不得自由发明任务。
+- 新教师首次进入时，系统幂等初始化当前 9 项必修成长任务，默认状态为 `ASSIGNED`。
+- 当前任务目录只有 9 个固定成长任务和 5 个个性化改善任务；系统不得自由发明任务。
 - 教师端只更新已有任务的执行状态，不能写积分、总分或资格。
-- `task_assignments.why` 是教师端外显原因，固定和个性化任务均必须使用英文；上游原始中文值只保留在证据快照。
-- 课堂质量分：`perfect_cnt × 2`。
+- `task_assignments.why` 是教师端外显原因，固定和个性化任务均必须使用英文；个性化任务的数据库原值包含 `Evidence:` 最小证据摘要，读取时不再二次拼接；上游原始中文值只保留在证据快照。
+- 可靠性分：完美完课数 `perfect_cnt × 4` + Peak 完课数 `peak_completed_cnt × 2`。
+- 课堂质量：当前不设置加分项，维度分为 0，后续规则另行发布。
+- 逐课 `is_perfect`：课程状态为 `end`、缺席原因明细为空、迟到为 0、早退为 0；该字段由教师端课程读取视图实时派生，仅作为业务事实展示，不参与当前逐课计分。
+- 用户反馈分：好评次数 × 5 + 按学员去重的收藏人数 × 5；15 日复约只保留事实，不计分。
 - 供给分：`peak_slot_cnt` 首次达到 40 时加 10 分并锁定。
-- 固定成长任务：按 G01–G10 已完成任务的配置分值累加，最高 30 分。
-- 出营资格：G01–G10 全部完成、L0 投诉为 0、raw 总分不低于 100。
-- 金牌资格：已满足出营资格且 raw 总分不低于 200。
+- 固定成长任务：按当前 9 项必修任务的完成状态与配置分值累加，最高 30 分。
+- 出营资格：当前 9 项必修任务全部完成、L0 投诉为 0、raw 总分不低于 100。
+- 金牌资格：满足当前出营条件、raw 总分不低于 200、`late_cnt <= 1`、
+  `early_cnt = 0`、`absent_cnt = 0`。
+- 新积分规则发布时，在同一发布事务内按新规则全量重算当前教师积分；重算失败则发布失败。
+- 教师一旦获得出营或金牌资格，后续数据修正或新规则降分都不撤回已获得资格。
 - 个性化任务由确定性规则触发；当前规则不依赖 OpenAI Key。
 
 完整口径见 [数据与积分规则](docs/数据与积分规则.md)。
@@ -92,8 +99,38 @@ TiDe/
 - 当前交接测试库包含教师宽表和课程基线快照，不是生产日更数据。
 - 原始 Excel、学生身份、数据库 dump、环境文件和日志都不进入 Git。
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
-- 当前后端只允许一个 API 进程，不使用多 Worker。
+- 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
+  本地一键启动仍默认单进程，便于开发排查。
 - 外部数据日更、教师端生产接入、真实通知回执、监控、备份和回滚仍待完成。
+
+## 生产部署骨架
+
+仓库提供生产镜像和同源反向代理示例；它用于构建可追溯产物，不代表公司生产资源已经开通：
+
+```bash
+export TIDE_ENV_FILE=/安全路径/TiDe.production.env
+
+# 发布前单独执行迁移并检查结果。
+docker compose -f docker-compose.production.yml --profile migration run --rm migrate
+
+# 首次部署时单独创建启动运营账号。密码仅注入本次命令，不写入环境文件。
+TIT_BOOTSTRAP_USERNAME='<运营账号>' \
+TIT_BOOTSTRAP_PASSWORD='<至少 12 位的强密码>' \
+docker compose -f docker-compose.production.yml run --rm \
+  -e TIT_BOOTSTRAP_USERNAME -e TIT_BOOTSTRAP_PASSWORD \
+  api python scripts/bootstrap_operator.py
+
+# 启动两个 API Worker、一个固定任务积分结算进程和静态 Web 服务。
+docker compose -f docker-compose.production.yml up -d api score-settlement web
+```
+
+- `backend/Dockerfile` 使用非 root 用户运行 FastAPI，默认 2 个 Worker；
+- `frontend/Dockerfile` 产出静态资源，Nginx 同源代理 `/api`；
+- 同源代理会把 Web App 域名作为 API 的 `Host`，因此 `TIT_ALLOWED_HOSTS`
+  必须填写 Web App 域名；同源部署的 `TIT_ALLOWED_ORIGINS` 保持为空；
+- 数据库凭据只由部署环境注入，不能复制进镜像；
+- HTTPS 应在公司网关/负载均衡终止，网关必须配合 Allowed Host、证书、限流和日志；
+- Alembic 迁移是发布前单独动作，不能由每个 API 副本启动时竞争执行。
 
 ## 开发验证
 
@@ -134,6 +171,7 @@ export APP_ENV=local
 - [数据与积分规则](docs/数据与积分规则.md)
 - [数据库表结构](docs/数据库表结构.md)
 - [教师端共享任务表契约](contracts/教师端共享任务表契约.md)
+- [教师端积分与课程读取对照表](contracts/教师端积分与课程读取对照表.md)
 - [课程级数据契约](contracts/TIT课程级数据与Mock字段契约.md)
 - [配置中心运行契约](docs/config-center-contract.md)
 - [认证与 RBAC](backend/README_AUTH.md)

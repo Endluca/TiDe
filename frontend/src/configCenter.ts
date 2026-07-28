@@ -49,18 +49,25 @@ export interface CurrentGoldHardGates {
   inherits_graduation: true
 }
 
+export interface GoldHardGatesV9 extends CurrentGoldHardGates {
+  maximum_late_count: number
+  maximum_early_count: number
+  maximum_absent_count: number
+}
+
 export interface ScoreGraduationPayload {
-  policy_version: 'v2' | 'v3' | 'v4' | 'v5' | 'v6' | 'v7'
+  policy_version: 'v1' | 'v2' | 'v3' | 'v4' | 'v5' | 'v6' | 'v7' | 'v8' | 'v9' | 'v10'
   graduation_effect: 'IMMEDIATE_ON_CRITERIA'
   scoring_items: {
     capacity: SupplyMilestoneRule
     new_teacher_tasks: { maximum_points: number }
     feedback_praise: { points_per_unit: number }
     feedback_favorite: { points_per_unit: number }
-    feedback_rebook_15d: { points_per_unit: number }
-    reliability_on_time: { points_per_unit: number }
+    feedback_rebook_15d?: { points_per_unit: number }
+    reliability_on_time?: { points_per_unit: number }
+    reliability_perfect?: { points_per_unit: number }
     reliability_peak: { points_per_unit: number }
-    classroom_quality: LegacyClassroomQualityRule | PerfectCompletionQualityRule
+    classroom_quality?: LegacyClassroomQualityRule | PerfectCompletionQualityRule
   }
   thresholds: {
     graduation_raw_score: number
@@ -70,7 +77,7 @@ export interface ScoreGraduationPayload {
   }
   hard_gates: {
     graduation: LegacyGraduationHardGates | CurrentGraduationHardGates
-    gold: LegacyGoldHardGates | CurrentGoldHardGates
+    gold: LegacyGoldHardGates | CurrentGoldHardGates | GoldHardGatesV9
   }
 }
 
@@ -156,6 +163,7 @@ export const SCORING_ITEM_META: Array<{
   { key: 'feedback_favorite', label: '用户反馈 · 收藏', field: 'points_per_unit', unit: '每人' },
   { key: 'feedback_rebook_15d', label: '用户反馈 · 15 日复约', field: 'points_per_unit', unit: '每人' },
   { key: 'reliability_on_time', label: '可靠性 · 准时完课', field: 'points_per_unit', unit: '每节' },
+  { key: 'reliability_perfect', label: '可靠性 · 完美完课', field: 'points_per_unit', unit: '每节' },
   { key: 'reliability_peak', label: '可靠性 · Peak 完课', field: 'points_per_unit', unit: '每节' },
   { key: 'classroom_quality', label: '课堂质量 · 无问题课程', field: 'points_per_unit', unit: '每节' },
 ]
@@ -169,10 +177,37 @@ function isScoreGraduationVersion(
   const scoringItems = value.scoring_items as Record<string, unknown> | undefined
   const thresholds = value.thresholds as Record<string, unknown> | undefined
   const hardGates = value.hard_gates as Record<string, unknown> | undefined
+  const requiredScoringKeys = ['v1', 'v9', 'v10'].includes(policyVersion)
+    ? [
+        'capacity',
+        'new_teacher_tasks',
+        'feedback_praise',
+        'feedback_favorite',
+        'reliability_perfect',
+        'reliability_peak',
+      ]
+    : [
+        'capacity',
+        'new_teacher_tasks',
+        'feedback_praise',
+        'feedback_favorite',
+        'reliability_on_time',
+        'reliability_peak',
+        'classroom_quality',
+        ...(policyVersion === 'v8' ? [] : ['feedback_rebook_15d']),
+      ]
   return value.policy_version === policyVersion
     && value.graduation_effect === 'IMMEDIATE_ON_CRITERIA'
     && Boolean(scoringItems)
-    && ['capacity', 'new_teacher_tasks', 'feedback_praise', 'feedback_favorite', 'feedback_rebook_15d', 'reliability_on_time', 'reliability_peak', 'classroom_quality'].every((key) => key in (scoringItems ?? {}))
+    && requiredScoringKeys.every((key) => key in (scoringItems ?? {}))
+    && (
+      !['v1', 'v8', 'v9', 'v10'].includes(policyVersion)
+      || !('feedback_rebook_15d' in (scoringItems ?? {}))
+    )
+    && (
+      !['v1', 'v9', 'v10'].includes(policyVersion)
+      || !['reliability_on_time', 'classroom_quality'].some((key) => key in (scoringItems ?? {}))
+    )
     && ['graduation_raw_score', 'gold_raw_score', 'graduation_external_score', 'gold_external_score'].every((key) => key in (thresholds ?? {}))
     && ['graduation', 'gold'].every((key) => key in (hardGates ?? {}))
 }
@@ -197,7 +232,8 @@ export function isScoreGraduationV4(payload: unknown): payload is ScoreGraduatio
     && typeof capacity.score_value === 'number'
     && typeof capacity.maximum_points === 'number'
     && capacity.settlement_mode === 'FIRST_ACHIEVEMENT_LOCKED'
-    && 'default_achievement_rate' in classroomQuality
+    && Boolean(classroomQuality)
+    && 'default_achievement_rate' in classroomQuality!
     && classroomQuality.source_mode === 'MOCK_SIMULATION'
     && 'minimum_completed_lessons' in graduationGates
 }
@@ -214,10 +250,11 @@ export function isScoreGraduationV5(payload: unknown): payload is ScoreGraduatio
     && typeof capacity.score_value === 'number'
     && typeof capacity.maximum_points === 'number'
     && capacity.settlement_mode === 'FIRST_ACHIEVEMENT_LOCKED'
-    && 'metric' in classroomQuality
-    && classroomQuality.metric === 'perfect_cnt'
-    && classroomQuality.source_mode === 'REAL_TEACHER_SNAPSHOT'
-    && typeof classroomQuality.points_per_unit === 'number'
+    && Boolean(classroomQuality)
+    && 'metric' in classroomQuality!
+    && classroomQuality!.metric === 'perfect_cnt'
+    && classroomQuality!.source_mode === 'REAL_TEACHER_SNAPSHOT'
+    && typeof classroomQuality!.points_per_unit === 'number'
     && 'required_mandatory_task_count' in graduationGates
     && typeof graduationGates.required_mandatory_task_count === 'number'
     && 'maximum_l0_complaint_count' in graduationGates
@@ -226,7 +263,7 @@ export function isScoreGraduationV5(payload: unknown): payload is ScoreGraduatio
 
 function isCurrentScoreGraduationVersion(
   payload: unknown,
-  policyVersion: 'v6' | 'v7',
+  policyVersion: 'v6' | 'v7' | 'v8',
 ): payload is ScoreGraduationPayload {
   if (!isScoreGraduationVersion(payload, policyVersion)) return false
   const capacity = payload.scoring_items.capacity
@@ -240,10 +277,11 @@ function isCurrentScoreGraduationVersion(
     && typeof capacity.score_value === 'number'
     && typeof capacity.maximum_points === 'number'
     && capacity.settlement_mode === 'FIRST_ACHIEVEMENT_LOCKED'
-    && 'metric' in classroomQuality
-    && classroomQuality.metric === 'perfect_cnt'
-    && classroomQuality.source_mode === 'REAL_TEACHER_SNAPSHOT'
-    && typeof classroomQuality.points_per_unit === 'number'
+    && Boolean(classroomQuality)
+    && 'metric' in classroomQuality!
+    && classroomQuality!.metric === 'perfect_cnt'
+    && classroomQuality!.source_mode === 'REAL_TEACHER_SNAPSHOT'
+    && typeof classroomQuality!.points_per_unit === 'number'
     && 'required_mandatory_task_count' in graduationGates
     && typeof graduationGates.required_mandatory_task_count === 'number'
     && 'maximum_l0_complaint_count' in graduationGates
@@ -260,8 +298,70 @@ export function isScoreGraduationV7(payload: unknown): payload is ScoreGraduatio
   return isCurrentScoreGraduationVersion(payload, 'v7')
 }
 
+export function isScoreGraduationV8(payload: unknown): payload is ScoreGraduationPayload {
+  return isCurrentScoreGraduationVersion(payload, 'v8')
+}
+
+export function isScoreGraduationV9(payload: unknown): payload is ScoreGraduationPayload {
+  if (!isScoreGraduationVersion(payload, 'v9')) return false
+  return isModernScoreGraduation(payload)
+    && 'required_mandatory_task_count' in payload.hard_gates.graduation
+    && payload.hard_gates.graduation.required_mandatory_task_count === 10
+}
+
+export function isScoreGraduationV10(payload: unknown): payload is ScoreGraduationPayload {
+  if (!isScoreGraduationVersion(payload, 'v10')) return false
+  return isModernScoreGraduation(payload)
+    && 'required_mandatory_task_count' in payload.hard_gates.graduation
+    && payload.hard_gates.graduation.required_mandatory_task_count === 9
+}
+
+export function isScoreGraduationV1(payload: unknown): payload is ScoreGraduationPayload {
+  if (!isScoreGraduationVersion(payload, 'v1')) return false
+  return isModernScoreGraduation(payload)
+    && 'required_mandatory_task_count' in payload.hard_gates.graduation
+    && payload.hard_gates.graduation.required_mandatory_task_count === 9
+}
+
+function isModernScoreGraduation(payload: ScoreGraduationPayload): boolean {
+  const capacity = payload.scoring_items.capacity
+  const perfect = payload.scoring_items.reliability_perfect
+  const peak = payload.scoring_items.reliability_peak
+  const graduationGates = payload.hard_gates.graduation
+  const goldGates = payload.hard_gates.gold
+  return capacity.milestone_id === 'CAPACITY_PEAK_SLOT_40'
+    && capacity.metric === 'peak_slot_cnt'
+    && capacity.operator === 'GTE'
+    && typeof capacity.threshold === 'number'
+    && typeof capacity.score_value === 'number'
+    && typeof capacity.maximum_points === 'number'
+    && capacity.settlement_mode === 'FIRST_ACHIEVEMENT_LOCKED'
+    && typeof perfect?.points_per_unit === 'number'
+    && typeof peak.points_per_unit === 'number'
+    && 'required_mandatory_task_count' in graduationGates
+    && typeof graduationGates.required_mandatory_task_count === 'number'
+    && 'maximum_l0_complaint_count' in graduationGates
+    && typeof graduationGates.maximum_l0_complaint_count === 'number'
+    && 'inherits_graduation' in goldGates
+    && goldGates.inherits_graduation === true
+    && 'maximum_late_count' in goldGates
+    && typeof goldGates.maximum_late_count === 'number'
+    && 'maximum_early_count' in goldGates
+    && typeof goldGates.maximum_early_count === 'number'
+    && 'maximum_absent_count' in goldGates
+    && typeof goldGates.maximum_absent_count === 'number'
+}
+
 export function canEditConfiguration(version?: ConfigVersion): boolean {
   return version?.status === 'DRAFT'
+}
+
+export function isConfigurationFormEditable(
+  version: ConfigVersion | undefined,
+  canManage: boolean,
+  readOnlyPolicy: boolean,
+): boolean {
+  return Boolean(version && canManage && canEditConfiguration(version) && !readOnlyPolicy)
 }
 
 export function canValidateConfiguration(version?: ConfigVersion): boolean {

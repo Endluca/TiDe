@@ -54,6 +54,7 @@ const sourceModeMeta: Record<string, { label: string; color: string }> = {
   MOCK_SIMULATION: { label: '替代计算', color: 'default' },
   MOCK_PROXY: { label: '替代指标', color: 'orange' },
   SOURCE_MISSING: { label: '源数据缺失', color: 'default' },
+  NOT_APPLICABLE: { label: '当前无加分项', color: 'default' },
   MISSING_INPUT_ZERO: { label: '缺失按 0 结算', color: 'orange' },
   SYSTEM_TASK_STATUS: { label: '任务状态计算', color: 'cyan' },
   TASK_BASELINE_INCOMPLETE: { label: '必修任务初始化异常', color: 'red' },
@@ -67,7 +68,7 @@ const sourceModeMeta: Record<string, { label: string; color: string }> = {
 
 const gateLabels: Record<string, string> = {
   REQUIRES_GRADUATION_CRITERIA: '需先满足最终出营资格',
-  ALL_MANDATORY_GROWTH_TASKS_COMPLETED: 'G01–G10 必修成长任务全部完成',
+  ALL_MANDATORY_GROWTH_TASKS_COMPLETED: '当前 9 项必修成长任务全部完成',
   NO_L0_COMPLAINT: 'L0 投诉数为 0',
   MINIMUM_TOTAL_SCORE: '累计总分达到出营要求',
   MINIMUM_GOLD_TOTAL_SCORE: '累计总分达到金牌要求',
@@ -79,6 +80,8 @@ const gateLabels: Record<string, string> = {
   REQUIRED_BASE_SCORE: '基础分达到金牌要求',
   MINIMUM_USER_FEEDBACK_SCORE: '用户反馈分达到金牌要求',
   MAXIMUM_LATE_COUNT: '迟到次数不超过要求',
+  ZERO_EARLY_COUNT: '早退次数为 0',
+  ZERO_ABSENT_COUNT: '缺席次数为 0',
   MAXIMUM_EARLY_COUNT: '早退次数不超过要求',
   MAXIMUM_REAL_ABSENT_COUNT: '真实缺席次数不超过要求',
 }
@@ -99,9 +102,9 @@ export function externalScoreFromRaw(
   goldRawScore = 200,
   graduationExternalScore = 100,
   goldExternalScore = 200,
-  policyVersion: string = 'v7',
+  policyVersion: string = 'v1',
 ): number {
-  if (policyVersion === 'v3' || policyVersion === 'v4' || policyVersion === 'v5' || policyVersion === 'v6' || policyVersion === 'v7') return Math.min(rawScore, goldExternalScore)
+  if (policyVersion === 'v1' || policyVersion === 'v3' || policyVersion === 'v4' || policyVersion === 'v5' || policyVersion === 'v6' || policyVersion === 'v7' || policyVersion === 'v8' || policyVersion === 'v9' || policyVersion === 'v10') return Math.min(rawScore, goldExternalScore)
   if (rawScore < graduationRawScore) return rawScore * graduationExternalScore / graduationRawScore
   if (rawScore < goldRawScore) {
     return graduationExternalScore
@@ -114,10 +117,10 @@ export function teacherScoreProjection(teacher: Teacher) {
   const raw = finiteNumber(teacher.raw_total_score)
     ?? finiteNumber(teacher.total_score)
     ?? (teacher.dimensions ?? []).reduce((total, item) => total + (finiteNumber(item.score) ?? 0), 0)
-  const policyVersion = ['v2', 'v3', 'v4', 'v5', 'v6', 'v7'].includes(teacher.score_policy_version ?? '')
-    ? teacher.score_policy_version as 'v2' | 'v3' | 'v4' | 'v5' | 'v6' | 'v7'
-    : 'v7'
-  const hasEventScorePolicy = ['v2', 'v3', 'v4', 'v5', 'v6', 'v7'].includes(teacher.score_policy_version ?? '')
+  const policyVersion = ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10'].includes(teacher.score_policy_version ?? '')
+    ? teacher.score_policy_version as 'v1' | 'v2' | 'v3' | 'v4' | 'v5' | 'v6' | 'v7' | 'v8' | 'v9' | 'v10'
+    : 'v1'
+  const hasEventScorePolicy = ['v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10'].includes(teacher.score_policy_version ?? '')
   const graduationThreshold = hasEventScorePolicy ? finiteNumber(teacher.graduation_threshold) ?? 100 : 100
   const goldThreshold = hasEventScorePolicy
     ? finiteNumber(teacher.gold_threshold) ?? (policyVersion === 'v2' ? 660 : 200)
@@ -134,9 +137,10 @@ export function teacherScoreProjection(teacher: Teacher) {
     graduationExternalScore,
     goldExternalScore,
     graduationScoreMet: teacher.graduation_score_threshold_met ?? raw >= graduationThreshold,
-    graduationCriteriaMet: teacher.graduation_criteria_met,
+    graduationCriteriaMet: teacher.graduation_qualified
+      ?? teacher.graduation_criteria_met,
     goldScoreMet: teacher.gold_score_threshold_met ?? raw >= goldThreshold,
-    goldCriteriaMet: teacher.gold_criteria_met,
+    goldCriteriaMet: teacher.gold_qualified ?? teacher.gold_criteria_met,
   }
 }
 
@@ -155,7 +159,7 @@ export interface SupplyMilestoneProjection {
 }
 
 export function teacherSupplyMilestone(teacher: Teacher): SupplyMilestoneProjection | null {
-  if (teacher.score_policy_version !== 'v4' && teacher.score_policy_version !== 'v5' && teacher.score_policy_version !== 'v6' && teacher.score_policy_version !== 'v7') return null
+  if (teacher.score_policy_version !== 'v1' && teacher.score_policy_version !== 'v4' && teacher.score_policy_version !== 'v5' && teacher.score_policy_version !== 'v6' && teacher.score_policy_version !== 'v7' && teacher.score_policy_version !== 'v8' && teacher.score_policy_version !== 'v9' && teacher.score_policy_version !== 'v10') return null
   const capacityDimension = teacher.dimensions?.find((item) => item.code === 'CAPACITY')
   const milestoneComponent = capacityDimension?.components?.find((item) => item.code === 'CAPACITY_PEAK_SLOT_40')
   const peakSlotCount = finiteNumber(teacher.metric_inputs?.peak_slot_cnt)
@@ -197,12 +201,21 @@ export function sourceModeLabel(mode?: SourceMode | string): string {
 
 export function scorePolicyLabel(policyVersion?: string | null): string {
   if (!policyVersion) return '待确认'
-  return policyVersion === 'v7' ? '当前口径' : '非当前数据（只读）'
+  return policyVersion === 'v1' ? '当前口径' : '非当前数据（只读）'
 }
 
 function sourceModeTag(mode?: SourceMode | string, fieldLabel?: string) {
   const meta = sourceModeMeta[mode ?? 'UNKNOWN'] ?? { label: mode || sourceModeMeta.UNKNOWN.label, color: 'default' }
   return <Tag color={meta.color}>{fieldLabel ? `${fieldLabel}：` : ''}{meta.label}</Tag>
+}
+
+export function reconciliationLabel(status?: string): string | null {
+  const labels: Record<string, string> = {
+    PARTIAL: '部分课程可归因',
+    MISMATCH: '课程明细与教师汇总不一致',
+    SOURCE_MISSING: '暂无逐课归因依据',
+  }
+  return status ? labels[status] ?? null : null
 }
 
 export function hardGateSourceMeta(item: HardGate): { label: string; color: string } {
@@ -251,12 +264,31 @@ function isHardGateGroup(value: unknown): value is HardGateGroup {
 }
 
 export function visibleGraduationGateItems(items: HardGate[], policyVersion?: string | null): HardGate[] {
-  if (policyVersion !== 'v5' && policyVersion !== 'v6' && policyVersion !== 'v7') return items
+  if (policyVersion !== 'v1' && policyVersion !== 'v5' && policyVersion !== 'v6' && policyVersion !== 'v7' && policyVersion !== 'v8' && policyVersion !== 'v9' && policyVersion !== 'v10') return items
   return items.filter((item) => currentGraduationGateCodes.has(item.code))
 }
 
 export function hardGateLabel(item: HardGate): string {
   return gateLabels[item.code] ?? item.metric ?? item.code
+}
+
+const scoreComponentLabels: Record<string, string> = {
+  PERFECT_COMPLETED: '完美完课',
+  perfect_cnt: '完美完课',
+  PEAK_COMPLETED: 'Peak 时段完课',
+  peak_completed_cnt: 'Peak 时段完课',
+  FEEDBACK_PRAISE: '学员好评',
+  feedback_praise_cnt: '学员好评',
+  FEEDBACK_FAVORITE: '学员收藏',
+  feedback_favorite_cnt: '学员收藏',
+}
+
+export function scoreComponentLabel(component: { code?: string; metric?: string }): string {
+  return scoreComponentLabels[component.code ?? '']
+    ?? scoreComponentLabels[component.metric ?? '']
+    ?? component.metric
+    ?? component.code
+    ?? '积分子项'
 }
 
 function hardGateGroups(teacher: Teacher): Array<{ key: string; title: string; group: HardGateGroup }> {
@@ -459,7 +491,6 @@ export default function Teacher360({ initialTeacherId }: { initialTeacherId?: st
       setListLoading(false)
     }
   }, [dataMode, employmentStatus, keyword, page])
-
   useEffect(() => {
     if (!selectedId) return
     let active = true
@@ -505,7 +536,11 @@ export default function Teacher360({ initialTeacherId }: { initialTeacherId?: st
 
       <Flex justify="space-between" align="center" wrap="wrap" gap={12}>
         <Text type="secondary">{hasLoaded ? `共 ${teacherPage.total} 位教师；服务端仅返回第 ${teacherPage.page} 页（每页最多 ${teacherPage.page_size} 位）` : '尚未读取教师档案，点击“更新教师”'}</Text>
-        <Space>{dataModeTag('REAL')}{dataModeTag('MIXED')}{dataModeTag('MOCK')}</Space>
+        <Space>
+          {teacherPage.filters.available_data_modes.map((mode) => (
+            <span key={mode}>{dataModeTag(mode)}</span>
+          ))}
+        </Space>
       </Flex>
 
       {listError ? <Alert type="error" showIcon message={listError} /> : null}
@@ -662,9 +697,19 @@ export default function Teacher360({ initialTeacherId }: { initialTeacherId?: st
                           size="small"
                           dataSource={item.components}
                           renderItem={(component) => (
-                            <List.Item style={{ paddingInline: 0 }} extra={sourceModeTag(component.source_mode)}>
+                            <List.Item
+                              style={{ paddingInline: 0 }}
+                              extra={(
+                                <Space wrap>
+                                  {sourceModeTag(component.source_mode)}
+                                  {reconciliationLabel(component.reconciliation_status)
+                                    ? <Tag color="gold">{reconciliationLabel(component.reconciliation_status)}</Tag>
+                                    : null}
+                                </Space>
+                              )}
+                            >
                               <Text type="secondary">
-                                {component.metric || component.code}：{formatGateValue(component.value)}
+                                {scoreComponentLabel(component)}：{formatGateValue(component.value)}
                                 {component.metric === 'perfect_cnt' && finiteNumber(component.points_per_unit) !== undefined
                                   ? ` × ${scoreText(component.points_per_unit!)}`
                                   : ''}

@@ -1,0 +1,85 @@
+services:
+  migrate:
+    build:
+      context: ./backend
+    env_file:
+      - ${TIDE_ENV_FILE:?Set TIDE_ENV_FILE to a protected production env file}
+    environment:
+      APP_ENV: production
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["migration"]
+
+  api:
+    build:
+      context: ./backend
+    env_file:
+      - ${TIDE_ENV_FILE:?Set TIDE_ENV_FILE to a protected production env file}
+    environment:
+      APP_ENV: production
+      TIT_API_WORKERS: ${TIT_API_WORKERS:-2}
+      TIT_TRUSTED_PROXY_IPS: ${TIT_TRUSTED_PROXY_IPS:-172.16.0.0/12}
+    expose:
+      - "8010"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/health', timeout=3).read()",
+        ]
+      interval: 20s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  score-settlement:
+    build:
+      context: ./backend
+    env_file:
+      - ${TIDE_ENV_FILE:?Set TIDE_ENV_FILE to a protected production env file}
+    environment:
+      APP_ENV: production
+    command:
+      [
+        "python",
+        "scripts/settle_shared_task_scores.py",
+        "--watch",
+        "--interval-seconds",
+        "3",
+      ]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    build:
+      context: ./frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${TIDE_HTTPS_TERMINATION_PORT:-8080}:8080"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+      - /var/cache/nginx:size=32m
+      - /var/run:size=8m
+    security_opt:
+      - no-new-privileges:true

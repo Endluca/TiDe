@@ -99,6 +99,7 @@ export type SourceMode =
   | 'MOCK_SIMULATION'
   | 'MOCK_PROXY'
   | 'SOURCE_MISSING'
+  | 'NOT_APPLICABLE'
   | 'MISSING_INPUT_ZERO'
   | 'SYSTEM_TASK_STATUS'
   | 'TASK_BASELINE_INCOMPLETE'
@@ -132,6 +133,7 @@ export interface DimensionComponent {
   settlement_mode?: string
   score: number
   source_mode?: SourceMode | string
+  reconciliation_status?: string
 }
 
 export interface Signal {
@@ -196,8 +198,10 @@ export interface Teacher {
   graduation_effect?: 'IMMEDIATE_ON_CRITERIA' | string
   graduation_score_threshold_met?: boolean
   graduation_criteria_met?: boolean
+  graduation_qualified?: boolean
   gold_score_threshold_met?: boolean
   gold_criteria_met?: boolean
+  gold_qualified?: boolean
   graduation_state?: string
   data_mode?: TeacherDataMode | string
   employment_status?: string | null
@@ -362,6 +366,7 @@ export interface TaskTemplate {
   integration_mode: 'OUTBOUND_MANAGED' | 'INBOUND_STATUS_ONLY'
   ops_name_zh: string
   content_locale: string
+  content_status: 'READY' | 'PENDING_JIAHE'
   category: string
   dimension: string
   stage: string
@@ -421,6 +426,14 @@ export interface SharedTaskAssignment {
   completed_at: string | null
   created_at: string
   updated_at: string
+}
+
+export interface SharedTaskAssignmentPage {
+  items: SharedTaskAssignment[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
 }
 
 export interface TaskProgressItem {
@@ -535,18 +548,6 @@ export interface Task {
   events: AuditEvent[]
 }
 
-export interface QueueItem {
-  queue_id: string
-  queue_type: string
-  priority: string
-  teacher_id: string
-  title: string
-  summary: string
-  status: string
-  response_due_at?: string | null
-  created_at: string
-}
-
 export interface AuditEvent {
   event_id: string
   event_type: string
@@ -559,6 +560,13 @@ export interface AuditEvent {
   verification_result?: string | null
   provider_event_id?: string | null
   payload?: Record<string, unknown>
+}
+
+export interface AuditEventPage {
+  items: AuditEvent[]
+  total: number
+  page: number
+  page_size: number
 }
 
 export interface Dashboard {
@@ -587,8 +595,10 @@ export interface Dashboard {
   mock_teacher_count?: number
   graduation_score_threshold_met_count?: number
   graduation_criteria_met_count?: number
+  graduation_qualified_count?: number
   gold_score_threshold_met_count?: number
   gold_criteria_met_count?: number
+  gold_qualified_count?: number
   data_composition?: Partial<Record<TeacherDataMode | string, number>>
   data_mode_counts?: Record<string, number>
   employment_status_counts?: Record<string, number>
@@ -596,7 +606,9 @@ export interface Dashboard {
     teacher_count: number
     graduation_score_reached_count: number
     graduation_criteria_met_count: number
+    graduation_qualified_count?: number
     gold_eligible_count: number
+    gold_qualified_count?: number
   }>
   graduation_score_reached_count?: number
   gold_score_reached_count?: number
@@ -645,6 +657,9 @@ export interface OperationsIntervention {
 export interface OperationsInterventionResponse {
   items: OperationsIntervention[]
   total: number
+  page?: number
+  page_size?: number
+  counts_by_type?: Record<string, number>
 }
 
 export interface OperationsCaseDecisionResult {
@@ -748,6 +763,9 @@ export interface OutputRecord {
 export interface OutputListResponse {
   items: OutputRecord[]
   total: number
+  page?: number
+  page_size?: number
+  counts_by_type?: Record<string, number>
 }
 
 export interface OutputSummary {
@@ -769,12 +787,4 @@ export interface ApiErrorBody {
 
 export interface AppSnapshot {
   dashboard: Dashboard | null
-  /** Lightweight selector options; Teacher 360 owns its paged list request. */
-  teachers: TeacherOption[]
-  templates: Template[]
-  tasks: Task[]
-  cases: OpsCase[]
-  queue: QueueItem[]
-  notifications: Notification[]
-  events: AuditEvent[]
 }

@@ -28,7 +28,7 @@ def test_lesson_memo_and_attendance_signals_are_exact() -> None:
         complaint_rules=RULES,
     )
     assert [(item.task_code, item.title) for item in memo] == [
-        ("P-REL-MEMO", "出席（未填写lesson-memo）问题")
+        ("P-REL-MEMO", "Missing Lesson Memo")
     ]
 
     memo_with_late = evaluate_lesson(
@@ -73,7 +73,8 @@ def test_complaint_rank_routes_to_ops_or_teacher() -> None:
         complaint_rules=RULES,
     )
     assert general[0].task_code == "P-FB-COMPLAINT"
-    assert general[0].title == "一般投诉-语速过快问题"
+    assert general[0].title == "General Complaint - Speaking Too Fast"
+    assert not contains_han(general[0].title)
     assert not contains_han(general[0].why)
 
 
@@ -110,7 +111,7 @@ def test_quality_flags_are_merged_into_one_explainable_reminder() -> None:
         complaint_rules=RULES,
     )
     assert len(decisions) == 1
-    assert decisions[0].title == "课中质量问题"
+    assert decisions[0].title == "In-Class Quality Alert"
     assert decisions[0].evidence["anomalies"] == ["未开摄像头", "CPU 占用过高"]
     assert not contains_han(decisions[0].why)
 

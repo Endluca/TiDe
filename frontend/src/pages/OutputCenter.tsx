@@ -30,9 +30,9 @@ import {
   UnorderedListOutlined,
 } from '@ant-design/icons'
 import { api } from '../api'
-import { canRetryOutput, displayError, isOperationalOutput, isOperationalTaskAssignment, normalizeOutputList, outputDisplayTypeLabels, outputStatusLabels } from '../domain'
+import { canRetryOutput, displayError, isOperationalTaskAssignment, normalizeOutputList, outputDisplayTypeLabels, outputStatusLabels } from '../domain'
 import { interventionOutputTypeLabel, interventionStatusLabel, operationDomainLabel, operationalOutputInterventions } from '../operations'
-import type { AppSnapshot, OperationsIntervention, OutputRecord, SharedTaskAssignment } from '../types'
+import type { OperationsIntervention, OutputDisplayType, OutputRecord, SharedTaskAssignment } from '../types'
 import { PageHeader, PriorityTag, TimeText } from '../components/Common'
 
 const { Paragraph, Text } = Typography
@@ -67,10 +67,24 @@ function assignmentStatusBadge(status: string) {
   return <Badge status={badge} text={labels[status] ?? status} />
 }
 
-export default function OutputCenter({ snapshot }: { snapshot: AppSnapshot }) {
+export default function OutputCenter() {
   const [assignments, setAssignments] = useState<SharedTaskAssignment[]>([])
+  const [assignmentTotal, setAssignmentTotal] = useState(0)
+  const [assignmentPage, setAssignmentPage] = useState(1)
+  const [assignmentPageSize, setAssignmentPageSize] = useState(8)
+  const [assignmentLoading, setAssignmentLoading] = useState(false)
   const [outputs, setOutputs] = useState<OutputRecord[]>([])
+  const [outputTotal, setOutputTotal] = useState(0)
+  const [outputPage, setOutputPage] = useState(1)
+  const [outputPageSize, setOutputPageSize] = useState(10)
+  const [outputCounts, setOutputCounts] = useState<Record<string, number>>({})
+  const [outputLoading, setOutputLoading] = useState(false)
   const [interventions, setInterventions] = useState<OperationsIntervention[]>([])
+  const [interventionTotal, setInterventionTotal] = useState(0)
+  const [interventionPage, setInterventionPage] = useState(1)
+  const [interventionPageSize, setInterventionPageSize] = useState(10)
+  const [interventionCounts, setInterventionCounts] = useState<Record<string, number>>({})
+  const [interventionLoading, setInterventionLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [hasLoaded, setHasLoaded] = useState(false)
   const [loadError, setLoadError] = useState('')
@@ -80,68 +94,140 @@ export default function OutputCenter({ snapshot }: { snapshot: AppSnapshot }) {
   const [selectedOutput, setSelectedOutput] = useState<OutputRecord>()
   const [selectedIntervention, setSelectedIntervention] = useState<OperationsIntervention>()
   const [retryingId, setRetryingId] = useState('')
-  const teacherNames = useMemo(
-    () => new Map(snapshot.teachers.map((teacher) => [teacher.teacher_id, teacher.name])),
-    [snapshot.teachers],
-  )
-
   const load = useCallback(async () => {
     setLoading(true)
+    setAssignmentLoading(true)
+    setInterventionLoading(true)
+    setOutputLoading(true)
     setLoadError('')
     try {
-      const [taskRows, outputRows, notificationRows, caseRows, pendingDataRows] = await Promise.all([
-        api.taskAssignments(),
-        api.outputs(),
-        api.operationsInterventions({ type: 'NOTIFICATION', page: 1, page_size: 500 }),
-        api.operationsInterventions({ type: 'OPS_CASE', page: 1, page_size: 500 }),
-        api.operationsInterventions({ type: 'PENDING_DATA', page: 1, page_size: 500 }),
+      const [taskRows, outputRows, interventionRows] = await Promise.all([
+        api.taskAssignments({ include_mock: false, page: 1, page_size: 8 }),
+        api.outputs({ page: 1, page_size: 10 }),
+        api.operationsInterventions({
+          type: 'NOTIFICATION,OPS_CASE,PENDING_DATA',
+          page: 1,
+          page_size: 10,
+        }),
       ])
-      const currentInterventions = operationalOutputInterventions([
-        ...notificationRows.items,
-        ...caseRows.items,
-        ...pendingDataRows.items,
-      ])
-      const currentOutputIds = new Set(currentInterventions.map((item) => item.output_id))
-      setAssignments(taskRows.filter(isOperationalTaskAssignment))
+      const currentInterventions = operationalOutputInterventions(interventionRows.items)
+      const currentOutputs = normalizeOutputList(outputRows)
+      setAssignments(taskRows.items.filter(isOperationalTaskAssignment))
+      setAssignmentTotal(taskRows.total)
+      setAssignmentPage(taskRows.page)
+      setAssignmentPageSize(taskRows.page_size)
       setInterventions(currentInterventions)
-      setOutputs(normalizeOutputList(outputRows).items.filter((item) => item.display_type !== 'TASK_ASSIGNMENT' && isOperationalOutput(item) && !currentOutputIds.has(item.output_id)))
+      setInterventionTotal(interventionRows.total)
+      setInterventionPage(interventionRows.page ?? 1)
+      setInterventionPageSize(interventionRows.page_size ?? 10)
+      setInterventionCounts(interventionRows.counts_by_type ?? {})
+      setOutputs(currentOutputs.items)
+      setOutputTotal(currentOutputs.total)
+      setOutputPage(currentOutputs.page ?? 1)
+      setOutputPageSize(currentOutputs.page_size ?? 10)
+      setOutputCounts(currentOutputs.counts_by_type ?? {})
     } catch (error) {
       setAssignments([])
+      setAssignmentTotal(0)
       setOutputs([])
+      setOutputTotal(0)
+      setOutputCounts({})
       setInterventions([])
+      setInterventionTotal(0)
+      setInterventionCounts({})
       setLoadError(displayError(error))
     } finally {
       setHasLoaded(true)
+      setAssignmentLoading(false)
+      setInterventionLoading(false)
+      setOutputLoading(false)
       setLoading(false)
     }
   }, [])
 
-  const filteredOutputs = useMemo(() => {
-    const needle = keyword.trim().toLocaleLowerCase()
-    return outputs.filter((item) => {
-      const searchable = [item.output_id, item.title, item.body, item.teacher_id, teacherNames.get(item.teacher_id ?? ''), item.source_type, item.source_id].filter(Boolean).join(' ').toLocaleLowerCase()
-      return (!needle || searchable.includes(needle)) && (!displayType || item.display_type === displayType)
-    })
-  }, [displayType, keyword, outputs, teacherNames])
+  async function loadAssignmentPage(page: number, pageSize: number) {
+    setAssignmentLoading(true)
+    setLoadError('')
+    try {
+      const taskRows = await api.taskAssignments({
+        include_mock: false,
+        page,
+        page_size: pageSize,
+      })
+      setAssignments(taskRows.items.filter(isOperationalTaskAssignment))
+      setAssignmentTotal(taskRows.total)
+      setAssignmentPage(taskRows.page)
+      setAssignmentPageSize(taskRows.page_size)
+    } catch (error) {
+      setLoadError(displayError(error))
+    } finally {
+      setAssignmentLoading(false)
+    }
+  }
+
+  async function loadInterventionPage(page: number, pageSize: number) {
+    setInterventionLoading(true)
+    setLoadError('')
+    try {
+      const result = await api.operationsInterventions({
+        type: 'NOTIFICATION,OPS_CASE,PENDING_DATA',
+        page,
+        page_size: pageSize,
+      })
+      setInterventions(operationalOutputInterventions(result.items))
+      setInterventionTotal(result.total)
+      setInterventionPage(result.page ?? page)
+      setInterventionPageSize(result.page_size ?? pageSize)
+      setInterventionCounts(result.counts_by_type ?? {})
+    } catch (error) {
+      setLoadError(displayError(error))
+    } finally {
+      setInterventionLoading(false)
+    }
+  }
+
+  async function loadOutputPage(page: number, pageSize: number) {
+    setOutputLoading(true)
+    setLoadError('')
+    try {
+      const result = await api.outputs({
+        type: displayType || undefined,
+        keyword: keyword.trim() || undefined,
+        page,
+        page_size: pageSize,
+      })
+      setOutputs(result.items)
+      setOutputTotal(result.total)
+      setOutputPage(result.page ?? page)
+      setOutputPageSize(result.page_size ?? pageSize)
+    } catch (error) {
+      setLoadError(displayError(error))
+    } finally {
+      setOutputLoading(false)
+    }
+  }
 
   const displayTypeOptions = useMemo(
-    () => [...new Set(outputs.map((item) => item.display_type))].sort().map((value) => ({ value, label: outputDisplayTypeLabels[value] ?? value })),
-    [outputs],
+    () => Object.keys(outputCounts).sort().map((value) => ({
+      value,
+      label: outputDisplayTypeLabels[value as OutputDisplayType] ?? value,
+    })),
+    [outputCounts],
   )
 
   const counts = useMemo(() => ({
-    tasks: assignments.length,
-    notices: outputs.filter((item) => ['IN_APP_NOTIFICATION', 'REMINDER'].includes(item.display_type)).length + interventions.filter((item) => item.output_type === 'NOTIFICATION').length,
-    cases: outputs.filter((item) => item.display_type === 'OPS_CASE').length + interventions.filter((item) => item.output_type === 'OPS_CASE').length,
-    actions: outputs.filter((item) => item.display_type === 'EXTERNAL_ACTION_REQUEST').length,
-    dataIssues: interventions.filter((item) => item.output_type === 'PENDING_DATA').length,
-  }), [assignments.length, interventions, outputs])
+    tasks: assignmentTotal,
+    notices: (outputCounts.IN_APP_NOTIFICATION ?? 0) + (outputCounts.REMINDER ?? 0) + (interventionCounts.NOTIFICATION ?? 0),
+    cases: (outputCounts.OPS_CASE ?? 0) + (interventionCounts.OPS_CASE ?? 0),
+    actions: outputCounts.EXTERNAL_ACTION_REQUEST ?? 0,
+    dataIssues: interventionCounts.PENDING_DATA ?? 0,
+  }), [assignmentTotal, interventionCounts, outputCounts])
 
   async function retry(item: OutputRecord) {
     setRetryingId(item.output_id)
     try {
       await api.retryOutput(item.output_id)
-      await load()
+      await loadOutputPage(outputPage, outputPageSize)
     } finally {
       setRetryingId('')
     }
@@ -154,7 +240,7 @@ export default function OutputCenter({ snapshot }: { snapshot: AppSnapshot }) {
     },
     {
       title: '接收教师', key: 'teacher', width: 190,
-      render: (_, item) => <Space direction="vertical" size={2}><Text>{item.teacher_name || teacherNames.get(item.teacher_id) || item.teacher_id}</Text><Text code>{item.teacher_id}</Text></Space>,
+      render: (_, item) => <Space direction="vertical" size={2}><Text>{item.teacher_name || item.teacher_id}</Text><Text code>{item.teacher_id}</Text></Space>,
     },
     { title: '为什么产生', dataIndex: 'why', width: 430, render: (value: string) => <Paragraph ellipsis={{ rows: 3, tooltip: value }} style={{ margin: 0 }}>{value}</Paragraph> },
     { title: '状态', key: 'status', width: 180, render: (_, item) => assignmentStatusBadge(item.status) },
@@ -169,7 +255,7 @@ export default function OutputCenter({ snapshot }: { snapshot: AppSnapshot }) {
     },
     {
       title: '对象', key: 'recipient', width: 220,
-      render: (_, item) => <Text>{item.recipient_name || teacherNames.get(item.teacher_id ?? '') || item.recipient_id || '—'}</Text>,
+      render: (_, item) => <Text>{item.recipient_name || item.recipient_id || '—'}</Text>,
     },
     { title: '内容', key: 'content', width: 430, render: (_, item) => <Paragraph ellipsis={{ rows: 3, tooltip: item.body || item.content || '' }} style={{ margin: 0 }}>{item.body || item.content || '—'}</Paragraph> },
     { title: '状态', key: 'status', width: 190, render: (_, item) => <Space direction="vertical" size={3}>{outputStatusBadge(item.status)}<Text type="secondary">尝试 {item.attempt_count}/{item.max_attempts}</Text></Space> },
@@ -208,19 +294,82 @@ export default function OutputCenter({ snapshot }: { snapshot: AppSnapshot }) {
     </Row>
 
     {loadError ? <Result status="warning" title="输出加载失败" subTitle={loadError} extra={<Button onClick={() => load()}>重试</Button>} /> : <>
-      <Card title={`提醒与运营事项（${interventions.length}）`} extra={counts.dataIssues ? <Tag color="gold">{counts.dataIssues} 项内部数据待补</Tag> : null} styles={{ body: { padding: 0 } }}>
-        <Table rowKey="output_id" loading={loading} dataSource={interventions} columns={interventionColumns} pagination={{ pageSize: 10, hideOnSinglePage: true }} scroll={{ x: 1050 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasLoaded ? '当前没有提醒、运营事项或数据待补' : '尚未读取触达记录，点击“刷新”'} /> }} />
+      <Card title={`提醒与运营事项（${interventionTotal}）`} extra={counts.dataIssues ? <Tag color="gold">{counts.dataIssues} 项内部数据待补</Tag> : null} styles={{ body: { padding: 0 } }}>
+        <Table
+          rowKey="output_id"
+          loading={interventionLoading}
+          dataSource={interventions}
+          columns={interventionColumns}
+          pagination={{
+            current: interventionPage,
+            pageSize: interventionPageSize,
+            total: interventionTotal,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50, 100],
+            hideOnSinglePage: true,
+          }}
+          onChange={(pagination) => {
+            void loadInterventionPage(
+              pagination.current ?? 1,
+              pagination.pageSize ?? interventionPageSize,
+            )
+          }}
+          scroll={{ x: 1050 }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasLoaded ? '当前没有提醒、运营事项或数据待补' : '尚未读取触达记录，点击“刷新”'} /> }}
+        />
       </Card>
 
-      <Card title={`教师任务（${assignments.length}）`} styles={{ body: { padding: 0 } }}>
-        <Table rowKey="assignment_id" loading={loading} dataSource={assignments} columns={taskColumns} pagination={{ pageSize: 8, hideOnSinglePage: true }} scroll={{ x: 1320 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有任务实例" /> }} />
+      <Card title={`教师任务（${assignmentTotal}）`} styles={{ body: { padding: 0 } }}>
+        <Table
+          rowKey="assignment_id"
+          loading={assignmentLoading}
+          dataSource={assignments}
+          columns={taskColumns}
+          pagination={{
+            current: assignmentPage,
+            pageSize: assignmentPageSize,
+            total: assignmentTotal,
+            showSizeChanger: true,
+            pageSizeOptions: [8, 20, 50, 100],
+            hideOnSinglePage: true,
+          }}
+          onChange={(pagination) => {
+            void loadAssignmentPage(
+              pagination.current ?? 1,
+              pagination.pageSize ?? assignmentPageSize,
+            )
+          }}
+          scroll={{ x: 1320 }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有任务实例" /> }}
+        />
       </Card>
 
-      {outputs.length ? <Card>
-        <Flex gap={12} wrap><Input allowClear value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索输出、教师或来源" style={{ width: 340 }} /><Select allowClear value={displayType || undefined} onChange={(value) => setDisplayType(value || '')} placeholder="全部输出类型" options={displayTypeOptions} style={{ width: 210 }} /><Text type="secondary" style={{ marginLeft: 'auto' }}>显示 {filteredOutputs.length} / {outputs.length}</Text></Flex>
+      {hasLoaded && (outputTotal > 0 || keyword || displayType) ? <Card>
+        <Flex gap={12} wrap><Input allowClear value={keyword} onChange={(event) => setKeyword(event.target.value)} onPressEnter={() => void loadOutputPage(1, outputPageSize)} placeholder="搜索输出、教师或来源" style={{ width: 340 }} /><Select allowClear value={displayType || undefined} onChange={(value) => setDisplayType(value || '')} placeholder="全部输出类型" options={displayTypeOptions} style={{ width: 210 }} /><Button onClick={() => void loadOutputPage(1, outputPageSize)}>查询</Button><Text type="secondary" style={{ marginLeft: 'auto' }}>共 {outputTotal} 条</Text></Flex>
       </Card> : null}
-      {outputs.length ? <Card title={`其他触达记录（${filteredOutputs.length}）`} styles={{ body: { padding: 0 } }}>
-        <Table rowKey="output_id" loading={loading} dataSource={filteredOutputs} columns={outputColumns} pagination={{ pageSize: 10, hideOnSinglePage: true }} scroll={{ x: 1520 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有通知、运营事项或外部动作" /> }} />
+      {hasLoaded && (outputTotal > 0 || keyword || displayType) ? <Card title={`其他触达记录（${outputTotal}）`} styles={{ body: { padding: 0 } }}>
+        <Table
+          rowKey="output_id"
+          loading={outputLoading}
+          dataSource={outputs}
+          columns={outputColumns}
+          pagination={{
+            current: outputPage,
+            pageSize: outputPageSize,
+            total: outputTotal,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50, 100],
+            hideOnSinglePage: true,
+          }}
+          onChange={(pagination) => {
+            void loadOutputPage(
+              pagination.current ?? 1,
+              pagination.pageSize ?? outputPageSize,
+            )
+          }}
+          scroll={{ x: 1520 }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有通知、运营事项或外部动作" /> }}
+        />
       </Card> : null}
     </>}
 

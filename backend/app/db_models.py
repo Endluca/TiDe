@@ -121,6 +121,9 @@ class TeacherRecord(Base):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     camp_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     graduation_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    gold_qualified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     total_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     graduation_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     data_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="MOCK")
@@ -183,6 +186,7 @@ class TeacherMetricSnapshotRecord(Base):
     completed_again_student_15d_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     late_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     early_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    absent_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     real_absent_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     severe_redline_event: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     capacity_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
@@ -386,6 +390,9 @@ class LessonDimensionScoreRecord(Base):
     score_as_of: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_score_entry_id: Mapped[Optional[str]] = mapped_column(String(128))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
 
 class ScoreAccountRecord(Base):
@@ -402,6 +409,76 @@ class ScoreAccountRecord(Base):
     score_rule_version: Mapped[str] = mapped_column(String(64), nullable=False, default="mock_score_v1")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+
+
+class ScoreComponentAccountRecord(Base):
+    """Current teacher-level score for one explainable scoring component."""
+
+    __tablename__ = "score_component_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "teacher_id",
+            "component_code",
+            name="uq_score_component_account_teacher_component",
+        ),
+        CheckConstraint(
+            "source_scope IN ('LESSON', 'TEACHER', 'TASK')",
+            name="ck_score_component_account_source_scope",
+        ),
+        CheckConstraint(
+            "reconciliation_status IN "
+            "('MATCHED', 'MATCHED_ZERO', 'PARTIAL', 'MISMATCH', "
+            "'SOURCE_MISSING', 'NOT_APPLICABLE')",
+            name="ck_score_component_account_reconciliation",
+        ),
+        Index(
+            "ix_score_component_account_teacher_dimension",
+            "teacher_id",
+            "dimension",
+        ),
+        Index("ix_score_component_account_teacher_id", "teacher_id"),
+        Index(
+            "ix_score_component_account_camp_enrollment_id",
+            "camp_enrollment_id",
+        ),
+        Index(
+            "ix_score_component_account_source_teacher_batch_id",
+            "source_teacher_batch_id",
+        ),
+        Index(
+            "ix_score_component_account_source_lesson_batch_id",
+            "source_lesson_batch_id",
+        ),
+        Index("ix_score_component_account_calculated_at", "calculated_at"),
+    )
+
+    component_account_id: Mapped[str] = mapped_column(String(192), primary_key=True)
+    teacher_id: Mapped[str] = mapped_column(
+        ForeignKey("teachers.teacher_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    camp_enrollment_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    dimension: Mapped[str] = mapped_column(String(32), nullable=False)
+    component_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_metric: Mapped[Optional[str]] = mapped_column(String(128))
+    unit_count: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    points_per_unit: Mapped[Optional[float]] = mapped_column(Float)
+    current_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    lesson_attributed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lesson_attributed_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    unattributed_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    reconciliation_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="NOT_APPLICABLE"
+    )
+    score_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_teacher_batch_id: Mapped[Optional[str]] = mapped_column(String(160))
+    source_lesson_batch_id: Mapped[Optional[str]] = mapped_column(String(160))
+    projection_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    calculated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
 
 
@@ -511,11 +588,11 @@ class TaskAssignmentRecord(Base):
         ),
         CheckConstraint("row_version >= 1", name="ck_task_assignment_row_version"),
         CheckConstraint(
-            "((task_code IN ('G01', 'G02', 'G03', 'G04', 'G05', 'G06', 'G07', "
-            "'G08', 'G09', 'G10') AND task_kind = 'FIXED_GROWTH' "
+            "((task_code IN ('G00', 'G01', 'G02', 'G03', 'G04', 'G05', 'G06', "
+            "'G07', 'G08', 'G09') AND task_kind = 'FIXED_GROWTH' "
             "AND creator_system = 'TRIGGER_CENTER') OR "
-            "(task_code NOT IN ('G01', 'G02', 'G03', 'G04', 'G05', 'G06', 'G07', "
-            "'G08', 'G09', 'G10') AND task_kind = 'PERSONALIZED_IMPROVEMENT' "
+            "(task_code NOT IN ('G00', 'G01', 'G02', 'G03', 'G04', 'G05', 'G06', "
+            "'G07', 'G08', 'G09') AND task_kind = 'PERSONALIZED_IMPROVEMENT' "
             "AND creator_system = 'TRIGGER_CENTER'))",
             name="ck_task_assignment_owner_consistency",
         ),
@@ -550,6 +627,11 @@ class TaskAssignmentRecord(Base):
             "why !~ U&'[\\4E00-\\9FFF]'",
             name="ck_task_assignment_why_teacher_english",
         ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "task_kind <> 'PERSONALIZED_IMPROVEMENT' "
+            "OR why LIKE '%Evidence:%'",
+            name="ck_task_assignment_personalized_why_evidence",
+        ),
         UniqueConstraint("dedupe_key", name="uq_task_assignment_dedupe"),
         Index(
             "uq_task_assignment_fixed_teacher_task",

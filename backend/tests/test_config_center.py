@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -17,6 +18,9 @@ from app.config_models import (
     SCORE_POLICY_V5_PAYLOAD,
     SCORE_POLICY_V6_PAYLOAD,
     SCORE_POLICY_V7_PAYLOAD,
+    SCORE_POLICY_V8_PAYLOAD,
+    SCORE_POLICY_V9_PAYLOAD,
+    SCORE_POLICY_V10_PAYLOAD,
     ConfigKey,
     ConfigStatus,
     ConfigVersionRecord,
@@ -38,6 +42,9 @@ from scripts.upgrade_score_config_v4 import upgrade_score_config_v4
 from scripts.upgrade_score_config_v5 import upgrade_score_config_v5
 from scripts.upgrade_score_config_v6 import upgrade_score_config_v6
 from scripts.upgrade_score_config_v7 import upgrade_score_config_v7
+from scripts.upgrade_score_config_v8 import upgrade_score_config_v8
+from scripts.upgrade_score_config_v9 import upgrade_score_config_v9
+from scripts.upgrade_score_config_v10 import upgrade_score_config_v10
 
 
 @pytest.fixture()
@@ -61,9 +68,9 @@ def test_empty_database_does_not_implicitly_seed(service: ConfigService) -> None
     assert service.get_published_payload(ConfigKey.SCORE_GRADUATION) is None
 
 
-def test_default_payloads_match_frozen_v7_score_contract() -> None:
+def test_default_payloads_match_single_v1_score_contract() -> None:
     score = DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION]
-    assert score["policy_version"] == "v7"
+    assert score["policy_version"] == "v1"
     assert score["scoring_items"] == {
         "capacity": {
             "milestone_id": "CAPACITY_PEAK_SLOT_40",
@@ -77,14 +84,8 @@ def test_default_payloads_match_frozen_v7_score_contract() -> None:
         "new_teacher_tasks": {"maximum_points": 30},
         "feedback_praise": {"points_per_unit": 5},
         "feedback_favorite": {"points_per_unit": 5},
-        "feedback_rebook_15d": {"points_per_unit": 8},
-        "reliability_on_time": {"points_per_unit": 2},
-        "reliability_peak": {"points_per_unit": 1},
-        "classroom_quality": {
-            "metric": "perfect_cnt",
-            "points_per_unit": 2,
-            "source_mode": "REAL_TEACHER_SNAPSHOT",
-        },
+        "reliability_perfect": {"points_per_unit": 4},
+        "reliability_peak": {"points_per_unit": 2},
     }
     assert score["thresholds"] == {
         "graduation_raw_score": 100,
@@ -93,10 +94,15 @@ def test_default_payloads_match_frozen_v7_score_contract() -> None:
         "gold_external_score": 200,
     }
     assert score["hard_gates"]["graduation"] == {
-        "required_mandatory_task_count": 10,
+        "required_mandatory_task_count": 9,
         "maximum_l0_complaint_count": 0,
     }
-    assert score["hard_gates"]["gold"] == {"inherits_graduation": True}
+    assert score["hard_gates"]["gold"] == {
+        "inherits_graduation": True,
+        "maximum_late_count": 1,
+        "maximum_early_count": 0,
+        "maximum_absent_count": 0,
+    }
     assert score["graduation_effect"] == "IMMEDIATE_ON_CRITERIA"
 
     agent = DEFAULT_CONFIG_PAYLOADS[ConfigKey.AGENT_POLICY]
@@ -116,6 +122,59 @@ def test_default_payloads_match_frozen_v7_score_contract() -> None:
         "p0_response_window_minutes": 120,
         "p0_reminder_minutes_before_response_due": 30,
     }
+
+
+def test_v1_allows_business_values_but_keeps_contract_structure() -> None:
+    payload = deepcopy(DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION])
+    payload["scoring_items"]["capacity"].update(
+        threshold=45,
+        score_value=12,
+        maximum_points=12,
+    )
+    payload["scoring_items"]["feedback_praise"]["points_per_unit"] = 6
+    payload["scoring_items"]["reliability_perfect"]["points_per_unit"] = 5
+    payload["thresholds"].update(
+        graduation_raw_score=110,
+        gold_raw_score=220,
+    )
+    payload["hard_gates"]["graduation"]["maximum_l0_complaint_count"] = 1
+    payload["hard_gates"]["gold"].update(
+        maximum_late_count=2,
+        maximum_early_count=1,
+        maximum_absent_count=1,
+    )
+
+    normalized = validate_config_payload(ConfigKey.SCORE_GRADUATION, payload)
+
+    assert normalized["scoring_items"]["capacity"]["threshold"] == 45
+    assert normalized["scoring_items"]["feedback_praise"]["points_per_unit"] == 6
+    assert normalized["thresholds"]["graduation_raw_score"] == 110
+    assert normalized["hard_gates"]["gold"]["maximum_late_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["hard_gates"]["graduation"].update(
+            required_mandatory_task_count=8
+        ),
+        lambda payload: payload["scoring_items"]["new_teacher_tasks"].update(
+            maximum_points=29
+        ),
+        lambda payload: payload["thresholds"].update(
+            gold_external_score=199
+        ),
+        lambda payload: payload["scoring_items"]["capacity"].update(
+            settlement_mode="REVERSIBLE"
+        ),
+    ],
+)
+def test_v1_rejects_contract_structure_changes(mutate) -> None:
+    payload = deepcopy(DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION])
+    mutate(payload)
+
+    with pytest.raises(ValidationError):
+        validate_config_payload(ConfigKey.SCORE_GRADUATION, payload)
 
 
 @pytest.mark.parametrize(
@@ -240,6 +299,101 @@ def test_publishing_new_version_retires_but_never_overwrites_history(service: Co
     with pytest.raises(ConfigDomainError) as caught:
         service.update_draft(first["version_id"], changed_payload, actor_id="ops-creator-2")
     assert caught.value.error_code == "CONFIG_NOT_EDITABLE"
+
+
+def test_score_policy_publish_recalculates_before_success(
+    service: ConfigService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _draft(
+        service,
+        ConfigKey.SCORE_GRADUATION,
+        deepcopy(DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION]),
+    )
+    assert service.validate_version(
+        first["version_id"], actor_id="ops-validator"
+    )["valid"]
+    service.publish_version(first["version_id"], actor_id="ops-publisher")
+
+    replacement = service.create_draft(
+        ConfigKey.SCORE_GRADUATION,
+        actor_id="ops-creator-2",
+        from_version_id=first["version_id"],
+    )
+    assert service.validate_version(
+        replacement["version_id"], actor_id="ops-validator-2"
+    )["valid"]
+
+    def fake_refresh(session, **kwargs):
+        assert session.in_transaction()
+        assert kwargs["trigger_type"] == "SCORE_POLICY_PUBLISHED"
+        assert kwargs["trigger_ref"] == replacement["version_id"]
+        return {
+            "projection_id": "SPR-TEST",
+            "teacher_count": 1065,
+            "lesson_score_state_count": 0,
+            "component_account_count": 0,
+        }
+
+    monkeypatch.setattr(
+        "app.score_read_model.refresh_persisted_score_read_models",
+        fake_refresh,
+    )
+
+    published = service.publish_version(
+        replacement["version_id"],
+        actor_id="ops-publisher-2",
+    )
+
+    assert published["status"] == ConfigStatus.PUBLISHED.value
+    assert published["recalculation"]["teacher_count"] == 1065
+    assert service.get_version(first["version_id"])["status"] == (
+        ConfigStatus.RETIRED.value
+    )
+
+
+def test_failed_score_recalculation_rolls_publication_back(
+    service: ConfigService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = _draft(
+        service,
+        ConfigKey.SCORE_GRADUATION,
+        deepcopy(DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION]),
+    )
+    assert service.validate_version(
+        current["version_id"], actor_id="ops-validator"
+    )["valid"]
+    service.publish_version(current["version_id"], actor_id="ops-publisher")
+    replacement = service.create_draft(
+        ConfigKey.SCORE_GRADUATION,
+        actor_id="ops-creator-2",
+        from_version_id=current["version_id"],
+    )
+    assert service.validate_version(
+        replacement["version_id"], actor_id="ops-validator-2"
+    )["valid"]
+
+    def fail_refresh(*args, **kwargs):
+        raise RuntimeError("projection failed")
+
+    monkeypatch.setattr(
+        "app.score_read_model.refresh_persisted_score_read_models",
+        fail_refresh,
+    )
+
+    with pytest.raises(RuntimeError, match="projection failed"):
+        service.publish_version(
+            replacement["version_id"],
+            actor_id="ops-publisher-2",
+        )
+
+    assert service.get_version(current["version_id"])["status"] == (
+        ConfigStatus.PUBLISHED.value
+    )
+    assert service.get_version(replacement["version_id"])["status"] == (
+        ConfigStatus.VALIDATED.value
+    )
 
 
 def test_published_v6_cannot_be_downgraded_to_historical_v2_or_v3(service: ConfigService) -> None:
@@ -507,6 +661,100 @@ def test_local_score_v7_upgrade_retires_v6_without_rewriting_history_and_is_idem
 def test_score_v7_upgrade_refuses_nonlocal_environment(service: ConfigService) -> None:
     with pytest.raises(RuntimeError, match="outside local/dev/test"):
         upgrade_score_config_v7(service=service, app_env="production")
+
+
+def test_local_score_v8_upgrade_retires_v7_without_rewriting_history_and_is_idempotent(
+    service: ConfigService,
+) -> None:
+    historical = upgrade_score_config_v7(service=service, app_env="test")
+    historical_payload = deepcopy(service.get_version(historical["version_id"])["payload"])
+
+    upgraded = upgrade_score_config_v8(service=service, app_env="test")
+    repeated = upgrade_score_config_v8(service=service, app_env="test")
+
+    assert upgraded["status"] == "UPGRADED"
+    assert upgraded["policy_version"] == "v8"
+    assert upgraded["recalculated_teacher_count"] == 0
+    assert repeated == {"status": "SKIPPED_ALREADY_V8", "policy_version": "v8"}
+    versions = service.list_versions(ConfigKey.SCORE_GRADUATION)
+    assert [(item["version_number"], item["status"]) for item in versions] == [
+        (2, ConfigStatus.PUBLISHED.value),
+        (1, ConfigStatus.RETIRED.value),
+    ]
+    assert versions[0]["payload"] == validate_config_payload(
+        ConfigKey.SCORE_GRADUATION,
+        SCORE_POLICY_V8_PAYLOAD,
+    )
+    assert (
+        "feedback_rebook_15d" not in versions[0]["payload"]["scoring_items"]
+    )
+    assert service.get_version(historical["version_id"])["payload"] == historical_payload
+
+
+def test_score_v8_upgrade_refuses_nonlocal_environment(service: ConfigService) -> None:
+    with pytest.raises(RuntimeError, match="outside local/dev/test"):
+        upgrade_score_config_v8(service=service, app_env="production")
+
+
+def test_local_score_v9_upgrade_retires_v8_without_rewriting_history_and_is_idempotent(
+    service: ConfigService,
+) -> None:
+    historical = upgrade_score_config_v8(service=service, app_env="test")
+    historical_payload = deepcopy(service.get_version(historical["version_id"])["payload"])
+
+    upgraded = upgrade_score_config_v9(service=service, app_env="test")
+    repeated = upgrade_score_config_v9(service=service, app_env="test")
+
+    assert upgraded["status"] == "UPGRADED"
+    assert upgraded["policy_version"] == "v9"
+    assert upgraded["recalculated_teacher_count"] == 0
+    assert repeated == {"status": "SKIPPED_ALREADY_V9", "policy_version": "v9"}
+    versions = service.list_versions(ConfigKey.SCORE_GRADUATION)
+    assert [(item["version_number"], item["status"]) for item in versions] == [
+        (2, ConfigStatus.PUBLISHED.value),
+        (1, ConfigStatus.RETIRED.value),
+    ]
+    assert versions[0]["payload"] == validate_config_payload(
+        ConfigKey.SCORE_GRADUATION,
+        SCORE_POLICY_V9_PAYLOAD,
+    )
+    assert "classroom_quality" not in versions[0]["payload"]["scoring_items"]
+    assert service.get_version(historical["version_id"])["payload"] == historical_payload
+
+
+def test_score_v9_upgrade_refuses_nonlocal_environment(service: ConfigService) -> None:
+    with pytest.raises(RuntimeError, match="outside local/dev/test"):
+        upgrade_score_config_v9(service=service, app_env="production")
+
+
+def test_local_score_v10_upgrade_retires_v9_without_rewriting_history_and_is_idempotent(
+    service: ConfigService,
+) -> None:
+    historical = upgrade_score_config_v9(service=service, app_env="test")
+    historical_payload = deepcopy(service.get_version(historical["version_id"])["payload"])
+
+    upgraded = upgrade_score_config_v10(service=service, app_env="test")
+    repeated = upgrade_score_config_v10(service=service, app_env="test")
+
+    assert upgraded["status"] == "UPGRADED"
+    assert upgraded["policy_version"] == "v10"
+    assert upgraded["recalculated_teacher_count"] == 0
+    assert repeated == {"status": "SKIPPED_ALREADY_V10", "policy_version": "v10"}
+    versions = service.list_versions(ConfigKey.SCORE_GRADUATION)
+    assert [(item["version_number"], item["status"]) for item in versions] == [
+        (2, ConfigStatus.PUBLISHED.value),
+        (1, ConfigStatus.RETIRED.value),
+    ]
+    assert versions[0]["payload"] == validate_config_payload(
+        ConfigKey.SCORE_GRADUATION,
+        SCORE_POLICY_V10_PAYLOAD,
+    )
+    assert service.get_version(historical["version_id"])["payload"] == historical_payload
+
+
+def test_score_v10_upgrade_refuses_nonlocal_environment(service: ConfigService) -> None:
+    with pytest.raises(RuntimeError, match="outside local/dev/test"):
+        upgrade_score_config_v10(service=service, app_env="production")
 
 
 def test_config_api_uses_trusted_actor_and_rejects_actor_in_body(service: ConfigService) -> None:

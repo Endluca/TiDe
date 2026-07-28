@@ -123,7 +123,6 @@ export default function InterventionCenter({
       setLoading(false)
     }
   }, [domain, page, status, teacherId])
-
   const counts = useMemo(() => ({
     urgent: items.filter((item) => item.priority === 'P0' || item.priority === 'P1').length,
     teachers: new Set(items.map((item) => item.teacher_id)).size,
