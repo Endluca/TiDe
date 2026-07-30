@@ -1,0 +1,23 @@
+# Reviewed false positives from the initial import on 2026-07-30.
+# These findings are public service endpoints or stable business identifiers,
+# not credentials. Keep the fingerprints narrow so future findings still fail.
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/.env.example:generic-api-key:65
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/config/public-videos-v2.json:generic-api-key:65
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/config/public-videos-v2.json:generic-api-key:80
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/config/public-videos-v2.json:generic-api-key:95
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/config/public-videos-v2.json:generic-api-key:110
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/config/public-videos-v2.json:generic-api-key:125
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/config/public-videos-v2.json:generic-api-key:140
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/scripts/sync-current-task-catalog.ts:generic-api-key:199
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/scripts/sync-current-task-catalog.ts:generic-api-key:228
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/scripts/sync-current-task-catalog.ts:generic-api-key:474
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/scripts/sync-current-task-catalog.ts:generic-api-key:482
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/scripts/sync-current-task-catalog.ts:generic-api-key:490
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/scripts/sync-current-task-catalog.ts:generic-api-key:498
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/scripts/sync-current-task-catalog.ts:generic-api-key:506
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/backend/scripts/sync-current-task-catalog.ts:generic-api-key:541
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/frontend/test/task-adapter.test.mjs:generic-api-key:147
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/frontend/test/task-adapter.test.mjs:generic-api-key:279
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/frontend/test/task-adapter.test.mjs:generic-api-key:297
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/frontend/src/App.jsx:generic-api-key:2550
+48754dc46bfd01847bc32ede7b66e472d68d0d47:teacher/frontend/src/App.jsx:generic-api-key:3605
