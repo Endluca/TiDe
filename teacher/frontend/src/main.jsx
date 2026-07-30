@@ -7,6 +7,7 @@ import "./modern.css";
 import "./brand-v2.css";
 import "./growth-path.css";
 import "./enhancements.css";
+import "./ai-help-fab.css";
 import { publicAsset } from "./public-assets";
 import { startAnalyticsRuntime } from "./analytics/product-analytics";
 

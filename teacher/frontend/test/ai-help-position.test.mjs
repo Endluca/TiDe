@@ -1,10 +1,25 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   clampAiHelpPosition,
   defaultAiHelpPosition,
   getAiHelpBounds,
 } from "../src/ai-help-position.js";
+
+test("loads the floating AI helper styles before the lazy support dialog", () => {
+  const mainSource = readFileSync(
+    new URL("../src/main.jsx", import.meta.url),
+    "utf8",
+  );
+  const helperStyles = readFileSync(
+    new URL("../src/ai-help-fab.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(mainSource, /import "\.\/ai-help-fab\.css";/);
+  assert.match(helperStyles, /\.ai-help-fab > button > img/);
+});
 
 test("keeps the desktop AI helper below the top navigation", () => {
   const bounds = getAiHelpBounds({

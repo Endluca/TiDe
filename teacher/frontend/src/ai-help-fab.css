@@ -1,0 +1,214 @@
+.ai-help-fab {
+  --ai-help-size: 84px;
+  position: fixed;
+  z-index: 55;
+  right: max(28px, env(safe-area-inset-right));
+  bottom: max(28px, env(safe-area-inset-bottom));
+  width: var(--ai-help-size);
+  height: var(--ai-help-size);
+  animation: ai-help-fab-in 360ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.ai-help-fab.is-positioned {
+  right: auto;
+  bottom: auto;
+}
+
+.ai-help-fab-hint {
+  position: absolute;
+  z-index: 2;
+  right: auto;
+  bottom: -12px;
+  left: 50%;
+  display: inline-grid;
+  min-width: max-content;
+  padding: 5px 10px;
+  pointer-events: none;
+  border: 1px solid rgba(176, 207, 238, .9);
+  border-radius: 999px;
+  opacity: 1;
+  color: #33475b;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 10px 28px rgba(29, 71, 116, .13);
+  transform: translateX(-50%);
+  transition: opacity 160ms ease, transform 160ms ease;
+  white-space: nowrap;
+}
+
+.ai-help-fab.is-near-left .ai-help-fab-hint {
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.ai-help-fab-hint strong,
+.ai-help-fab-hint small {
+  display: block;
+}
+
+.ai-help-fab-hint strong {
+  color: var(--brand-blue);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.ai-help-fab-hint small {
+  margin-top: 2px;
+  color: #718092;
+  font-size: 10px;
+}
+
+.ai-help-fab:is(:hover, :focus-within) .ai-help-fab-hint {
+  opacity: 1;
+  transform: translateX(-50%);
+}
+
+.ai-help-fab.is-dragging .ai-help-fab-hint {
+  opacity: 0;
+}
+
+.ai-help-fab > button {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  flex: 0 0 auto;
+  padding: 0;
+  place-items: center;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  color: var(--brand-blue);
+  background:
+    radial-gradient(circle at 50% 42%, #fff 0 45%, #eaf6ff 76%, #d6ecff 100%);
+  box-shadow:
+    0 14px 34px rgba(0, 74, 168, .23),
+    0 0 0 1px rgba(0, 99, 242, .16);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.ai-help-fab > button::before {
+  position: absolute;
+  z-index: -1;
+  inset: -7px;
+  border: 1px solid rgba(38, 183, 255, .36);
+  border-radius: 50%;
+  content: "";
+  animation: ai-help-pulse 2.8s ease-out infinite;
+}
+
+.ai-help-fab > button:hover {
+  box-shadow:
+    0 17px 38px rgba(0, 74, 168, .28),
+    0 0 0 1px rgba(0, 99, 242, .2);
+  transform: translateY(-3px);
+}
+
+.ai-help-fab > button:active {
+  transform: translateY(0) scale(.96);
+}
+
+.ai-help-fab.is-dragging > button {
+  box-shadow:
+    0 20px 44px rgba(0, 74, 168, .3),
+    0 0 0 4px rgba(38, 183, 255, .14);
+  cursor: grabbing;
+  transform: scale(.98);
+}
+
+.ai-help-fab.is-dragging > button::before {
+  animation: none;
+  opacity: 0;
+}
+
+.ai-help-fab > button > img {
+  display: block;
+  width: calc(var(--ai-help-size) + 4px);
+  height: calc(var(--ai-help-size) + 4px);
+  object-fit: contain;
+  pointer-events: none;
+  transform: translateY(2px);
+}
+
+.ai-help-fab-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -1px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  color: #004fbf;
+  background: var(--brand-yellow);
+  box-shadow: 0 4px 10px rgba(23, 65, 113, .18);
+}
+
+@keyframes ai-help-fab-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(.88);
+  }
+}
+
+@keyframes ai-help-pulse {
+  0%, 55% {
+    opacity: .7;
+    transform: scale(.92);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+}
+
+@media (max-width: 720px) {
+  .ai-help-fab {
+    --ai-help-size: 62px;
+    right: max(15px, env(safe-area-inset-right));
+    bottom: calc(91px + env(safe-area-inset-bottom));
+  }
+
+  .reference-app.detail-route .ai-help-fab {
+    bottom: calc(84px + env(safe-area-inset-bottom));
+  }
+
+  .ai-help-fab-hint {
+    right: auto;
+    bottom: -10px;
+    left: 50%;
+    display: inline-grid;
+    padding: 4px 7px;
+    box-shadow: 0 6px 18px rgba(29, 71, 116, .12);
+  }
+
+  .ai-help-fab.is-near-left .ai-help-fab-hint {
+    right: auto;
+    left: 50%;
+  }
+
+  .ai-help-fab-hint strong {
+    font-size: 10px;
+  }
+
+  .ai-help-fab-badge {
+    width: 23px;
+    height: 23px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-help-fab,
+  .ai-help-fab > button::before {
+    animation: none;
+  }
+
+  .ai-help-fab-hint,
+  .ai-help-fab > button {
+    transition: none;
+  }
+}
