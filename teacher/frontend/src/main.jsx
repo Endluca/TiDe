@@ -1,0 +1,26 @@
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { HashRouter } from "react-router-dom";
+import App from "./App";
+import "./styles.css";
+import "./modern.css";
+import "./brand-v2.css";
+import "./growth-path.css";
+import "./enhancements.css";
+import { publicAsset } from "./public-assets";
+import { startAnalyticsRuntime } from "./analytics/product-analytics";
+
+startAnalyticsRuntime();
+
+document.documentElement.style.setProperty(
+  "--coach-card-background",
+  `url("${publicAsset("/assets/backgrounds/coach-card-background.png")}")`,
+);
+
+createRoot(document.getElementById("root")).render(
+  <StrictMode>
+    <HashRouter>
+      <App />
+    </HashRouter>
+  </StrictMode>,
+);

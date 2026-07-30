@@ -1,0 +1,243 @@
+.lesson-example-gallery {
+  display: grid;
+  min-width: 0;
+  padding: 18px;
+  gap: 14px;
+  border: 1px solid #dce5ee;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #fff 0%, #f8fbff 100%);
+}
+
+.lesson-example-gallery-head {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+}
+.lesson-example-gallery-head > span {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 11px;
+  color: var(--brand-blue);
+  background: #e7f2ff;
+}
+.lesson-example-gallery-head small {
+  color: var(--brand-blue);
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .09em;
+}
+.lesson-example-gallery-head h3 { margin: 4px 0 3px; font-size: 17px; line-height: 1.35; }
+.lesson-example-gallery-head p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+
+.lesson-example-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 4px;
+  gap: 4px;
+  border-radius: 11px;
+  background: #edf3f8;
+}
+.lesson-example-tabs button {
+  display: grid;
+  min-width: 0;
+  min-height: 48px;
+  place-content: center;
+  justify-items: center;
+  padding: 6px 4px;
+  gap: 2px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #647487;
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 850;
+  cursor: pointer;
+}
+.lesson-example-tabs button span { font-size: 7px; letter-spacing: .08em; opacity: .66; }
+.lesson-example-tabs button.is-active {
+  border-color: #bfd5ea;
+  color: #173e6b;
+  background: #fff;
+  box-shadow: 0 4px 12px rgba(24, 67, 111, .08);
+}
+
+.lesson-example-tabpanel { display: grid; gap: 12px; }
+.lesson-example-summary { padding: 11px 12px; border-radius: 10px; background: #f0f6fc; }
+.lesson-example-summary strong { display: block; font-size: 12px; }
+.lesson-example-summary p { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+
+.lesson-example-set { display: grid; gap: 7px; }
+.lesson-example-set h4 {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  gap: 6px;
+  font-size: 11px;
+}
+.lesson-example-set.tone-good h4 { color: #287653; }
+.lesson-example-set.tone-bad h4 { color: #98513e; }
+.lesson-example-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.lesson-example-grid button {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  padding: 0;
+  aspect-ratio: 16 / 10;
+  border: 1px solid #dce5ed;
+  border-radius: 10px;
+  color: #fff;
+  text-align: left;
+  background: #10243b;
+  cursor: zoom-in;
+}
+.lesson-example-grid button img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .2s ease; }
+.lesson-example-grid button:hover img { transform: scale(1.025); }
+.lesson-example-grid button > span {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  overflow: hidden;
+  padding: 22px 28px 7px 8px;
+  background: linear-gradient(transparent, rgba(5, 17, 31, .82));
+  font-size: 8px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lesson-example-grid button > svg {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,.45));
+}
+.lesson-example-set.tone-good .lesson-example-grid button { border-color: #b9dec9; }
+.lesson-example-set.tone-bad .lesson-example-grid button { border-color: #ebc9bf; }
+.lesson-example-source { margin: 0; color: #7b8794; font-size: 8px; text-align: right; }
+
+.lesson-example-gallery.is-compact {
+  padding: 16px;
+  gap: 14px;
+  border: 0;
+  background: transparent;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-tabs {
+  background: #eaf0f6;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-tabs button {
+  min-height: 46px;
+  font-size: 11px;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-summary {
+  padding: 12px 14px;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-summary strong {
+  font-size: 13px;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-summary p,
+.lesson-example-gallery.is-compact .lesson-example-source {
+  font-size: 10px;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-set {
+  gap: 9px;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-set h4 {
+  font-size: 12px;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.lesson-example-gallery.is-compact .lesson-example-grid.count-1,
+.lesson-example-gallery.is-compact .lesson-example-grid.count-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lesson-example-gallery.is-compact .lesson-example-grid button > span {
+  font-size: 9px;
+}
+
+.lesson-example-lightbox {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  overflow: auto;
+  padding: 28px;
+  place-items: center;
+  background: rgba(3, 12, 24, .82);
+  cursor: zoom-out;
+  backdrop-filter: blur(8px);
+}
+.lesson-example-lightbox-dialog {
+  position: relative;
+  overflow: hidden;
+  width: min(820px, 100%);
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 28px 70px rgba(0,0,0,.38);
+  cursor: default;
+}
+.lesson-example-lightbox-dialog > button {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,.35);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(4,16,31,.68);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.lesson-example-lightbox-dialog > img {
+  display: block;
+  width: 100%;
+  max-height: min(72vh, 760px);
+  object-fit: contain;
+  background: #0a1727;
+}
+.lesson-example-lightbox-dialog > div { display: grid; padding: 15px 18px 18px; gap: 4px; }
+.lesson-example-lightbox-dialog span { display: inline-flex; width: max-content; align-items: center; margin-bottom: 2px; gap: 5px; font-size: 9px; font-weight: 900; }
+.lesson-example-lightbox-dialog span.tone-good { color: #287653; }
+.lesson-example-lightbox-dialog span.tone-bad { color: #98513e; }
+.lesson-example-lightbox-dialog strong { font-size: 14px; }
+.lesson-example-lightbox-dialog p { margin: 0; color: var(--muted); font-size: 11px; }
+
+@media (max-width: 720px) {
+  .lesson-example-gallery { padding: 14px; gap: 12px; }
+  .lesson-example-gallery.is-compact { padding: 12px; }
+  .lesson-example-gallery-head h3 { font-size: 15px; }
+  .lesson-example-tabs { overflow-x: auto; grid-template-columns: repeat(4, minmax(88px, 1fr)); }
+  .lesson-example-gallery.is-compact .lesson-example-tabs {
+    overflow: visible;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .lesson-example-tabs button { min-height: 44px; }
+  .lesson-example-gallery.is-compact .lesson-example-grid,
+  .lesson-example-gallery.is-compact .lesson-example-grid.count-1,
+  .lesson-example-gallery.is-compact .lesson-example-grid.count-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .lesson-example-lightbox { padding: 14px; }
+  .lesson-example-lightbox-dialog { border-radius: 14px; }
+}

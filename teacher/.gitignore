@@ -1,0 +1,25 @@
+# Dependencies and build output
+node_modules/
+.pnpm-store/
+dist/
+.vite/
+
+# Local system and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local reference repositories kept for migration input only
+backend/reference/teacher-faq-demo/
+backend/storage/
+
+# Training videos are hosted in OSS, not committed with the frontend.
+.video-v2-media/
+frontend/public/assets/tasks/**/*.mp4
+frontend/public/assets/tasks/**/*.webm
+frontend/public/assets/tasks/**/*.mov

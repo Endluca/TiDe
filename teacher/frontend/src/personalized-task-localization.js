@@ -1,0 +1,113 @@
+const personalizedTaskZhByCode = {
+  "NT-Q03": {
+    name: "检查设备与网络",
+    shortName: "设备网络检查",
+    duration: "4 分钟",
+    due: "建议下节课前完成",
+    priority: "建议课前完成",
+    stage: "个性化任务",
+    reason: "近期课程显示设备或网络还有改善空间，建议在下节课前完成一次检查。",
+    value: "确认摄像头、麦克风和网络已经为后续课程准备好。",
+    result: "完成页面中指定的设备与网络检查。",
+    standard: "页面中配置的检查项目均已通过。",
+    steps: ["检查摄像头、麦克风和网络", "按照页面提示处理未通过的项目", "确认全部检查已经通过"],
+    scoreReason: "这是一项个性化改善任务，完成本身不直接加分。",
+    recoveryPath: "重新完成尚未通过的设备或网络检查；仍有问题时使用支持入口。",
+  },
+  "P-REL-ATTENDANCE": {
+    name: "准时、安心地开始每节课",
+    shortName: "课前准备",
+    duration: "约 8 分钟",
+    due: "建议尽快完成",
+    priority: "建议下一步",
+    stage: "个性化任务",
+    reason: "近期课程出现了需要关注的出席情况，请完成对应培训并通过小测。",
+    value: "本任务不直接加分，帮助你改善任务原因中提到的具体出席问题。",
+    result: "完成指定的出席培训，并通过小测。",
+    standard: "教师端显示培训和小测均已完成。",
+    steps: ["完成指定的出席培训", "完成并通过小测"],
+    scoreReason: "这是一项帮助你改善出席情况的个性化任务，完成本身不直接加分。",
+    recoveryPath: "完成培训后重新参加小测，直到教师端显示两项均已完成。",
+  },
+  "P-REL-MEMO": {
+    name: "按时完成 Lesson Memo",
+    shortName: "Lesson Memo 帮助",
+    duration: "约 8 分钟",
+    due: "建议下次提交前完成",
+    priority: "建议下一步",
+    stage: "个性化任务",
+    reason: "近期课程显示 Lesson Memo 需要及时完成，请学习对应规则并按页面提示操作。",
+    value: "本任务不直接加分，帮助你清楚了解 Lesson Memo 应该填写什么、何时提交。",
+    result: "完成指定的 Lesson Memo 学习内容。",
+    standard: "教师端显示指定学习内容已经完成。",
+    steps: ["查看相关课程", "完成指定的 Lesson Memo 学习", "确认教师端已记录完成"],
+    scoreReason: "这是帮助你按时完成 Lesson Memo 的个性化任务，完成本身不直接加分。",
+    recoveryPath: "完成操作说明，并在下一份 Lesson Memo 中按照最新要求填写。",
+  },
+  "P-FB-NEGATIVE": {
+    name: "完成课堂改善练习",
+    shortName: "课堂改善",
+    duration: "约 8 分钟",
+    due: "建议在下一节相关课程前完成",
+    priority: "根据近期反馈推荐",
+    stage: "个性化任务",
+    reason: "近期课堂反馈匹配到一项改善主题，请完成页面中为你推荐的对应练习。",
+    value: "本任务不直接加分，帮助你针对任务原因中提到的课堂反馈进行改善。",
+    result: "完成页面中为你匹配的课堂改善练习。",
+    standard: "教师端显示已完成该任务的全部要求。",
+    steps: ["查看相关课程与反馈主题", "完成为你匹配的改善练习", "确认页面中的全部要求已经完成"],
+    scoreReason: "这是根据近期课堂反馈推荐的个性化练习，完成本身不直接加分。",
+    recoveryPath: "重新完成尚未通过的练习内容；内容未加载时联系培训支持。",
+  },
+  "P-FB-COMPLAINT": {
+    name: "完成课堂改善练习",
+    shortName: "课堂改善",
+    duration: "约 8 分钟",
+    due: "建议在下一节相关课程前完成",
+    priority: "根据近期反馈推荐",
+    stage: "个性化任务",
+    reason: "近期课堂反馈匹配到一项改善主题，请完成页面中为你推荐的对应练习。",
+    value: "本任务不直接加分，帮助你针对任务原因中提到的课堂反馈进行改善。",
+    result: "完成页面中为你匹配的课堂改善练习。",
+    standard: "教师端显示已完成该任务的全部要求。",
+    steps: ["查看相关课程与反馈主题", "完成为你匹配的改善练习", "确认页面中的全部要求已经完成"],
+    scoreReason: "这是根据近期课堂反馈推荐的个性化练习，完成本身不直接加分。",
+    recoveryPath: "重新完成尚未通过的练习内容；内容未加载时联系培训支持。",
+  },
+  "P-FB-BLACKLIST": {
+    name: "查看学员体验提醒",
+    shortName: "体验复核",
+    duration: "约 6 分钟",
+    due: "请按任务提示及时完成",
+    priority: "需要你的回复",
+    stage: "个性化任务",
+    reason: "多条学员体验记录需要你补充事实说明，请查看教师安全摘要并提交回复。",
+    value: "本任务不直接加分，帮助复核团队获得公平处理所需的背景信息。",
+    result: "查看教师安全摘要，填写事实说明并提交运营复核。",
+    standard: "已提交 20 至 2,000 字的事实说明，等待运营复核。",
+    steps: ["查看教师安全摘要", "填写简短、客观的事实说明", "提交说明等待运营复核"],
+    scoreReason: "这是一次教师安全的学员体验复核，完成本身不直接加分。",
+    recoveryPath: "检查说明是否达到字数要求，再重新提交运营复核。",
+  },
+};
+
+const hasChineseText = (value) => typeof value === "string" && /[\u3400-\u9fff]/.test(value);
+
+export function localizePersonalizedTask(task) {
+  if (task?.taskCategory !== "personalized") return {};
+  const localized = personalizedTaskZhByCode[task.taskCode];
+  if (!localized) return {};
+
+  return {
+    ...localized,
+    name: hasChineseText(task.name) ? task.name : localized.name,
+    shortName: hasChineseText(task.shortName) ? task.shortName : localized.shortName,
+    reason: task.reason,
+    value: task.value,
+    result: task.result,
+    standard: task.standard,
+    steps: task.steps,
+  };
+}
+
+export const personalizedTaskCodes = Object.freeze(Object.keys(personalizedTaskZhByCode));

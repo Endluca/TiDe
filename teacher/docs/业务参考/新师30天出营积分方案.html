@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>新师30天出营积分方案 · 会议决策版（出营100 / 金牌200封顶 · 内部无封顶累加 + 对外显示封顶200）</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#171f29; --panel2:#1d2733; --line:#2a3744;
+    --text:#e6edf3; --muted:#9fb0c0; --teal:#2dd4bf; --teal-d:#14b8a6;
+    --amber:#fbbf24; --green:#34d399; --red:#f87171; --blue:#60a5fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;padding:32px 20px 64px;}
+  .wrap{max-width:1000px;margin:0 auto;}
+  h1{font-size:26px;margin:0 0 4px;color:var(--teal);}
+  .sub{color:var(--muted);font-size:14px;margin-bottom:28px;}
+  h2{font-size:19px;margin:36px 0 14px;padding-left:10px;border-left:4px solid var(--teal);}
+  h3{font-size:15px;color:var(--teal-d);margin:22px 0 8px;}
+  p,li{font-size:14px;color:var(--text);}
+  .muted{color:var(--muted);}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px;}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top;}
+  th{background:var(--panel2);color:var(--teal);font-weight:600;}
+  td code{background:var(--panel2);padding:1px 6px;border-radius:5px;color:var(--amber);font-size:12.5px;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  @media(max-width:720px){.grid{grid-template-columns:1fr;}}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;}
+  .pill-green{background:rgba(52,211,153,.15);color:var(--green);}
+  .pill-red{background:rgba(248,113,113,.15);color:var(--red);}
+  .pill-amber{background:rgba(251,191,36,.15);color:var(--amber);}
+  .pill-blue{background:rgba(96,165,250,.15);color:var(--blue);}
+  .score-big{font-size:34px;font-weight:800;color:var(--teal);line-height:1.1;}
+  .note{background:var(--panel2);border-left:3px solid var(--amber);padding:11px 14px;border-radius:6px;margin:12px 0;font-size:13.5px;color:var(--muted);}
+  .note-red{background:rgba(248,113,113,.08);border-left:3px solid var(--red);color:var(--text);}
+  .note-teal{background:rgba(45,212,191,.08);border-left:3px solid var(--teal);color:var(--text);}
+  .formula{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 16px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--teal);margin:10px 0;}
+  .del{text-decoration:line-through;color:var(--red);opacity:.7;}
+  .changelog{background:var(--panel);border:1px solid var(--teal);border-radius:12px;padding:16px 20px;margin:14px 0;}
+  .changelog h3{margin-top:0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>新师 30 天出营积分方案 · 会议决策版</h1>
+<div class="sub">基石：<code>100%用户价值出发的新师通关指标设计.docx</code> ｜ 回测样本：4 月海外新师真实数据 1065 人 ｜ 已删长期持续指标 ｜ 维度3 按 80% 达成率模拟 ｜ <b style="color:var(--red)">课程分无封顶累加，Peak=1</b> ｜ <b style="color:var(--teal)">会议 2026-07-17 决策：出营100 / 金牌200（对外显示封顶）｜ 2026-07-20 修正金牌机制</b></div>
+
+<div class="changelog">
+<h3>📌 本版关键变更（会议决策 + 07-20 机制修正）</h3>
+<ul>
+  <li><b>金牌机制（07-20 修正）</b>：<b>内部计分逻辑完全不变</b>（无封顶累加）；只是<b>给外教看的数字封顶在 200</b>。<b>金牌 = 内部原始分 ≥ 200</b>（此时外教看到顶格 200）。上一版多加的"内部锚定 top10% 再缩放映射"已删除——那是我的过度设计，会议本意就是"显示封顶 200"，不是缩放。</li>
+  <li><b>不扣分、用红线替代</b>：迟到/早退/真实缺席作为金牌排除项（红线），<b>不在计分中做减法</b>，与会议一致。</li>
+  <li><b>金牌硬门槛（前置条件）</b>：基础分=40 全拿 + 完课≥10 + 用户反馈分≥20 + 四害红线（迟到≤1 / 早退=0 / 真实缺席=0）。金牌不只是分数达标，还要"均衡 + 纪律干净"。</li>
+  <li><b>升档映射记录</b>：出营 +1 档、金牌 +2 档（钱/职级侧，见第六节，不进打分模型）。</li>
+  <li><b>标准固定、不随老板百分比摇摆</b>：金牌 = 绝对线 200（对外显示封顶），是固定门槛；老板要更多优秀 = "多拉人达到 200 分"，而非降标。</li>
+  <li><b>基础分结构细化（07-20）</b>：基础分拆为三块——<b>成长任务（必修）30 + 供给任务（选修）10 = 40</b> 固定；<b>个性化任务（触发制，不加分）</b>仅作行为引导，不计入积分。评分逻辑不变。</li>
+</ul>
+</div>
+
+<h2>一、整体结构（不变）</h2>
+<div class="grid">
+  <div class="card">
+    <h3>基础分（固定 40，不随本方案变动）</h3>
+    <p>· <b>成长任务（必修）</b> 维度5：满分 <b>30</b> —— 新师必完成的培训/成长动作，出营底线</p>
+    <p>· <b>供给任务（选修）</b> 维度4：满分 <b>10</b> —— 自愿完成的供给动作，拿满 40 才达金牌基础门槛</p>
+    <p>· <b>个性化任务（触发制，不加分）</b>：由特定事件触发的引导任务，<b>不计入积分</b>，仅作行为引导</p>
+    <p class="muted">基础分 = 成长任务(必修) 30 + 供给任务(选修) 10 = <b>40 分</b>，作为底线治理门槛；个性化任务触发制、0 分。</p>
+  </div>
+  <div class="card">
+    <h3>课程分（本方案设计，累加<b style="color:var(--red)">无封顶</b>）</h3>
+    <p>· 维度1 用户反馈：事件型</p>
+    <p>· 维度2 可靠性：行为型</p>
+    <p>· 维度3 课堂质量：无质量问题 <code>+2/节 × 80%</code> 达成（模拟）</p>
+    <p class="muted">30 天新兵营内所有课程得分累加，<b style="color:var(--red)">不设任何分数封顶</b>。</p>
+  </div>
+</div>
+<div class="formula">原始总积分 = 40（基础分 = 成长任务必修30 + 供给任务选修10） + 课程分（维度1 + 维度2 + 维度3，逐项累加，零封顶）</div>
+<div class="note" style="margin-top:8px;">个性化任务为<b>触发制、不加分</b>，仅作行为引导，不进入上式。</div>
+
+<h2>二、课程分计分规则（无封顶版）</h2>
+<div class="note">
+<b>本版删去的"长期持续/复杂"指标：</b>
+<span class="del">稳定性大奖（连续7天+5 / 连续10天+8 / 30天稳定+10）</span>、
+<span class="del">无投诉+10（需30天全程无有效投诉）</span>。
+这些指标需跨整个营期追踪连续表现，运营成本高且解释复杂，故移除。
+保留的全部为<b>按次 / 按节</b>即可计分的干净指标。
+</div>
+<div class="note note-red">
+<b>本版相对封顶版的两处变更：</b>
+① <b>取消全部分数封顶</b>——准时完课、Peak 完课、维度3 课堂质量均按节无限累加，高课量老师的可靠性/课堂质量分不再受限；
+② <b>Peak 完课由 +2/节 降为 +1/节</b>。
+两项叠加后，分数整体大幅上浮（见第四节），且内部权重结构改变，请重点关注下方风险提示。
+</div>
+
+<table>
+  <tr><th>维度</th><th>计分项</th><th>分值</th><th>计量方式</th><th>封顶</th></tr>
+  <tr>
+    <td rowspan="3"><b>维度1<br/>用户反馈</b><br/><span class="muted">最高优先</span></td>
+    <td>好评</td><td><code>+5 / 次</code></td><td>每收到 1 条学员好评</td><td>无</td>
+  </tr>
+  <tr><td>收藏（喜欢老师）</td><td><code>+5 / 次</code></td><td>每被 1 名学员收藏</td><td>无</td></tr>
+  <tr><td>复约（15天内再次约课）</td><td><code>+8 / 次</code></td><td>首课学员 15 天内再次约该老师课</td><td>无</td></tr>
+  <tr>
+    <td rowspan="2"><b>维度2<br/>可靠性</b></td>
+    <td>准时完课</td><td><code>+2 / 节</code></td><td>每节无迟到、无早退、无缺席的完课</td>
+    <td><span class="pill pill-red">无封顶</span></td>
+  </tr>
+  <tr>
+    <td>Peak 时段完课</td><td><code>+1 / 节</code></td><td>每节在 Peak 黄金时段完课（<span class="del">原 +2/节</span>）</td>
+    <td><span class="pill pill-red">无封顶</span></td>
+  </tr>
+  <tr>
+    <td><b>维度3<br/>课堂质量</b></td>
+    <td>无质量问题</td>
+    <td><code>+2 / 节 × 80%</code><br/><span class="muted">= 1.6 / 节，按完课数累加</span></td>
+    <td>每节完课且设备/网络/摄像头/灯光/TQ 无问题，按完课数累计</td>
+    <td><span class="pill pill-red">无封顶</span></td>
+  </tr>
+</table>
+<div class="note">
+<b>维度3 模拟口径：</b> 4 月数据无课堂质量字段，按用户假设"每节无质量问题 +2、80% 课均达成"模拟，即 <code>维度3 = 2 × 0.8 × 完课数 = 1.6 × 完课数</code>（无封顶）。该值为<b>模拟估计</b>，蜂巢/TQ 真实数据接入后须替换重算（见第六节待办）。
+</div>
+
+<h2>三、出营 / 金牌分数线 + 对外显示封顶（会议决策核心）</h2>
+
+<div class="note note-teal">
+<b>机制（07-20 修正，按会议本意）：</b> 内部计分逻辑<b>完全不变</b>——原始分继续无封顶累加，老师每多得一节好课、每条好评，内部分数如实上涨。差别只在<b>给外教展示的数字封顶在 200</b>：原始分 150 就显示 150，原始分 660 也只显示 200。对应王东"考卷 150 分封顶"的思路——分数可累加，但对外呈现有顶。
+<br/><b>出营 = 原始分 ≥ 100</b>（显示 ≥100）；<b>金牌 = 原始分 ≥ 200</b>（显示顶格 200）。没有"内部缩放映射"，没有"锚定 top10%"，就一层简单的显示封顶。
+</div>
+
+<div class="formula">对外显示分 = min(原始分, 200)<br/>
+&nbsp;&nbsp;原始分 &lt; 100：显示原始分（未出营，0–99）<br/>
+&nbsp;&nbsp;100 ≤ 原始分 &lt; 200：显示原始分（出营区间，100–199）<br/>
+&nbsp;&nbsp;原始分 ≥ 200：显示 200（金牌封顶）<br/>
+<span class="muted">· 出营里程碑 = 原始分 ≥ 100（显示 100+）&nbsp;·&nbsp; 金牌里程碑 = 原始分 ≥ 200（显示封顶 200）</span></div>
+
+<div class="grid">
+  <div class="card">
+    <h3>🟢 出营标准（合格）</h3>
+    <div class="score-big">原始分 ≥ 100 <span style="font-size:16px;color:var(--muted)">（显示 100+）</span></div>
+    <p class="muted">真实数据回测通过率 <b>51.6%</b>（550/1065）</p>
+    <p><b>前置硬门槛：</b></p>
+    <ul>
+      <li>基础分 ≥ 30（<b>成长任务必修</b>达标，即完成维度5；供给任务为选修可后补）</li>
+      <li>30天完课 ≥ 10 节（样本有效性）</li>
+      <li>无严重红线事件（严重违规 / 重大有效投诉）</li>
+      <li>维度1、维度2 均 &gt; 0（有真实教学行为）</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>🏅 金牌甄选标准（优秀）</h3>
+    <div class="score-big">原始分 ≥ 200 <span style="font-size:16px;color:var(--muted)">（显示封顶 200）</span></div>
+    <p class="muted">真实数据回测通过率 <b>36.6%</b>（390/1065）</p>
+    <p><b>前置硬门槛（均衡 + 纪律）：</b></p>
+    <ul>
+      <li>基础分 = 40（<b>成长任务必修</b>30 + <b>供给任务选修</b>10，<b>全拿</b>）</li>
+      <li>30天完课 ≥ 10 节</li>
+      <li>用户反馈分 ≥ 20（≈4 条好评，确保"用户用脚投票"、非纯堆课）</li>
+      <li><b>四害红线</b>：迟到 ≤ 1 次、早退 = 0、真实缺席 = 0（新师 30 天绝对红线）</li>
+    </ul>
+  </div>
+</div>
+
+<div class="note note-red">
+<b>✅ 分数线已锁定（会议决策版）：</b>
+· <b>出营线 = 100</b>：回测 51.6%（550/1065），维持不变；
+· <b>金牌线 = 原始分 ≥ 200（对外显示封顶 200）</b>：回测 <b>36.6%</b>（390/1065）。
+<br/><span class="muted">说明：金牌率 36.6% 高于会议最初"≈10% 尖子"的口头预期，但这是"出营100 / 金牌200封顶"干净框架下的真实落点——因为维度3=1.6×完课让分数尺度被拉大，一个老师 40 节无问题课 + 基础分就已破 100，叠加少量反馈即过 200。会议 200 分本就是"拍脑袋"初值，8 月真实数据跑出后，若认为金牌应更尖，应通过"拉人达标"而非"降分"调节（标准固定）。</span>
+</div>
+
+<h2>四、真实数据校验（1065 人回测，无封顶 + 维度3 按 80% 模拟）</h2>
+<table>
+  <tr><th>指标</th><th>数值</th><th>说明</th></tr>
+  <tr><td>样本量</td><td>1065 人</td><td>PH / HBT-Kids / 海外(ovs)；on 810 / off 208 / hei 47</td></tr>
+  <tr><td>课程分 = 0 占比</td><td><b>29.3%</b></td><td>多为 off/hei 离职、30天零完课 → 自然不出营，合理</td></tr>
+  <tr><td>总分中位数</td><td>108.6</td><td>较封顶版(98.2)上移；大量零行为老师仍拉低中位</td></tr>
+  <tr><td>活跃老师（总分&gt;40）中位</td><td>≈ 209</td><td>真实在教老师典型水平（n=753），较封顶版(165)显著上移</td></tr>
+  <tr><td>总分 p75 / p90 / max</td><td>336 / 665 / <b>1540</b></td><td>无封顶导致高分长尾极长，最高分破 1500</td></tr>
+  <tr><td>课程分内部权重</td><td><b style="color:var(--red)">可靠 41% / 反馈 36% / 课堂 24%</b></td><td>无封顶后可靠性反超反馈，<b>打破"反馈最高优先"基石原则</b></td></tr>
+</table>
+
+<h3>分数线在真实分布上的通过率（无封顶）</h3>
+<table>
+  <tr><th>原始分阈值</th><th>含义</th><th>通过率</th></tr>
+  <tr><td>100</td><td>出营线（显示 100+）</td><td><span class="pill pill-green">51.6%</span></td></tr>
+  <tr><td><b>200</b></td><td><b>金牌线（对外显示封顶 200）</b></td><td><span class="pill pill-amber">36.6%</span></td></tr>
+  <tr><td>660</td><td>历史参考：内部 top10% 位置</td><td><span class="pill pill-blue">10.1%</span></td></tr>
+</table>
+
+<h3>按老师状态拆分的出营率 / 金牌率（无封顶）</h3>
+<table>
+  <tr><th>状态</th><th>人数</th><th>出营 ≥100</th><th>金牌 ≥200（显示封顶200）</th></tr>
+  <tr><td>on（在线）</td><td>810</td><td>511（63.1%）</td><td>361（44.6%）</td></tr>
+  <tr><td>off（离职）</td><td>208</td><td>1（0.5%）</td><td>1（0.5%）</td></tr>
+  <tr><td>hei</td><td>47</td><td>38（80.9%）</td><td>28（59.6%）</td></tr>
+  <tr><td><b>合计</b></td><td><b>1065</b></td><td><b>550（51.6%）</b></td><td><b>390（36.6%）</b></td></tr>
+</table>
+<div class="note">
+<b>解读：</b> <b>on 在线老师</b>出营率 63.1%、金牌率 44.6%，是方案目标人群的真实落点；<b>off 离职</b>几乎全部判不出营（0.5%），符合"离职即未出营"预期；<b>hei</b> 状态出营率/金牌率反而最高（80.9% / 59.6%）——该群体多为已完成营期教学的存量老师，样本量小（仅 47 人），建议单独研判其状态业务含义，不宜直接并入 on 口径。
+</div>
+
+<h2>五、和谐性与风险</h2>
+<div class="card">
+  <p><b>和谐性变化：</b>基础分（40）仍以"硬门槛+必修"锁底线治理权；课程分作分层排序主驱动。但<b>无封顶后课程分被课量主导</b>——可靠(41%)+课堂(24%)=65% 与课量直接挂钩，反馈(36%)降至第二位。</p>
+  <p><b style="color:var(--red)">风险 0（反馈最高优先原则被打破）：</b>基石 doc 明确"用户反馈"为最高优先级维度，封顶版中反馈占 67% 居首；无封顶后可靠性以 41% 反超反馈(36%)。高课量但反馈平平的老师会靠"刷课"胜出，与 doc 标题"100%用户价值出发"相悖。<b>若坚持无封顶，建议把反馈权重进一步上调（如好评+8/收藏+8/复约+12）以夺回主导权</b>，否则应恢复封顶。</p>
+  <p><b style="color:var(--red)">风险 1（金牌率高于会议预期）：</b>金牌=原始分≥200 是会议拍板的绝对线、对外显示封顶 200。回测通过率 <b>36.6%</b>（390 人），高于会议口头"≈10% 尖子"预期。这是"无封顶 + 维度3=1.6×完课"下尺度被拉大的自然结果。金牌硬门槛（反馈分≥20 + 四害红线）已用于拦截纯堆课型老师；若要更尖，应在"拉人达标"上发力，标准本身不随老板百分比摇摆。</p>
+  <p><b>风险 2（维度3为模拟值）：</b>4 月数据无课堂质量字段，维度3 按"每节+2、80%达成"模拟（无封顶）。真实达成率未知，实际总分可能更高；蜂巢/TQ 真实数据接入后须替换重算，届时按新分布微调分数线。</p>
+  <p><b>风险 3（基础分假设）：</b>回测中基础分按满分 40 假设；真实基础分由培训系统给，若有人未满分，实际出营率会低于 51.6%。金牌硬门槛已要求基础分=40 全拿。</p>
+  <p><b>风险 4（样本范围）：</b>按"全部 1065 人纳入"，off/hei 自然判不出营；若只看在岗(on)老师，出营率/金牌率会显著高于 51% / 36.6%。</p>
+</div>
+
+<h2>六、红线机制 / 升档映射 / 数据质量与待办</h2>
+
+<div class="card">
+  <h3>① 红线机制：四害作金牌排除项（不扣分）</h3>
+  <p>会议定调<b>"不扣分，用红线替代"</b>。四害（迟到 / 早退 / <b>真实缺席</b>）在计分中<b>不做减法</b>，而是作为<b>金牌硬排除红线</b>：</p>
+  <ul>
+    <li><b>金牌红线</b>：迟到 ≤ 1 次、早退 = 0、真实缺席 = 0（新师 30 天绝对红线，呼应"新老师绝对不能迟到"）。</li>
+    <li><b>出营层</b>：迟到/早退仅通过维度2"准时完课 +2/节"做<b>软惩罚</b>（迟到/早退的课不计入 on_time），不硬排除。</li>
+    <li><b>口径修正（待数据）</b>：当前 <code>absent_cnt</code> 含"请假 / 系统取消"，须由海璇 8 月产品设计将<b>请假、系统取消从"真实缺席"拨出</b>，仅真实缺席计入红线。当前以 <code>absent_cnt</code> 代理并标注口径风险。</li>
+  </ul>
+  <p class="muted">参考：历史口径下金牌老师中仅少数零三害，故金牌红线采用"容忍 range"（迟到≤1）而非绝对 0，与会议"设一个 range"一致；具体达标人数待 8 月真实数据复核。</p>
+</div>
+
+<div class="card">
+  <h3>② 升档映射（钱 / 职级侧，记录对齐）</h3>
+  <p>会议明确：出营与金牌对应老师 ranking 升级。映射建议（待与现 ranking 体系对齐，不进打分模型）：</p>
+  <ul>
+    <li><b>出营（合格）</b>：ranking +1 档</li>
+    <li><b>金牌甄选（优秀）</b>：ranking +2 档（累计，即在出营基础上再加 2）</li>
+  </ul>
+  <p class="muted">原则：当前招聘/存量 ranking 体系以本方案为"主"、未来随本项目演进；短期用"出营+1 / 金牌+2"做温和映射，避免一次性拉满导致体系失稳。具体档位数值待确认。</p>
+</div>
+
+<div class="card">
+  <h3>③ 数据质量与下一步待办（会议提炼）</h3>
+  <ul>
+    <li><b>蜂巢/TQ 维度3 替换</b>：蔡老板下周稳定版数据到位后，替换 <code>1.6×完课</code> 模拟，重算全部阈值。</li>
+    <li><b>四害拨请假</b>：海璇 8 月产品设计，将请假/系统取消从真实缺席剥离。</li>
+    <li><b>4 月数据有偏</b>：4 月评价率刚上线偏低、且处于换血期，反馈分被低估；<b>8 月为干净基线</b>。</li>
+    <li><b>8 月真实跑、9 月初复盘</b>：用真实数据校准金牌线（200）与金牌硬门槛数值。</li>
+    <li><b>下周三汇报（sell）</b>：带分布模拟 + 成本测算，争取方向绿灯，细节再磨。</li>
+    <li><b>标准固定</b>：金牌 = 绝对线 200（对外显示封顶），不随老板百分比摇摆；老板要更多优秀 = "多拉人达到 200 分"，而非降标。</li>
+  </ul>
+</div>
+
+<div class="sub" style="margin-top:30px;">
+   Analytics Reporter ｜ 2026-07-17 会议决策版 ｜ 2026-07-20 修正金牌机制（内部逻辑不变 + 对外显示封顶200）｜ 方案基于 1065 人真实数据回测，无封顶 + Peak=1
+</div>
+
+</div>
+</body>
+</html>

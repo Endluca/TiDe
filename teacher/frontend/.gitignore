@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.DS_Store
+*.tgz
+audit-current-home.png
+audit-current-path.png
+preview-desktop.png
+preview-mobile.png

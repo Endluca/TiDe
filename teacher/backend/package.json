@@ -1,0 +1,99 @@
+{
+  "name": "tide-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "新师训练营教师端后端",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@11.13.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "start": "node dist/src/main.js",
+    "start:dev": "nest start --watch",
+    "test": "jest",
+    "test:cov": "jest --coverage",
+    "test:e2e": "jest --config test/jest-e2e.json",
+    "import:faq": "ts-node scripts/import-canonical-faq.ts",
+    "import:quiz-banks": "ts-node scripts/import-task-quiz-banks.ts",
+    "provision:internal-test": "ts-node scripts/provision-internal-test-accounts.ts",
+    "sync:task-catalog": "ts-node scripts/sync-current-task-catalog.ts",
+    "publish:system-notifications": "ts-node scripts/publish-system-notifications.ts",
+    "archive:public-video-masters": "ts-node scripts/archive-public-video-masters.ts",
+    "cleanup:public-video-v1": "ts-node scripts/cleanup-public-video-v1.ts",
+    "prepare:public-video-v2": "node scripts/prepare-public-video-v2.mjs",
+    "prefetch:public-video-v2": "ts-node scripts/prefetch-public-videos.ts",
+    "release:public-video": "ts-node scripts/video-prefetch-event.ts --trigger=new-release",
+    "rewarm:public-video-after-cdn-change": "ts-node scripts/video-prefetch-event.ts --trigger=cdn-change",
+    "prefetch:public-video-for-camp": "ts-node scripts/video-prefetch-event.ts --trigger=camp-launch",
+    "verify:public-video-v2": "ts-node scripts/verify-public-video-v2-release.ts",
+    "upload:public-assets": "ts-node scripts/upload-public-assets.ts",
+    "smoke": "node scripts/smoke-check.mjs"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  },
+  "dependencies": {
+    "@alicloud/cdn20180510": "9.2.0",
+    "@alicloud/openapi-client": "0.4.15",
+    "@nestjs/common": "^11.1.28",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.1.28",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/platform-express": "^11.1.28",
+    "@nestjs/throttler": "^6.5.0",
+    "ali-oss": "^6.23.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "dotenv": "^17.4.1",
+    "nestjs-pino": "^4.6.1",
+    "pg": "^8.22.0",
+    "pino-http": "^11.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "sharp": "^0.34.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nestjs/cli": "^11.0.24",
+    "@nestjs/schematics": "^11.1.0",
+    "@nestjs/testing": "^11.1.28",
+    "@types/ali-oss": "^6.23.3",
+    "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
+    "@types/supertest": "^7.2.1",
+    "eslint": "^10.7.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "globals": "^17.7.0",
+    "jest": "^30.4.2",
+    "prettier": "^3.9.5",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.11",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.64.0"
+  }
+}

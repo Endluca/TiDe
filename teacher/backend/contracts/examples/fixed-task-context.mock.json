@@ -1,0 +1,61 @@
+{
+  "taskInstanceId": "30000000-0000-4000-8000-000000000002",
+  "taskCode": "G02",
+  "kind": "FIXED_GROWTH",
+  "templateVersion": 1,
+  "executionContractVersion": "task-contract-v2",
+  "status": "ASSIGNED",
+  "stateVersion": 1,
+  "display": {
+    "stageKey": "FOUNDATION",
+    "sequence": 2,
+    "points": 3,
+    "estimatedMinutes": 10
+  },
+  "content": {
+    "title": "[Mock] Device & Network Check",
+    "why": "[Mock] Confirm that your teaching setup is ready before class.",
+    "whatToDo": "[Mock] Complete the device checklist and submit one teaching-environment photo.",
+    "completionStandard": "[Mock] Every configured check and the photo step are complete.",
+    "outcome": "[Mock] Your pre-class setup is recorded as ready.",
+    "language": "en"
+  },
+  "steps": [
+    {
+      "stepKey": "device-check",
+      "position": 1,
+      "type": "DEVICE_CHECK",
+      "title": "[Mock] Check camera, microphone and network",
+      "config": { "mock": true }
+    },
+    {
+      "stepKey": "environment-photo",
+      "position": 2,
+      "type": "UPLOAD",
+      "title": "[Mock] Submit teaching-environment photo",
+      "config": { "mock": true, "maxFiles": 1 }
+    }
+  ],
+  "progress": {
+    "currentStepKey": null,
+    "percent": 0,
+    "steps": [
+      { "stepKey": "device-check", "status": "NOT_STARTED", "percent": 0 },
+      { "stepKey": "environment-photo", "status": "NOT_STARTED", "percent": 0 }
+    ]
+  },
+  "capabilities": ["DEVICE_CHECK", "UPLOAD"],
+  "assignment": {
+    "assignmentId": "30000000-0000-4000-8000-000000000002",
+    "teacherSafeReason": "[Mock] Confirm that your teaching setup is ready before class.",
+    "teacherSafeFacts": [],
+    "relatedCourses": [],
+    "reminderNotificationId": null,
+    "priority": "P1",
+    "dueAt": null
+  },
+  "availableAt": "2026-07-21T08:00:00Z",
+  "dueAt": null,
+  "completedAt": null,
+  "dataOrigin": "MOCK"
+}

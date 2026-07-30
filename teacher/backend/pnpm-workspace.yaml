@@ -1,0 +1,4 @@
+allowBuilds:
+  '@alicloud/openapi-core': false
+  sharp: true
+  unrs-resolver: true

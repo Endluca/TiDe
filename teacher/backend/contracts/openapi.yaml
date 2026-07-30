@@ -1,0 +1,1751 @@
+openapi: 3.1.0
+info:
+  title: TIDE Teacher API Contract
+  version: 0.10.0
+  description: >-
+    教师端公共合同。包含教师端任务、文件和 My TIDE 安全读取；
+    各模块实现状态见 contracts/README。任务、G01 状态和外部消息直接使用共享 PostgreSQL 契约表；
+    教师积分与逐课积分直接读取世文当前聚合视图，不在教师端重算。
+servers:
+  - url: http://localhost:3000
+    description: local backend
+tags:
+  - name: Auth
+  - name: Tasks
+  - name: Files
+  - name: TeacherPhoto
+  - name: MyTIDE
+  - name: Notifications
+  - name: FAQ
+  - name: SupportTickets
+  - name: Analytics
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: 使用公司邮箱和世文教师编号注册
+      operationId: registerTeacher
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '202':
+          description: 账号和绑定已创建，等待邮箱验证
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/email-verification/confirm:
+    post:
+      tags: [Auth]
+      summary: 使用一次性令牌验证邮箱
+      operationId: confirmEmailVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmEmailRequest' }
+      responses:
+        '200':
+          description: 邮箱已验证，重复使用已成功令牌时返回 ALREADY_VERIFIED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVerificationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/v1/auth/email-verification/resend:
+    post:
+      tags: [Auth]
+      summary: 重新发送邮箱验证邮件
+      description: 无论邮箱是否存在均返回相同响应，避免泄露账号状态。
+      operationId: resendEmailVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResendVerificationRequest' }
+      responses:
+        '202':
+          description: 请求已接受
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResendAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 使用已验证邮箱和密码登录
+      operationId: loginTeacher
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: 短期访问令牌和一次显示的刷新令牌
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokenPair' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { description: 尝试过于频繁 }
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 轮换刷新令牌并签发新访问令牌
+      operationId: refreshTeacherSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshSessionRequest' }
+      responses:
+        '200':
+          description: 新令牌对；旧刷新令牌立即失效
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokenPair' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: 注销当前会话
+      operationId: logoutTeacher
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: 当前会话已撤销 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/password-reset/request:
+    post:
+      tags: [Auth]
+      summary: 申请密码重置邮件
+      description: 无论邮箱是否存在均返回相同响应，避免泄露账号状态。
+      operationId: requestPasswordReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordResetRequest' }
+      responses:
+        '202':
+          description: 请求已接受
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResendAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/auth/password-reset/confirm:
+    post:
+      tags: [Auth]
+      summary: 使用一次性令牌设置新密码
+      operationId: confirmPasswordReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmPasswordResetRequest' }
+      responses:
+        '200':
+          description: 密码已更新，所有既有会话已撤销
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasswordResetCompleted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/v1/me/profile:
+    get:
+      tags: [MyTIDE]
+      summary: 获取当前教师账号和训练营安全资料
+      operationId: getTeacherProfile
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+        - name: cursor
+          in: query
+          schema: { type: string, maxLength: 512 }
+        - name: filter
+          in: query
+          schema: { type: string, enum: [ALL, UNREAD], default: ALL }
+      responses:
+        '200':
+          description: 世文实时资料或最近一次安全缓存
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TeacherProfile' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/me/g01-review:
+    get:
+      tags: [MyTIDE, Tasks]
+      summary: 获取 G01 Self-intro 和 TESOL 外部审核安全状态
+      operationId: getG01Review
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 后端映射后的教师安全审核状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/G01Review' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/tasks:
+    get:
+      tags: [Tasks]
+      summary: 返回世文已为当前老师创建的共享任务
+      operationId: listTeacherTasks
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 共享 assignment 任务列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskListResponse' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/tasks/{taskInstanceId}:
+    get:
+      tags: [Tasks]
+      summary: 获取统一任务上下文
+      operationId: getTaskContext
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+      responses:
+        '200':
+          description: 共享任务与本地执行步骤组成的上下文
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskContext' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/tasks/{taskInstanceId}/view:
+    post:
+      tags: [Tasks]
+      summary: 老师主动打开任务详情后标记已查看
+      description: 任务列表曝光不得调用此接口。
+      operationId: viewTask
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MutationMeta' }
+      responses:
+        '200': { $ref: '#/components/responses/TaskMutation' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/tasks/{taskInstanceId}/start:
+    post:
+      tags: [Tasks]
+      summary: 开始任务
+      operationId: startTask
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MutationMeta' }
+      responses:
+        '200': { $ref: '#/components/responses/TaskMutation' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/tasks/{taskInstanceId}/progress:
+    put:
+      tags: [Tasks]
+      summary: 保存任务步骤进度
+      operationId: saveTaskProgress
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SaveProgressRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/TaskMutation' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/v1/tasks/{taskInstanceId}/submissions:
+    post:
+      tags: [Tasks]
+      summary: 提交任务尝试
+      operationId: submitTask
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitTaskRequest' }
+      responses:
+        '202': { $ref: '#/components/responses/TaskMutation' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/v1/tasks/{taskInstanceId}/validation:
+    get:
+      tags: [Tasks]
+      summary: 查询最近一次验证结果
+      operationId: getTaskValidation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+      responses:
+        '200':
+          description: 验证结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ValidationResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/tasks/{taskInstanceId}/teacher-photo:
+    post:
+      tags: [TeacherPhoto]
+      summary: 提交首课摄像头画面，完成四项可见内容检测和私有保存
+      operationId: submitTeacherPhoto
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [photo]
+              properties:
+                photo: { type: string, format: binary }
+      responses:
+        '201':
+          description: 检测与保存状态；四项通过后不会再要求教师重拍
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TeacherPhotoRun' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    get:
+      tags: [TeacherPhoto]
+      summary: 查询当前首课摄像头画面检测和保存状态
+      operationId: getTeacherPhoto
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+      responses:
+        '200':
+          description: 最新摄像头画面检测状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TeacherPhotoRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/tasks/{taskInstanceId}/teacher-photo/content:
+    get:
+      tags: [TeacherPhoto]
+      summary: 读取已鉴权的画面检测证据
+      operationId: downloadTeacherPhoto
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+      responses:
+        '200':
+          description: 后台处理并私有保存的画面检测证据
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/tasks/{taskInstanceId}/retry:
+    post:
+      tags: [Tasks]
+      summary: 创建下一次任务尝试
+      operationId: retryTask
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RetryTaskRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/TaskMutation' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/files/upload-intents:
+    post:
+      tags: [Files]
+      summary: 创建受控文件上传意图
+      operationId: createUploadIntent
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadIntentRequest' }
+      responses:
+        '201':
+          description: 上传意图
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadIntentResponse' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/v1/files/{fileId}/content:
+    put:
+      tags: [Files]
+      summary: 以流式请求向本地受控上传意图提交文件内容
+      operationId: uploadFileContent
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: fileId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: 文件内容已接收，等待完成确认
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileObject' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { description: 文件超过环境配置的大小限制 }
+        '415': { description: 文件 MIME 类型不在允许列表 }
+    get:
+      tags: [Files]
+      summary: 鉴权下载当前老师已就绪的私有文件
+      operationId: downloadFileContent
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: fileId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 私有文件内容
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/files/{fileId}/complete:
+    post:
+      tags: [Files]
+      summary: 确认上传完成并触发服务端校验
+      operationId: completeUpload
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: fileId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sha256]
+              properties:
+                sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+      responses:
+        '200':
+          description: 文件状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileObject' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/me/tide-summary:
+    get:
+      tags: [MyTIDE]
+      summary: 读取世文当前教师积分卡
+      operationId: getTideSummary
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 直接透传世文当前总分、资格、五维及子项；可获得积分仅由未完成 G 任务生成
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TideSummary' }
+  /api/v1/me/courses:
+    get:
+      tags: [MyTIDE]
+      summary: 分页读取世文当前逐课积分明细
+      operationId: getCourseFacts
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 无历史数据时 items 为空数组
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseList' }
+  /api/v1/me/notifications:
+    get:
+      tags: [Notifications]
+      summary: 获取教师通知
+      operationId: getNotifications
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, maxLength: 512 }
+        - name: filter
+          in: query
+          required: false
+          schema: { type: string, enum: [ALL, UNREAD], default: ALL }
+      responses:
+        '200':
+          description: 合并返回共享外部消息与 tide 系统消息
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, totalCount, unreadCount, nextCursor, freshness]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  totalCount: { type: integer, minimum: 0 }
+                  unreadCount: { type: integer, minimum: 0 }
+                  nextCursor: { type: [string, 'null'] }
+                  freshness: { $ref: '#/components/schemas/SourceFreshness' }
+  /api/v1/me/notifications/{sourceNotificationId}/read:
+    post:
+      tags: [Notifications]
+      summary: 幂等回写外部或系统消息已读状态
+      operationId: markNotificationRead
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: sourceNotificationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: 已读时间已保存 }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/me/notifications/{sourceNotificationId}/click:
+    post:
+      tags: [Notifications]
+      summary: 幂等回写外部或系统消息点击状态
+      operationId: markNotificationClicked
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: sourceNotificationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: 点击时间已保存 }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/faq/conversations:
+    post:
+      tags: [FAQ]
+      summary: 获取或创建当前老师的开放 FAQ 会话
+      operationId: createFaqConversation
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: 当前开放 FAQ 会话已返回；没有时创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqConversationCreated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/faq/conversations/{conversationId}:
+    get:
+      tags: [FAQ]
+      summary: 获取当前老师的 FAQ 会话和历史消息
+      operationId: getFaqConversation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 会话、消息和教师可见来源
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqConversation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/faq/conversations/{conversationId}/messages:
+    post:
+      tags: [FAQ]
+      summary: 向 FAQ 会话发送纯文字问题
+      description: 不接收图片或附件；先在已生效 FAQ 中做英文自然语义匹配，意图不明确时追问，确认未命中时拒绝猜测并记录 Gap。
+      operationId: askFaqQuestion
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AskFaqRequest' }
+      responses:
+        '200':
+          description: 保存后的教师消息和安全 FAQ 回答
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqAnswerResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/faq/messages/{messageId}/feedback:
+    post:
+      tags: [FAQ]
+      summary: 保存当前老师对 FAQ 回答的首次反馈
+      operationId: saveFaqFeedback
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FaqFeedbackRequest' }
+      responses:
+        '200':
+          description: 反馈已保存；完全相同的重复请求幂等返回
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqFeedbackResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/support-tickets:
+    get:
+      tags: [SupportTickets]
+      summary: 读取当前教师工单并在本次刷新中同步运营回复状态
+      operationId: listSupportTickets
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 工单列表与未读数
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicketList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [SupportTickets]
+      summary: 创建教师工单
+      operationId: createSupportTicket
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/CreateSupportTicket' }
+      responses:
+        '201':
+          description: 工单已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { description: 单张截图超过 8 MB }
+        '415': { description: 截图格式不支持 }
+  /api/v1/support-tickets/{ticketId}:
+    get:
+      tags: [SupportTickets]
+      summary: 读取当前教师的一条工单
+      operationId: getSupportTicket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 工单详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/support-tickets/{ticketId}/read:
+    post:
+      tags: [SupportTickets]
+      summary: 将当前最新运营回复标为已读
+      operationId: markSupportTicketRead
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 已更新工单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/support-tickets/{ticketId}/messages:
+    post:
+      tags: [SupportTickets]
+      summary: 教师在未关闭工单中继续补充
+      operationId: replySupportTicket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/ReplySupportTicket' }
+      responses:
+        '200':
+          description: 消息已追加
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/support-tickets/{ticketId}/resolve:
+    post:
+      tags: [SupportTickets]
+      summary: 教师确认已解决并由 TIDE 关闭工单
+      operationId: resolveSupportTicket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [rowVersion]
+              properties:
+                rowVersion: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: 工单已关闭并触发图片清理
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportTicket' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/support-tickets/{ticketId}/images/{fileId}:
+    get:
+      tags: [SupportTickets]
+      summary: 鉴权读取当前教师工单图片
+      operationId: getSupportTicketImage
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - name: fileId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 私有图片二进制
+          content:
+            image/jpeg: { schema: { type: string, contentEncoding: binary } }
+            image/png: { schema: { type: string, contentEncoding: binary } }
+            image/webp: { schema: { type: string, contentEncoding: binary } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/app-events:
+    post:
+      tags: [Analytics]
+      summary: 保存已登录老师的白名单产品分析事件
+      description: >-
+        事件按 event_id 幂等保存。任务事件必须绑定当前老师拥有的 assignment；
+        任务编码、类型、模板版本、执行规则版本、状态和尝试次数由后端权威数据覆盖。
+        埋点失败不改变任务、积分或课程业务状态。当前接口独立限流为每分钟 300 次。
+      operationId: createAppEvent
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAppEvent' }
+      responses:
+        '202':
+          description: 事件已接受或幂等忽略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppEventAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { description: properties 序列化后超过 8 KB }
+        '429': { description: 埋点请求过于频繁；客户端按 Retry-After 重试 }
+  /api/v1/app-events/anonymous:
+    post:
+      tags: [Analytics]
+      summary: 保存登录前页面与技术异常事件
+      description: >-
+        只接受 PAGE_VIEWED、PAGE_LOAD_SUCCEEDED、PAGE_LOAD_FAILED、
+        NAVIGATION_CLICKED、LANGUAGE_CHANGED、PAGE_EXITED、API_FAILED、
+        NETWORK_TIMEOUT、FRONTEND_UNCAUGHT_ERROR，且不得携带 taskAssignmentId。
+        当前接口独立限流为每分钟 30 次。
+      operationId: createAnonymousAppEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAppEvent' }
+      responses:
+        '202':
+          description: 匿名事件已接受或幂等忽略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppEventAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '413': { description: properties 序列化后超过 8 KB }
+        '429': { description: 匿名埋点请求过于频繁；客户端按 Retry-After 重试 }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    TaskInstanceId:
+      name: taskInstanceId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    TicketId:
+      name: ticketId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+  responses:
+    TaskMutation:
+      description: 状态变更已持久化
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TaskMutationResponse' }
+    Unauthorized:
+      description: 未认证或验签失败
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    BadRequest:
+      description: 请求字段格式错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: 资源不存在或不属于当前教师
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Conflict:
+      description: 幂等负载冲突、状态版本冲突或非法状态迁移
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    ValidationError:
+      description: 请求字段或任务输出不符合合同
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    ServiceUnavailable:
+      description: 数据源或外部依赖暂时不可用
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+  schemas:
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, teacherId, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        teacherId: { type: string, minLength: 1, maxLength: 128 }
+        password: { type: string, minLength: 12, maxLength: 128 }
+    RegistrationAccepted:
+      type: object
+      additionalProperties: false
+      required: [status, verificationEmailSent]
+      properties:
+        status: { type: string, const: VERIFICATION_REQUIRED }
+        verificationEmailSent: { type: boolean }
+    ConfirmEmailRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, minLength: 32, maxLength: 512 }
+    EmailVerificationResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [VERIFIED, ALREADY_VERIFIED]
+    ResendVerificationRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+    ResendAccepted:
+      type: object
+      additionalProperties: false
+      required: [accepted]
+      properties:
+        accepted: { type: boolean, const: true }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 1, maxLength: 128 }
+    RefreshSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string, minLength: 32, maxLength: 512 }
+    AuthTokenPair:
+      type: object
+      additionalProperties: false
+      required: [tokenType, accessToken, accessTokenExpiresIn, refreshToken, refreshTokenExpiresAt]
+      properties:
+        tokenType: { type: string, const: Bearer }
+        accessToken: { type: string }
+        accessTokenExpiresIn: { type: integer, minimum: 60 }
+        refreshToken: { type: string }
+        refreshTokenExpiresAt: { type: string, format: date-time }
+    PasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+    ConfirmPasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required: [token, newPassword]
+      properties:
+        token: { type: string, minLength: 32, maxLength: 512 }
+        newPassword: { type: string, minLength: 12, maxLength: 128 }
+    PasswordResetCompleted:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: PASSWORD_UPDATED }
+    TeacherProfile:
+      type: object
+      additionalProperties: false
+      required: [teacherId, email, name, timezone, campDay, totalCampDays, graduationState, freshness]
+      properties:
+        teacherId: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+        timezone: { type: [string, 'null'] }
+        campDay: { type: [integer, 'null'], minimum: 0 }
+        totalCampDays: { type: integer, minimum: 1 }
+        graduationState: { type: [string, 'null'] }
+        freshness: { $ref: '#/components/schemas/SourceFreshness' }
+    ExternalReviewStatus:
+      type: string
+      enum: [WAITING, IN_REVIEW, APPROVED, NEEDS_CHANGES, UNAVAILABLE]
+    G01Review:
+      type: object
+      additionalProperties: false
+      required: [selfIntroStatus, tesolStatus, externalStatusesComplete, freshness]
+      properties:
+        selfIntroStatus: { $ref: '#/components/schemas/ExternalReviewStatus' }
+        tesolStatus: { $ref: '#/components/schemas/ExternalReviewStatus' }
+        externalStatusesComplete:
+          type: boolean
+          description: 仅表示 Self-intro 与 TESOL 两项外部状态均完成，不代表 G01 整体完成。
+        freshness: { $ref: '#/components/schemas/SourceFreshness' }
+    MutationMeta:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedStateVersion]
+      properties:
+        commandId: { type: string, minLength: 8, maxLength: 128 }
+        expectedStateVersion: { type: integer, minimum: 1 }
+    TaskListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/TaskSummary' }
+    TaskSummary:
+      type: object
+      additionalProperties: false
+      required: [taskInstanceId, taskCode, kind, status, stateVersion, display, title, priority, availableAt, dueAt, completedAt, dataOrigin]
+      properties:
+        taskInstanceId: { type: string }
+        taskCode: { type: string }
+        kind: { type: string, enum: [FIXED_GROWTH, PERSONALIZED_IMPROVEMENT] }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        stateVersion: { type: integer, minimum: 1 }
+        display: { $ref: '#/components/schemas/TaskDisplayMetadata' }
+        title: { type: string }
+        priority: { type: string, enum: [P0, P1, P2, P3] }
+        availableAt: { type: [string, 'null'], format: date-time }
+        dueAt: { type: [string, 'null'], format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+        dataOrigin: { type: string, enum: [REAL, DERIVED_REAL, MOCK, MOCK_SIMULATION, MOCK_PROXY] }
+    TaskDisplayMetadata:
+      type: object
+      additionalProperties: false
+      required: [stageKey, sequence, points, estimatedMinutes]
+      properties:
+        stageKey: { type: [string, 'null'] }
+        sequence: { type: [integer, 'null'], minimum: 1 }
+        points: { type: number, minimum: 0 }
+        estimatedMinutes: { type: [integer, 'null'], minimum: 1 }
+    TaskContext:
+      type: object
+      additionalProperties: false
+      required: [taskInstanceId, taskCode, kind, templateVersion, executionContractVersion, status, stateVersion, display, content, steps, progress, capabilities, assignment, availableAt, dueAt, completedAt, dataOrigin]
+      properties:
+        taskInstanceId: { type: string }
+        taskCode: { type: string }
+        kind: { type: string, enum: [FIXED_GROWTH, PERSONALIZED_IMPROVEMENT] }
+        templateVersion: { type: integer, minimum: 1 }
+        executionContractVersion: { type: string }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        stateVersion: { type: integer, minimum: 1 }
+        display: { $ref: '#/components/schemas/TaskDisplayMetadata' }
+        content: { $ref: '#/components/schemas/TaskContent' }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/TaskStep' }
+        progress: { $ref: '#/components/schemas/TaskProgress' }
+        capabilities:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/StepType' }
+        assignment: { $ref: '#/components/schemas/SharedAssignmentContext' }
+        availableAt: { type: [string, 'null'], format: date-time }
+        dueAt: { type: [string, 'null'], format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+        dataOrigin: { type: string, enum: [REAL, DERIVED_REAL, MOCK, MOCK_SIMULATION, MOCK_PROXY] }
+    TaskContent:
+      type: object
+      additionalProperties: false
+      required: [title, why, whatToDo, completionStandard, outcome, language]
+      properties:
+        title: { type: string }
+        why: { type: string }
+        whatToDo: { type: string }
+        completionStandard: { type: string }
+        outcome: { type: string }
+        language: { type: string }
+    SharedAssignmentContext:
+      type: object
+      additionalProperties: false
+      required: [assignmentId, teacherSafeReason, teacherSafeFacts, relatedCourses, reminderNotificationId, priority, dueAt]
+      properties:
+        assignmentId: { type: string }
+        teacherSafeReason: { type: string }
+        teacherSafeFacts:
+          type: array
+          items: { $ref: '#/components/schemas/TaskTeacherSafeFact' }
+        relatedCourses:
+          type: array
+          items: { $ref: '#/components/schemas/TaskRelatedCourse' }
+        reminderNotificationId: { type: [string, 'null'] }
+        priority: { type: string, enum: [P0, P1, P2, P3] }
+        dueAt: { type: [string, 'null'], format: date-time }
+    TaskTeacherSafeFact:
+      type: object
+      additionalProperties: false
+      required: [label, labelZh, value, valueZh]
+      properties:
+        label: { type: string }
+        labelZh: { type: [string, 'null'] }
+        value: { type: string }
+        valueZh: { type: [string, 'null'] }
+    TaskRelatedCourse:
+      type: object
+      additionalProperties: false
+      required: [lessonId, label, labelZh, summary, summaryZh, occurredAt]
+      properties:
+        lessonId: { type: string }
+        label: { type: string }
+        labelZh: { type: [string, 'null'] }
+        summary: { type: string }
+        summaryZh: { type: [string, 'null'] }
+        occurredAt: { type: [string, 'null'], format: date-time }
+    TaskStep:
+      type: object
+      additionalProperties: false
+      required: [stepKey, position, type, title, config]
+      properties:
+        stepKey: { type: string }
+        position: { type: integer, minimum: 1 }
+        type: { $ref: '#/components/schemas/StepType' }
+        title: { type: string }
+        config: { type: object, additionalProperties: true }
+    TaskProgress:
+      type: object
+      required: [currentStepKey, percent, steps]
+      properties:
+        currentStepKey: { type: [string, 'null'] }
+        percent: { type: integer, minimum: 0, maximum: 100 }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [stepKey, status, percent]
+            properties:
+              stepKey: { type: string }
+              status: { type: string, enum: [NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED] }
+              percent: { type: integer, minimum: 0, maximum: 100 }
+    StepType:
+      type: string
+      enum: [VIDEO, DOCUMENT, QUIZ, CHECKLIST, UPLOAD, DEVICE_CHECK, EXTERNAL_TRAINING, CUSTOM]
+    TaskStatus:
+      type: string
+      enum: [ASSIGNED, VIEWED, IN_PROGRESS, SUBMITTED, UNDER_REVIEW, COMPLETED, FAILED, EXPIRED, WAIVED, CANCELLED]
+    SaveProgressRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedStateVersion, stepKey, percent, progress]
+      properties:
+        commandId: { type: string, minLength: 8, maxLength: 128 }
+        expectedStateVersion: { type: integer, minimum: 1 }
+        stepKey: { type: string }
+        percent: { type: integer, minimum: 0, maximum: 100 }
+        progress: { type: object, additionalProperties: true }
+    SubmitTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedStateVersion, attemptId, outputs]
+      properties:
+        commandId: { type: string, minLength: 8, maxLength: 128 }
+        expectedStateVersion: { type: integer, minimum: 1 }
+        attemptId: { type: string, format: uuid }
+        outputs:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/StepOutput' }
+    StepOutput:
+      type: object
+      additionalProperties: false
+      required: [stepKey, outputType, value]
+      properties:
+        stepKey: { type: string }
+        outputType: { type: string, enum: [QUIZ, CHECKLIST, FILE, DEVICE_CHECK, EXTERNAL_PROOF, CUSTOM] }
+        value: { type: object, additionalProperties: true }
+    RetryTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedStateVersion]
+      properties:
+        commandId: { type: string, minLength: 8, maxLength: 128 }
+        expectedStateVersion: { type: integer, minimum: 1 }
+        reasonCode: { type: string, maxLength: 128 }
+    TaskMutationResponse:
+      type: object
+      required: [accepted, taskInstanceId, status, stateVersion]
+      properties:
+        accepted: { type: boolean, const: true }
+        taskInstanceId: { type: string }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        stateVersion: { type: integer, minimum: 1 }
+        step:
+          type: object
+          additionalProperties: false
+          required: [stepKey, status, percent]
+          properties:
+            stepKey: { type: string }
+            status: { type: string, enum: [NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED] }
+            percent: { type: integer, minimum: 0, maximum: 100 }
+            result: { type: object, additionalProperties: true }
+        validation: { $ref: '#/components/schemas/ValidationResult' }
+    ValidationResult:
+      type: object
+      required: [status, resultCode, teacherMessage]
+      properties:
+        status: { type: string, enum: [PENDING, UNDER_REVIEW, PASSED, FAILED, ERROR] }
+        resultCode: { type: [string, 'null'] }
+        teacherMessage: { type: [string, 'null'] }
+    UploadIntentRequest:
+      type: object
+      additionalProperties: false
+      required: [taskInstanceId, stepKey, filename, mimeType, sizeBytes, sha256]
+      properties:
+        taskInstanceId: { type: string }
+        stepKey: { type: string }
+        filename: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer, minimum: 1 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    UploadIntentResponse:
+      type: object
+      required: [fileId, uploadMethod, uploadUrl, expiresAt, requiredHeaders, requiredFields]
+      properties:
+        fileId: { type: string, format: uuid }
+        uploadMethod: { type: string, enum: [LOCAL_STREAM, OSS_POST_FORM] }
+        uploadUrl: { type: string, format: uri }
+        expiresAt: { type: string, format: date-time }
+        requiredHeaders: { type: object, additionalProperties: { type: string } }
+        requiredFields: { type: object, additionalProperties: { type: string } }
+    FileObject:
+      type: object
+      required: [fileId, status, mimeType, sizeBytes, sha256]
+      properties:
+        fileId: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING, READY, QUARANTINED, DELETED] }
+        mimeType: { type: string }
+        sizeBytes: { type: integer, minimum: 0 }
+        sha256: { type: string }
+    TeacherPhotoCheck:
+      type: object
+      additionalProperties: false
+      required: [id, title, status, message, suggestion]
+      properties:
+        id: { type: string, enum: [camera_angle, lighting, background, dressing] }
+        title: { type: string }
+        status: { type: string, enum: [pass, fail, uncertain] }
+        message: { type: string }
+        suggestion: { type: string }
+    TeacherPhotoRun:
+      type: object
+      additionalProperties: false
+      required: [photoRunId, status, decision, criteriaVersion, teacherMessage, submittedAt, checkedAt, checks, finalPhoto]
+      properties:
+        photoRunId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [UPLOADING, CHECKING, RETRY_REQUIRED, BEAUTIFYING, READY, UNDER_REVIEW, PROCESSING_FAILED]
+        decision:
+          oneOf:
+            - { type: string, enum: [PASS, RETRY, ERROR] }
+            - { type: 'null' }
+        criteriaVersion: { type: string }
+        teacherMessage: { type: [string, 'null'] }
+        submittedAt: { type: string, format: date-time }
+        checkedAt: { type: [string, 'null'], format: date-time }
+        checks:
+          type: array
+          minItems: 0
+          maxItems: 4
+          items: { $ref: '#/components/schemas/TeacherPhotoCheck' }
+        finalPhoto:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [fileId, contentUrl, filterPreset, filterStrength, savedAt]
+              properties:
+                fileId: { type: string, format: uuid }
+                contentUrl: { type: string, format: uri }
+                filterPreset:
+                  type: string
+                  enum: [cream_bright_04_adaptive_v1, cream_bright_04_adaptive_v2, cream_bright_04_adaptive_v3]
+                filterStrength: { type: number, enum: [0.6, 0.75, 1] }
+                savedAt: { type: string, format: date-time }
+            - { type: 'null' }
+    SourceFreshness:
+      type: object
+      required: [source, sourceUpdatedAt, fetchedAt, stale]
+      properties:
+        source: { type: string, enum: [LIVE, CACHED, UNAVAILABLE] }
+        sourceUpdatedAt: { type: [string, 'null'], format: date-time }
+        fetchedAt: { type: [string, 'null'], format: date-time }
+        stale: { type: boolean }
+    TideSummary:
+      type: object
+      additionalProperties: false
+      required: [available, rawTotalScore, publicTotalScore, graduationState, graduationQualified, goldQualified, graduationThreshold, goldThreshold, mandatoryTaskCompletedCount, mandatoryTaskTotalCount, scoreRuleVersion, calculatedAt, dimensions, availableScore, freshness]
+      properties:
+        available: { type: boolean, const: true }
+        rawTotalScore: { type: number, minimum: 0 }
+        publicTotalScore: { type: number, minimum: 0, maximum: 200 }
+        graduationState: { type: string }
+        graduationQualified: { type: boolean }
+        goldQualified: { type: boolean }
+        graduationThreshold: { type: number, minimum: 0 }
+        goldThreshold: { type: number, minimum: 0 }
+        mandatoryTaskCompletedCount:
+          type: integer
+          minimum: 0
+          description: 当前 G01–G09 九项必修任务中已完成的数量。
+        mandatoryTaskTotalCount:
+          type: integer
+          minimum: 0
+          description: 当前固定必修任务总数，正常为 9。
+        scoreRuleVersion: { type: string }
+        calculatedAt: { type: string, format: date-time }
+        dimensions:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items: { $ref: '#/components/schemas/ScoreDimension' }
+        availableScore:
+          oneOf:
+            - { $ref: '#/components/schemas/AvailableScore' }
+            - { type: 'null' }
+        freshness: { $ref: '#/components/schemas/SourceFreshness' }
+    ScoreDimension:
+      type: object
+      additionalProperties: false
+      required: [code, score, scoreRuleVersion, projectionRevision, calculatedAt, components]
+      properties:
+        code:
+          type: string
+          enum: [USER_FEEDBACK, RELIABILITY, CLASS_QUALITY, CAPACITY, NEW_TEACHER_TASK]
+        score: { type: number, minimum: 0 }
+        scoreRuleVersion: { type: string }
+        projectionRevision: { type: integer, minimum: 0 }
+        calculatedAt: { type: string, format: date-time }
+        components:
+          type: array
+          items: { $ref: '#/components/schemas/ScoreComponent' }
+    ScoreComponent:
+      type: object
+      additionalProperties: false
+      required: [code, unitCount, pointsPerUnit, score, sourceScope, sourceMetric]
+      properties:
+        code: { type: string }
+        unitCount: { type: number, minimum: 0 }
+        pointsPerUnit: { type: [number, 'null'], minimum: 0 }
+        score: { type: number, minimum: 0 }
+        sourceScope: { type: string, enum: [LESSON, TEACHER, TASK] }
+        sourceMetric: { type: [string, 'null'] }
+    AvailableScore:
+      type: object
+      description: 未进入终态的 G01–G09 可获得积分；隐藏 G00 不进入。
+      additionalProperties: false
+      required: [score, items]
+      properties:
+        score: { type: number, exclusiveMinimum: 0 }
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/AvailableScoreItem' }
+    AvailableScoreItem:
+      type: object
+      additionalProperties: false
+      required: [taskCode, title, score, taskStatus]
+      properties:
+        taskCode: { type: string }
+        title: { type: [string, 'null'] }
+        score: { type: number, exclusiveMinimum: 0 }
+        taskStatus: { type: string }
+    CourseList:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, totalCount, freshness]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CourseFact' }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        totalCount: { type: integer, minimum: 0 }
+        freshness: { $ref: '#/components/schemas/SourceFreshness' }
+    CourseFact:
+      type: object
+      additionalProperties: false
+      required: [lessonId, lessonSequence, lessonCount, scheduledStartAt, lessonLocalDate, lessonLocalTime, lifecycleStatus, validForScoring, evidenceStatus, lessonTotalScore, scoreRuleVersion, updatedAt, facts, dimensions]
+      properties:
+        lessonId: { type: string }
+        lessonSequence: { type: integer, minimum: 1 }
+        lessonCount: { type: integer, minimum: 0 }
+        scheduledStartAt: { type: [string, 'null'], format: date-time }
+        lessonLocalDate: { type: [string, 'null'], format: date }
+        lessonLocalTime: { type: [string, 'null'] }
+        lifecycleStatus: { type: string }
+        validForScoring: { type: boolean }
+        evidenceStatus: { type: string }
+        lessonTotalScore: { type: number, minimum: 0 }
+        scoreRuleVersion: { type: string }
+        updatedAt: { type: string, format: date-time }
+        facts:
+          type: object
+          additionalProperties: false
+          required: [late, earlyLeave, falseEarlyLeave, positiveFeedback, favorited, rebooked, cameraOff, cpuUsageHigh, networkDelayHigh, peak]
+          properties:
+            late: { type: [boolean, 'null'] }
+            earlyLeave: { type: [boolean, 'null'] }
+            falseEarlyLeave: { type: [boolean, 'null'] }
+            positiveFeedback: { type: [boolean, 'null'] }
+            favorited: { type: [boolean, 'null'] }
+            rebooked: { type: [boolean, 'null'] }
+            cameraOff: { type: [boolean, 'null'] }
+            cpuUsageHigh: { type: [boolean, 'null'] }
+            networkDelayHigh: { type: [boolean, 'null'] }
+            peak: { type: [boolean, 'null'] }
+        dimensions:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items: { $ref: '#/components/schemas/CourseScoreDimension' }
+    CourseScoreDimension:
+      type: object
+      additionalProperties: false
+      required: [code, score, evidenceStatus, evidenceCoverage, components]
+      properties:
+        code: { type: string, enum: [USER_FEEDBACK, RELIABILITY, CLASS_QUALITY] }
+        score: { type: number, minimum: 0 }
+        evidenceStatus: { type: string }
+        evidenceCoverage: { type: [string, 'null'] }
+        components:
+          type: array
+          items: { $ref: '#/components/schemas/CourseScoreComponent' }
+    CourseScoreComponent:
+      type: object
+      additionalProperties: false
+      required: [code, score, pointsPerUnit, awarded, evidenceStatus]
+      properties:
+        code: { type: string }
+        score: { type: number, minimum: 0 }
+        pointsPerUnit: { type: [number, 'null'], minimum: 0 }
+        awarded: { type: boolean }
+        evidenceStatus: { type: string }
+    Notification:
+      type: object
+      required: [sourceNotificationId, source, typeCode, title, body, relatedTaskCode, relatedTaskInstanceId, actionType, actionTarget, actionAvailable, expiresAt, expired, issuedAt, read, clicked]
+      properties:
+        sourceNotificationId: { type: string }
+        source: { type: string, enum: [EXTERNAL, SYSTEM] }
+        typeCode: { type: [string, 'null'] }
+        title: { type: string }
+        body: { type: string }
+        relatedTaskCode: { type: [string, 'null'] }
+        relatedTaskInstanceId: { type: [string, 'null'] }
+        actionType:
+          type: [string, 'null']
+          enum: [TASK_DETAIL, MY_TIDE, TASKS, HELP, ACCOUNT, null]
+        actionTarget: { type: [string, 'null'] }
+        actionAvailable: { type: boolean }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        expired: { type: boolean }
+        issuedAt: { type: string, format: date-time }
+        read: { type: boolean }
+        clicked: { type: boolean }
+    FaqConversationCreated:
+      type: object
+      additionalProperties: false
+      required: [conversationId, status, startedAt]
+      properties:
+        conversationId: { type: string, format: uuid }
+        status: { type: string, const: OPEN }
+        startedAt: { type: string, format: date-time }
+    AskFaqRequest:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: { type: string, minLength: 2, maxLength: 2000 }
+    FaqSource:
+      type: object
+      additionalProperties: false
+      required: [position, title, section, question, category, url]
+      properties:
+        position: { type: integer, minimum: 1 }
+        title: { type: string }
+        section: { type: string }
+        question: { type: [string, 'null'] }
+        category: { type: [string, 'null'] }
+        url: { type: [string, 'null'], format: uri }
+    FaqFeedback:
+      type: object
+      additionalProperties: false
+      required: [resolved, reasonCode]
+      properties:
+        resolved: { type: boolean }
+        reasonCode: { type: [string, 'null'] }
+    FaqMessage:
+      type: object
+      additionalProperties: false
+      required: [id, role, body, faqHit, reasonCode, sources, feedback, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, enum: [TEACHER, ASSISTANT, SYSTEM] }
+        body: { type: string }
+        faqHit: { type: boolean }
+        reasonCode:
+          type: [string, 'null']
+          enum: [FAQ_MATCHED, FAQ_CLARIFICATION_NEEDED, FAQ_NOT_FOUND, FAQ_AI_UNAVAILABLE, FAQ_AI_RESPONSE_INVALID, null]
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/FaqSource' }
+        feedback:
+          oneOf:
+            - { $ref: '#/components/schemas/FaqFeedback' }
+            - { type: 'null' }
+        createdAt: { type: string, format: date-time }
+    CreateSupportTicket:
+      type: object
+      additionalProperties: false
+      required: [secondaryCategory, problemLocation, description]
+      properties:
+        secondaryCategory:
+          type: string
+          enum:
+            [TASK_RULES, LESSON_INFO, SCORE_OR_REVIEW, PRODUCT_FUNCTION, ACCOUNT_LOGIN, MEDIA_UPLOAD_CAMERA, OTHER]
+        problemLocation:
+          type: string
+          enum: [MY_TIDE, TASK, LESSON, MESSAGES, ACCOUNT, HELP, OTHER]
+        description: { type: string, minLength: 1, maxLength: 5000 }
+        context:
+          type: string
+          description: multipart 中序列化的 JSON 对象；服务端只保留白名单上下文
+        images:
+          type: array
+          maxItems: 3
+          items: { type: string, contentEncoding: binary }
+    ReplySupportTicket:
+      type: object
+      additionalProperties: false
+      required: [description, rowVersion]
+      properties:
+        description: { type: string, minLength: 1, maxLength: 5000 }
+        rowVersion: { type: integer, minimum: 1 }
+        images:
+          type: array
+          maxItems: 3
+          items: { type: string, contentEncoding: binary }
+    SupportTicketImage:
+      type: object
+      additionalProperties: false
+      required: [fileId, filename, mimeType, size, deleted, contentUrl]
+      properties:
+        fileId: { type: string, format: uuid }
+        filename: { type: string }
+        mimeType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        size: { type: integer, minimum: 0 }
+        deleted: { type: boolean }
+        contentUrl: { type: [string, 'null'] }
+    SupportTicketMessage:
+      type: object
+      additionalProperties: false
+      required: [messageId, sender, content, createdAt, images]
+      properties:
+        messageId: { type: string, format: uuid }
+        sender: { type: string, enum: [TEACHER, OPERATOR] }
+        content: { type: string, minLength: 1, maxLength: 5000 }
+        createdAt: { type: string, format: date-time }
+        images:
+          type: array
+          maxItems: 3
+          items: { $ref: '#/components/schemas/SupportTicketImage' }
+    SupportTicket:
+      type: object
+      additionalProperties: false
+      required:
+        [ticketId, primaryCategory, secondaryCategory, problemLocation,
+         problemContext, messages, status, unread, lastOperatorReplyAt,
+         teacherReplyDeadlineAt, closeReason, closedAt, rowVersion, createdAt,
+         updatedAt]
+      properties:
+        ticketId: { type: string, format: uuid }
+        primaryCategory: { type: string, enum: [OPERATIONS, PRODUCT, OTHER] }
+        secondaryCategory:
+          type: string
+          enum:
+            [TASK_RULES, LESSON_INFO, SCORE_OR_REVIEW, PRODUCT_FUNCTION, ACCOUNT_LOGIN, MEDIA_UPLOAD_CAMERA, OTHER]
+        problemLocation:
+          type: string
+          enum: [MY_TIDE, TASK, LESSON, MESSAGES, ACCOUNT, HELP, OTHER]
+        problemContext: { type: object, additionalProperties: true }
+        messages:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/SupportTicketMessage' }
+        status:
+          type: string
+          enum: [WAITING_OPERATOR, WAITING_TEACHER, CLOSED]
+        unread: { type: boolean }
+        lastOperatorReplyAt: { type: [string, 'null'], format: date-time }
+        teacherReplyDeadlineAt: { type: [string, 'null'], format: date-time }
+        closeReason:
+          type: [string, 'null']
+          enum: [RESOLVED, NO_RESPONSE_TIMEOUT, null]
+        closedAt: { type: [string, 'null'], format: date-time }
+        rowVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    SupportTicketList:
+      type: object
+      additionalProperties: false
+      required: [items, unreadCount]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SupportTicket' }
+        unreadCount: { type: integer, minimum: 0 }
+    FaqConversation:
+      type: object
+      additionalProperties: false
+      required: [conversationId, status, startedAt, messages]
+      properties:
+        conversationId: { type: string, format: uuid }
+        status: { type: string, enum: [OPEN, CLOSED, ARCHIVED] }
+        startedAt: { type: string, format: date-time }
+        messages:
+          type: array
+          items: { $ref: '#/components/schemas/FaqMessage' }
+    FaqAnswerResponse:
+      type: object
+      additionalProperties: false
+      required: [conversationId, teacherMessage, answer]
+      properties:
+        conversationId: { type: string, format: uuid }
+        teacherMessage: { $ref: '#/components/schemas/FaqMessage' }
+        answer: { $ref: '#/components/schemas/FaqMessage' }
+    FaqFeedbackRequest:
+      type: object
+      additionalProperties: false
+      required: [resolved]
+      properties:
+        resolved: { type: boolean }
+        reasonCode: { type: string, minLength: 1, maxLength: 128 }
+    FaqFeedbackResponse:
+      type: object
+      additionalProperties: false
+      required: [messageId, resolved, reasonCode]
+      properties:
+        messageId: { type: string, format: uuid }
+        resolved: { type: boolean }
+        reasonCode: { type: [string, 'null'] }
+    CreateAppEvent:
+      type: object
+      additionalProperties: false
+      required:
+        [eventName, eventId, eventSchemaVersion, sessionId, properties, occurredAt]
+      properties:
+        eventName: { $ref: '#/components/schemas/ClientAppEventName' }
+        eventId: { type: string, minLength: 8, maxLength: 128 }
+        eventSchemaVersion: { type: integer, const: 1 }
+        sessionId: { type: string, minLength: 8, maxLength: 128 }
+        taskAssignmentId: { type: string, minLength: 1, maxLength: 255 }
+        properties:
+          type: object
+          maxProperties: 48
+          additionalProperties:
+            type: [string, number, boolean, 'null']
+        occurredAt: { type: string, format: date-time }
+    ClientAppEventName:
+      type: string
+      enum:
+        - PAGE_VIEWED
+        - PAGE_LOAD_SUCCEEDED
+        - PAGE_LOAD_FAILED
+        - NAVIGATION_CLICKED
+        - LANGUAGE_CHANGED
+        - PAGE_EXITED
+        - TASK_CARD_IMPRESSION
+        - TASK_CARD_CLICKED
+        - TASK_OPENED_FROM_MESSAGE
+        - TASK_DETAIL_VIEWED
+        - TASK_STEP_STARTED
+        - TASK_EXITED
+        - TASK_PROGRESS_RESUMED
+        - VIDEO_PLAYED
+        - VIDEO_PAUSED
+        - VIDEO_RESUMED
+        - VIDEO_SEEK_BLOCKED
+        - VIDEO_STALLED
+        - VIDEO_FAILED
+        - QUIZ_UNLOCKED
+        - QUIZ_STARTED
+        - QUIZ_SUBMITTED
+        - QUIZ_PASSED
+        - QUIZ_FAILED
+        - DOCUMENT_READING_STARTED
+        - DOCUMENT_MODULE_EXPANDED
+        - DOCUMENT_COMPLETED
+        - CHECKLIST_STARTED
+        - CHECKLIST_PROGRESS_UPDATED
+        - CHECKLIST_SUBMITTED
+        - CAMERA_PERMISSION_RESULT
+        - CAMERA_OPENED
+        - CAMERA_PHOTO_TAKEN
+        - CAMERA_PHOTO_RETAKEN
+        - CAMERA_FAILED
+        - UPLOAD_STARTED
+        - UPLOAD_SUCCEEDED
+        - UPLOAD_FAILED
+        - UPLOAD_RETRIED
+        - FAQ_OPENED
+        - FAQ_QUESTION_SUBMITTED
+        - FAQ_FEEDBACK_SUBMITTED
+        - AI_HELP_OPENED
+        - HELP_ROUTE_SELECTED
+        - SUPPORT_TICKET_SUBMITTED
+        - SUPPORT_TICKET_CREATED
+        - SUPPORT_TICKET_OPENED
+        - SUPPORT_TICKET_REPLY_READ
+        - SUPPORT_TICKET_RESOLUTION_CONFIRMED
+        - SUPPORT_TICKET_FOLLOWUP_SUBMITTED
+        - MESSAGE_IMPRESSION
+        - MESSAGE_DETAIL_OPENED
+        - MESSAGE_TASK_CLICKED
+        - MESSAGE_ACTION_EXPIRED
+        - API_FAILED
+        - NETWORK_TIMEOUT
+        - FRONTEND_UNCAUGHT_ERROR
+    AppEventAccepted:
+      type: object
+      additionalProperties: false
+      required: [accepted, eventId]
+      properties:
+        accepted: { type: boolean, const: true }
+        eventId: { type: string }
+    ApiError:
+      type: object
+      required: [code, message, requestId, retryable]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        requestId: { type: string }
+        retryable: { type: boolean }
+        details: { type: object, additionalProperties: true }

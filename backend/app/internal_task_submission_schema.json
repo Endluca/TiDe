@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tit:teacher-task:submission-registry:v1",
+  "title": "TIT Teacher Task Submission Command Schema Registry V1",
+  "description": "Validates teacher action commands for all six completion methods. Actor identity is injected from the authenticated session. The client cannot assert status, score, pass result or verification result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "command_schema_version",
+    "event_id",
+    "idempotency_key",
+    "command_type",
+    "task_id",
+    "expected_execution_contract_version",
+    "last_seen_runtime_sequence",
+    "occurred_at",
+    "completion_method",
+    "payload"
+  ],
+  "properties": {
+    "command_schema_version": {
+      "const": 1
+    },
+    "event_id": {
+      "$ref": "#/$defs/Identifier"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/Identifier"
+    },
+    "command_type": {
+      "enum": [
+        "SUBMIT_TASK",
+        "RESPOND_CONFIRMATION"
+      ]
+    },
+    "task_id": {
+      "$ref": "#/$defs/Identifier"
+    },
+    "expected_execution_contract_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "last_seen_runtime_sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completion_method": {
+      "enum": [
+        "QUIZ",
+        "CHECKLIST",
+        "UPLOAD_REVIEW",
+        "DEVICE_CHECK",
+        "EXTERNAL_SYNC",
+        "CONFIRMATION_FORM"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "command_type": {
+          "const": "SUBMIT_TASK"
+        },
+        "completion_method": {
+          "const": "QUIZ"
+        },
+        "payload": {
+          "$ref": "#/$defs/QuizSubmission"
+        }
+      }
+    },
+    {
+      "properties": {
+        "command_type": {
+          "const": "SUBMIT_TASK"
+        },
+        "completion_method": {
+          "const": "CHECKLIST"
+        },
+        "payload": {
+          "$ref": "#/$defs/ChecklistSubmission"
+        }
+      }
+    },
+    {
+      "properties": {
+        "command_type": {
+          "const": "SUBMIT_TASK"
+        },
+        "completion_method": {
+          "const": "UPLOAD_REVIEW"
+        },
+        "payload": {
+          "$ref": "#/$defs/UploadReviewSubmission"
+        }
+      }
+    },
+    {
+      "properties": {
+        "command_type": {
+          "const": "SUBMIT_TASK"
+        },
+        "completion_method": {
+          "const": "DEVICE_CHECK"
+        },
+        "payload": {
+          "$ref": "#/$defs/DeviceCheckSubmission"
+        }
+      }
+    },
+    {
+      "properties": {
+        "command_type": {
+          "const": "SUBMIT_TASK"
+        },
+        "completion_method": {
+          "const": "EXTERNAL_SYNC"
+        },
+        "payload": {
+          "$ref": "#/$defs/ExternalSyncSubmission"
+        }
+      }
+    },
+    {
+      "properties": {
+        "command_type": {
+          "const": "RESPOND_CONFIRMATION"
+        },
+        "completion_method": {
+          "const": "CONFIRMATION_FORM"
+        },
+        "payload": {
+          "$ref": "#/$defs/ConfirmationFormSubmission"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "QuizAnswer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question_id",
+        "selected_option_ids"
+      ],
+      "properties": {
+        "question_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "selected_option_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/Identifier"
+          }
+        }
+      }
+    },
+    "QuizSubmission": {
+      "$anchor": "QuizSubmission",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submission_schema_version",
+        "quiz_session_id",
+        "answers"
+      ],
+      "properties": {
+        "submission_schema_version": {
+          "const": 1
+        },
+        "quiz_session_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "answers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/QuizAnswer"
+          }
+        }
+      }
+    },
+    "ChecklistSubmission": {
+      "$anchor": "ChecklistSubmission",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submission_schema_version",
+        "checklist_id",
+        "checklist_version",
+        "checked_item_ids",
+        "attestation_accepted",
+        "attestation_version"
+      ],
+      "properties": {
+        "submission_schema_version": {
+          "const": 1
+        },
+        "checklist_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "checklist_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checked_item_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/Identifier"
+          }
+        },
+        "attestation_accepted": {
+          "type": "boolean"
+        },
+        "attestation_version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "UploadAssetReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "purpose_code"
+      ],
+      "properties": {
+        "asset_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "purpose_code": {
+          "$ref": "#/$defs/Identifier"
+        }
+      }
+    },
+    "UploadFieldValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field_id",
+        "value"
+      ],
+      "properties": {
+        "field_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "UploadReviewSubmission": {
+      "$anchor": "UploadReviewSubmission",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submission_schema_version",
+        "upload_session_id",
+        "assets",
+        "field_values"
+      ],
+      "properties": {
+        "submission_schema_version": {
+          "const": 1
+        },
+        "upload_session_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "assets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/UploadAssetReference"
+          }
+        },
+        "field_values": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/UploadFieldValue"
+          }
+        }
+      }
+    },
+    "DeviceCheckSubmission": {
+      "$anchor": "DeviceCheckSubmission",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submission_schema_version",
+        "check_run_id"
+      ],
+      "properties": {
+        "submission_schema_version": {
+          "const": 1
+        },
+        "check_run_id": {
+          "$ref": "#/$defs/Identifier"
+        }
+      }
+    },
+    "ExternalSyncSubmission": {
+      "$anchor": "ExternalSyncSubmission",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submission_schema_version",
+        "request_sync"
+      ],
+      "properties": {
+        "submission_schema_version": {
+          "const": 1
+        },
+        "external_session_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "request_sync": {
+          "const": true
+        }
+      }
+    },
+    "ConfirmationFormSubmission": {
+      "$anchor": "ConfirmationFormSubmission",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submission_schema_version",
+        "question_id",
+        "question_version",
+        "selected_option_code",
+        "consequence_acknowledged"
+      ],
+      "properties": {
+        "submission_schema_version": {
+          "const": 1
+        },
+        "question_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "question_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "selected_option_code": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "consequence_acknowledged": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

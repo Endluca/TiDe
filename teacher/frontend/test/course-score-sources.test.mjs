@@ -1,0 +1,217 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  courseScoreSourceLabels,
+  courseSourcesForDimension,
+  lessonLifecycleStatusLabel,
+  mergeScorecardCourseSources,
+  positiveCourseScoreSources,
+  visibleCourseIndicators,
+} from "../src/course-score-sources.js";
+
+test("maps the hardware-quality component to teacher-facing copy", () => {
+  assert.deepEqual(courseScoreSourceLabels.CLASS_QUALITY_HARDWARE, {
+    en: "No device, network, or teaching-environment issues",
+    zh: "无设备网络&教学环境问题",
+  });
+});
+
+const course = {
+  lessonId: "lesson-001",
+  lessonSequence: 3,
+  scheduledStartAt: "2026-07-21T08:00:00.000Z",
+  lifecycleStatus: "end",
+  scoreRuleVersion: "score-rule-v3",
+  facts: {
+    late: false,
+    earlyLeave: false,
+    falseEarlyLeave: false,
+    positiveFeedback: true,
+    favorited: false,
+    rebooked: false,
+    cameraOff: false,
+    cpuUsageHigh: false,
+    networkDelayHigh: false,
+  },
+  dimensions: [
+    {
+      code: "USER_FEEDBACK",
+      components: [
+      {
+        code: "FEEDBACK_PRAISE",
+        score: 5,
+        awarded: true,
+        evidenceStatus: "READY",
+      },
+      ],
+    },
+    {
+      code: "RELIABILITY",
+      components: [
+      {
+        code: "ON_TIME_COMPLETED",
+        score: 2,
+        awarded: true,
+        evidenceStatus: "READY",
+      },
+      ],
+    },
+    {
+      code: "CLASS_QUALITY",
+      components: [
+      {
+        code: "CLASS_QUALITY_PERFECT_COUNT",
+        score: 0,
+        awarded: false,
+        evidenceStatus: "SOURCE_MISSING",
+      },
+      ],
+    },
+  ],
+};
+
+test("keeps positive course score sources only", () => {
+  assert.deepEqual(positiveCourseScoreSources(course), [
+    {
+      dimension: "USER_FEEDBACK",
+      sourceKey: "FEEDBACK_PRAISE",
+      score: 5,
+      scoreRuleVersion: "score-rule-v3",
+      evidenceStatus: "READY",
+    },
+    {
+      dimension: "RELIABILITY",
+      sourceKey: "ON_TIME_COMPLETED",
+      score: 2,
+      scoreRuleVersion: "score-rule-v3",
+      evidenceStatus: "READY",
+    },
+  ]);
+});
+
+test("groups course sources into the matching cumulative dimension", () => {
+  assert.deepEqual(courseSourcesForDimension([course], "userFeedback"), [
+    {
+      sourceKey: "FEEDBACK_PRAISE",
+      value: 1,
+      unit: "CLASSES",
+      score: 5,
+      lessonId: "lesson-001",
+      lessonNumber: 3,
+      lessonStartedAt: "2026-07-21T08:00:00.000Z",
+    },
+  ]);
+});
+
+test("keeps Shiwen summary components when no class attribution is available", () => {
+  assert.deepEqual(
+    mergeScorecardCourseSources(
+      [course],
+      "reliability",
+      [
+        {
+          sourceKey: "ON_TIME_COMPLETED",
+          value: 1,
+          unit: "CLASSES",
+          score: 2,
+          pointsPerUnit: 2,
+        },
+        {
+          sourceKey: "PERFECT_COMPLETED",
+          value: 6,
+          unit: "CLASSES",
+          score: 24,
+          pointsPerUnit: 4,
+        },
+      ],
+    ),
+    [
+      {
+        sourceKey: "ON_TIME_COMPLETED",
+        value: 1,
+        unit: "CLASSES",
+        score: 2,
+        lessonId: "lesson-001",
+        lessonNumber: 3,
+        lessonStartedAt: "2026-07-21T08:00:00.000Z",
+        summaryScore: 2,
+        summaryValue: 1,
+      },
+      {
+        sourceKey: "PERFECT_COMPLETED",
+        value: 6,
+        unit: "CLASSES",
+        score: 24,
+        pointsPerUnit: 4,
+        summaryScore: 24,
+        summaryValue: 6,
+        attributionMissing: true,
+      },
+    ],
+  );
+});
+
+test("does not expose components that the source view did not award", () => {
+  assert.deepEqual(
+    positiveCourseScoreSources({
+      ...course,
+      dimensions: course.dimensions.map((dimension) => ({
+        ...dimension,
+        components: dimension.components.map((component) => ({
+          ...component,
+          awarded: false,
+        })),
+      })),
+    }),
+    [],
+  );
+});
+
+test("keeps every safe course fact with a teacher-facing value", () => {
+  const indicators = visibleCourseIndicators(course);
+  assert.equal(indicators.length, 9);
+  assert.deepEqual(
+    indicators.map(({ sourceKey, value, tone, score }) => ({
+      sourceKey,
+      value: value.zh,
+      tone,
+      score,
+    })),
+    [
+      { sourceKey: "FEEDBACK_PRAISE", value: "已收到好评", tone: "positive", score: 5 },
+      { sourceKey: "FEEDBACK_FAVORITE", value: "暂无收藏", tone: "neutral", score: null },
+      { sourceKey: "FEEDBACK_REBOOK_15D", value: "暂无 15 天内复约", tone: "neutral", score: null },
+      { sourceKey: "ON_TIME_COMPLETED", value: "准时完成", tone: "positive", score: 2 },
+      { sourceKey: "RELIABILITY_NO_EARLY_LEAVE", value: "完整完成", tone: "positive", score: null },
+      { sourceKey: "RELIABILITY_EARLY_LEAVE_CORRECTED", value: "无修正记录", tone: "neutral", score: null },
+      { sourceKey: "CLASS_QUALITY_CAMERA_ON", value: "摄像头保持开启", tone: "positive", score: null },
+      { sourceKey: "CLASS_QUALITY_CPU_STABLE", value: "电脑运行稳定", tone: "positive", score: null },
+      { sourceKey: "CLASS_QUALITY_NETWORK_STABLE", value: "网络连接稳定", tone: "positive", score: null },
+    ],
+  );
+});
+
+test("shows missing values as unavailable instead of treating them as negative facts", () => {
+  const indicators = visibleCourseIndicators({
+    ...course,
+    facts: Object.fromEntries(
+      Object.keys(course.facts).map((key) => [key, null]),
+    ),
+  });
+  assert.equal(indicators.length, 9);
+  assert.equal(indicators.every((indicator) => indicator.value.zh.includes("暂无") || indicator.value.zh.includes("不完整")), true);
+  assert.equal(indicators.every((indicator) => indicator.tone === "missing"), true);
+});
+
+test("does not treat absent classes as completed course facts", () => {
+  assert.deepEqual(
+    visibleCourseIndicators({ ...course, lifecycleStatus: "s_absent" }),
+    [],
+  );
+});
+
+test("maps all current lifecycle values to teacher-facing labels", () => {
+  assert.equal(lessonLifecycleStatusLabel("end").zh, "已完课");
+  assert.equal(lessonLifecycleStatusLabel("s_absent").zh, "学员缺席");
+  assert.equal(lessonLifecycleStatusLabel("t_absent").zh, "教师缺席");
+});

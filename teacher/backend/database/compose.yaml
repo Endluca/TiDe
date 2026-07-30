@@ -1,0 +1,24 @@
+name: tide-backend-prep
+
+services:
+  postgres:
+    image: postgres:16.14-alpine
+    container_name: tide-postgres16-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TIDE_DB_NAME:-tide_dev}
+      POSTGRES_USER: ${TIDE_DB_USER:-tide_app}
+      POSTGRES_PASSWORD: ${TIDE_DB_PASSWORD:?set TIDE_DB_PASSWORD in .env}
+    ports:
+      - "${TIDE_DB_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TIDE_DB_USER:-tide_app} -d ${TIDE_DB_NAME:-tide_dev}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - tide_postgres16_data:/var/lib/postgresql/data
+
+volumes:
+  tide_postgres16_data:
+    name: tide_postgres16_data

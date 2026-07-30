@@ -1,0 +1,28 @@
+{
+  "name": "tide-teacher-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.13.1",
+  "type": "module",
+  "scripts": {
+    "dev": "VITE_API_BASE_URL=http://127.0.0.1:3000 vite --host 127.0.0.1",
+    "build": "node scripts/build-nginx.mjs",
+    "build:nginx": "node scripts/build-nginx.mjs",
+    "build:sites": "node scripts/build-sites.mjs",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@gsap/react": "^2.1.2",
+    "@phosphor-icons/react": "^2.1.10",
+    "gsap": "^3.15.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.1",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "vite": "^8.1.4"
+  }
+}
