@@ -39,7 +39,7 @@
 | 投诉二级分类 | `complaint_category_l2` | 出席/网络设备投诉用于改路由 |
 | 投诉三级分类 | `complaint_category_l3` | 与处罚规则三级分类精确匹配 |
 | 是否拉黑 | `is_blocked` | 0/1/空；按不同学员数聚合 |
-| 收藏 | `is_favorited` | 0/1/空；本轮只保存事实 |
+| 收藏 | `is_favorited` | 0/1/空；保存收藏事实。同一教师与学员仅上课时间最早的有效完课收藏可归因加分，后续收藏课事实仍为 1、收藏加分为 0 |
 | 好评标签 | `has_positive_feedback_tag` | 当前只保存是否存在 |
 | 评价详情 | `feedback_detail` / `negative_tag_values` | 原文完整保存；差评课按英文逗号拆分、去空格并单课去重，形成标签数组 |
 | 是否复约 | `is_rebooked` | 0/1/空；本轮只保存事实 |

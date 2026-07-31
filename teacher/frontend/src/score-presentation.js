@@ -2,8 +2,8 @@ const scorecardGroupCopy = {
   USER_FEEDBACK: {
     title: { en: "User Feedback", zh: "用户反馈" },
     description: {
-      en: "Feedback items returned by Shiwen accumulate without a dimension cap.",
-      zh: "世文返回的用户反馈子项按次累计，本维度不封顶。",
+      en: "Feedback items returned by Shiwen accumulate under their current rules without a dimension cap.",
+      zh: "世文返回的用户反馈子项按当前规则累计，本维度不封顶。",
     },
   },
   RELIABILITY: {
@@ -44,8 +44,11 @@ const scorecardRuleCopy = {
   },
   FEEDBACK_FAVORITE: {
     title: { en: "Learner favorite", zh: "学员收藏" },
-    condition: { en: "Each confirmed learner favorite", zh: "每被学员收藏 1 次" },
-    unit: { en: "/event", zh: "/次" },
+    condition: {
+      en: "First eligible favorited class for each learner",
+      zh: "同一学员首节符合条件的收藏课计分 1 次",
+    },
+    unit: { en: "/scored favorite", zh: "/次" },
   },
   FEEDBACK_REBOOK_15D: {
     title: { en: "15-day rebooking", zh: "15 天内复约" },

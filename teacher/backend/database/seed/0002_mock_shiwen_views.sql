@@ -97,6 +97,28 @@ task_rollup AS (
       ON template.row_id = assignment.template_version_id
     GROUP BY teacher.teacher_id
 ),
+favorite_pairs AS (
+    SELECT
+        lesson.teacher_id,
+        lesson.student_id_hash
+    FROM public.lesson_facts lesson
+    WHERE lesson.valid_for_scoring
+      AND lower(lesson.lesson_lifecycle_status) = 'end'
+      AND lesson.is_favorited IS TRUE
+      AND lesson.student_id_hash IS NOT NULL
+    GROUP BY lesson.teacher_id, lesson.student_id_hash
+    HAVING bool_and(
+        lesson.lesson_local_date IS NOT NULL
+        AND lesson.lesson_local_time IS NOT NULL
+    )
+),
+favorite_attribution AS (
+    SELECT
+        pair.teacher_id,
+        count(*)::numeric AS attributed_count
+    FROM favorite_pairs pair
+    GROUP BY pair.teacher_id
+),
 score_source AS (
     SELECT
         teacher.teacher_id,
@@ -117,6 +139,10 @@ score_source AS (
         task.mandatory_task_completed_count,
         task.mandatory_task_total_count,
         task.task_components,
+        COALESCE(
+            favorite.attributed_count,
+            0
+        )::numeric AS favorite_attributed_count,
         COALESCE(metric.metric_inputs, '{}'::jsonb) AS metric_inputs,
         COALESCE(metric.score_policy_snapshot, '{}'::jsonb) AS score_policy,
         COALESCE(metric.score_rule_version, 'LOCAL_FIXTURE_V1') AS score_rule_version,
@@ -126,6 +152,8 @@ score_source AS (
       ON metric.teacher_id = teacher.teacher_id
     JOIN task_rollup task
       ON task.teacher_id = teacher.teacher_id
+    LEFT JOIN favorite_attribution favorite
+      ON favorite.teacher_id = teacher.teacher_id
 )
 SELECT
     source.teacher_id,
@@ -183,13 +211,26 @@ SELECT
                         NULLIF(source.score_policy #>> '{scoring_items,feedback_favorite,points_per_unit}', '')::numeric,
                         5
                     ),
-                    'score', 0,
+                    'score', favorite.total_score,
                     'source_scope', 'LESSON',
                     'source_metric', 'feedback_favorite_cnt',
-                    'lesson_attributed_count', 0,
-                    'lesson_attributed_score', 0,
-                    'unattributed_score', 0,
-                    'reconciliation_status', 'SOURCE_FIXTURE'
+                    'lesson_attributed_count',
+                        source.favorite_attributed_count,
+                    'lesson_attributed_score',
+                        favorite.attributed_score,
+                    'unattributed_score',
+                        favorite.total_score - favorite.attributed_score,
+                    'reconciliation_status', CASE
+                        WHEN favorite.total_score = favorite.attributed_score
+                            THEN CASE
+                                WHEN favorite.total_score = 0
+                                    THEN 'MATCHED_ZERO'
+                                ELSE 'MATCHED'
+                            END
+                        WHEN favorite.attributed_score < favorite.total_score
+                            THEN 'PARTIAL'
+                        ELSE 'MISMATCH'
+                    END
                 ),
                 jsonb_build_object(
                     'code', 'FEEDBACK_REBOOK_15D',
@@ -315,6 +356,20 @@ SELECT
     ) AS dimensions
 FROM score_source source
 CROSS JOIN LATERAL (
+    SELECT
+        COALESCE(
+            NULLIF(source.metric_inputs ->> 'feedback_favorite_cnt', '')::numeric,
+            0
+        ) * COALESCE(
+            NULLIF(source.score_policy #>> '{scoring_items,feedback_favorite,points_per_unit}', '')::numeric,
+            5
+        ) AS total_score,
+        source.favorite_attributed_count * COALESCE(
+            NULLIF(source.score_policy #>> '{scoring_items,feedback_favorite,points_per_unit}', '')::numeric,
+            5
+        ) AS attributed_score
+) favorite
+CROSS JOIN LATERAL (
     SELECT (
         source.user_feedback_score
         + source.reliability_score
@@ -353,6 +408,38 @@ lesson_source AS (
     LEFT JOIN latest_metric metric
       ON metric.teacher_id = lesson.teacher_id
 ),
+favorite_ranked AS (
+    SELECT
+        lesson.lesson_id,
+        lesson.student_id_hash IS NOT NULL
+        AND bool_and(
+                lesson.lesson_local_date IS NOT NULL
+                AND lesson.lesson_local_time IS NOT NULL
+            ) OVER (
+                PARTITION BY lesson.teacher_id, lesson.student_id_hash
+            ) AS attribution_known,
+        CASE
+            WHEN lesson.student_id_hash IS NOT NULL
+             AND bool_and(
+                    lesson.lesson_local_date IS NOT NULL
+                    AND lesson.lesson_local_time IS NOT NULL
+                 ) OVER (
+                    PARTITION BY lesson.teacher_id, lesson.student_id_hash
+                 )
+                THEN row_number() OVER (
+                    PARTITION BY lesson.teacher_id, lesson.student_id_hash
+                    ORDER BY
+                        lesson.lesson_local_date,
+                        lesson.lesson_local_time,
+                        lesson.lesson_id
+                )
+            ELSE NULL
+        END AS favorite_rank
+    FROM lesson_source lesson
+    WHERE lesson.valid_for_scoring
+      AND lower(lesson.lesson_lifecycle_status) = 'end'
+      AND lesson.is_favorited IS TRUE
+),
 lesson_points AS (
     SELECT
         lesson.*,
@@ -367,7 +454,9 @@ lesson_points AS (
         END AS praise_score,
         CASE
             WHEN lesson.valid_for_scoring
+             AND lower(lesson.lesson_lifecycle_status) = 'end'
              AND lesson.is_favorited IS TRUE
+             AND favorite.favorite_rank = 1
                 THEN COALESCE(
                     NULLIF(lesson.score_policy #>> '{scoring_items,feedback_favorite,points_per_unit}', '')::numeric,
                     5
@@ -404,8 +493,20 @@ lesson_points AS (
                     1
                 )
             ELSE 0::numeric
-        END AS peak_score
+        END AS peak_score,
+        CASE
+            WHEN lesson.is_favorited IS NULL
+                THEN 'SOURCE_MISSING'
+            WHEN lesson.valid_for_scoring
+             AND lower(lesson.lesson_lifecycle_status) = 'end'
+             AND lesson.is_favorited IS TRUE
+             AND COALESCE(favorite.attribution_known, false) IS FALSE
+                THEN 'SOURCE_MISSING'
+            ELSE lesson.evidence_status
+        END AS favorite_evidence_status
     FROM lesson_source lesson
+    LEFT JOIN favorite_ranked favorite
+      ON favorite.lesson_id = lesson.lesson_id
 )
 SELECT
     lesson.teacher_id,
@@ -450,8 +551,18 @@ SELECT
         jsonb_build_object(
             'code', 'USER_FEEDBACK',
             'score', lesson.praise_score + lesson.favorite_score + lesson.rebook_score,
-            'evidence_status', lesson.evidence_status,
-            'evidence_coverage', 'FULL',
+            'evidence_status', CASE
+                WHEN lesson.favorite_evidence_status = 'SOURCE_MISSING'
+                 AND lesson.evidence_status = 'CONFIRMED'
+                    THEN 'PARTIAL'
+                ELSE lesson.evidence_status
+            END,
+            'evidence_coverage', CASE
+                WHEN lesson.favorite_evidence_status = 'SOURCE_MISSING'
+                 AND lesson.evidence_status = 'CONFIRMED'
+                    THEN 'PARTIAL'
+                ELSE 'FULL'
+            END,
             'components', jsonb_build_array(
                 jsonb_build_object(
                     'code', 'FEEDBACK_PRAISE',
@@ -471,7 +582,7 @@ SELECT
                         5
                     ),
                     'awarded', lesson.favorite_score > 0,
-                    'evidence_status', lesson.evidence_status
+                    'evidence_status', lesson.favorite_evidence_status
                 ),
                 jsonb_build_object(
                     'code', 'FEEDBACK_REBOOK_15D',

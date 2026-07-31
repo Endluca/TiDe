@@ -234,12 +234,28 @@ def _lesson_component_payloads(
     attributed: dict[str, dict[str, float]] = defaultdict(
         lambda: {"count": 0.0, "score": 0.0}
     )
-    favorite_credit: set[str] = set()
+    favorite_credit: set[tuple[str, str]] = set()
+    unresolved_favorite_pairs = {
+        (lesson.teacher_id, lesson.student_id_hash)
+        for lesson in lessons
+        if (
+            lesson.valid_for_scoring
+            and _completed_lesson(lesson.lesson_lifecycle_status)
+            and lesson.is_favorited is True
+            and lesson.student_id_hash
+            and (
+                lesson.lesson_local_date is None
+                or lesson.lesson_local_time is None
+            )
+        )
+    }
     ordered_lessons = sorted(
         lessons,
         key=lambda item: (
-            item.lesson_local_date or datetime.min.date(),
-            item.lesson_local_time or datetime.min.time(),
+            item.lesson_local_date is None,
+            item.lesson_local_date or datetime.max.date(),
+            item.lesson_local_time is None,
+            item.lesson_local_time or datetime.max.time(),
             item.lesson_id,
         ),
     )
@@ -251,11 +267,44 @@ def _lesson_component_payloads(
         praise_known = lesson.has_positive_feedback_tag is not None
         praise = is_completed and lesson.has_positive_feedback_tag is True
         favorite_known = lesson.is_favorited is not None
-        favorite_source_hit = is_completed and lesson.is_favorited is True
-        favorite_key = lesson.student_id_hash or f"lesson:{lesson.lesson_id}"
-        favorite = favorite_source_hit and favorite_key not in favorite_credit
+        favorite_source_hit = (
+            lesson.valid_for_scoring
+            and is_completed
+            and lesson.is_favorited is True
+        )
+        favorite_key = (
+            (lesson.teacher_id, lesson.student_id_hash)
+            if lesson.student_id_hash
+            else None
+        )
+        favorite_order_known = (
+            lesson.lesson_local_date is not None
+            and lesson.lesson_local_time is not None
+        )
+        favorite_attribution_known = (
+            favorite_key is not None
+            and favorite_order_known
+            and favorite_key not in unresolved_favorite_pairs
+        )
+        favorite = (
+            favorite_source_hit
+            and favorite_attribution_known
+            and favorite_key not in favorite_credit
+        )
         if favorite:
+            assert favorite_key is not None
             favorite_credit.add(favorite_key)
+        favorite_evidence_status = (
+            "SOURCE_MISSING"
+            if (
+                not favorite_known
+                or (
+                    favorite_source_hit
+                    and not favorite_attribution_known
+                )
+            )
+            else "CONFIRMED"
+        )
         hardware_quality = hardware_quality_passed(
             is_camera_off=lesson.is_camera_off,
             is_cpu_usage_high=lesson.is_cpu_usage_high,
@@ -289,11 +338,13 @@ def _lesson_component_payloads(
                     "awarded": favorite,
                     "points_per_unit": points.get("FEEDBACK_FAVORITE", 0.0),
                     "score": points.get("FEEDBACK_FAVORITE", 0.0) if favorite else 0.0,
-                    "evidence_status": "CONFIRMED" if favorite_known else "SOURCE_MISSING",
+                    "evidence_status": favorite_evidence_status,
                     "dedupe": {
-                        "key": "student_id_hash",
+                        "key": "teacher_id+student_id_hash",
                         "credited_on_this_lesson": favorite,
                         "source_hit": favorite_source_hit,
+                        "pair_available": favorite_key is not None,
+                        "lesson_time_available": favorite_order_known,
                     },
                 },
             ],
@@ -678,6 +729,7 @@ def refresh_persisted_score_read_models(
                     LessonFactRecord.lesson_local_date,
                     LessonFactRecord.lesson_local_time,
                     LessonFactRecord.student_id_hash,
+                    LessonFactRecord.valid_for_scoring,
                     LessonFactRecord.is_late,
                     LessonFactRecord.is_early,
                     LessonFactRecord.is_peak,

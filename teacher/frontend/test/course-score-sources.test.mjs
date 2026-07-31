@@ -167,6 +167,35 @@ test("does not expose components that the source view did not award", () => {
   );
 });
 
+test("keeps a later favorite fact visible without presenting a zero score", () => {
+  const laterFavorite = {
+    ...course,
+    facts: { ...course.facts, favorited: true },
+    dimensions: [{
+      code: "USER_FEEDBACK",
+      components: [{
+        code: "FEEDBACK_FAVORITE",
+        score: 0,
+        awarded: false,
+        evidenceStatus: "CONFIRMED",
+      }],
+    }],
+  };
+
+  assert.deepEqual(positiveCourseScoreSources(laterFavorite), []);
+  const favoriteFact = visibleCourseIndicators(laterFavorite).find(
+    (item) => item.sourceKey === "FEEDBACK_FAVORITE",
+  );
+  assert.deepEqual(
+    {
+      value: favoriteFact.value.zh,
+      tone: favoriteFact.tone,
+      score: favoriteFact.score,
+    },
+    { value: "已被学员收藏", tone: "positive", score: null },
+  );
+});
+
 test("keeps every safe course fact with a teacher-facing value", () => {
   const indicators = visibleCourseIndicators(course);
   assert.equal(indicators.length, 9);

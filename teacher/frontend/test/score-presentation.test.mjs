@@ -17,6 +17,25 @@ test("marks the gold stage as current after reaching 200", () => {
   });
 });
 
+test("describes favorite points as one eligible class per learner", () => {
+  const [feedback] = presentScorecardRules([
+    {
+      code: "USER_FEEDBACK",
+      score: 5,
+      scoreRuleVersion: "rule-v8",
+      components: [{ code: "FEEDBACK_FAVORITE", pointsPerUnit: 5 }],
+    },
+  ], "zh");
+
+  assert.equal(feedback.description, "世文返回的用户反馈子项按当前规则累计，本维度不封顶。");
+  assert.deepEqual(feedback.items, [{
+    code: "FEEDBACK_FAVORITE",
+    title: "学员收藏",
+    condition: "同一学员首节符合条件的收藏课计分 1 次",
+    pointsLabel: "+5/次",
+  }]);
+});
+
 test("presents teacher-readable rules from Shiwen scorecard components", () => {
   const groups = presentScorecardRules([
     {
@@ -69,7 +88,7 @@ test("presents teacher-readable rules from Shiwen scorecard components", () => {
     {
       code: "USER_FEEDBACK",
       title: "用户反馈",
-      description: "世文返回的用户反馈子项按次累计，本维度不封顶。",
+      description: "世文返回的用户反馈子项按当前规则累计，本维度不封顶。",
       currentScore: 10,
       scoreRuleVersion: "rule-v8",
       items: [{
