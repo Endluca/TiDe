@@ -90,7 +90,8 @@ def test_output_retry_is_atomic_and_persists_audit_outbox() -> None:
             )
         )
         assert outbox is not None
-        assert outbox.status == "PENDING"
+        assert outbox.status == "PARKED"
+        assert outbox.last_error == "NO_OUTPUT_CONSUMER_CONFIGURED"
         assert outbox.aggregate_id == "OUTPUT-RETRY-1"
 
 

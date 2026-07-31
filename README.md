@@ -1,7 +1,7 @@
-# TiDe｜新师成长运营台
+# TiDe｜新师训练营（运营端 + 教师端）
 
-面向新外教 30 天试用期的内部 Web App。系统把教师、课程、履约、课堂质量、用户反馈、
-产能和成长任务事实，转成可解释的积分、资格、任务和运营行动。
+面向新外教 30 天试用期的成长系统。仓库同时包含运营端和教师端：系统把教师、课程、
+履约、课堂质量、用户反馈、产能和成长任务事实，转成可解释的积分、资格、任务和运营行动。
 
 当前状态：**公司测试环境可运行，尚未生产上线。**
 
@@ -15,8 +15,8 @@
 - 单独收到的 `TiDe.env` 和运营登录账号。
 
 ```bash
-git clone https://github.com/Endluca/TiDe.git
-cd TiDe
+git clone git@flow.51talk.biz:ai-efficiency/Tide_teachers_camp.git
+cd Tide_teachers_camp
 
 ./scripts/setup.sh /安全路径/TiDe.env
 ./scripts/start.sh /安全路径/TiDe.env
@@ -55,9 +55,11 @@ cd TiDe
 - 当前任务目录只有 9 个固定成长任务和 5 个个性化改善任务；系统不得自由发明任务。
 - 教师端只更新已有任务的执行状态，不能写积分、总分或资格。
 - `task_assignments.why` 是教师端外显原因，固定和个性化任务均必须使用英文；个性化任务的数据库原值包含 `Evidence:` 最小证据摘要，读取时不再二次拼接；上游原始中文值只保留在证据快照。
-- 可靠性分：完美完课数 `perfect_cnt × 4` + Peak 完课数 `peak_completed_cnt × 2`。
-- 课堂质量：当前不设置加分项，维度分为 0，后续规则另行发布。
-- 逐课 `is_perfect`：课程状态为 `end`、缺席原因明细为空、迟到为 0、早退为 0；该字段由教师端课程读取视图实时派生，仅作为业务事实展示，不参与当前逐课计分。
+- 个性化任务的 `task_assignments.display_title` 是英文数据库事实；运营端和教师端直接读取，不在页面或 API 层转换。
+- `notifications.payload.title/body` 是触达展示的英文数据库事实，`body` 内含 `Evidence:` 关键证据摘要；运营端和教师端直接读取，不在展示层翻译或补写。
+- 可靠性分：课程明细派生的完美完课数 `perfect_cnt × 4` + Peak 完课数 `peak_completed_cnt × 2`。
+- 课堂质量：每节课的未开摄像头、CPU 占用过高、网络延迟过高三个字段都明确为 0 时，硬件质量加 2 分；任一字段为 1 或为空均不加分，空值同时标记为 `SOURCE_MISSING`。
+- 逐课 `is_perfect`：课程状态为 `end`、迟到为 0、早退为 0；每节达标课程在可靠性维度加 4 分，并进入 `lesson_total_score`。教师维度 `perfect_cnt` 按去重 `source_appoint_id` 汇总。
 - 用户反馈分：好评次数 × 5 + 按学员去重的收藏人数 × 5；15 日复约只保留事实，不计分。
 - 供给分：`peak_slot_cnt` 首次达到 40 时加 10 分并锁定。
 - 固定成长任务：按当前 9 项必修任务的完成状态与配置分值累加，最高 30 分。
@@ -84,14 +86,20 @@ cd TiDe
 ## 目录
 
 ```text
-TiDe/
-├── backend/           # FastAPI、PostgreSQL、Alembic、积分与任务规则
+Tide_teachers_camp/
+├── backend/           # 运营端 FastAPI、PostgreSQL、Alembic、积分与任务规则
 ├── frontend/          # React 运营 Web App
-├── contracts/         # 教师端共享任务和课程数据契约
+├── teacher/           # 教师端 NestJS API、React Web App 及其文档
+├── contracts/         # 两端共享任务和课程数据契约
+├── deploy/combined/   # 两端同机、不同域名的联合部署入口
 ├── docs/              # 架构、数据、积分、认证和配置说明
 ├── project-context/   # 业务方与 AI 的项目背景
-└── scripts/           # 一键安装和启动
+└── scripts/           # 运营端一键安装和启动
 ```
+
+教师端的独立开发、测试和构建命令见
+[`teacher/README.md`](teacher/README.md)。根目录与 `teacher/` 各自保留技术栈和迁移链，
+但通过同一 PostgreSQL 业务事实与共享契约协作。
 
 ## 数据与系统边界
 
@@ -108,9 +116,22 @@ TiDe/
 仓库提供生产镜像和同源反向代理示例；它用于构建可追溯产物，不代表公司生产资源已经开通：
 
 ```bash
-export TIDE_ENV_FILE=/安全路径/TiDe.production.env
+export TIDE_RUNTIME_ENV_FILE=/安全路径/TiDe.runtime.production.env
+export TIDE_MIGRATION_ENV_FILE=/安全路径/TiDe.migration.production.env
+export TIDE_MIGRATION_EXPECTED_DATABASE=tit_growth
+export TIDE_OPS_HOST=tit-growth.example.com
 
-# 发布前单独执行迁移并检查结果。
+# 默认只监听本机网关；如公司网关在另一台机器，只填写本机明确的私网 IP。
+export TIDE_GATEWAY_BIND_ADDRESS=127.0.0.1
+# 必须选择与宿主机及现有 Docker 网络都不重叠的专用网段，并在启动前核对。
+export TIDE_RUNTIME_SUBNET=172.31.254.0/24
+export TIDE_WEB_PROXY_IP=172.31.254.10
+
+# 先失败关闭校验环境文件、数据库角色、绑定地址和内部网段，再展开 Compose。
+python3 scripts/preflight_production.py
+docker compose -f docker-compose.production.yml --profile migration config --quiet
+
+# 校验通过后单独执行迁移并检查结果。
 docker compose -f docker-compose.production.yml --profile migration run --rm migrate
 
 # 首次部署时单独创建启动运营账号。密码仅注入本次命令，不写入环境文件。
@@ -126,11 +147,32 @@ docker compose -f docker-compose.production.yml up -d api score-settlement web
 
 - `backend/Dockerfile` 使用非 root 用户运行 FastAPI，默认 2 个 Worker；
 - `frontend/Dockerfile` 产出静态资源，Nginx 同源代理 `/api`；
-- 同源代理会把 Web App 域名作为 API 的 `Host`，因此 `TIT_ALLOWED_HOSTS`
-  必须填写 Web App 域名；同源部署的 `TIT_ALLOWED_ORIGINS` 保持为空；
-- 数据库凭据只由部署环境注入，不能复制进镜像；
-- HTTPS 应在公司网关/负载均衡终止，网关必须配合 Allowed Host、证书、限流和日志；
-- Alembic 迁移是发布前单独动作，不能由每个 API 副本启动时竞争执行。
+- `TIDE_RUNTIME_ENV_FILE` 只使用受限运行角色 `tit_growth_app`，
+  `TIDE_MIGRATION_ENV_FILE` 只使用迁移角色 `tit_growth_migrator`；两个文件不得复用，
+  数据库凭据只由部署环境注入，不能复制进镜像；
+- 同源代理会把 Web App 域名作为 API 的 `Host`。`TIDE_OPS_HOST` 必须同时出现在运行
+  环境文件的 `TIT_ALLOWED_HOSTS` 中，Compose 会用它覆盖 `TIT_HEALTHCHECK_HOST`；
+  同源部署的 `TIT_ALLOWED_ORIGINS` 保持为空；
+- Web Nginx 是 API 唯一可信 HTTP 代理，`TIDE_WEB_PROXY_IP` 与
+  `TIDE_RUNTIME_SUBNET` 都是生产必填项。所选网段必须先通过
+  `docker network ls` / `docker network inspect` 和宿主路由核对不重叠，API 只信任
+  这个精确容器 IP，不能改回整个 Docker 网段；
+- HTTPS 在公司网关/负载均衡终止。原点 Nginx 会丢弃所有入站 `X-Real-IP`、
+  `X-Forwarded-For` 与 `X-Forwarded-Proto`，只把直接连接的网关地址传给 API，并将
+  协议固定为生产 HTTPS；真实客户端 IP 的限流和审计由公司网关负责。宿主发布端口
+  默认只绑定 `127.0.0.1`，跨机接入时仅绑定明确私网 IP 并用防火墙只允许公司网关，
+  禁止 `0.0.0.0`；
+- Alembic 迁移是发布前单独动作，Compose 会显式注入迁移模式和预期数据库名，不能
+  由 API 副本启动时执行。
+
+仓库内 `teacher/` 教师端与根目录运营端同机部署时，使用
+[联合部署说明](deploy/combined/README.md) 和
+[联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
+独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
+联合部署门禁要求教师端生产迁移完整到
+`0025_fixed_task_semantic_alignment`，并同时通过固定提交源码中的精确
+`G01–G09` 标题/分值预检和目标数据库契约探针。教师端只到 0024、目录缺项或语义错误
+都会失败关闭；即使门禁通过，也不能把“已有 Compose”解释为已完成生产切流。
 
 ## 开发验证
 

@@ -22,8 +22,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 from uuid import uuid4
 
-from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, delete, insert, select
+from sqlalchemy.orm import Session, load_only
 
 from .config_models import (
     ConfigKey,
@@ -31,6 +31,7 @@ from .config_models import (
     ConfigVersionRecord,
     ScoreGraduationConfig,
 )
+from .lesson_quality import hardware_quality_passed, is_perfect_lesson
 from .db_models import (
     LessonDimensionScoreRecord,
     LessonFactRecord,
@@ -68,6 +69,7 @@ COMPLETED_LESSON_STATUSES = frozenset(
         "finished",
     }
 )
+PROJECTION_INSERT_BATCH_SIZE = 2_000
 
 
 def _now() -> datetime:
@@ -86,6 +88,56 @@ def _canonical_hash(payload: dict[str, Any]) -> str:
 
 def _completed_lesson(value: str | None) -> bool:
     return str(value or "").strip().casefold() in COMPLETED_LESSON_STATUSES
+
+
+def _hardware_quality_summary(
+    lessons: Iterable[LessonFactRecord],
+) -> dict[str, Any]:
+    results = [
+        hardware_quality_passed(
+            is_camera_off=lesson.is_camera_off,
+            is_cpu_usage_high=lesson.is_cpu_usage_high,
+            is_network_delay_high=lesson.is_network_delay_high,
+        )
+        for lesson in lessons
+    ]
+    return {
+        "count": sum(result is True for result in results),
+        "source_mode": (
+            "DERIVED_REAL"
+            if all(result is not None for result in results)
+            else "SOURCE_MISSING"
+        ),
+    }
+
+
+def _perfect_completion_summary(
+    lessons: Iterable[LessonFactRecord],
+) -> dict[str, Any]:
+    lesson_rows = list(lessons)
+    appoint_ids = {
+        lesson.source_appoint_id
+        for lesson in lesson_rows
+        if lesson.source_appoint_id
+        and is_perfect_lesson(
+            lesson_lifecycle_status=lesson.lesson_lifecycle_status,
+            is_late=lesson.is_late,
+            is_early=lesson.is_early,
+        )
+    }
+    evidence_complete = all(
+        bool(lesson.lesson_lifecycle_status)
+        and lesson.is_late is not None
+        and lesson.is_early is not None
+        and bool(lesson.source_appoint_id)
+        for lesson in lesson_rows
+    )
+    return {
+        "count": len(appoint_ids),
+        "source_mode": (
+            "DERIVED_REAL" if evidence_complete else "SOURCE_MISSING"
+        ),
+    }
 
 
 def _source_mode(payload: dict[str, Any] | None, default: str) -> str:
@@ -204,6 +256,21 @@ def _lesson_component_payloads(
         favorite = favorite_source_hit and favorite_key not in favorite_credit
         if favorite:
             favorite_credit.add(favorite_key)
+        hardware_quality = hardware_quality_passed(
+            is_camera_off=lesson.is_camera_off,
+            is_cpu_usage_high=lesson.is_cpu_usage_high,
+            is_network_delay_high=lesson.is_network_delay_high,
+        )
+        perfect_known = (
+            bool(lesson.lesson_lifecycle_status)
+            and lesson.is_late is not None
+            and lesson.is_early is not None
+        )
+        is_perfect = is_perfect_lesson(
+            lesson_lifecycle_status=lesson.lesson_lifecycle_status,
+            is_late=lesson.is_late,
+            is_early=lesson.is_early,
+        )
         component_sets = {
             "USER_FEEDBACK": [
                 {
@@ -234,14 +301,31 @@ def _lesson_component_payloads(
                 [
                     {
                         "code": "PERFECT_COMPLETED",
-                        "business_fact": "perfect_cnt",
-                        "fact_value": None,
-                        "awarded": False,
+                        "business_fact": "is_perfect",
+                        "fact_value": (
+                            is_perfect if perfect_known else None
+                        ),
+                        "awarded": is_perfect,
                         "points_per_unit": points.get(
                             "PERFECT_COMPLETED", 0.0
                         ),
-                        "score": 0.0,
-                        "evidence_status": "SOURCE_MISSING",
+                        "score": (
+                            points.get("PERFECT_COMPLETED", 0.0)
+                            if is_perfect
+                            else 0.0
+                        ),
+                        "evidence_status": (
+                            "CONFIRMED"
+                            if perfect_known
+                            else "SOURCE_MISSING"
+                        ),
+                        "inputs": {
+                            "lesson_lifecycle_status": (
+                                lesson.lesson_lifecycle_status
+                            ),
+                            "is_late": lesson.is_late,
+                            "is_early": lesson.is_early,
+                        },
                     },
                 ]
                 if "PERFECT_COMPLETED" in points
@@ -309,20 +393,51 @@ def _lesson_component_payloads(
             ],
             "CLASS_QUALITY": (
                 [
-                {
-                    "code": "CLASS_QUALITY_PERFECT_COUNT",
-                    "business_fact": "perfect_cnt",
-                    "fact_value": None,
-                    "awarded": False,
-                    "points_per_unit": points.get(
-                        "CLASS_QUALITY_PERFECT_COUNT", 0.0
-                    ),
-                    "score": 0.0,
-                    "evidence_status": "SOURCE_MISSING",
-                }
+                    {
+                        "code": "CLASS_QUALITY_HARDWARE",
+                        "business_fact": "hardware_quality_passed",
+                        "fact_value": hardware_quality,
+                        "awarded": hardware_quality is True,
+                        "points_per_unit": points.get(
+                            "CLASS_QUALITY_HARDWARE", 0.0
+                        ),
+                        "score": (
+                            points.get("CLASS_QUALITY_HARDWARE", 0.0)
+                            if hardware_quality is True
+                            else 0.0
+                        ),
+                        "evidence_status": (
+                            "CONFIRMED"
+                            if hardware_quality is not None
+                            else "SOURCE_MISSING"
+                        ),
+                        "inputs": {
+                            "is_camera_off": lesson.is_camera_off,
+                            "is_cpu_usage_high": lesson.is_cpu_usage_high,
+                            "is_network_delay_high": (
+                                lesson.is_network_delay_high
+                            ),
+                        },
+                    }
                 ]
-                if "CLASS_QUALITY_PERFECT_COUNT" in points
-                else []
+                if "CLASS_QUALITY_HARDWARE" in points
+                else (
+                    [
+                        {
+                            "code": "CLASS_QUALITY_PERFECT_COUNT",
+                            "business_fact": "perfect_cnt",
+                            "fact_value": None,
+                            "awarded": False,
+                            "points_per_unit": points.get(
+                                "CLASS_QUALITY_PERFECT_COUNT", 0.0
+                            ),
+                            "score": 0.0,
+                            "evidence_status": "SOURCE_MISSING",
+                        }
+                    ]
+                    if "CLASS_QUALITY_PERFECT_COUNT" in points
+                    else []
+                )
             ),
         }
         if "FEEDBACK_REBOOK_15D" in points:
@@ -388,10 +503,7 @@ def _reconciliation(
 ) -> str:
     if source_scope != "LESSON":
         return "NOT_APPLICABLE"
-    if component_code in {
-        "CLASS_QUALITY_PERFECT_COUNT",
-        "PERFECT_COMPLETED",
-    }:
+    if component_code == "CLASS_QUALITY_PERFECT_COUNT":
         return "SOURCE_MISSING"
     if math.isclose(current_score, attributed_score, abs_tol=1e-9):
         return "MATCHED" if current_score else "MATCHED_ZERO"
@@ -482,8 +594,40 @@ def refresh_persisted_score_read_models(
 
     snapshots = list(
         session.scalars(
-            select(TeacherMetricSnapshotRecord).where(
-                TeacherMetricSnapshotRecord.teacher_id.in_(ids)
+            select(TeacherMetricSnapshotRecord)
+            .join(
+                TeacherRecord,
+                and_(
+                    TeacherRecord.teacher_id
+                    == TeacherMetricSnapshotRecord.teacher_id,
+                    TeacherRecord.source_batch_id
+                    == TeacherMetricSnapshotRecord.batch_id,
+                ),
+            )
+            .where(TeacherRecord.teacher_id.in_(ids))
+            .options(
+                load_only(
+                    TeacherMetricSnapshotRecord.snapshot_id,
+                    TeacherMetricSnapshotRecord.batch_id,
+                    TeacherMetricSnapshotRecord.teacher_id,
+                    TeacherMetricSnapshotRecord.score_rule_version,
+                    TeacherMetricSnapshotRecord.score_policy_snapshot,
+                    TeacherMetricSnapshotRecord.score_policy_sha256,
+                    TeacherMetricSnapshotRecord.total_completed_cnt,
+                    TeacherMetricSnapshotRecord.perfect_cnt,
+                    TeacherMetricSnapshotRecord.absent_cnt,
+                    TeacherMetricSnapshotRecord.capacity_score,
+                    TeacherMetricSnapshotRecord.new_teacher_task_score,
+                    TeacherMetricSnapshotRecord.reliability_score,
+                    TeacherMetricSnapshotRecord.user_feedback_score,
+                    TeacherMetricSnapshotRecord.class_quality_score,
+                    TeacherMetricSnapshotRecord.raw_total_score,
+                    TeacherMetricSnapshotRecord.public_total_score,
+                    TeacherMetricSnapshotRecord.metric_inputs,
+                    TeacherMetricSnapshotRecord.metric_provenance,
+                    TeacherMetricSnapshotRecord.updated_at,
+                    raiseload=True,
+                )
             )
         ).all()
     )
@@ -524,6 +668,31 @@ def refresh_persisted_score_read_models(
         session.scalars(
             select(LessonFactRecord)
             .where(LessonFactRecord.teacher_id.in_(ids))
+            .options(
+                load_only(
+                    LessonFactRecord.lesson_id,
+                    LessonFactRecord.source_appoint_id,
+                    LessonFactRecord.teacher_id,
+                    LessonFactRecord.scheduled_start_at,
+                    LessonFactRecord.lesson_lifecycle_status,
+                    LessonFactRecord.lesson_local_date,
+                    LessonFactRecord.lesson_local_time,
+                    LessonFactRecord.student_id_hash,
+                    LessonFactRecord.is_late,
+                    LessonFactRecord.is_early,
+                    LessonFactRecord.is_peak,
+                    LessonFactRecord.is_favorited,
+                    LessonFactRecord.has_positive_feedback_tag,
+                    LessonFactRecord.is_rebooked,
+                    LessonFactRecord.is_camera_off,
+                    LessonFactRecord.is_cpu_usage_high,
+                    LessonFactRecord.is_network_delay_high,
+                    LessonFactRecord.source_batch_id,
+                    LessonFactRecord.source_record_id,
+                    LessonFactRecord.updated_at,
+                    raiseload=True,
+                )
+            )
             .order_by(
                 LessonFactRecord.teacher_id,
                 LessonFactRecord.lesson_local_date,
@@ -536,27 +705,43 @@ def refresh_persisted_score_read_models(
     for item in lessons:
         lessons_by_teacher[item.teacher_id].append(item)
 
-    old_lesson_revisions = {
-        (item.teacher_id, item.lesson_id, item.dimension): int(
-            item.current_revision or 0
-        )
-        for item in session.scalars(
-            select(LessonDimensionScoreRecord).where(
+    # A teacher-wide source update changes aggregate inputs, but it does not
+    # change either lesson facts or the published score policy. Keep the
+    # existing per-lesson projection intact in that path. Policy publication
+    # and lesson-source replacement still rebuild it atomically.
+    rebuild_lesson_scores = trigger_type not in {
+        "TEACHER_SOURCE_UPDATED",
+        "TASK_STATUS_UPDATED",
+    }
+    old_lesson_revisions = (
+        {
+            (str(teacher_id), str(lesson_id), str(dimension)): int(revision or 0)
+            for teacher_id, lesson_id, dimension, revision in session.execute(
+                select(
+                    LessonDimensionScoreRecord.teacher_id,
+                    LessonDimensionScoreRecord.lesson_id,
+                    LessonDimensionScoreRecord.dimension,
+                    LessonDimensionScoreRecord.current_revision,
+                ).where(LessonDimensionScoreRecord.teacher_id.in_(ids))
+            ).all()
+        }
+        if rebuild_lesson_scores
+        else {}
+    )
+    if rebuild_lesson_scores:
+        session.execute(
+            delete(LessonDimensionScoreRecord).where(
                 LessonDimensionScoreRecord.teacher_id.in_(ids)
             )
-        ).all()
-    }
-    session.execute(
-        delete(LessonDimensionScoreRecord).where(
-            LessonDimensionScoreRecord.teacher_id.in_(ids)
         )
-    )
     old_component_revisions = {
-        (item.teacher_id, item.component_code): int(item.projection_revision or 0)
-        for item in session.scalars(
-            select(ScoreComponentAccountRecord).where(
-                ScoreComponentAccountRecord.teacher_id.in_(ids)
-            )
+        (str(teacher_id), str(component_code)): int(revision or 0)
+        for teacher_id, component_code, revision in session.execute(
+            select(
+                ScoreComponentAccountRecord.teacher_id,
+                ScoreComponentAccountRecord.component_code,
+                ScoreComponentAccountRecord.projection_revision,
+            ).where(ScoreComponentAccountRecord.teacher_id.in_(ids))
         ).all()
     }
     session.execute(
@@ -577,6 +762,8 @@ def refresh_persisted_score_read_models(
     calculated_at = _now()
     lesson_state_count = 0
     component_count = 0
+    lesson_insert_buffer: list[dict[str, Any]] = []
+    component_insert_buffer: list[dict[str, Any]] = []
     teacher_batch_ids: set[str] = set()
     lesson_batch_ids: set[str] = set()
 
@@ -630,12 +817,52 @@ def refresh_persisted_score_read_models(
                     ),
                 },
             )
+        has_confirmed_empty_lesson_set = bool(
+            snapshot is not None
+            and int(snapshot.total_completed_cnt or 0) == 0
+        )
+        perfect_summary = (
+            _perfect_completion_summary(teacher_lessons)
+            if teacher_lessons or has_confirmed_empty_lesson_set
+            else None
+        )
+        if perfect_summary is not None:
+            teacher_payload.setdefault("metric_inputs", {})
+            teacher_payload.setdefault("metric_provenance", {})
+            teacher_payload["metric_inputs"]["perfect_cnt"] = int(
+                perfect_summary["count"]
+            )
+            teacher_payload["metric_provenance"]["perfect_cnt"] = {
+                "source_mode": perfect_summary["source_mode"],
+                "source_field": (
+                    "lesson_facts.source_appoint_id,"
+                    "lesson_lifecycle_status,is_late,is_early"
+                ),
+                "batch_id": source_lesson_batch_id,
+                "note": (
+                    "COUNT(DISTINCT source_appoint_id) where status=end, "
+                    "is_late=false and is_early=false."
+                ),
+            }
         teacher_assignments = assignments_by_teacher.get(teacher.teacher_id, [])
         overrides = _account_overrides(
             accounts_by_teacher.get(teacher.teacher_id, []),
             teacher_assignments,
             templates,
         )
+        quality_rule = getattr(policy.scoring_items, "classroom_quality", None)
+        if (
+            getattr(quality_rule, "metric", None)
+            == "lesson_hardware_quality_passed"
+        ):
+            quality_summary = _hardware_quality_summary(teacher_lessons)
+            overrides["CLASS_QUALITY"] = {
+                **quality_summary,
+                "score": (
+                    float(quality_summary["count"])
+                    * float(quality_rule.points_per_unit)
+                ),
+            }
         projection_score_rule_version = str(
             (
                 policy.policy_version
@@ -666,6 +893,27 @@ def refresh_persisted_score_read_models(
                 "CAPACITY": float(snapshot.capacity_score),
                 "NEW_TEACHER_TASK": float(snapshot.new_teacher_task_score),
             }
+            if trigger_type == "LESSON_SOURCE_UPDATED":
+                preserved_scores["RELIABILITY"] = float(
+                    next(
+                        (
+                            item["score"]
+                            for item in dimensions
+                            if item.get("code") == "RELIABILITY"
+                        ),
+                        0.0,
+                    )
+                )
+                preserved_scores["CLASS_QUALITY"] = float(
+                    next(
+                        (
+                            item["score"]
+                            for item in dimensions
+                            if item.get("code") == "CLASS_QUALITY"
+                        ),
+                        0.0,
+                    )
+                )
             if trigger_type == "TASK_STATUS_UPDATED":
                 preserved_scores["NEW_TEACHER_TASK"] = float(
                     next(
@@ -717,46 +965,60 @@ def refresh_persisted_score_read_models(
             teacher_lessons,
             points=points,
         )
-        for row in lesson_rows:
-            lesson = row["lesson"]
-            dimension = row["dimension"]
-            session.add(
-                LessonDimensionScoreRecord(
-                    score_state_id=(
-                        f"{teacher.camp_enrollment_id}:{lesson.lesson_id}:{dimension}"
-                    ),
-                    camp_enrollment_id=teacher.camp_enrollment_id,
-                    lesson_id=lesson.lesson_id,
-                    teacher_id=teacher.teacher_id,
-                    dimension=dimension,
-                    current_score=float(row["current_score"]),
-                    evidence_status=str(row["evidence_status"]),
-                    evidence_coverage=str(row["evidence_coverage"]),
-                    score_rule_version=projection_score_rule_version,
-                    current_revision=(
-                        old_lesson_revisions.get(
-                            (teacher.teacher_id, lesson.lesson_id, dimension),
-                            0,
-                        )
-                        + 1
-                    ),
-                    score_as_of=lesson.scheduled_start_at or lesson.updated_at,
-                    last_score_entry_id=None,
-                    payload={
-                        "source_scope": "LESSON",
-                        "source_batch_id": lesson.source_batch_id,
-                        "source_record_id": lesson.source_record_id,
-                        "business_facts": row["components"],
-                        "projection_id": projection_id,
-                        "projection_trigger": {
-                            "type": trigger_type,
-                            "ref": trigger_ref,
+        if rebuild_lesson_scores:
+            for row in lesson_rows:
+                lesson = row["lesson"]
+                dimension = row["dimension"]
+                lesson_insert_buffer.append(
+                    {
+                        "score_state_id": (
+                            f"{teacher.camp_enrollment_id}:"
+                            f"{lesson.lesson_id}:{dimension}"
+                        ),
+                        "camp_enrollment_id": teacher.camp_enrollment_id,
+                        "lesson_id": lesson.lesson_id,
+                        "teacher_id": teacher.teacher_id,
+                        "dimension": dimension,
+                        "current_score": float(row["current_score"]),
+                        "evidence_status": str(row["evidence_status"]),
+                        "evidence_coverage": str(row["evidence_coverage"]),
+                        "score_rule_version": projection_score_rule_version,
+                        "current_revision": (
+                            old_lesson_revisions.get(
+                                (
+                                    teacher.teacher_id,
+                                    lesson.lesson_id,
+                                    dimension,
+                                ),
+                                0,
+                            )
+                            + 1
+                        ),
+                        "score_as_of": (
+                            lesson.scheduled_start_at or lesson.updated_at
+                        ),
+                        "last_score_entry_id": None,
+                        "payload": {
+                            "source_scope": "LESSON",
+                            "source_batch_id": lesson.source_batch_id,
+                            "source_record_id": lesson.source_record_id,
+                            "business_facts": row["components"],
+                            "projection_id": projection_id,
+                            "projection_trigger": {
+                                "type": trigger_type,
+                                "ref": trigger_ref,
+                            },
                         },
-                    },
-                    updated_at=calculated_at,
+                        "updated_at": calculated_at,
+                    }
                 )
-            )
-            lesson_state_count += 1
+                lesson_state_count += 1
+                if len(lesson_insert_buffer) >= PROJECTION_INSERT_BATCH_SIZE:
+                    session.execute(
+                        insert(LessonDimensionScoreRecord),
+                        lesson_insert_buffer,
+                    )
+                    lesson_insert_buffer.clear()
 
         task_components = _task_component_rows(teacher_assignments, templates)
         account_by_dimension = {
@@ -855,39 +1117,43 @@ def refresh_persisted_score_read_models(
                     attributed_score=attributed_score,
                     has_lessons=bool(teacher_lessons),
                 )
-                session.add(
-                    ScoreComponentAccountRecord(
-                        component_account_id=f"{teacher.teacher_id}:{code}",
-                        teacher_id=teacher.teacher_id,
-                        camp_enrollment_id=teacher.camp_enrollment_id,
-                        dimension=dimension_code,
-                        component_code=code,
-                        source_scope=source_scope,
-                        source_metric=component.get("metric"),
-                        unit_count=float(component.get("value") or 0),
-                        points_per_unit=(
+                component_insert_buffer.append(
+                    {
+                        "component_account_id": f"{teacher.teacher_id}:{code}",
+                        "teacher_id": teacher.teacher_id,
+                        "camp_enrollment_id": teacher.camp_enrollment_id,
+                        "dimension": dimension_code,
+                        "component_code": code,
+                        "source_scope": source_scope,
+                        "source_metric": component.get("metric"),
+                        "unit_count": float(component.get("value") or 0),
+                        "points_per_unit": (
                             float(component["points_per_unit"])
                             if component.get("points_per_unit") is not None
                             else None
                         ),
-                        current_score=component_score,
-                        lesson_attributed_count=int(attributed_value["count"]),
-                        lesson_attributed_score=round(attributed_score, 2),
-                        unattributed_score=round(
-                            component_score - attributed_score, 2
+                        "current_score": component_score,
+                        "lesson_attributed_count": int(
+                            attributed_value["count"]
                         ),
-                        reconciliation_status=status,
-                        score_rule_version=projection_score_rule_version,
-                        source_teacher_batch_id=teacher.source_batch_id,
-                        source_lesson_batch_id=source_lesson_batch_id,
-                        projection_revision=(
+                        "lesson_attributed_score": round(attributed_score, 2),
+                        "unattributed_score": round(
+                            component_score - attributed_score,
+                            2,
+                        ),
+                        "reconciliation_status": status,
+                        "score_rule_version": projection_score_rule_version,
+                        "source_teacher_batch_id": teacher.source_batch_id,
+                        "source_lesson_batch_id": source_lesson_batch_id,
+                        "projection_revision": (
                             old_component_revisions.get(
-                                (teacher.teacher_id, code), 0
+                                (teacher.teacher_id, code),
+                                0,
                             )
                             + 1
                         ),
-                        calculated_at=calculated_at,
-                        payload={
+                        "calculated_at": calculated_at,
+                        "payload": {
                             **deepcopy(component),
                             "score_config_version_id": config_version_id,
                             "projection_id": projection_id,
@@ -901,9 +1167,15 @@ def refresh_persisted_score_read_models(
                                 "lesson-attribution-must-reconcile"
                             ),
                         },
-                    )
+                    }
                 )
                 component_count += 1
+                if len(component_insert_buffer) >= PROJECTION_INSERT_BATCH_SIZE:
+                    session.execute(
+                        insert(ScoreComponentAccountRecord),
+                        component_insert_buffer,
+                    )
+                    component_insert_buffer.clear()
 
         raw_total = float(projected.get("raw_total_score") or 0)
         public_total = float(projected.get("external_display_score") or 0)
@@ -911,6 +1183,14 @@ def refresh_persisted_score_read_models(
             dimension_scores = {
                 item["code"]: float(item["score"]) for item in dimensions
             }
+            if perfect_summary is not None:
+                snapshot.perfect_cnt = int(perfect_summary["count"])
+            snapshot.metric_inputs = deepcopy(
+                teacher_payload["metric_inputs"]
+            )
+            snapshot.metric_provenance = deepcopy(
+                teacher_payload["metric_provenance"]
+            )
             snapshot.reliability_score = dimension_scores.get("RELIABILITY", 0)
             snapshot.user_feedback_score = dimension_scores.get("USER_FEEDBACK", 0)
             snapshot.class_quality_score = dimension_scores.get("CLASS_QUALITY", 0)
@@ -961,6 +1241,16 @@ def refresh_persisted_score_read_models(
         teacher.payload = teacher_payload
         teacher.updated_at = calculated_at
 
+    if lesson_insert_buffer:
+        session.execute(
+            insert(LessonDimensionScoreRecord),
+            lesson_insert_buffer,
+        )
+    if component_insert_buffer:
+        session.execute(
+            insert(ScoreComponentAccountRecord),
+            component_insert_buffer,
+        )
     session.flush()
     return {
         "projection_id": projection_id,

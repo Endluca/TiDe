@@ -36,6 +36,7 @@ from .fixed_growth_baseline import (
     FixedGrowthBaselineError,
     ensure_fixed_growth_assignments,
 )
+from .score_projection_lock import acquire_score_projection_lock
 from .task_catalog import MANDATORY_TASK_CODES
 
 
@@ -485,6 +486,45 @@ def _find_capacity_milestone_entry(
     )
 
 
+def _capacity_milestone_entries_by_teacher(
+    session: Session,
+    teacher_ids: Iterable[str],
+) -> dict[str, ScoreEntryRecord]:
+    """Load current and legacy capacity milestone rows in one query."""
+
+    normalized_ids = sorted({str(item) for item in teacher_ids})
+    if not normalized_ids:
+        return {}
+    rows = list(
+        session.scalars(
+            select(ScoreEntryRecord)
+            .where(
+                ScoreEntryRecord.teacher_id.in_(normalized_ids),
+                ScoreEntryRecord.dimension == "CAPACITY",
+                ScoreEntryRecord.reason_code
+                == CAPACITY_MILESTONE_REASON_CODE,
+            )
+            .order_by(
+                ScoreEntryRecord.teacher_id,
+                ScoreEntryRecord.recorded_at,
+                ScoreEntryRecord.score_entry_id,
+            )
+        ).all()
+    )
+    result: dict[str, ScoreEntryRecord] = {}
+    for entry in rows:
+        teacher_id = str(entry.teacher_id)
+        if (
+            entry.idempotency_key
+            == _capacity_milestone_idempotency_key(teacher_id)
+        ):
+            # The deterministic row has precedence over a legacy fallback.
+            result[teacher_id] = entry
+        else:
+            result.setdefault(teacher_id, entry)
+    return result
+
+
 def _append_score_entry_payload(
     teacher_payload: dict[str, Any],
     entry_payload: dict[str, Any],
@@ -519,6 +559,9 @@ def _score_entry_payload_from_record(entry: ScoreEntryRecord) -> dict[str, Any]:
     return payload
 
 
+_MILESTONE_NOT_PRELOADED = object()
+
+
 def _ensure_capacity_milestone_entry(
     session: Session,
     *,
@@ -527,8 +570,16 @@ def _ensure_capacity_milestone_entry(
     snapshot_id: str,
     peak_slot_cnt: int,
     occurred_at: datetime,
+    preloaded_existing: ScoreEntryRecord | None | object = (
+        _MILESTONE_NOT_PRELOADED
+    ),
 ) -> tuple[ScoreEntryRecord, dict[str, Any], bool]:
-    existing = _find_capacity_milestone_entry(session, teacher.teacher_id)
+    existing = (
+        _find_capacity_milestone_entry(session, teacher.teacher_id)
+        if preloaded_existing is _MILESTONE_NOT_PRELOADED
+        else preloaded_existing
+    )
+    assert existing is None or isinstance(existing, ScoreEntryRecord)
     if existing is not None:
         return existing, _score_entry_payload_from_record(existing), False
 
@@ -810,6 +861,14 @@ def _metric_projection(
         class_quality_score = 0.0
     elif classroom_quality_rule.get("metric") == "perfect_cnt":
         class_quality_score = perfect * classroom_quality_rule["points_per_unit"]
+    elif (
+        classroom_quality_rule.get("metric")
+        == "lesson_hardware_quality_passed"
+    ):
+        # The teacher-wide import does not own lesson-grain hardware facts.
+        # The persisted read-model refresh recalculates this dimension from
+        # lesson_facts in the same import transaction.
+        class_quality_score = 0.0
     else:
         class_quality_score = (
             total_completed
@@ -836,6 +895,14 @@ def _metric_projection(
 
 def _dimensions(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     inputs = metrics["metric_inputs"]
+    classroom_quality_rule = SCORE_POLICY_SNAPSHOT["scoring_items"].get(
+        "classroom_quality"
+    )
+    hardware_quality_enabled = bool(
+        classroom_quality_rule
+        and classroom_quality_rule.get("metric")
+        == "lesson_hardware_quality_passed"
+    )
     return [
         {
             "code": "RELIABILITY",
@@ -880,25 +947,37 @@ def _dimensions(metrics: dict[str, Any]) -> list[dict[str, Any]]:
             "minimum": 0,
             "weight": 0,
             "data_mode": (
-                metrics["metric_provenance"]["perfect_cnt"]["source_mode"]
-                if "classroom_quality"
-                in SCORE_POLICY_SNAPSHOT["scoring_items"]
-                else "NOT_APPLICABLE"
+                "SOURCE_MISSING"
+                if hardware_quality_enabled
+                else (
+                    metrics["metric_provenance"]["perfect_cnt"]["source_mode"]
+                    if classroom_quality_rule is not None
+                    else "NOT_APPLICABLE"
+                )
             ),
             "score_rule_version": SCORE_RULE_VERSION,
             "formula": (
                 (
-                    "perfect_cnt * "
-                    f"{float(SCORE_POLICY_SNAPSHOT['scoring_items']['classroom_quality']['points_per_unit']):g}"
+                    "lesson_hardware_quality_passed_count * "
+                    f"{float(classroom_quality_rule['points_per_unit']):g}"
                 )
-                if "classroom_quality"
-                in SCORE_POLICY_SNAPSHOT["scoring_items"]
+                if hardware_quality_enabled
+                else (
+                    "perfect_cnt * "
+                    f"{float(classroom_quality_rule['points_per_unit']):g}"
+                )
+                if classroom_quality_rule is not None
                 else None
             ),
             "source_fields": (
-                ["perfect_cnt"]
-                if "classroom_quality"
-                in SCORE_POLICY_SNAPSHOT["scoring_items"]
+                [
+                    "lesson_facts.is_camera_off",
+                    "lesson_facts.is_cpu_usage_high",
+                    "lesson_facts.is_network_delay_high",
+                ]
+                if hardware_quality_enabled
+                else ["perfect_cnt"]
+                if classroom_quality_rule is not None
                 else []
             ),
         },
@@ -1288,6 +1367,18 @@ def _repair_existing_batch_policy_metadata(
             "stored batch snapshots are incomplete or contain unexpected teacher IDs; "
             "refusing to report an idempotent success"
         )
+    teachers_by_id = {
+        teacher.teacher_id: teacher
+        for teacher in session.scalars(
+            select(TeacherRecord).where(
+                TeacherRecord.teacher_id.in_(expected_rows)
+            )
+        ).all()
+    }
+    milestone_entries = _capacity_milestone_entries_by_teacher(
+        session,
+        expected_rows,
+    )
 
     now = _now()
     repaired_lineages: set[tuple[str, str]] = set()
@@ -1311,7 +1402,7 @@ def _repair_existing_batch_policy_metadata(
             except (TypeError, ValueError):
                 stored_policy_is_valid = False
         effective_policy = stored_policy if stored_policy_is_valid else SCORE_POLICY_SNAPSHOT
-        existing_milestone_entry = _find_capacity_milestone_entry(session, teacher_id)
+        existing_milestone_entry = milestone_entries.get(teacher_id)
         expected_metrics = _metric_projection(
             source_row.raw_payload,
             batch.batch_id,
@@ -1358,7 +1449,7 @@ def _repair_existing_batch_policy_metadata(
             snapshot.updated_at = now
         repaired_lineages.add((snapshot.score_rule_version, snapshot.score_policy_sha256))
 
-        teacher = session.get(TeacherRecord, teacher_id)
+        teacher = teachers_by_id.get(teacher_id)
         milestone_entry_payload: dict[str, Any] | None = None
         if (
             teacher is not None
@@ -1368,7 +1459,11 @@ def _repair_existing_batch_policy_metadata(
                 )
             )
         ):
-            _, milestone_entry_payload, _ = _ensure_capacity_milestone_entry(
+            (
+                milestone_entry,
+                milestone_entry_payload,
+                _milestone_created,
+            ) = _ensure_capacity_milestone_entry(
                 session,
                 teacher=teacher,
                 batch_id=batch.batch_id,
@@ -1377,7 +1472,9 @@ def _repair_existing_batch_policy_metadata(
                     expected_metrics["metric_inputs"].get("peak_slot_cnt", 0)
                 ),
                 occurred_at=snapshot.created_at or batch.imported_at or now,
+                preloaded_existing=existing_milestone_entry,
             )
+            milestone_entries[teacher_id] = milestone_entry
         if teacher is None or teacher.source_batch_id != batch.batch_id:
             # A historical batch must not overwrite a teacher's newer current
             # projection.  The immutable snapshot above remains fully repaired.
@@ -1534,6 +1631,7 @@ def recalculate_current_class_quality_scores(
     now = _now()
 
     with session_scope(selected_engine) as session:
+        acquire_score_projection_lock(session)
         published_config = session.scalar(
             select(ConfigVersionRecord)
             .where(
@@ -1989,6 +2087,10 @@ def import_teacher_metrics(
     batch_id = f"TMB-{source_sha256[:32]}"
     idempotent_reimport = False
     with session_scope(selected_engine) as session:
+        # Import may initialize assignments, score ledgers and projections.
+        # Establish the shared lock order before any of those writes or row
+        # locks are possible.
+        acquire_score_projection_lock(session)
         existing_batch = session.scalar(
             select(DataImportBatchRecord).where(
                 DataImportBatchRecord.source_sha256 == source_sha256,
@@ -2076,15 +2178,44 @@ def import_teacher_metrics(
             )
             session.flush()
 
+        teacher_ids = [row.teacher_id for row in rows]
+        teachers_by_id = {
+            teacher.teacher_id: teacher
+            for teacher in session.scalars(
+                select(TeacherRecord).where(
+                    TeacherRecord.teacher_id.in_(teacher_ids)
+                )
+            ).all()
+        }
+        milestone_entries = _capacity_milestone_entries_by_teacher(
+            session,
+            teacher_ids,
+        )
+        snapshots_by_id = {
+            snapshot.snapshot_id: snapshot
+            for snapshot in session.scalars(
+                select(TeacherMetricSnapshotRecord).where(
+                    TeacherMetricSnapshotRecord.batch_id == batch_id,
+                    TeacherMetricSnapshotRecord.teacher_id.in_(teacher_ids),
+                )
+            ).all()
+        }
+        accounts_by_key = {
+            (account.teacher_id, account.dimension): account
+            for account in session.scalars(
+                select(ScoreAccountRecord).where(
+                    ScoreAccountRecord.teacher_id.in_(teacher_ids)
+                )
+            ).all()
+        }
+
         for row in rows:
-            existing_teacher = session.get(TeacherRecord, row.teacher_id)
+            existing_teacher = teachers_by_id.get(row.teacher_id)
             if existing_teacher is not None and existing_teacher.data_mode == "MOCK":
                 raise ImportValidationError(
                     f"source tchr_id {row.teacher_id!r} collides with a protected Mock demo teacher"
                 )
-            existing_milestone_entry = _find_capacity_milestone_entry(
-                session, row.teacher_id
-            )
+            existing_milestone_entry = milestone_entries.get(row.teacher_id)
             existing_payload = (
                 deepcopy(existing_teacher.payload)
                 if existing_teacher is not None
@@ -2110,8 +2241,8 @@ def import_teacher_metrics(
                 if existing_teacher is not None
                 else f"CAMP-{row.teacher_id}"
             )
-            teacher_record = session.merge(
-                TeacherRecord(
+            if existing_teacher is None:
+                teacher_record = TeacherRecord(
                     teacher_id=row.teacher_id,
                     camp_enrollment_id=camp_enrollment_id,
                     name=teacher_payload["name"],
@@ -2126,54 +2257,104 @@ def import_teacher_metrics(
                     source_batch_id=batch_id,
                     source_snapshot_label=normalized_snapshot_label,
                     payload=deepcopy(teacher_payload),
-                    created_at=existing_teacher.created_at if existing_teacher else imported_at,
+                    created_at=imported_at,
                     updated_at=imported_at,
                 )
-            )
+                session.add(teacher_record)
+                teachers_by_id[row.teacher_id] = teacher_record
+            else:
+                teacher_record = existing_teacher
+                teacher_record.name = teacher_payload["name"]
+                teacher_record.country = teacher_payload["country"]
+                teacher_record.timezone = (
+                    teacher_payload.get("timezone") or "UTC"
+                )
+                teacher_record.camp_day = teacher_payload["camp_day"]
+                teacher_record.graduation_state = teacher_payload[
+                    "graduation_state"
+                ]
+                teacher_record.gold_qualified = bool(
+                    teacher_payload["gold_qualified"]
+                )
+                teacher_record.total_score = float(
+                    teacher_payload["total_score"]
+                )
+                teacher_record.graduation_threshold = float(
+                    teacher_payload["graduation_threshold"]
+                )
+                teacher_record.data_mode = "MIXED"
+                teacher_record.source_batch_id = batch_id
+                teacher_record.source_snapshot_label = (
+                    normalized_snapshot_label
+                )
+                teacher_record.payload = deepcopy(teacher_payload)
+                teacher_record.updated_at = imported_at
             if bool(snapshot["metric_inputs"]["capacity_milestone_achieved"]):
-                _, milestone_entry_payload, _ = _ensure_capacity_milestone_entry(
+                (
+                    milestone_entry,
+                    milestone_entry_payload,
+                    _milestone_created,
+                ) = _ensure_capacity_milestone_entry(
                     session,
                     teacher=teacher_record,
                     batch_id=batch_id,
                     snapshot_id=f"{batch_id}:{row.teacher_id}",
                     peak_slot_cnt=int(snapshot["peak_slot_cnt"]),
                     occurred_at=imported_at,
+                    preloaded_existing=existing_milestone_entry,
                 )
+                milestone_entries[row.teacher_id] = milestone_entry
                 _append_score_entry_payload(teacher_payload, milestone_entry_payload)
                 teacher_record.payload = deepcopy(teacher_payload)
-            existing_snapshot = session.get(
-                TeacherMetricSnapshotRecord, f"{batch_id}:{row.teacher_id}"
-            )
-            session.merge(
-                TeacherMetricSnapshotRecord(
+            snapshot_id = f"{batch_id}:{row.teacher_id}"
+            existing_snapshot = snapshots_by_id.get(snapshot_id)
+            snapshot_values = {
+                "batch_id": batch_id,
+                "teacher_id": row.teacher_id,
+                "snapshot_label": normalized_snapshot_label,
+                "source_row_number": row.row_number,
+                "data_mode": "MIXED",
+                "raw_payload": deepcopy(row.raw_payload),
+                "updated_at": imported_at,
+                **snapshot,
+            }
+            if existing_snapshot is None:
+                snapshot_record = TeacherMetricSnapshotRecord(
                     snapshot_id=f"{batch_id}:{row.teacher_id}",
-                    batch_id=batch_id,
-                    teacher_id=row.teacher_id,
-                    snapshot_label=normalized_snapshot_label,
-                    source_row_number=row.row_number,
-                    data_mode="MIXED",
-                    raw_payload=deepcopy(row.raw_payload),
-                    created_at=existing_snapshot.created_at if existing_snapshot else imported_at,
-                    updated_at=imported_at,
-                    **snapshot,
+                    created_at=imported_at,
+                    **snapshot_values,
                 )
-            )
+                session.add(snapshot_record)
+                snapshots_by_id[snapshot_id] = snapshot_record
+            else:
+                for field, value in snapshot_values.items():
+                    setattr(existing_snapshot, field, value)
             for dimension in teacher_payload["dimensions"]:
-                session.merge(
-                    ScoreAccountRecord(
+                dimension_code = str(dimension["code"])
+                account_key = (row.teacher_id, dimension_code)
+                account = accounts_by_key.get(account_key)
+                account_values = {
+                    "teacher_id": row.teacher_id,
+                    "camp_enrollment_id": camp_enrollment_id,
+                    "dimension": dimension_code,
+                    "current_score": float(dimension["score"]),
+                    "minimum_score": float(dimension.get("minimum", 0)),
+                    "weight": float(dimension.get("weight", 0)),
+                    "score_rule_version": SCORE_RULE_VERSION,
+                    "version": 1,
+                    "updated_at": imported_at,
+                    "payload": deepcopy(dimension),
+                }
+                if account is None:
+                    account = ScoreAccountRecord(
                         account_id=f'{row.teacher_id}:{dimension["code"]}',
-                        teacher_id=row.teacher_id,
-                        camp_enrollment_id=camp_enrollment_id,
-                        dimension=dimension["code"],
-                        current_score=float(dimension["score"]),
-                        minimum_score=float(dimension.get("minimum", 0)),
-                        weight=float(dimension.get("weight", 0)),
-                        score_rule_version=SCORE_RULE_VERSION,
-                        version=1,
-                        updated_at=imported_at,
-                        payload=deepcopy(dimension),
+                        **account_values,
                     )
-                )
+                    session.add(account)
+                    accounts_by_key[account_key] = account
+                else:
+                    for field, value in account_values.items():
+                        setattr(account, field, value)
         try:
             ensure_fixed_growth_assignments(
                 session,

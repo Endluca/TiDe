@@ -131,6 +131,20 @@ def test_1069_teacher_list_projects_only_24_and_avoids_megabyte_response() -> No
     assert len(response.json()["items"]) == 24
     assert len(response.content) < 250_000
 
+    options = client.get("/api/teacher-options")
+    assert options.status_code == 200
+    assert len(options.json()) == 30
+    assert len(options.content) < 40_000
+
+    searched_options = client.get(
+        "/api/teacher-options",
+        params={"keyword": "T-PAGE-1069", "limit": 30},
+    )
+    assert searched_options.status_code == 200
+    assert [
+        item["teacher_id"] for item in searched_options.json()
+    ] == ["T-PAGE-1069"]
+
 
 def test_teacher_list_rejects_page_sizes_above_100() -> None:
     response = client.get("/api/teachers?page_size=101")

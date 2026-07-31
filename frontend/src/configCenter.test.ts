@@ -212,6 +212,14 @@ describe('configuration center governance helpers', () => {
     const v1Payload: ScoreGraduationPayload = {
       ...v10Payload,
       policy_version: 'v1',
+      scoring_items: {
+        ...v10Payload.scoring_items,
+        classroom_quality: {
+          points_per_unit: 2,
+          metric: 'lesson_hardware_quality_passed',
+          source_mode: 'REAL_LESSON_FACTS',
+        },
+      },
     }
     expect(isScoreGraduationV1(v1Payload)).toBe(true)
     expect(isScoreGraduationV1(v10Payload)).toBe(false)

@@ -23,6 +23,6 @@ USER tide
 EXPOSE 8010
 
 HEALTHCHECK --interval=20s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/health', timeout=3).read()" || exit 1
+  CMD python -c "import os, urllib.request; r=urllib.request.Request('http://127.0.0.1:8010/api/health', headers={'Host': os.environ.get('TIT_HEALTHCHECK_HOST', '127.0.0.1')}); urllib.request.urlopen(r, timeout=3).read()" || exit 1
 
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8010 --workers ${TIT_API_WORKERS:-2} --proxy-headers --forwarded-allow-ips=${TIT_TRUSTED_PROXY_IPS:-127.0.0.1}"]
+CMD ["python", "scripts/run_api.py"]

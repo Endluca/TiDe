@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    literal_column,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -338,6 +339,14 @@ class PersonalizedTriggerMatchRecord(Base):
             "output_type",
             "matched_at",
         ),
+        Index(
+            "ix_personalized_trigger_match_active_output",
+            "output_type",
+            "output_id",
+            "matched_at",
+            postgresql_where=text("match_status <> 'SUPPRESSED'"),
+            sqlite_where=text("match_status <> 'SUPPRESSED'"),
+        ),
         Index("ix_personalized_trigger_match_teacher", "teacher_id", "matched_at"),
     )
 
@@ -375,6 +384,11 @@ class LessonDimensionScoreRecord(Base):
     __tablename__ = "lesson_dimension_scores"
     __table_args__ = (
         UniqueConstraint("camp_enrollment_id", "lesson_id", "dimension", name="uq_lesson_dimension_state"),
+        Index(
+            "ix_lesson_dimension_score_teacher_lesson",
+            "teacher_id",
+            "lesson_id",
+        ),
     )
 
     score_state_id: Mapped[str] = mapped_column(String(256), primary_key=True)
@@ -632,6 +646,13 @@ class TaskAssignmentRecord(Base):
             "OR why LIKE '%Evidence:%'",
             name="ck_task_assignment_personalized_why_evidence",
         ),
+        CheckConstraint(
+            "task_kind <> 'PERSONALIZED_IMPROVEMENT' "
+            "OR (display_title IS NOT NULL "
+            "AND btrim(display_title) <> '' "
+            "AND display_title !~ U&'[\\4E00-\\9FFF]')",
+            name="ck_task_assignment_personalized_title_english",
+        ).ddl_if(dialect="postgresql"),
         UniqueConstraint("dedupe_key", name="uq_task_assignment_dedupe"),
         Index(
             "uq_task_assignment_fixed_teacher_task",
@@ -710,6 +731,17 @@ class NotificationRecord(Base):
             "task_id IS NOT NULL OR source_ref IS NOT NULL",
             name="ck_notification_source",
         ),
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object' "
+            "AND length(btrim(payload->>'title')) > 0 "
+            "AND length(btrim(payload->>'body')) > 0 "
+            "AND position('Evidence:' in payload->>'body') > 0 "
+            "AND (payload->>'title') !~ "
+            "'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]' "
+            "AND (payload->>'body') !~ "
+            "'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]'",
+            name="ck_notifications_teacher_copy_english",
+        ).ddl_if(dialect="postgresql"),
         UniqueConstraint("source_ref", name="uq_notification_source_ref"),
     )
 
@@ -825,6 +857,18 @@ class OutboundOutputRecord(Base):
 
 class OutboxEventRecord(Base):
     __tablename__ = "outbox_events"
+    __table_args__ = (
+        Index(
+            "ix_outbox_pending_settlement_claim",
+            "event_type",
+            "aggregate_type",
+            "available_at",
+            "created_at",
+            "outbox_id",
+            postgresql_where=text("status = 'PENDING'"),
+            sqlite_where=text("status = 'PENDING'"),
+        ),
+    )
 
     outbox_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     event_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
@@ -842,6 +886,30 @@ class OutboxEventRecord(Base):
 
 class AuditEventRecord(Base):
     __tablename__ = "audit_events"
+    __table_args__ = (
+        Index(
+            "ix_audit_events_teacher_sequence",
+            "teacher_id",
+            "sequence",
+        ),
+        Index(
+            "ix_audit_events_structured_search_trgm",
+            literal_column(
+                "((((((((((event_id::text || ' '::text) || "
+                "event_type::text) || ' '::text) || "
+                "COALESCE(teacher_id, ''::character varying)::text) || "
+                "' '::text) || "
+                "COALESCE(task_id, ''::character varying)::text) || "
+                "' '::text) || "
+                "COALESCE(case_id, ''::character varying)::text) || "
+                "' '::text) || actor_type::text)"
+            ).label("structured_search"),
+            postgresql_using="gin",
+            postgresql_ops={
+                "structured_search": "gin_trgm_ops",
+            },
+        ).ddl_if(dialect="postgresql"),
+    )
 
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)

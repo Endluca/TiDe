@@ -775,6 +775,67 @@ export interface OutputSummary {
   by_status: Partial<Record<OutputStatus, number>>
 }
 
+export type SupportTicketWorkflowState =
+  | 'WAITING_OPERATOR'
+  | 'WAITING_TEACHER'
+  | 'CLOSED'
+
+export interface SupportTicketImage {
+  file_id: string | null
+  filename: string | null
+  mime_type: string | null
+  size: number | null
+  storage_provider: string | null
+  deleted_at: string | null
+  preview_url: string | null
+}
+
+export interface SupportTicketMessage {
+  message_id: string | null
+  sender: 'TEACHER' | 'OPERATOR' | string | null
+  content: string
+  images: SupportTicketImage[]
+  created_at: string | null
+}
+
+export interface SupportTicket {
+  ticket_id: string
+  teacher_id: string
+  teacher_name: string
+  primary_category: string
+  secondary_category: string
+  problem_location: string
+  problem_context?: Record<string, unknown>
+  source_status: string
+  workflow_state: SupportTicketWorkflowState
+  latest_message: SupportTicketMessage | null
+  messages?: SupportTicketMessage[]
+  message_count: number
+  last_operator_reply_at: string | null
+  teacher_reply_deadline_at: string | null
+  close_reason: string | null
+  closed_at: string | null
+  image_cleanup_status: string
+  images_deleted_at: string | null
+  row_version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SupportTicketPage {
+  items: SupportTicket[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface SupportTicketSummary {
+  waiting_operator: number
+  waiting_teacher: number
+  closed: number
+  total: number
+}
+
 export interface ApiErrorBody {
   accepted?: false
   error_code?: string

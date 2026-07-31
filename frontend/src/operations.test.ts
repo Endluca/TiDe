@@ -36,6 +36,11 @@ describe('运营视图文案与排序', () => {
     expect(lessonStatusLabel('s_absent')).toBe('学员缺席')
     expect(interventionStatusLabel('IN_REVIEW')).toBe('处理中')
     expect(lessonSignalLabel({ code: 'CAMERA_OFF', label: '未开摄像头' })).toBe('未开摄像头')
+    expect(operationDomainLabel('RELIABILITY', undefined, 'en-US')).toBe('Reliability')
+    expect(interventionStatusLabel('ACTION_PENDING', 'en-US')).toBe('Pending approval')
+    expect(lessonStatusLabel('TEACHER_ABSENT', 'en-US')).toBe('Teacher absent')
+    expect(lessonSignalLabel({ code: 'CAMERA_OFF', label: '未开摄像头' }, 'en-US')).toBe('Camera off')
+    expect(interventionOutputTypeLabel('PENDING_DATA', 'en-US')).toBe('Data pending (internal)')
   })
 
   it('处置事项先按优先级、再按触发时间排序', () => {

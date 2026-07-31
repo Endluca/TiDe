@@ -23,6 +23,12 @@ export interface PerfectCompletionQualityRule {
   source_mode: 'REAL_TEACHER_SNAPSHOT'
 }
 
+export interface LessonHardwareQualityRule {
+  points_per_unit: number
+  metric: 'lesson_hardware_quality_passed'
+  source_mode: 'REAL_LESSON_FACTS'
+}
+
 export interface LegacyGraduationHardGates {
   minimum_base_score: number
   minimum_completed_lessons: number
@@ -67,7 +73,7 @@ export interface ScoreGraduationPayload {
     reliability_on_time?: { points_per_unit: number }
     reliability_perfect?: { points_per_unit: number }
     reliability_peak: { points_per_unit: number }
-    classroom_quality?: LegacyClassroomQualityRule | PerfectCompletionQualityRule
+    classroom_quality?: LegacyClassroomQualityRule | PerfectCompletionQualityRule | LessonHardwareQualityRule
   }
   thresholds: {
     graduation_raw_score: number
@@ -185,6 +191,7 @@ function isScoreGraduationVersion(
         'feedback_favorite',
         'reliability_perfect',
         'reliability_peak',
+        ...(policyVersion === 'v1' ? ['classroom_quality'] : []),
       ]
     : [
         'capacity',
@@ -206,7 +213,11 @@ function isScoreGraduationVersion(
     )
     && (
       !['v1', 'v9', 'v10'].includes(policyVersion)
-      || !['reliability_on_time', 'classroom_quality'].some((key) => key in (scoringItems ?? {}))
+      || !('reliability_on_time' in (scoringItems ?? {}))
+    )
+    && (
+      !['v9', 'v10'].includes(policyVersion)
+      || !('classroom_quality' in (scoringItems ?? {}))
     )
     && ['graduation_raw_score', 'gold_raw_score', 'graduation_external_score', 'gold_external_score'].every((key) => key in (thresholds ?? {}))
     && ['graduation', 'gold'].every((key) => key in (hardGates ?? {}))
@@ -318,7 +329,13 @@ export function isScoreGraduationV10(payload: unknown): payload is ScoreGraduati
 
 export function isScoreGraduationV1(payload: unknown): payload is ScoreGraduationPayload {
   if (!isScoreGraduationVersion(payload, 'v1')) return false
+  const classroomQuality = payload.scoring_items.classroom_quality
   return isModernScoreGraduation(payload)
+    && Boolean(classroomQuality)
+    && 'metric' in classroomQuality!
+    && classroomQuality!.metric === 'lesson_hardware_quality_passed'
+    && classroomQuality!.source_mode === 'REAL_LESSON_FACTS'
+    && classroomQuality!.points_per_unit === 2
     && 'required_mandatory_task_count' in payload.hard_gates.graduation
     && payload.hard_gates.graduation.required_mandatory_task_count === 9
 }

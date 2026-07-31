@@ -4,9 +4,19 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import pool, text
 
-from app.database import Base, DEFAULT_DATABASE_URL
+from app.runtime_settings import (
+    is_production_migration,
+    validate_alembic_runtime,
+    validate_production_migration_identity,
+)
+
+
+validate_alembic_runtime()
+
+from app.database import Base, DEFAULT_DATABASE_URL, build_engine  # noqa: E402
+from app.migration_ownership import include_owned_object  # noqa: E402
 from app import db_models  # noqa: F401
 from app import config_models  # noqa: F401
 from app import auth_models  # noqa: F401
@@ -27,19 +37,42 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_owned_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    connectable = build_engine(
+        config.get_main_option("sqlalchemy.url"),
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+        if is_production_migration():
+            identity = connection.execute(
+                text(
+                    """
+                    SELECT
+                        current_user,
+                        current_database(),
+                        role.rolsuper
+                    FROM pg_roles AS role
+                    WHERE role.rolname = current_user
+                    """
+                )
+            ).one()
+            validate_production_migration_identity(
+                role=identity[0],
+                database=identity[1],
+                is_superuser=identity[2],
+            )
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            include_object=include_owned_object,
+        )
         with context.begin_transaction():
             context.run_migrations()
 

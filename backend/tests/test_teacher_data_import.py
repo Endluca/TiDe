@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 
 from app.config_models import (
     SCORE_POLICY_V4_PAYLOAD,
@@ -195,7 +195,7 @@ def test_import_is_idempotent_without_rewriting_snapshot_or_accounts(tmp_path: P
                     ScoreComponentAccountRecord
                 )
             )
-            == 28
+            == 30
         )
         assert (
             session.scalar(
@@ -229,6 +229,53 @@ def test_import_is_idempotent_without_rewriting_snapshot_or_accounts(tmp_path: P
             )
         ).updated_at
         assert after == before
+
+
+def test_import_prefetches_teacher_state_without_per_teacher_selects(
+    tmp_path: Path,
+) -> None:
+    source = _write_workbook(
+        tmp_path / "teacher-metrics-batch.xlsx",
+        [_source_row(10_000 + index) for index in range(25)],
+    )
+    selected_engine = _engine(tmp_path, "teacher-import-query-count.db")
+    select_count = 0
+
+    def count_selects(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        nonlocal select_count
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_count += 1
+
+    event.listen(
+        selected_engine,
+        "before_cursor_execute",
+        count_selects,
+    )
+    try:
+        import_teacher_metrics(
+            source,
+            bind=selected_engine,
+            snapshot_label="query-count",
+            expected_row_count=25,
+        )
+    finally:
+        event.remove(
+            selected_engine,
+            "before_cursor_execute",
+            count_selects,
+        )
+
+    # This bound is independent of the 25-row cohort. Before batch prefetch,
+    # teacher/milestone/snapshot/account merge checks alone added hundreds of
+    # SELECT round trips.
+    assert select_count <= 25
 
 
 def test_import_keeps_lossless_source_row_and_explicit_provenance(tmp_path: Path) -> None:

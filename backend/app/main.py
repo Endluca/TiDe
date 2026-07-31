@@ -1,23 +1,28 @@
 from __future__ import annotations
 
+import logging
+import os
+import time
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import OperatorIdentity, auth_router, require_roles
 from .auth_models import OperatorRole
 from .audit_service import AuditService
 from .config_routes import router as config_router
-from .database import database_health, engine
+from .database import database_health, database_pool_status, engine
 from .errors import DomainError
 from .output_service import OutputService
 from .services import GrowthService
 from .operations_routes import router as operations_router
 from .score_read_service import ScoreReadModelNotFound, ScoreReadService
+from .support_ticket_routes import router as support_ticket_router
 from .task_routes import router as task_router
 from .teacher_read_service import DashboardReadService, TeacherReadService
 from .runtime_settings import (
@@ -29,6 +34,19 @@ from .runtime_settings import (
 
 
 validate_production_runtime()
+logger = logging.getLogger("tit_growth.performance")
+
+
+def _slow_request_threshold_ms() -> int:
+    raw = os.getenv("TIT_SLOW_REQUEST_MS", "1000").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 1000
+    return max(100, min(value, 60_000))
+
+
+SLOW_REQUEST_THRESHOLD_MS = _slow_request_threshold_ms()
 app = FastAPI(
     title="TIT Growth System Operational API",
     version="current",
@@ -54,6 +72,7 @@ app.include_router(auth_router)
 app.include_router(config_router)
 app.include_router(task_router)
 app.include_router(operations_router)
+app.include_router(support_ticket_router)
 
 class _LazyLegacyService:
     """Test-only compatibility; production routes no longer instantiate it."""
@@ -81,7 +100,30 @@ output_service = OutputService(engine)
 
 @app.middleware("http")
 async def add_api_security_headers(request: Request, call_next):
-    response = await call_next(request)
+    started_at = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+    finally:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        if (
+            request.url.path.startswith("/api/")
+            and duration_ms >= SLOW_REQUEST_THRESHOLD_MS
+        ):
+            route = request.scope.get("route")
+            route_path = getattr(route, "path", "unmatched")
+            pool = database_pool_status()
+            logger.warning(
+                "slow_api_request method=%s route=%s status=%s "
+                "duration_ms=%.1f pool_checked_out=%s pool_overflow=%s",
+                request.method,
+                route_path,
+                status_code,
+                duration_ms,
+                pool.get("checked_out", "unknown"),
+                pool.get("overflow", "unknown"),
+            )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -100,6 +142,23 @@ async def add_api_security_headers(request: Request, call_next):
 @app.exception_handler(DomainError)
 async def handle_domain_error(_, exc: DomainError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content=exc.response())
+
+
+@app.exception_handler(SQLAlchemyTimeoutError)
+async def handle_database_capacity_error(_, __: SQLAlchemyTimeoutError) -> JSONResponse:
+    logger.warning("database_pool_timeout")
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "1"},
+        content={
+            "accepted": False,
+            "error_code": "DATABASE_CAPACITY_EXCEEDED",
+            "field_path": None,
+            "retryable": True,
+            "message_key": "system.error.busy",
+            "details": {},
+        },
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -183,9 +242,16 @@ def list_teachers(
 
 @app.get("/api/teacher-options")
 def teacher_options(
+    keyword: Optional[str] = Query(default=None, max_length=200),
+    limit: int = Query(default=30, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
     _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
 ) -> list[dict]:
-    return teacher_read_service.teacher_options()
+    return teacher_read_service.teacher_options(
+        keyword=keyword,
+        limit=limit,
+        page=page,
+    )
 
 
 @app.get("/api/teachers/{teacher_id}")

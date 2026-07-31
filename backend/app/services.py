@@ -545,6 +545,36 @@ class GrowthService:
                     score=quality_score,
                     source_mode=quality_source_mode,
                 )
+            elif (
+                getattr(quality_rule, "metric", None)
+                == "lesson_hardware_quality_passed"
+            ):
+                quality_account = score_account_overrides.get("CLASS_QUALITY")
+                quality_count = max(
+                    self._score_number(
+                        quality_account.get("count")
+                        if quality_account
+                        else None,
+                        0.0,
+                    ),
+                    0.0,
+                )
+                quality_source_mode = (
+                    str(quality_account.get("source_mode"))
+                    if quality_account
+                    else "SOURCE_MISSING"
+                )
+                quality_score = (
+                    quality_count * quality_rule.points_per_unit
+                )
+                quality_component = self._score_component(
+                    code="CLASS_QUALITY_HARDWARE",
+                    metric="lesson_hardware_quality_passed",
+                    value=quality_count,
+                    points_per_unit=quality_rule.points_per_unit,
+                    score=quality_score,
+                    source_mode=quality_source_mode,
+                )
             else:
                 quality_rate = self._score_number(
                     metrics.get("class_quality_no_issue_rate"),

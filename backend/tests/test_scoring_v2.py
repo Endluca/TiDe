@@ -36,9 +36,17 @@ def _provenance(metrics: dict, **overrides: str) -> dict:
     return result
 
 
-def _project(teacher: dict, policy: dict | None = None) -> dict:
+def _project(
+    teacher: dict,
+    policy: dict | None = None,
+    *,
+    score_account_overrides: dict | None = None,
+) -> dict:
     service = GrowthService(None, config_reader=_reader(policy))  # type: ignore[arg-type]
-    return service._project_teacher_scoring(teacher)
+    return service._project_teacher_scoring(
+        teacher,
+        score_account_overrides=score_account_overrides,
+    )
 
 
 def _canonical_teacher(**metric_overrides) -> dict:
@@ -93,7 +101,16 @@ def _canonical_teacher(**metric_overrides) -> dict:
 
 
 def test_v1_moves_perfect_completion_to_reliability_and_uses_nine_mandatory_tasks() -> None:
-    teacher = _project(_canonical_teacher())
+    teacher = _project(
+        _canonical_teacher(),
+        score_account_overrides={
+            "CLASS_QUALITY": {
+                "count": 3,
+                "score": 6,
+                "source_mode": "DERIVED_REAL",
+            }
+        },
+    )
     dimensions = {item["code"]: item for item in teacher["dimensions"]}
 
     assert dimensions["USER_FEEDBACK"]["score"] == 15  # 2*5 + 1*5
@@ -105,16 +122,25 @@ def test_v1_moves_perfect_completion_to_reliability_and_uses_nine_mandatory_task
     assert {
         item["code"] for item in dimensions["RELIABILITY"]["components"]
     } == {"PERFECT_COMPLETED", "PEAK_COMPLETED"}
-    assert dimensions["CLASS_QUALITY"]["score"] == 0
-    assert dimensions["CLASS_QUALITY"]["components"] == []
+    assert dimensions["CLASS_QUALITY"]["score"] == 6
+    assert dimensions["CLASS_QUALITY"]["components"] == [
+        {
+            "code": "CLASS_QUALITY_HARDWARE",
+            "metric": "lesson_hardware_quality_passed",
+            "value": 3.0,
+            "points_per_unit": 2.0,
+            "score": 6.0,
+            "source_mode": "DERIVED_REAL",
+        }
+    ]
     assert dimensions["CAPACITY"]["score"] == 10
     assert dimensions["NEW_TEACHER_TASK"]["score"] == 30
     assert dimensions["USER_FEEDBACK"]["source_mode"] == "REAL"
     assert dimensions["RELIABILITY"]["source_mode"] == "REAL"
-    assert dimensions["CLASS_QUALITY"]["source_mode"] == "NOT_APPLICABLE"
+    assert dimensions["CLASS_QUALITY"]["source_mode"] == "DERIVED_REAL"
     assert teacher["base_score"] == 40
-    assert teacher["raw_total_score"] == teacher["total_score"] == 145
-    assert teacher["external_display_score"] == 145
+    assert teacher["raw_total_score"] == teacher["total_score"] == 151
+    assert teacher["external_display_score"] == 151
     assert teacher["graduation_score_threshold_met"] is True
     assert teacher["graduation_criteria_met"] is True
     assert teacher["graduation_state"] == "GRADUATED"
@@ -275,7 +301,7 @@ def test_l0_complaint_blocks_both_graduation_and_gold() -> None:
         "threshold": True,
         "actual": False,
         "met": False,
-        "source_mode": "DERIVED_REAL",
+        "source_mode": "MIXED_DERIVED",
     }
     assert projected["hard_gates"]["gold"]["items"][1] == {
         "code": "MINIMUM_GOLD_TOTAL_SCORE",
@@ -284,7 +310,7 @@ def test_l0_complaint_blocks_both_graduation_and_gold() -> None:
         "threshold": 200.0,
         "actual": 200.0,
         "met": True,
-        "source_mode": "SYSTEM_TASK_STATUS",
+        "source_mode": "SOURCE_MISSING",
     }
     assert projected["graduation_criteria_met"] is False
     assert projected["gold_criteria_met"] is False
@@ -310,7 +336,7 @@ def test_missing_evidence_scores_zero_and_l0_gate_fails_closed() -> None:
     assert feedback["score"] == 0
     assert feedback["source_mode"] == "MISSING_INPUT_ZERO"
     assert quality["score"] == 0
-    assert quality["source_mode"] == "NOT_APPLICABLE"
+    assert quality["source_mode"] == "SOURCE_MISSING"
     assert l0_gate["actual"] == 0
     assert l0_gate["met"] is False
     assert l0_gate["source_mode"] == "SOURCE_MISSING"

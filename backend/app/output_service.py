@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Engine, String, cast, func, or_, select
+from sqlalchemy import Engine, func, or_, select
 
 from .database import engine as default_engine
 from .database import session_scope
@@ -138,7 +138,6 @@ class OutputService:
                         OutboundOutputRecord.teacher_id.ilike(pattern),
                         OutboundOutputRecord.source_type.ilike(pattern),
                         OutboundOutputRecord.source_id.ilike(pattern),
-                        cast(OutboundOutputRecord.payload, String).ilike(pattern),
                     )
                 )
 
@@ -188,50 +187,45 @@ class OutputService:
                     ).all()
                 }
 
+            totals = session.execute(
+                select(
+                    func.count().label("total"),
+                    func.count()
+                    .filter(
+                        OutboundOutputRecord.status == "FAILED",
+                        OutboundOutputRecord.retryable.is_(True),
+                    )
+                    .label("failed_retryable_count"),
+                    func.count()
+                    .filter(
+                        OutboundOutputRecord.status == "ACTION_PENDING",
+                        OutboundOutputRecord.requires_human_approval.is_(True),
+                    )
+                    .label("waiting_human_approval_count"),
+                    func.count()
+                    .filter(
+                        OutboundOutputRecord.display_type == "REMINDER",
+                        OutboundOutputRecord.status == "PLANNED",
+                    )
+                    .label("planned_reminder_count"),
+                ).select_from(OutboundOutputRecord)
+            ).one()
+            by_output_type = grouped(OutboundOutputRecord.output_type)
             return {
                 "as_of": _iso(datetime.now(timezone.utc)),
-                "total": int(
-                    session.scalar(
-                        select(func.count()).select_from(OutboundOutputRecord)
-                    )
-                    or 0
-                ),
-                "by_type": grouped(OutboundOutputRecord.output_type),
-                "by_output_type": grouped(OutboundOutputRecord.output_type),
+                "total": int(totals.total or 0),
+                "by_type": by_output_type,
+                "by_output_type": by_output_type,
                 "by_display_type": grouped(OutboundOutputRecord.display_type),
                 "by_status": grouped(OutboundOutputRecord.status),
                 "failed_retryable_count": int(
-                    session.scalar(
-                        select(func.count())
-                        .select_from(OutboundOutputRecord)
-                        .where(
-                            OutboundOutputRecord.status == "FAILED",
-                            OutboundOutputRecord.retryable.is_(True),
-                        )
-                    )
-                    or 0
+                    totals.failed_retryable_count or 0
                 ),
                 "waiting_human_approval_count": int(
-                    session.scalar(
-                        select(func.count())
-                        .select_from(OutboundOutputRecord)
-                        .where(
-                            OutboundOutputRecord.status == "ACTION_PENDING",
-                            OutboundOutputRecord.requires_human_approval.is_(True),
-                        )
-                    )
-                    or 0
+                    totals.waiting_human_approval_count or 0
                 ),
                 "planned_reminder_count": int(
-                    session.scalar(
-                        select(func.count())
-                        .select_from(OutboundOutputRecord)
-                        .where(
-                            OutboundOutputRecord.display_type == "REMINDER",
-                            OutboundOutputRecord.status == "PLANNED",
-                        )
-                    )
-                    or 0
+                    totals.planned_reminder_count or 0
                 ),
             }
 
@@ -365,10 +359,13 @@ class OutputService:
                     aggregate_id=output_id,
                     event_type=event_payload["event_type"],
                     payload=event_payload,
-                    status="PENDING",
+                    # The repository has no real outbound delivery consumer yet.
+                    # Keep the retry intent auditable without creating a queue
+                    # item that can never be consumed.
+                    status="PARKED",
                     available_at=now,
                     attempt_count=0,
-                    last_error=None,
+                    last_error="NO_OUTPUT_CONSUMER_CONFIGURED",
                     created_at=now,
                     published_at=None,
                 )

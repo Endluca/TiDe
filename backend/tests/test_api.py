@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from app.auth import OperatorIdentity, current_operator
 from app.auth_models import OperatorRole
 from app.database import engine, session_scope
 from app.db_models import AuditEventRecord
-from app.main import app
+from app.main import app, handle_database_capacity_error
 
 
 client = TestClient(app)
@@ -33,6 +35,16 @@ def test_health_is_public_and_reports_persistent_database() -> None:
     assert body["status"] == "ok"
     assert body["database"]["status"] == "ok"
     assert body["runtime"] == {"single_process_required": False}
+
+
+def test_pool_timeout_returns_bounded_retryable_503() -> None:
+    response = asyncio.run(
+        handle_database_capacity_error(None, SQLAlchemyTimeoutError())
+    )
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+    assert json.loads(response.body)["error_code"] == "DATABASE_CAPACITY_EXCEEDED"
 
 
 def test_current_read_routes_require_viewer_role() -> None:
@@ -131,8 +143,17 @@ def test_audit_events_are_server_paginated_and_filterable() -> None:
     assert first_page.json()["items"][0]["event_id"] == "EVT-25"
 
     filtered = client.get(
-        "/api/events?page=1&page_size=10&teacher_id=T-1&keyword=needle"
+        "/api/events?page=1&page_size=10&teacher_id=T-1&keyword=EVT-3"
     )
     assert filtered.status_code == 200
     assert filtered.json()["total"] == 1
     assert filtered.json()["items"][0]["event_id"] == "EVT-3"
+
+    # Arbitrary payload JSON is intentionally not part of the audit search
+    # index. The authoritative event identifiers remain searchable while
+    # payload rendering stays available in the selected result.
+    payload_only = client.get(
+        "/api/events?page=1&page_size=10&keyword=needle"
+    )
+    assert payload_only.status_code == 200
+    assert payload_only.json()["total"] == 0

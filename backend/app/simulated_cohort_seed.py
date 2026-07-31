@@ -59,6 +59,7 @@ from .lesson_ingestion import (
     _materialize_outputs,
     _template_map,
 )
+from .lesson_quality import hardware_quality_passed, is_perfect_lesson
 from .task_catalog import MANDATORY_TASK_CODES
 
 
@@ -492,9 +493,11 @@ def _metric_payload(
     )
     peak_completed_count = sum(item.is_peak is True for item in completed)
     perfect_count = sum(
-        not item.absence_reason_detail
-        and item.is_late is False
-        and item.is_early is False
+        is_perfect_lesson(
+            lesson_lifecycle_status=item.lesson_lifecycle_status,
+            is_late=item.is_late,
+            is_early=item.is_early,
+        )
         for item in completed
     )
     praise_count = sum(
@@ -1340,10 +1343,7 @@ def _reconciliation_status(
 ) -> str:
     if source_scope != "LESSON":
         return "NOT_APPLICABLE"
-    if component_code in {
-        "CLASS_QUALITY_PERFECT_COUNT",
-        "PERFECT_COMPLETED",
-    }:
+    if component_code == "CLASS_QUALITY_PERFECT_COUNT":
         return "SOURCE_MISSING"
     if math.isclose(current_score, lesson_attributed_score, abs_tol=1e-9):
         return "MATCHED" if current_score else "MATCHED_ZERO"
@@ -1402,25 +1402,32 @@ def _lesson_score_rows(
             and lesson.is_early is False
         )
         peak = completed and lesson.is_peak is True
-        is_perfect = (
-            completed
-            and not lesson.absence_reason_detail
-            and lesson.is_late is False
-            and lesson.is_early is False
+        is_perfect = is_perfect_lesson(
+            lesson_lifecycle_status=lesson.lesson_lifecycle_status,
+            is_late=lesson.is_late,
+            is_early=lesson.is_early,
+        )
+        hardware_quality = hardware_quality_passed(
+            is_camera_off=lesson.is_camera_off,
+            is_cpu_usage_high=lesson.is_cpu_usage_high,
+            is_network_delay_high=lesson.is_network_delay_high,
         )
         reliability_primary = (
             {
                 "code": "PERFECT_COMPLETED",
                 "business_fact": "is_perfect",
                 "fact_value": is_perfect,
-                "awarded": False,
+                "awarded": is_perfect,
                 "points_per_unit": primary_points,
-                "score": 0.0,
-                "evidence_status": "SOURCE_MISSING",
-                "note": (
-                    "The current source provides teacher-wide perfect_cnt; "
-                    "points are not allocated back to individual lessons."
-                ),
+                "score": primary_points if is_perfect else 0.0,
+                "evidence_status": "CONFIRMED",
+                "inputs": {
+                    "lesson_lifecycle_status": (
+                        lesson.lesson_lifecycle_status
+                    ),
+                    "is_late": lesson.is_late,
+                    "is_early": lesson.is_early,
+                },
             }
             if reliability_uses_perfect
             else {
@@ -1494,19 +1501,47 @@ def _lesson_score_rows(
             ],
             "CLASS_QUALITY": (
                 [
-                {
-                    "code": "CLASS_QUALITY_PERFECT_COUNT",
-                    "business_fact": "is_perfect",
-                    "fact_value": is_perfect,
-                    "awarded": False,
-                    "points_per_unit": quality_points,
-                    "score": 0.0,
-                    "evidence_status": "SOURCE_MISSING",
-                    "note": (
-                        "The current contract does not attribute teacher-wide "
-                        "perfect-count points to a lesson."
-                    ),
-                }
+                    (
+                        {
+                            "code": "CLASS_QUALITY_HARDWARE",
+                            "business_fact": "hardware_quality_passed",
+                            "fact_value": hardware_quality,
+                            "awarded": hardware_quality is True,
+                            "points_per_unit": quality_points,
+                            "score": (
+                                quality_points
+                                if hardware_quality is True
+                                else 0.0
+                            ),
+                            "evidence_status": (
+                                "CONFIRMED"
+                                if hardware_quality is not None
+                                else "SOURCE_MISSING"
+                            ),
+                            "inputs": {
+                                "is_camera_off": lesson.is_camera_off,
+                                "is_cpu_usage_high": lesson.is_cpu_usage_high,
+                                "is_network_delay_high": (
+                                    lesson.is_network_delay_high
+                                ),
+                            },
+                        }
+                        if quality_rule.get("metric")
+                        == "lesson_hardware_quality_passed"
+                        else {
+                            "code": "CLASS_QUALITY_PERFECT_COUNT",
+                            "business_fact": "is_perfect",
+                            "fact_value": is_perfect,
+                            "awarded": False,
+                            "points_per_unit": quality_points,
+                            "score": 0.0,
+                            "evidence_status": "SOURCE_MISSING",
+                            "note": (
+                                "The current contract does not attribute "
+                                "teacher-wide perfect-count points to a lesson."
+                            ),
+                        }
+                    )
                 ]
                 if quality_rule is not None
                 else []
@@ -1644,6 +1679,7 @@ def _refresh_simulated_score_projections(
             )
         metrics = deepcopy(snapshot["metric_inputs"] or {})
         provenance = deepcopy(snapshot["metric_provenance"] or {})
+        teacher_lessons = lessons_by_teacher.get(teacher.teacher_id, [])
         teacher_assignments = assignments_by_teacher[teacher.teacher_id]
         assignment_by_code = {
             item.task_code: item for item in teacher_assignments
@@ -1764,25 +1800,45 @@ def _refresh_simulated_score_projections(
                 dedupe="DISTINCT student_id_hash",
             ),
         ]
+        quality_rule = scoring.get("classroom_quality")
+        hardware_quality_count = sum(
+            hardware_quality_passed(
+                is_camera_off=lesson.is_camera_off,
+                is_cpu_usage_high=lesson.is_cpu_usage_high,
+                is_network_delay_high=lesson.is_network_delay_high,
+            )
+            is True
+            for lesson in teacher_lessons
+        )
         quality_components = (
             [
                 _score_component(
-                    code="CLASS_QUALITY_PERFECT_COUNT",
-                    metric="perfect_cnt",
-                    value=float(metrics["perfect_cnt"]),
-                    points_per_unit=float(
-                        scoring["classroom_quality"]["points_per_unit"]
+                    code=(
+                        "CLASS_QUALITY_HARDWARE"
+                        if quality_rule["metric"]
+                        == "lesson_hardware_quality_passed"
+                        else "CLASS_QUALITY_PERFECT_COUNT"
                     ),
+                    metric=str(quality_rule["metric"]),
+                    value=(
+                        float(hardware_quality_count)
+                        if quality_rule["metric"]
+                        == "lesson_hardware_quality_passed"
+                        else float(metrics["perfect_cnt"])
+                    ),
+                    points_per_unit=float(quality_rule["points_per_unit"]),
                     score=(
-                        float(metrics["perfect_cnt"])
-                        * float(
-                            scoring["classroom_quality"]["points_per_unit"]
-                        )
+                        float(hardware_quality_count)
+                        * float(quality_rule["points_per_unit"])
+                        if quality_rule["metric"]
+                        == "lesson_hardware_quality_passed"
+                        else float(metrics["perfect_cnt"])
+                        * float(quality_rule["points_per_unit"])
                     ),
                     source_mode="MOCK_SIMULATION",
                 )
             ]
-            if "classroom_quality" in scoring
+            if quality_rule is not None
             else []
         )
         capacity_achieved = bool(
@@ -1973,7 +2029,6 @@ def _refresh_simulated_score_projections(
             },
         }
 
-        teacher_lessons = lessons_by_teacher.get(teacher.teacher_id, [])
         lesson_rows, attributed = _lesson_score_rows(
             teacher_lessons,
             policy_payload=policy_payload,

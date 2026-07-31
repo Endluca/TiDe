@@ -36,6 +36,7 @@ _COMPLAINT_LABELS_EN = {
     "外教向学员借钱": "Teacher Asked Student for Money",
     "迟到": "Late Arrival",
     "网络卡顿": "Unstable Network",
+    "麦克风没有声音/卡顿": "Microphone Audio Missing or Unstable",
     "语速过快": "Speaking Too Fast",
 }
 
@@ -96,64 +97,6 @@ def personalized_task_title(task_code: str, detail: str | None = None) -> str:
         normalized_detail or task_code,
         field_name="task_assignments.display_title",
     )
-
-
-def normalize_personalized_assignment_title(
-    task_code: str,
-    stored_title: str | None,
-) -> str:
-    """Normalize historical Chinese assignment titles at the read boundary."""
-
-    title = str(stored_title or "").strip()
-    if task_code == "P-FB-NEGATIVE":
-        detail = title.removeprefix("差评-").removesuffix("问题")
-        return personalized_task_title(task_code, detail)
-    if task_code == "P-FB-COMPLAINT":
-        detail = (
-            title.removeprefix("一般投诉-")
-            .removeprefix("General Complaint - ")
-            .removesuffix("问题")
-        )
-        return personalized_task_title(task_code, detail)
-    if task_code in {
-        "P-REL-MEMO",
-        "P-REL-ATTENDANCE",
-        "P-FB-BLACKLIST",
-    }:
-        return personalized_task_title(task_code)
-    return title or task_code
-
-
-def normalize_teacher_notification_title(stored_title: str | None) -> str:
-    """Normalize the current teacher reminder title at the read boundary."""
-
-    title = str(stored_title or "").strip()
-    if not title or title == "课中质量问题":
-        return "In-Class Quality Alert"
-    return require_english_teacher_copy(
-        title,
-        field_name="notifications.payload.title",
-    )
-
-
-def normalize_teacher_notification_reason(
-    stored_reason: str | None,
-    snapshot: Mapping[str, Any] | None,
-) -> str:
-    """Project legacy reminder copy into current English teacher-facing copy.
-
-    Historical notifications may still contain the original Chinese body. A
-    single legacy record must not break the entire operations page, but the
-    read model must also never expose that Chinese copy to teachers.
-    """
-
-    reason = str(stored_reason or "").strip()
-    if not reason or contains_han(reason):
-        reason = (
-            "An in-class quality issue was detected. "
-            "Review the evidence and improve the class setup."
-        )
-    return with_teacher_evidence(reason, snapshot)
 
 
 def _as_string_list(value: object) -> list[str]:
@@ -308,9 +251,6 @@ def with_teacher_evidence(
 
 __all__ = [
     "contains_han",
-    "normalize_personalized_assignment_title",
-    "normalize_teacher_notification_reason",
-    "normalize_teacher_notification_title",
     "personalized_task_title",
     "require_english_teacher_copy",
     "teacher_evidence_summary",

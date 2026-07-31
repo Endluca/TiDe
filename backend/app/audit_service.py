@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Engine, String, cast, func, or_, select
+from sqlalchemy import Engine, func, literal_column, or_, select
 
 from .database import engine as default_engine
 from .database import session_scope
@@ -52,17 +52,46 @@ class AuditService:
             needle = (keyword or "").strip()
             if needle:
                 pattern = f"%{needle}%"
-                statement = statement.where(
-                    or_(
-                        AuditEventRecord.event_id.ilike(pattern),
-                        AuditEventRecord.event_type.ilike(pattern),
-                        AuditEventRecord.teacher_id.ilike(pattern),
-                        AuditEventRecord.task_id.ilike(pattern),
-                        AuditEventRecord.case_id.ilike(pattern),
-                        AuditEventRecord.actor_type.ilike(pattern),
-                        cast(AuditEventRecord.payload, String).ilike(pattern),
+                if session.bind.dialect.name == "postgresql":
+                    # This expression is covered by the structured trigram
+                    # index. Deliberately exclude the arbitrary JSON payload:
+                    # searching it forced full-table JSON serialization and
+                    # also made the search surface depend on unstable fields.
+                    separator = literal_column("' '")
+                    empty_text = literal_column("''")
+                    search_text = (
+                        AuditEventRecord.event_id
+                        + separator
+                        + AuditEventRecord.event_type
+                        + separator
+                        + func.coalesce(
+                            AuditEventRecord.teacher_id, empty_text
+                        )
+                        + separator
+                        + func.coalesce(
+                            AuditEventRecord.task_id, empty_text
+                        )
+                        + separator
+                        + func.coalesce(
+                            AuditEventRecord.case_id, empty_text
+                        )
+                        + separator
+                        + AuditEventRecord.actor_type
                     )
-                )
+                    statement = statement.where(
+                        search_text.ilike(pattern)
+                    )
+                else:
+                    statement = statement.where(
+                        or_(
+                            AuditEventRecord.event_id.ilike(pattern),
+                            AuditEventRecord.event_type.ilike(pattern),
+                            AuditEventRecord.teacher_id.ilike(pattern),
+                            AuditEventRecord.task_id.ilike(pattern),
+                            AuditEventRecord.case_id.ilike(pattern),
+                            AuditEventRecord.actor_type.ilike(pattern),
+                        )
+                    )
             total = int(
                 session.scalar(
                     select(func.count()).select_from(statement.subquery())

@@ -4,15 +4,17 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import hashlib
 
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from app.config_service import seed_default_configs
 from app.database import engine, session_scope
 from app.db_models import (
     AuditEventRecord,
     DataImportBatchRecord,
+    LessonDimensionScoreRecord,
     OutboxEventRecord,
     ScoreAccountRecord,
+    ScoreComponentAccountRecord,
     ScoreEntryRecord,
     TaskAssignmentRecord,
     TaskTemplateRecord,
@@ -380,6 +382,7 @@ def test_completion_persists_task_points_into_current_total_score_fields() -> No
 
     assert result["failed"] == 0
     assert result["settled"] == 7
+    assert result["projection_refreshes"] == 1
     with session_scope(engine) as session:
         teacher = session.get(TeacherRecord, teacher_id)
         snapshot = session.get(
@@ -397,6 +400,176 @@ def test_completion_persists_task_points_into_current_total_score_fields() -> No
         assert teacher.payload["metric_inputs"][
             "mandatory_task_completed_count"
         ] == 7
+
+
+def test_task_events_are_coalesced_without_rebuilding_lesson_scores() -> None:
+    _prepare_config()
+    teacher_id = "REAL-SCORE-INCREMENTAL"
+    _teacher(teacher_id, with_score_snapshot=True)
+    _assignments(teacher_id, completed={"G01", "G08"})
+    original_updated_at = NOW - timedelta(days=1)
+    with session_scope(engine) as session:
+        session.add(
+            LessonDimensionScoreRecord(
+                score_state_id=f"CAMP-{teacher_id}:LESSON-KEEP:RELIABILITY",
+                camp_enrollment_id=f"CAMP-{teacher_id}",
+                lesson_id="LESSON-KEEP",
+                teacher_id=teacher_id,
+                dimension="RELIABILITY",
+                current_score=4,
+                evidence_status="CONFIRMED",
+                evidence_coverage="FULL",
+                score_rule_version="lesson-policy-existing",
+                current_revision=41,
+                score_as_of=NOW,
+                last_score_entry_id=None,
+                payload={"marker": "must-survive-task-settlement"},
+                updated_at=original_updated_at,
+            )
+        )
+
+    result = SharedTaskScoreSettlementWorker(engine).run_once(max_events=10)
+
+    assert result["settled"] == 2
+    assert result["projection_refreshes"] == 1
+    with session_scope(engine) as session:
+        lesson_score = session.get(
+            LessonDimensionScoreRecord,
+            f"CAMP-{teacher_id}:LESSON-KEEP:RELIABILITY",
+        )
+        assert lesson_score is not None
+        assert lesson_score.current_revision == 41
+        assert lesson_score.score_rule_version == "lesson-policy-existing"
+        assert lesson_score.payload == {
+            "marker": "must-survive-task-settlement"
+        }
+        components = list(
+            session.scalars(
+                select(ScoreComponentAccountRecord)
+                .where(
+                    ScoreComponentAccountRecord.teacher_id == teacher_id,
+                    ScoreComponentAccountRecord.dimension
+                    == "NEW_TEACHER_TASK",
+                )
+                .order_by(ScoreComponentAccountRecord.component_code)
+            ).all()
+        )
+        assert [item.component_code for item in components] == list(
+            TASK_CODES
+        )
+        assert {
+            item.component_code: item.current_score
+            for item in components
+            if item.current_score
+        } == {"G01": 3, "G08": 5}
+
+
+def test_incremental_task_projection_can_grant_irreversible_qualification() -> None:
+    _prepare_config()
+    teacher_id = "REAL-SCORE-QUALIFICATION"
+    _teacher(teacher_id, with_score_snapshot=True)
+    provenance = {
+        key: {
+            "source_mode": "REAL",
+            "source_field": key,
+            "batch_id": f"BATCH-{teacher_id}",
+        }
+        for key in (
+            "peak_slot_cnt",
+            "capacity_score",
+            "perfect_cnt",
+            "peak_completed_cnt",
+            "feedback_praise_cnt",
+            "feedback_favorite_cnt",
+            "total_completed_cnt",
+            "late_cnt",
+            "early_cnt",
+            "absent_cnt",
+            "l0_complaint_cnt",
+        )
+    }
+    metric_inputs = {
+        "peak_slot_cnt": 40,
+        "capacity_milestone_achieved": True,
+        "capacity_score": 10,
+        "perfect_cnt": 5,
+        "peak_completed_cnt": 2,
+        "feedback_praise_cnt": 4,
+        "feedback_favorite_cnt": 2,
+        "total_completed_cnt": 10,
+        "late_cnt": 0,
+        "early_cnt": 0,
+        "absent_cnt": 0,
+        "l0_complaint_cnt": 0,
+        "new_teacher_task_score": 0,
+        "mandatory_task_assignment_count": 0,
+        "mandatory_task_completed_count": 0,
+        "mandatory_task_expected_count": 9,
+    }
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        snapshot = session.get(
+            TeacherMetricSnapshotRecord,
+            f"BATCH-{teacher_id}:{teacher_id}",
+        )
+        assert teacher is not None
+        assert snapshot is not None
+        snapshot.metric_inputs = metric_inputs
+        snapshot.metric_provenance = provenance
+        snapshot.capacity_score = 10
+        snapshot.reliability_score = 24
+        snapshot.user_feedback_score = 30
+        snapshot.class_quality_score = 6
+        snapshot.new_teacher_task_score = 0
+        snapshot.raw_total_score = 70
+        snapshot.public_total_score = 70
+        payload = dict(teacher.payload)
+        payload.update(
+            metric_inputs=metric_inputs,
+            metric_provenance=provenance,
+            raw_total_score=70,
+            total_score=70,
+            external_display_score=70,
+            graduation_qualified=False,
+            gold_qualified=False,
+            dimensions=[
+                {"code": "CAPACITY", "score": 10},
+                {"code": "RELIABILITY", "score": 24},
+                {"code": "USER_FEEDBACK", "score": 30},
+                {"code": "CLASS_QUALITY", "score": 6},
+                {"code": "NEW_TEACHER_TASK", "score": 0},
+            ],
+        )
+        teacher.payload = payload
+        teacher.total_score = 70
+        session.add(
+            ScoreAccountRecord(
+                account_id=f"{teacher_id}:CLASS_QUALITY",
+                teacher_id=teacher_id,
+                camp_enrollment_id=f"CAMP-{teacher_id}",
+                dimension="CLASS_QUALITY",
+                current_score=6,
+                minimum_score=0,
+                weight=0,
+                score_rule_version="current-quality",
+                version=1,
+                updated_at=NOW,
+                payload={"source_mode": "DERIVED_REAL"},
+            )
+        )
+    _assignments(teacher_id, completed=set(TASK_CODES))
+
+    result = SharedTaskScoreSettlementWorker(engine).run_once(max_events=20)
+
+    assert result["settled"] == 9
+    assert result["projection_refreshes"] == 1
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        assert teacher is not None
+        assert teacher.total_score == 100
+        assert teacher.graduation_state == "GRADUATED"
+        assert teacher.payload["graduation_criteria_met"] is True
+        assert teacher.payload["graduation_qualified"] is True
 
 
 def test_mock_and_non_completed_events_are_consumed_without_score() -> None:
@@ -510,3 +683,127 @@ def test_two_workers_cannot_duplicate_fixed_task_awards() -> None:
                 ScoreEntryRecord.entry_type == ENTRY_TYPE,
             )
         ) == 2
+
+
+def test_poison_event_is_not_hot_looped_and_moves_to_dead_letter() -> None:
+    _prepare_config()
+    teacher_id = "REAL-SCORE-DEAD-LETTER"
+    _teacher(teacher_id)
+    assignment_ids = _assignments(teacher_id, codes=("G01",))
+    with session_scope(engine) as session:
+        event_id = _add_event(
+            session,
+            assignment_id=assignment_ids["G01"],
+            teacher_id=teacher_id,
+            task_code="G01",
+            source_mode="REAL",
+            suffix="invalid-status",
+            to_status="NOT_A_LEGAL_STATUS",
+        )
+
+    worker = SharedTaskScoreSettlementWorker(
+        engine,
+        retry_delay=timedelta(0),
+        max_retry_delay=timedelta(0),
+        max_attempts=2,
+        retry_jitter_ratio=0,
+    )
+    first = worker.run_once(max_events=10)
+    assert first["failed"] == 1
+    assert first["dead_lettered"] == 0
+    with session_scope(engine) as session:
+        event = session.get(OutboxEventRecord, event_id)
+        assert event is not None
+        assert event.status == "PENDING"
+        assert event.attempt_count == 1
+
+    second = worker.run_once(max_events=10)
+    assert second["failed"] == 1
+    assert second["dead_lettered"] == 1
+    with session_scope(engine) as session:
+        event = session.get(OutboxEventRecord, event_id)
+        assert event is not None
+        assert event.status == "DEAD_LETTER"
+        assert event.attempt_count == 2
+        assert event.published_at is None
+        assert event.last_error is not None
+
+    assert worker.run_once(max_events=10)["claimed"] == 0
+
+
+def test_same_teacher_events_batch_assignment_locks_without_n_plus_one() -> None:
+    _prepare_config()
+    teacher_id = "REAL-SCORE-BATCH-LOCKS"
+    _teacher(teacher_id)
+    _assignments(teacher_id, completed=set(TASK_CODES))
+    statements: list[str] = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        result = SharedTaskScoreSettlementWorker(engine).run_once(
+            max_events=len(TASK_CODES)
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert result["settled"] == len(TASK_CODES)
+    assignment_id_batch_reads = [
+        statement
+        for statement in statements
+        if "FROM task_assignments" in statement
+        and "task_assignments.assignment_id IN" in statement
+    ]
+    assert len(assignment_id_batch_reads) == 1
+
+
+def test_systemic_group_failure_records_each_event_once(
+    monkeypatch,
+) -> None:
+    _prepare_config()
+    teacher_id = "REAL-SCORE-GROUP-FAILURE"
+    _teacher(teacher_id)
+    _assignments(teacher_id, completed=set(TASK_CODES))
+    worker = SharedTaskScoreSettlementWorker(
+        engine,
+        retry_delay=timedelta(minutes=5),
+        retry_jitter_ratio=0,
+    )
+
+    def fail_projection(*_args, **_kwargs):
+        raise RuntimeError("systemic projection failure")
+
+    monkeypatch.setattr(
+        worker,
+        "_settle_eligible_assignment",
+        fail_projection,
+    )
+    result = worker.run_once(max_events=len(TASK_CODES))
+
+    assert result["failed"] == len(TASK_CODES)
+    assert result["claimed"] == len(TASK_CODES)
+    with session_scope(engine) as session:
+        failed_events = session.scalars(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_type == "TASK_ASSIGNMENT",
+                OutboxEventRecord.aggregate_id.like(
+                    f"ASSIGN-{teacher_id}-%"
+                ),
+            )
+        ).all()
+        assert len(failed_events) == len(TASK_CODES)
+        assert {item.attempt_count for item in failed_events} == {1}
+        assert {item.status for item in failed_events} == {"PENDING"}
+        assert {item.last_error for item in failed_events} == {
+            "RuntimeError"
+        }

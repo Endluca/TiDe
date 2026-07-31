@@ -98,6 +98,17 @@ class PerfectCompletionQualityScoreRule(UnitScoreRule):
     source_mode: Literal["REAL_TEACHER_SNAPSHOT"] = "REAL_TEACHER_SNAPSHOT"
 
 
+class LessonHardwareQualityScoreRule(UnitScoreRule):
+    """Lesson-level hardware quality backed by three typed lesson facts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: Literal[
+        "lesson_hardware_quality_passed"
+    ] = "lesson_hardware_quality_passed"
+    source_mode: Literal["REAL_LESSON_FACTS"] = "REAL_LESSON_FACTS"
+
+
 class ScoreItemsV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -139,6 +150,12 @@ class ScoreItemsV9(BaseModel):
     feedback_favorite: UnitScoreRule
     reliability_perfect: UnitScoreRule
     reliability_peak: UnitScoreRule
+
+
+class ScoreItemsV1(ScoreItemsV9):
+    """Approved v1 items including lesson-level hardware quality."""
+
+    classroom_quality: LessonHardwareQualityScoreRule
 
 
 class ScoreThresholdsV2(BaseModel):
@@ -241,7 +258,7 @@ class ScoreGraduationConfig(BaseModel):
     policy_version: Literal[
         "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"
     ]
-    scoring_items: Union[ScoreItemsV2, ScoreItemsV8, ScoreItemsV9]
+    scoring_items: Union[ScoreItemsV2, ScoreItemsV8, ScoreItemsV9, ScoreItemsV1]
     thresholds: ScoreThresholdsV2
     hard_gates: Union[
         ScoreHardGatesV2,
@@ -524,9 +541,10 @@ class ScoreGraduationConfig(BaseModel):
             graduation_gates = self.hard_gates.graduation
             gold_gates = self.hard_gates.gold
             if (
-                not isinstance(scoring_items, ScoreItemsV9)
+                not isinstance(scoring_items, ScoreItemsV1)
                 or not isinstance(scoring_items.capacity, CapacityMilestoneScoreRule)
                 or scoring_items.new_teacher_tasks.maximum_points != 30
+                or scoring_items.classroom_quality.points_per_unit != 2
                 or self.thresholds.graduation_external_score != 100
                 or self.thresholds.gold_external_score != 200
                 or not isinstance(graduation_gates, GraduationHardGatesV5)
@@ -537,7 +555,8 @@ class ScoreGraduationConfig(BaseModel):
                 raise ValueError(
                     "v1 只允许调整已批准计分项的分值、供给阈值、出营/金牌"
                     "累计分数线和投诉/出席次数门槛；9 项必修任务、30 分任务总分、"
-                    "对外显示 100/200、数据字段和结算方式不可修改"
+                    "课堂硬件质量每节 2 分、对外显示 100/200、数据字段和结算方式"
+                    "不可修改"
                 )
         if self.policy_version in {"v9", "v10"}:
             mandatory_task_count = 9 if self.policy_version == "v10" else 10
@@ -818,6 +837,14 @@ SCORE_POLICY_V10_PAYLOAD: dict[str, Any] = {
 SCORE_POLICY_V1_PAYLOAD: dict[str, Any] = {
     **deepcopy(SCORE_POLICY_V10_PAYLOAD),
     "policy_version": "v1",
+    "scoring_items": {
+        **deepcopy(SCORE_POLICY_V10_PAYLOAD["scoring_items"]),
+        "classroom_quality": {
+            "metric": "lesson_hardware_quality_passed",
+            "points_per_unit": 2,
+            "source_mode": "REAL_LESSON_FACTS",
+        },
+    },
 }
 
 

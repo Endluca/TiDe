@@ -84,20 +84,20 @@
 只有完整拉取、校验和标准化全部成功，才能提交新批次并运行触发。失败或部分批次不能推进当前水位。
 
 本系统不再要求上游额外提供逐课 `perfect` 字段。教师端读取视图
-`teacher_lesson_score_current.is_perfect`，其值由以下四项课程事实派生：
+`teacher_lesson_score_current.is_perfect`，其值由以下三项课程事实派生：
 
 ```text
 lesson_lifecycle_status = 'end'
-且 absence_reason_detail 为空
 且 is_late = 0
 且 is_early = 0
 ```
 
 `is_perfect` 随依赖课程事实更新而变化，不重复写入 `lesson_facts`。正式日更接口仍需保证
-这四个来源字段的 0、1、空值和修正语义稳定。当前该字段只作为逐课业务事实展示。教师
-维度可靠性分读取宽表 `perfect_cnt × 4`；累计值无法准确分配到具体课程，因此逐课
-完美完课加分保持 0 并标记 `SOURCE_MISSING`。课堂质量当前无加分项，逐课该维度为 0
-并标记 `NOT_APPLICABLE`。
+这三个来源字段的 0、1、空值和修正语义稳定。逐课 `is_perfect = true` 时可靠性加 4 分；
+教师维度 `perfect_cnt` 按去重 `source_appoint_id` 汇总。课堂质量硬件项直接读取
+`is_camera_off / is_cpu_usage_high / is_network_delay_high`；三项均明确为 0 时
+逐课加 2 分，任一字段为 1 时不加分，任一字段为空时不加分并标记
+`SOURCE_MISSING`。
 
 ## 6. Mock 边界
 

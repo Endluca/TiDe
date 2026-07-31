@@ -83,10 +83,15 @@ def test_default_payloads_match_single_v1_score_contract() -> None:
         },
         "new_teacher_tasks": {"maximum_points": 30},
         "feedback_praise": {"points_per_unit": 5},
-        "feedback_favorite": {"points_per_unit": 5},
-        "reliability_perfect": {"points_per_unit": 4},
-        "reliability_peak": {"points_per_unit": 2},
-    }
+            "feedback_favorite": {"points_per_unit": 5},
+            "reliability_perfect": {"points_per_unit": 4},
+            "reliability_peak": {"points_per_unit": 2},
+            "classroom_quality": {
+                "points_per_unit": 2,
+                "metric": "lesson_hardware_quality_passed",
+                "source_mode": "REAL_LESSON_FACTS",
+            },
+        }
     assert score["thresholds"] == {
         "graduation_raw_score": 100,
         "gold_raw_score": 200,
@@ -350,6 +355,48 @@ def test_score_policy_publish_recalculates_before_success(
     assert service.get_version(first["version_id"])["status"] == (
         ConfigStatus.RETIRED.value
     )
+
+
+def test_score_policy_publish_takes_projection_lock_before_row_lock(
+    service: ConfigService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draft = _draft(
+        service,
+        ConfigKey.SCORE_GRADUATION,
+        deepcopy(DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION]),
+    )
+    assert service.validate_version(
+        draft["version_id"],
+        actor_id="ops-validator",
+    )["valid"]
+    order: list[str] = []
+    original_get_locked = service._get_locked
+
+    def record_projection_lock(_session) -> None:
+        order.append("projection_lock")
+
+    def record_row_lock(session, version_id):
+        assert order == ["projection_lock"]
+        order.append("config_row_lock")
+        return original_get_locked(session, version_id)
+
+    monkeypatch.setattr(
+        "app.config_service.acquire_score_projection_lock",
+        record_projection_lock,
+    )
+    monkeypatch.setattr(service, "_get_locked", record_row_lock)
+    monkeypatch.setattr(
+        "app.score_read_model.refresh_persisted_score_read_models",
+        lambda *_args, **_kwargs: {"teacher_count": 0},
+    )
+
+    service.publish_version(
+        draft["version_id"],
+        actor_id="ops-publisher",
+    )
+
+    assert order == ["projection_lock", "config_row_lock"]
 
 
 def test_failed_score_recalculation_rolls_publication_back(

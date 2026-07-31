@@ -22,6 +22,7 @@ from .config_models import (
     ConfigVersionRecord,
 )
 from .database import SessionLocal
+from .score_projection_lock import acquire_score_projection_lock
 
 
 SessionFactory = Callable[[], Session]
@@ -346,6 +347,16 @@ class ConfigService:
 
     def publish_version(self, version_id: str, *, actor_id: str) -> dict[str, Any]:
         with self.session_factory() as session, session.begin():
+            candidate_key = session.scalar(
+                select(ConfigVersionRecord.config_key).where(
+                    ConfigVersionRecord.version_id == version_id
+                )
+            )
+            if candidate_key == ConfigKey.SCORE_GRADUATION.value:
+                # Every transaction that can mutate score projections takes the
+                # global score lock before row locks or DML. This prevents the
+                # publish path from deadlocking with task settlement/imports.
+                acquire_score_projection_lock(session)
             record = self._get_locked(session, version_id)
             if record.status == ConfigStatus.PUBLISHED.value:
                 return self._version_dict(record)

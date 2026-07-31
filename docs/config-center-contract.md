@@ -15,7 +15,7 @@
 当前发布的积分配置为 `SCORE_GRADUATION.policy_version = v1`，不使用 cap、权重、负向扣分或五维最低线：
 
 - 用户反馈和可靠性按最新有效的 `teacher_metric_snapshots` 教师维度统计快照计算：好评 `+5`、收藏 `+5`、完美完课 `+4`、Peak 完课 `+2`；15 日复约字段和 `on_time_completed_cnt` 继续保存但不计分；
-- 课堂质量当前无加分项，维度分为 0，来源状态为 `NOT_APPLICABLE`；
+- 课堂质量按 `lesson_facts` 逐课计算：未开摄像头、CPU 占用过高、网络延迟过高三个字段均明确为 0 时加 2 分；任一字段为 1 或为空均不加分，空值标记为 `SOURCE_MISSING`；
 - 当前 9 项固定成长任务合计最多 30 分。每个合法 `COMPLETED` assignment 按其 `template_version_id` 固定引用的 `task_templates.payload.score_value` 累加，不等待其余任务完成；
 - 唯一供给积分规则为 `peak_slot_cnt >= 40`，首次达成时自动加 10 分并永久锁定；后续字段下降或数据纠错都不撤分，纠错只保留前后值和审计；
 - 当前 5 类个性化改善任务均为 0 分，其完成状态不产生积分流水；

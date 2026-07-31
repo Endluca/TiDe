@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.auth import OperatorIdentity, current_operator
 from app.auth_models import OperatorRole
@@ -21,6 +22,7 @@ from app.task_catalog import (
     task_template_seed_payloads,
 )
 from app.task_seed import seed_task_catalog
+from app.task_service import TaskService
 
 
 client = TestClient(app)
@@ -348,6 +350,49 @@ def test_current_template_create_update_publish_lifecycle_and_role_boundary() ->
     assert published.json()["revision"] == 3
 
 
+def test_template_update_compare_and_swap_rejects_a_stale_second_session() -> None:
+    request = _personalized_template_request()
+    created = client.post("/api/task-templates", json=request)
+    assert created.status_code == 201
+
+    with Session(engine) as first_session, Session(engine) as second_session:
+        first_revision = first_session.scalar(
+            select(TaskTemplateRecord.revision).where(
+                TaskTemplateRecord.template_id == "TEST-CURRENT-01"
+            )
+        )
+        stale_revision = second_session.scalar(
+            select(TaskTemplateRecord.revision).where(
+                TaskTemplateRecord.template_id == "TEST-CURRENT-01"
+            )
+        )
+        second_session.rollback()
+        assert first_revision == stale_revision == 1
+
+        assert TaskService._cas_update_template(
+            first_session,
+            row_id="TEST-CURRENT-01:v1",
+            expected_revision=first_revision,
+            values={"revision": 2},
+        )
+        first_session.commit()
+
+        assert not TaskService._cas_update_template(
+            second_session,
+            row_id="TEST-CURRENT-01:v1",
+            expected_revision=stale_revision,
+            values={"revision": 2},
+        )
+        second_session.rollback()
+
+    with session_scope(engine) as session:
+        assert session.scalar(
+            select(TaskTemplateRecord.revision).where(
+                TaskTemplateRecord.template_id == "TEST-CURRENT-01"
+            )
+        ) == 2
+
+
 def test_shared_assignment_list_joins_current_template_and_supports_filters() -> None:
     _insert_fixed_assignment()
 
@@ -437,24 +482,24 @@ def test_task_progress_aggregates_operational_assignments_and_pages_details() ->
     _insert_personalized_assignment(
         assignment_id="P-COMPLAINT-1",
         teacher_id="T-1001",
-        title="一般投诉-A问题",
+        title="General Complaint - A",
     )
     _insert_personalized_assignment(
         assignment_id="P-COMPLAINT-2",
         teacher_id="T-1002",
-        title="一般投诉-A问题",
+        title="General Complaint - A",
         status="COMPLETED",
     )
     _insert_personalized_assignment(
         assignment_id="P-COMPLAINT-3",
         teacher_id="T-1003",
-        title="一般投诉-A问题",
+        title="General Complaint - A",
         status="UNDER_REVIEW",
     )
     _insert_personalized_assignment(
         assignment_id="P-COMPLAINT-4",
         teacher_id="T-1004",
-        title="一般投诉-B问题",
+        title="General Complaint - B",
         status="EXPIRED",
     )
 
@@ -558,6 +603,55 @@ def test_task_progress_aggregates_operational_assignments_and_pages_details() ->
         assert teacher_detail.json()["items"][0]["why"] == stored.why
         assert "Evidence:" in stored.why
     assert "Evidence:" in teacher_detail.json()["items"][0]["why"]
+
+
+def test_task_progress_aggregates_and_pages_in_sql() -> None:
+    _insert_fixed_assignment(
+        assignment_id="FIXED-G01-SQL-1",
+        teacher_id="T-1001",
+        source_mode="REAL",
+    )
+    _insert_fixed_assignment(
+        assignment_id="FIXED-G01-SQL-2",
+        teacher_id="T-1002",
+        source_mode="REAL",
+    )
+    statements: list[str] = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        progress = TaskService(engine).list_task_progress()
+        progress_statements = list(statements)
+        statements.clear()
+        detail = TaskService(engine).list_task_progress_assignments(
+            task_code="G01",
+            title="Profile & Credentials Completion",
+            task_kind="FIXED_GROWTH",
+            page=1,
+            page_size=1,
+        )
+        detail_statements = list(statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert progress["total"] == 1
+    assert len(progress_statements) == 1
+    assert "GROUP BY" in progress_statements[0].upper()
+    assert detail["total"] == 2
+    assert len(detail["items"]) == 1
+    assert len(detail_statements) == 2
+    assert "LIMIT" in detail_statements[-1].upper()
 
 
 def test_shared_assignment_schema_excludes_retired_transport_fields() -> None:

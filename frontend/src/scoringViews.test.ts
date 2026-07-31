@@ -111,7 +111,7 @@ describe('teacher list and dashboard', () => {
     const currentDescription = mixedDataAlertDescription('v1')
     expect(currentDescription).toContain('Peak slots')
     expect(currentDescription).toContain('完美完课')
-    expect(currentDescription).toContain('课堂质量当前无加分项')
+    expect(currentDescription).toContain('逐课硬件质量')
     expect(currentDescription).toContain('必修任务基线和完成状态直接读取共享任务表')
     expect(currentDescription).not.toContain('缺席责任拆分')
     expect(currentDescription).not.toContain('Mock')
@@ -137,6 +137,7 @@ describe('teacher list and dashboard', () => {
   it('当前可靠性子项使用业务名称，不向运营暴露旧字段名', () => {
     expect(scoreComponentLabel({ code: 'PERFECT_COMPLETED', metric: 'perfect_cnt' })).toBe('完美完课')
     expect(scoreComponentLabel({ code: 'PEAK_COMPLETED', metric: 'peak_completed_cnt' })).toBe('Peak 时段完课')
+    expect(scoreComponentLabel({ code: 'CLASS_QUALITY_HARDWARE', metric: 'lesson_hardware_quality_passed' })).toBe('硬件质量')
   })
 
   it('当前出营只展示必修任务、L0 投诉和总分三条门槛', () => {

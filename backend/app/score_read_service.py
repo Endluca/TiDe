@@ -18,7 +18,7 @@ from .db_models import (
     TeacherMetricSnapshotRecord,
     TeacherRecord,
 )
-from .lesson_quality import is_perfect_lesson
+from .lesson_quality import hardware_quality_passed, is_perfect_lesson
 
 
 DIMENSION_ORDER = {
@@ -50,9 +50,13 @@ def _lesson_business_facts(lesson: LessonFactRecord) -> dict[str, Any]:
 
     is_perfect = is_perfect_lesson(
         lesson_lifecycle_status=lesson.lesson_lifecycle_status,
-        absence_reason_detail=lesson.absence_reason_detail,
         is_late=lesson.is_late,
         is_early=lesson.is_early,
+    )
+    hardware_quality = hardware_quality_passed(
+        is_camera_off=lesson.is_camera_off,
+        is_cpu_usage_high=lesson.is_cpu_usage_high,
+        is_network_delay_high=lesson.is_network_delay_high,
     )
     return {
         "attendance": {
@@ -76,6 +80,7 @@ def _lesson_business_facts(lesson: LessonFactRecord) -> dict[str, Any]:
             "is_camera_off": lesson.is_camera_off,
             "is_cpu_usage_high": lesson.is_cpu_usage_high,
             "is_network_delay_high": lesson.is_network_delay_high,
+            "hardware_quality_passed": hardware_quality,
             "is_perfect": is_perfect,
         },
         "capacity": {

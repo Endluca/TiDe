@@ -445,23 +445,70 @@ class TeacherReadService:
                 },
             }
 
-    def teacher_options(self) -> list[dict[str, Any]]:
+    def teacher_options(
+        self,
+        *,
+        keyword: str | None = None,
+        limit: int = 30,
+        page: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return a bounded scalar projection for remote-search selectors."""
+
+        normalized_keyword = str(keyword or "").strip().casefold()
+        employment_status = func.coalesce(
+            TeacherMetricSnapshotRecord.employment_status,
+            TeacherRecord.payload["employment_status"].as_string(),
+        ).label("employment_status")
+        timezone_source = TeacherRecord.payload[
+            "timezone_source_mode"
+        ].as_string().label("timezone_source")
         with session_scope(self.engine) as session:
+            statement = (
+                select(
+                    TeacherRecord.teacher_id,
+                    TeacherRecord.name,
+                    TeacherRecord.data_mode,
+                    employment_status,
+                    TeacherRecord.graduation_state,
+                    TeacherRecord.timezone,
+                    timezone_source,
+                )
+                .select_from(TeacherRecord)
+                .outerjoin(
+                    TeacherMetricSnapshotRecord,
+                    and_(
+                        TeacherMetricSnapshotRecord.teacher_id
+                        == TeacherRecord.teacher_id,
+                        TeacherMetricSnapshotRecord.batch_id
+                        == TeacherRecord.source_batch_id,
+                    ),
+                )
+            )
+            if normalized_keyword:
+                pattern = f"%{normalized_keyword}%"
+                statement = statement.where(
+                    or_(
+                        func.lower(TeacherRecord.teacher_id).like(pattern),
+                        func.lower(TeacherRecord.name).like(pattern),
+                    )
+                )
             rows = session.execute(
-                self._base_statement().order_by(TeacherRecord.teacher_id)
+                statement.order_by(TeacherRecord.teacher_id)
+                .offset((page - 1) * limit)
+                .limit(limit)
             ).all()
             result: list[dict[str, Any]] = []
-            for teacher, snapshot in rows:
+            for row in rows:
                 blockers: list[str] = []
-                if teacher.graduation_state != "IN_PROGRESS":
+                if row.graduation_state != "IN_PROGRESS":
                     blockers.append("GRADUATED")
                 timezone_source = str(
-                    (teacher.payload or {}).get("timezone_source_mode") or ""
+                    row.timezone_source or ""
                 ).upper()
                 if (
-                    not str(teacher.timezone or "").strip()
+                    not str(row.timezone or "").strip()
                     or (
-                        str(teacher.data_mode or "").upper()
+                        str(row.data_mode or "").upper()
                         in {"REAL", "MIXED"}
                         and timezone_source
                         in {
@@ -476,13 +523,11 @@ class TeacherReadService:
                     blockers.append("TIMEZONE_UNAVAILABLE")
                 result.append(
                     {
-                        "teacher_id": teacher.teacher_id,
-                        "name": teacher.name,
-                        "data_mode": teacher.data_mode,
-                        "employment_status": _employment_status(
-                            teacher, snapshot
-                        ),
-                        "graduation_state": teacher.graduation_state,
+                        "teacher_id": row.teacher_id,
+                        "name": row.name,
+                        "data_mode": row.data_mode,
+                        "employment_status": row.employment_status,
+                        "graduation_state": row.graduation_state,
                         "task_issuance_blockers": blockers,
                     }
                 )
