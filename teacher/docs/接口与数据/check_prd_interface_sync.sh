@@ -2,8 +2,10 @@
 
 set -u
 
-sync_root="$(git rev-parse --show-toplevel 2>/dev/null)"
-if [ -z "$sync_root" ]; then
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+sync_root="$(cd -- "$script_dir/../.." && pwd)"
+
+if ! git -C "$sync_root" rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "未找到 Git 仓库，无法检查文档联动。"
   exit 1
 fi
