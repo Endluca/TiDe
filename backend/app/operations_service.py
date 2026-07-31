@@ -6,7 +6,16 @@ from datetime import date, datetime, time, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Engine, func, select
+from sqlalchemy import (
+    Engine,
+    and_,
+    case,
+    func,
+    literal,
+    literal_column,
+    or_,
+    select,
+)
 
 from .database import engine as default_engine
 from .database import session_scope
@@ -19,9 +28,13 @@ from .db_models import (
     TaskAssignmentRecord,
     TeacherRecord,
 )
-
-
-TERMINAL_TASK_STATUSES = {"COMPLETED", "EXPIRED", "WAIVED", "CANCELLED"}
+TERMINAL_TASK_STATUSES = {
+    "COMPLETED",
+    "FAILED",
+    "EXPIRED",
+    "WAIVED",
+    "CANCELLED",
+}
 TERMINAL_CASE_STATUSES = {"CLOSED", "RESOLVED", "CANCELLED"}
 TERMINAL_NOTIFICATION_STATUSES = {"READ", "CLICKED", "CANCELLED", "FAILED"}
 DOMAIN_META = {
@@ -29,6 +42,93 @@ DOMAIN_META = {
     "USER_FEEDBACK": "用户反馈",
     "CLASS_QUALITY": "课堂质量",
 }
+EVIDENCE_MATCH_SAMPLE_LIMIT = 20
+
+
+def _active_match_expression() -> Any:
+    # Keep the constant literal so PostgreSQL can use the partial active-output
+    # index even after psycopg switches this query to a generic prepared plan.
+    return (
+        PersonalizedTriggerMatchRecord.match_status
+        != literal_column("'SUPPRESSED'")
+    )
+
+
+def _domain_expression() -> Any:
+    explicit = func.upper(
+        func.coalesce(
+            PersonalizedTriggerMatchRecord.evidence_snapshot[
+                "domain"
+            ].as_string(),
+            "",
+        )
+    )
+    return case(
+        (explicit.in_(tuple(DOMAIN_META)), explicit),
+        (
+            PersonalizedTriggerMatchRecord.trigger_code.like("TR-REL%"),
+            "RELIABILITY",
+        ),
+        (
+            PersonalizedTriggerMatchRecord.trigger_code.like("TR-QUALITY%"),
+            "CLASS_QUALITY",
+        ),
+        else_="USER_FEEDBACK",
+    )
+
+
+def _output_key_expression() -> Any:
+    return (
+        PersonalizedTriggerMatchRecord.output_type
+        + literal(":")
+        + func.coalesce(
+            PersonalizedTriggerMatchRecord.output_id,
+            PersonalizedTriggerMatchRecord.trigger_match_id,
+        )
+    )
+
+
+def _output_status_expression() -> Any:
+    return case(
+        (
+            PersonalizedTriggerMatchRecord.output_type == "TEACHER_TASK",
+            func.coalesce(TaskAssignmentRecord.status, "OUTPUT_MISSING"),
+        ),
+        (
+            PersonalizedTriggerMatchRecord.output_type == "OPS_CASE",
+            func.coalesce(OpsCaseRecord.status, "OUTPUT_MISSING"),
+        ),
+        (
+            PersonalizedTriggerMatchRecord.output_type == "NOTIFICATION",
+            func.coalesce(NotificationRecord.status, "OUTPUT_MISSING"),
+        ),
+        (
+            PersonalizedTriggerMatchRecord.output_type == "PENDING_DATA",
+            "PENDING_DATA",
+        ),
+        else_=PersonalizedTriggerMatchRecord.match_status,
+    )
+
+
+def _open_output_expression() -> Any:
+    return or_(
+        and_(
+            PersonalizedTriggerMatchRecord.output_type == "TEACHER_TASK",
+            TaskAssignmentRecord.assignment_id.is_not(None),
+            TaskAssignmentRecord.status.not_in(TERMINAL_TASK_STATUSES),
+        ),
+        and_(
+            PersonalizedTriggerMatchRecord.output_type == "OPS_CASE",
+            OpsCaseRecord.case_id.is_not(None),
+            OpsCaseRecord.status.not_in(TERMINAL_CASE_STATUSES),
+        ),
+        and_(
+            PersonalizedTriggerMatchRecord.output_type == "NOTIFICATION",
+            NotificationRecord.notification_id.is_not(None),
+            NotificationRecord.status.not_in(TERMINAL_NOTIFICATION_STATUSES),
+        ),
+        PersonalizedTriggerMatchRecord.output_type == "PENDING_DATA",
+    )
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -97,132 +197,185 @@ class OperationsService:
 
     def overview(self) -> dict[str, Any]:
         with session_scope(self.engine) as session:
-            lesson_total = int(
-                session.scalar(
-                    select(func.count()).select_from(LessonFactRecord).where(
-                        LessonFactRecord.source_batch_id.is_not(None)
+            active_match = _active_match_expression()
+            summary = session.execute(
+                select(
+                    select(func.count())
+                    .select_from(LessonFactRecord)
+                    .where(LessonFactRecord.source_batch_id.is_not(None))
+                    .scalar_subquery()
+                    .label("lesson_total"),
+                    select(
+                        func.count(
+                            func.distinct(LessonFactRecord.teacher_id)
+                        )
                     )
-                )
-                or 0
-            )
-            teacher_total = int(
-                session.scalar(
-                    select(func.count(func.distinct(LessonFactRecord.teacher_id))).where(
-                        LessonFactRecord.source_batch_id.is_not(None)
+                    .where(LessonFactRecord.source_batch_id.is_not(None))
+                    .scalar_subquery()
+                    .label("teacher_total"),
+                    select(
+                        func.count(
+                            func.distinct(
+                                PersonalizedTriggerMatchRecord.teacher_id
+                            )
+                        )
                     )
-                )
-                or 0
-            )
-            matches = session.scalars(
-                select(PersonalizedTriggerMatchRecord).where(
-                    PersonalizedTriggerMatchRecord.match_status != "SUPPRESSED"
-                )
-            ).all()
-            affected_teacher_total = len({item.teacher_id for item in matches})
-            pending_data_issues = sum(item.output_type == "PENDING_DATA" for item in matches)
-            open_personalized_tasks = int(
-                session.scalar(
-                    select(func.count()).select_from(TaskAssignmentRecord).where(
-                        TaskAssignmentRecord.task_kind == "PERSONALIZED_IMPROVEMENT",
-                        TaskAssignmentRecord.status.not_in(TERMINAL_TASK_STATUSES),
+                    .where(active_match)
+                    .scalar_subquery()
+                    .label("affected_teacher_total"),
+                    select(func.count())
+                    .select_from(PersonalizedTriggerMatchRecord)
+                    .where(
+                        active_match,
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "PENDING_DATA",
                     )
-                )
-                or 0
-            )
-            severe_complaint_cases = int(
-                session.scalar(
-                    select(func.count()).select_from(OpsCaseRecord).where(
+                    .scalar_subquery()
+                    .label("pending_data_issues"),
+                    select(func.count())
+                    .select_from(TaskAssignmentRecord)
+                    .where(
+                        TaskAssignmentRecord.task_kind
+                        == "PERSONALIZED_IMPROVEMENT",
+                        TaskAssignmentRecord.status.not_in(
+                            TERMINAL_TASK_STATUSES
+                        ),
+                    )
+                    .scalar_subquery()
+                    .label("open_personalized_tasks"),
+                    select(func.count())
+                    .select_from(OpsCaseRecord)
+                    .where(
                         OpsCaseRecord.case_type == "SEVERE_COMPLAINT",
                         OpsCaseRecord.status.not_in(TERMINAL_CASE_STATUSES),
                     )
+                    .scalar_subquery()
+                    .label("severe_complaint_cases"),
+                    select(
+                        func.count(func.distinct(OpsCaseRecord.case_id))
+                    )
+                    .select_from(PersonalizedTriggerMatchRecord)
+                    .join(
+                        OpsCaseRecord,
+                        and_(
+                            PersonalizedTriggerMatchRecord.output_type
+                            == "OPS_CASE",
+                            PersonalizedTriggerMatchRecord.output_id
+                            == OpsCaseRecord.case_id,
+                        ),
+                    )
+                    .where(
+                        active_match,
+                        OpsCaseRecord.status.not_in(
+                            TERMINAL_CASE_STATUSES
+                        ),
+                    )
+                    .scalar_subquery()
+                    .label("current_ops_todo_count"),
+                    select(
+                        func.max(
+                            PersonalizedTriggerMatchRecord.matched_at
+                        )
+                    )
+                    .scalar_subquery()
+                    .label("latest_match"),
                 )
-                or 0
-            )
+            ).one()
 
-            grouped: dict[str, dict[str, Any]] = {
-                code: {
-                    "domain": code,
-                    "label": label,
-                    "signal_count": 0,
-                    "teacher_ids": set(),
-                    "open_output_ids": set(),
+            domain_expression = _domain_expression()
+            output_key = _output_key_expression()
+            is_open = _open_output_expression()
+            risk_rows = session.execute(
+                select(
+                    domain_expression.label("domain"),
+                    func.count().label("signal_count"),
+                    func.count(
+                        func.distinct(
+                            PersonalizedTriggerMatchRecord.teacher_id
+                        )
+                    ).label("teacher_count"),
+                    func.count(
+                        func.distinct(
+                            case((is_open, output_key), else_=None)
+                        )
+                    ).label("open_output_count"),
+                )
+                .select_from(PersonalizedTriggerMatchRecord)
+                .outerjoin(
+                    TaskAssignmentRecord,
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "TEACHER_TASK",
+                        PersonalizedTriggerMatchRecord.output_id
+                        == TaskAssignmentRecord.assignment_id,
+                    ),
+                )
+                .outerjoin(
+                    OpsCaseRecord,
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "OPS_CASE",
+                        PersonalizedTriggerMatchRecord.output_id
+                        == OpsCaseRecord.case_id,
+                    ),
+                )
+                .outerjoin(
+                    NotificationRecord,
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "NOTIFICATION",
+                        PersonalizedTriggerMatchRecord.output_id
+                        == NotificationRecord.notification_id,
+                    ),
+                )
+                .where(active_match)
+                .group_by(domain_expression)
+            ).all()
+            risk_by_domain = {
+                str(row.domain): {
+                    "signal_count": int(row.signal_count or 0),
+                    "teacher_count": int(row.teacher_count or 0),
+                    "open_output_count": int(row.open_output_count or 0),
                 }
-                for code, label in DOMAIN_META.items()
+                for row in risk_rows
             }
-            task_status = {
-                item.assignment_id: item.status
-                for item in session.scalars(
-                    select(TaskAssignmentRecord).where(
-                        TaskAssignmentRecord.assignment_id.in_(
-                            [item.output_id for item in matches if item.output_type == "TEACHER_TASK" and item.output_id]
-                        )
-                    )
-                ).all()
-            }
-            case_status = {
-                item.case_id: item.status
-                for item in session.scalars(
-                    select(OpsCaseRecord).where(
-                        OpsCaseRecord.case_id.in_(
-                            [item.output_id for item in matches if item.output_type == "OPS_CASE" and item.output_id]
-                        )
-                    )
-                ).all()
-            }
-            current_ops_todo_count = sum(
-                status not in TERMINAL_CASE_STATUSES
-                for status in case_status.values()
-            )
-            notification_status = {
-                item.notification_id: item.status
-                for item in session.scalars(
-                    select(NotificationRecord).where(
-                        NotificationRecord.notification_id.in_(
-                            [item.output_id for item in matches if item.output_type == "NOTIFICATION" and item.output_id]
-                        )
-                    )
-                ).all()
-            }
-            for item in matches:
-                snapshot = item.evidence_snapshot if isinstance(item.evidence_snapshot, dict) else {}
-                domain = _domain(item.trigger_code, snapshot)
-                group = grouped[domain]
-                group["signal_count"] += 1
-                group["teacher_ids"].add(item.teacher_id)
-                is_open = False
-                if item.output_type == "TEACHER_TASK":
-                    is_open = task_status.get(item.output_id) not in TERMINAL_TASK_STATUSES
-                elif item.output_type == "OPS_CASE":
-                    is_open = case_status.get(item.output_id) not in TERMINAL_CASE_STATUSES
-                elif item.output_type == "NOTIFICATION":
-                    is_open = notification_status.get(item.output_id) not in TERMINAL_NOTIFICATION_STATUSES
-                elif item.output_type == "PENDING_DATA":
-                    is_open = True
-                if is_open:
-                    group["open_output_ids"].add(
-                        f"{item.output_type}:{item.output_id or item.trigger_match_id}"
-                    )
-
-            latest_match = session.scalar(select(func.max(PersonalizedTriggerMatchRecord.matched_at)))
-            risk_breakdown = [
-                {
-                    "domain": item["domain"],
-                    "label": item["label"],
-                    "signal_count": item["signal_count"],
-                    "teacher_count": len(item["teacher_ids"]),
-                    "open_output_count": len(item["open_output_ids"]),
-                }
-                for item in grouped.values()
-            ]
+            risk_breakdown = []
+            for code, label in DOMAIN_META.items():
+                counts = risk_by_domain.get(code, {})
+                risk_breakdown.append(
+                    {
+                        "domain": code,
+                        "label": label,
+                        "signal_count": int(
+                            counts.get("signal_count", 0)
+                        ),
+                        "teacher_count": int(
+                            counts.get("teacher_count", 0)
+                        ),
+                        "open_output_count": int(
+                            counts.get("open_output_count", 0)
+                        ),
+                    }
+                )
             return {
-                "as_of": _iso(latest_match),
-                "teacher_total": teacher_total,
-                "lesson_total": lesson_total,
-                "affected_teacher_total": affected_teacher_total,
-                "open_personalized_tasks": open_personalized_tasks,
-                "severe_complaint_cases": severe_complaint_cases,
-                "current_ops_todo_count": current_ops_todo_count,
-                "pending_data_issues": pending_data_issues,
+                "as_of": _iso(summary.latest_match),
+                "teacher_total": int(summary.teacher_total or 0),
+                "lesson_total": int(summary.lesson_total or 0),
+                "affected_teacher_total": int(
+                    summary.affected_teacher_total or 0
+                ),
+                "open_personalized_tasks": int(
+                    summary.open_personalized_tasks or 0
+                ),
+                "severe_complaint_cases": int(
+                    summary.severe_complaint_cases or 0
+                ),
+                "current_ops_todo_count": int(
+                    summary.current_ops_todo_count or 0
+                ),
+                "pending_data_issues": int(
+                    summary.pending_data_issues or 0
+                ),
                 "risk_breakdown": risk_breakdown,
             }
 
@@ -238,164 +391,381 @@ class OperationsService:
         page_size: int = 100,
     ) -> dict[str, Any]:
         with session_scope(self.engine) as session:
+            domain_expression = _domain_expression()
+            output_key = _output_key_expression()
+            output_status = _output_status_expression()
+            is_open = _open_output_expression()
+            title = case(
+                (
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "TEACHER_TASK",
+                        TaskAssignmentRecord.assignment_id.is_not(None),
+                    ),
+                    func.coalesce(
+                        TaskAssignmentRecord.display_title,
+                        "",
+                    ),
+                ),
+                (
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "NOTIFICATION",
+                        NotificationRecord.notification_id.is_not(None),
+                    ),
+                    func.coalesce(
+                        NotificationRecord.payload["title"].as_string(),
+                        "",
+                    ),
+                ),
+                else_=PersonalizedTriggerMatchRecord.output_title,
+            )
+            why = case(
+                (
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "TEACHER_TASK",
+                        TaskAssignmentRecord.assignment_id.is_not(None),
+                    ),
+                    func.coalesce(TaskAssignmentRecord.why, ""),
+                ),
+                (
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "NOTIFICATION",
+                        NotificationRecord.notification_id.is_not(None),
+                    ),
+                    func.coalesce(
+                        NotificationRecord.payload["body"].as_string(),
+                        "",
+                    ),
+                ),
+                else_=func.coalesce(
+                    PersonalizedTriggerMatchRecord.evidence_snapshot[
+                        "why"
+                    ].as_string(),
+                    PersonalizedTriggerMatchRecord.output_title,
+                ),
+            )
+            priority = case(
+                (
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "TEACHER_TASK",
+                        TaskAssignmentRecord.assignment_id.is_not(None),
+                    ),
+                    TaskAssignmentRecord.priority,
+                ),
+                (
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "OPS_CASE",
+                        OpsCaseRecord.case_id.is_not(None),
+                    ),
+                    OpsCaseRecord.priority,
+                ),
+                (
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "NOTIFICATION",
+                        NotificationRecord.notification_id.is_not(None),
+                    ),
+                    NotificationRecord.priority,
+                ),
+                else_=PersonalizedTriggerMatchRecord.evidence_snapshot[
+                    "priority"
+                ].as_string(),
+            )
+            action_label = case(
+                (
+                    PersonalizedTriggerMatchRecord.output_type
+                    == "TEACHER_TASK",
+                    "查看任务",
+                ),
+                (
+                    PersonalizedTriggerMatchRecord.output_type == "OPS_CASE",
+                    "处理投诉",
+                ),
+                (
+                    PersonalizedTriggerMatchRecord.output_type
+                    == "NOTIFICATION",
+                    "查看提醒",
+                ),
+                (
+                    PersonalizedTriggerMatchRecord.output_type
+                    == "PENDING_DATA",
+                    "补齐数据",
+                ),
+                else_="查看证据",
+            )
             statement = (
-                select(PersonalizedTriggerMatchRecord)
-                .where(PersonalizedTriggerMatchRecord.match_status != "SUPPRESSED")
-                .order_by(
-                    PersonalizedTriggerMatchRecord.matched_at.desc(),
-                    PersonalizedTriggerMatchRecord.trigger_match_id.desc(),
+                select(
+                    output_key.label("output_key"),
+                    PersonalizedTriggerMatchRecord.output_type.label(
+                        "output_type"
+                    ),
+                    PersonalizedTriggerMatchRecord.output_id.label(
+                        "materialized_output_id"
+                    ),
+                    PersonalizedTriggerMatchRecord.trigger_match_id.label(
+                        "trigger_match_id"
+                    ),
+                    PersonalizedTriggerMatchRecord.teacher_id.label(
+                        "teacher_id"
+                    ),
+                    TeacherRecord.name.label("teacher_name"),
+                    domain_expression.label("domain"),
+                    output_status.label("status"),
+                    func.coalesce(priority, "P1").label("priority"),
+                    title.label("title"),
+                    why.label("why"),
+                    action_label.label("action_label"),
+                    PersonalizedTriggerMatchRecord.matched_at.label(
+                        "matched_at"
+                    ),
+                )
+                .select_from(PersonalizedTriggerMatchRecord)
+                .join(
+                    TeacherRecord,
+                    TeacherRecord.teacher_id
+                    == PersonalizedTriggerMatchRecord.teacher_id,
+                )
+                .outerjoin(
+                    TaskAssignmentRecord,
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "TEACHER_TASK",
+                        PersonalizedTriggerMatchRecord.output_id
+                        == TaskAssignmentRecord.assignment_id,
+                    ),
+                )
+                .outerjoin(
+                    OpsCaseRecord,
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "OPS_CASE",
+                        PersonalizedTriggerMatchRecord.output_id
+                        == OpsCaseRecord.case_id,
+                    ),
+                )
+                .outerjoin(
+                    NotificationRecord,
+                    and_(
+                        PersonalizedTriggerMatchRecord.output_type
+                        == "NOTIFICATION",
+                        PersonalizedTriggerMatchRecord.output_id
+                        == NotificationRecord.notification_id,
+                    ),
+                )
+                .where(
+                    _active_match_expression()
                 )
             )
             if output_type:
-                statement = statement.where(PersonalizedTriggerMatchRecord.output_type == output_type)
+                output_types = {
+                    item.strip()
+                    for item in output_type.split(",")
+                    if item.strip()
+                }
+                statement = statement.where(
+                    PersonalizedTriggerMatchRecord.output_type.in_(output_types)
+                )
             if teacher_id:
-                statement = statement.where(PersonalizedTriggerMatchRecord.teacher_id == teacher_id)
-            matches = session.scalars(statement).all()
-            teacher_ids = {item.teacher_id for item in matches}
-            teachers = {
-                item.teacher_id: item.name
-                for item in session.scalars(
-                    select(TeacherRecord).where(TeacherRecord.teacher_id.in_(teacher_ids))
-                ).all()
-            }
-            task_ids = [item.output_id for item in matches if item.output_type == "TEACHER_TASK" and item.output_id]
-            case_ids = [item.output_id for item in matches if item.output_type == "OPS_CASE" and item.output_id]
-            notification_ids = [item.output_id for item in matches if item.output_type == "NOTIFICATION" and item.output_id]
-            tasks = {
-                item.assignment_id: item
-                for item in session.scalars(
-                    select(TaskAssignmentRecord).where(TaskAssignmentRecord.assignment_id.in_(task_ids))
-                ).all()
-            }
-            cases = {
-                item.case_id: item
-                for item in session.scalars(select(OpsCaseRecord).where(OpsCaseRecord.case_id.in_(case_ids))).all()
-            }
-            notifications = {
-                item.notification_id: item
-                for item in session.scalars(
-                    select(NotificationRecord).where(NotificationRecord.notification_id.in_(notification_ids))
-                ).all()
-            }
+                statement = statement.where(
+                    PersonalizedTriggerMatchRecord.teacher_id == teacher_id
+                )
+            if domain:
+                statement = statement.where(
+                    domain_expression == domain
+                )
+            if status:
+                statement = statement.where(output_status == status)
+            if open_only:
+                statement = statement.where(is_open)
 
-            grouped_rows: dict[str, dict[str, Any]] = {}
-            for item in matches:
-                snapshot = item.evidence_snapshot if isinstance(item.evidence_snapshot, dict) else {}
-                item_domain = _domain(item.trigger_code, snapshot)
-                if domain and item_domain != domain:
-                    continue
-                output_status = item.match_status
-                action_label = "查看证据"
-                if item.output_type == "TEACHER_TASK":
-                    task = tasks.get(item.output_id)
-                    output_status = task.status if task else "OUTPUT_MISSING"
-                    action_label = "查看任务"
-                elif item.output_type == "OPS_CASE":
-                    case = cases.get(item.output_id)
-                    output_status = case.status if case else "OUTPUT_MISSING"
-                    action_label = "处理投诉"
-                elif item.output_type == "NOTIFICATION":
-                    notification = notifications.get(item.output_id)
-                    output_status = notification.status if notification else "OUTPUT_MISSING"
-                    action_label = "查看提醒"
-                elif item.output_type == "PENDING_DATA":
-                    output_status = "PENDING_DATA"
-                    action_label = "补齐数据"
-                if status and output_status != status:
-                    continue
-                if open_only:
-                    if item.output_type == "TEACHER_TASK":
-                        task = tasks.get(item.output_id)
-                        is_open = (
-                            task is not None
-                            and task.status not in TERMINAL_TASK_STATUSES
+            source = statement.subquery("intervention_signals")
+            grouped = (
+                select(
+                    source.c.output_key,
+                    source.c.output_type,
+                    func.max(source.c.materialized_output_id).label(
+                        "materialized_output_id"
+                    ),
+                    func.max(source.c.trigger_match_id).label(
+                        "trigger_match_id"
+                    ),
+                    func.max(source.c.teacher_id).label("teacher_id"),
+                    func.max(source.c.teacher_name).label("teacher_name"),
+                    func.max(source.c.domain).label("domain"),
+                    func.max(source.c.status).label("status"),
+                    func.max(source.c.priority).label("priority"),
+                    func.max(source.c.title).label("title"),
+                    func.max(source.c.why).label("why"),
+                    func.max(source.c.action_label).label("action_label"),
+                    func.min(source.c.matched_at).label("triggered_at"),
+                    func.count().label("signal_count"),
+                )
+                .group_by(source.c.output_key, source.c.output_type)
+                .subquery("intervention_outputs")
+            )
+            count_rows = session.execute(
+                select(
+                    grouped.c.output_type,
+                    func.count().label("output_count"),
+                ).group_by(grouped.c.output_type)
+            ).all()
+            counts_by_type = {
+                str(row.output_type): int(row.output_count)
+                for row in count_rows
+            }
+            total = sum(counts_by_type.values())
+            priority_order = case(
+                (grouped.c.priority == "P0", 0),
+                (grouped.c.priority == "P1", 1),
+                (grouped.c.priority == "P2", 2),
+                (grouped.c.priority == "P3", 3),
+                else_=9,
+            )
+            page_rows = session.execute(
+                select(grouped)
+                .order_by(
+                    case(
+                        (grouped.c.output_type == "OPS_CASE", 0),
+                        else_=1,
+                    ),
+                    case(
+                        (grouped.c.output_type == "PENDING_DATA", 1),
+                        else_=0,
+                    ),
+                    priority_order,
+                    grouped.c.triggered_at,
+                    grouped.c.output_key,
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).all()
+            page_keys = [str(row.output_key) for row in page_rows]
+            evidence_by_key: dict[str, list[Any]] = defaultdict(list)
+            if page_keys:
+                evidence_ranked = (
+                    select(
+                        _output_key_expression().label("output_key"),
+                        PersonalizedTriggerMatchRecord.evidence_snapshot,
+                        PersonalizedTriggerMatchRecord.lesson_id,
+                        func.row_number()
+                        .over(
+                            partition_by=_output_key_expression(),
+                            order_by=(
+                                PersonalizedTriggerMatchRecord.matched_at.desc(),
+                                PersonalizedTriggerMatchRecord.trigger_match_id.desc(),
+                            ),
                         )
-                    elif item.output_type == "OPS_CASE":
-                        case = cases.get(item.output_id)
-                        is_open = (
-                            case is not None
-                            and case.status not in TERMINAL_CASE_STATUSES
-                        )
-                    elif item.output_type == "NOTIFICATION":
-                        notification = notifications.get(item.output_id)
-                        is_open = (
-                            notification is not None
-                            and notification.status
-                            not in TERMINAL_NOTIFICATION_STATUSES
-                        )
-                    else:
-                        is_open = item.output_type == "PENDING_DATA"
-                    if not is_open:
-                        continue
-                output_key = f"{item.output_type}:{item.output_id or item.trigger_match_id}"
-                row = grouped_rows.get(output_key)
-                if row is None:
-                    title = item.output_title
-                    why = str(snapshot.get("why") or item.output_title)
-                    priority = str(snapshot.get("priority") or "P1")
-                    if item.output_type == "TEACHER_TASK" and (task := tasks.get(item.output_id)):
-                        title = task.display_title or title
-                        why = task.why
-                        priority = task.priority
-                    elif item.output_type == "OPS_CASE" and (case := cases.get(item.output_id)):
-                        priority = case.priority
-                    elif item.output_type == "NOTIFICATION" and (
-                        notification := notifications.get(item.output_id)
-                    ):
-                        priority = notification.priority
-                    row = {
-                        "output_id": item.output_id or item.trigger_match_id,
-                        "output_type": item.output_type,
-                        "title": title,
-                        "teacher_id": item.teacher_id,
-                        "teacher_name": teachers.get(item.teacher_id, item.teacher_id),
-                        "domain": item_domain,
-                        "priority": priority,
-                        "status": output_status,
-                        "triggered_at": _iso(item.matched_at),
-                        "why": why,
-                        "evidence_summaries": [],
-                        "source_lesson_ids": [],
-                        "action_label": action_label,
-                        "signal_count": 0,
-                    }
-                    grouped_rows[output_key] = row
-                row["signal_count"] += 1
-                summary = _evidence_summary(snapshot)
-                if summary not in row["evidence_summaries"]:
-                    row["evidence_summaries"].append(summary)
-                if item.lesson_id and item.lesson_id not in row["source_lesson_ids"]:
-                    row["source_lesson_ids"].append(item.lesson_id)
-                matched_at = _iso(item.matched_at)
-                if matched_at and (not row["triggered_at"] or matched_at < row["triggered_at"]):
-                    row["triggered_at"] = matched_at
+                        .label("evidence_rank"),
+                    )
+                    .where(
+                        _active_match_expression(),
+                        _output_key_expression().in_(page_keys),
+                    )
+                )
+                if domain:
+                    evidence_ranked = evidence_ranked.where(
+                        _domain_expression() == domain
+                    )
+                evidence_source = evidence_ranked.subquery(
+                    "ranked_intervention_evidence"
+                )
+                evidence_statement = (
+                    select(
+                        evidence_source.c.output_key,
+                        evidence_source.c.evidence_snapshot,
+                        evidence_source.c.lesson_id,
+                    )
+                    .where(
+                        evidence_source.c.evidence_rank
+                        <= EVIDENCE_MATCH_SAMPLE_LIMIT
+                    )
+                    .order_by(
+                        evidence_source.c.output_key,
+                        evidence_source.c.evidence_rank,
+                    )
+                )
+                for evidence_row in session.execute(
+                    evidence_statement
+                ).all():
+                    evidence_by_key[str(evidence_row.output_key)].append(
+                        evidence_row
+                    )
 
             rows: list[dict[str, Any]] = []
-            for row in grouped_rows.values():
-                evidence_summaries = row.pop("evidence_summaries")
-                lesson_ids = row["source_lesson_ids"]
-                row["source_lesson_id"] = lesson_ids[0] if lesson_ids else None
-                prefix = f"共 {row['signal_count']} 次命中；" if row["signal_count"] > 1 else ""
-                row["evidence_summary"] = prefix + "；".join(evidence_summaries[:3])
-                rows.append(row)
-            rows.sort(
-                key=lambda row: (
-                    # 严重投诉需要运营本人介入。即使来源处罚表是 P1，
-                    # 也必须排在普通教师改善任务和课中提醒之前。
-                    0 if row["output_type"] == "OPS_CASE" else 1,
-                    # 数据缺口用于内部治理，不应挤占一线处置队列顶部。
-                    1 if row["output_type"] == "PENDING_DATA" else 0,
-                    {"P0": 0, "P1": 1, "P2": 2, "P3": 3}.get(row["priority"], 9),
-                    row["triggered_at"] or "",
+            for page_row in page_rows:
+                evidence_summaries: list[str] = []
+                lesson_ids: list[str] = []
+                for evidence_row in evidence_by_key.get(
+                    str(page_row.output_key), []
+                ):
+                    snapshot = (
+                        evidence_row.evidence_snapshot
+                        if isinstance(
+                            evidence_row.evidence_snapshot, dict
+                        )
+                        else {}
+                    )
+                    evidence_summary = _evidence_summary(snapshot)
+                    if evidence_summary not in evidence_summaries:
+                        evidence_summaries.append(evidence_summary)
+                    if (
+                        evidence_row.lesson_id
+                        and evidence_row.lesson_id not in lesson_ids
+                    ):
+                        lesson_ids.append(evidence_row.lesson_id)
+                signal_count = int(page_row.signal_count or 0)
+                prefix = (
+                    f"共 {signal_count} 次命中；"
+                    if signal_count > 1
+                    else ""
                 )
-            )
-            total = len(rows)
-            start = (page - 1) * page_size
+                rows.append(
+                    {
+                        "output_id": (
+                            page_row.materialized_output_id
+                            or page_row.trigger_match_id
+                        ),
+                        "output_type": page_row.output_type,
+                        "title": page_row.title,
+                        "teacher_id": page_row.teacher_id,
+                        "teacher_name": (
+                            page_row.teacher_name or page_row.teacher_id
+                        ),
+                        "domain": page_row.domain,
+                        "priority": page_row.priority,
+                        "status": page_row.status,
+                        "triggered_at": _iso(page_row.triggered_at),
+                        "why": page_row.why,
+                        "source_lesson_ids": lesson_ids,
+                        "source_lesson_id": (
+                            lesson_ids[0] if lesson_ids else None
+                        ),
+                        "action_label": page_row.action_label,
+                        "signal_count": signal_count,
+                        "evidence_sampled": (
+                            signal_count
+                            > len(
+                                evidence_by_key.get(
+                                    str(page_row.output_key),
+                                    [],
+                                )
+                            )
+                        ),
+                        "evidence_summary": prefix
+                        + "；".join(evidence_summaries[:3]),
+                    }
+                )
             return {
-                "items": rows[start : start + page_size],
+                "items": rows,
                 "total": total,
                 "page": page,
                 "page_size": page_size,
+                "counts_by_type": counts_by_type,
             }
 
     def decide_case(
@@ -479,7 +849,8 @@ class OperationsService:
                 statement = statement.where(
                     LessonFactRecord.lesson_id.in_(
                         select(PersonalizedTriggerMatchRecord.lesson_id).where(
-                            PersonalizedTriggerMatchRecord.lesson_id.is_not(None)
+                            PersonalizedTriggerMatchRecord.lesson_id.is_not(None),
+                            _active_match_expression(),
                         )
                     )
                 )
@@ -499,7 +870,8 @@ class OperationsService:
             if lesson_ids:
                 for match in session.scalars(
                     select(PersonalizedTriggerMatchRecord).where(
-                        PersonalizedTriggerMatchRecord.lesson_id.in_(lesson_ids)
+                        PersonalizedTriggerMatchRecord.lesson_id.in_(lesson_ids),
+                        _active_match_expression(),
                     )
                 ).all():
                     if match.lesson_id:

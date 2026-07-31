@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event, select
 
 from app.database import engine, session_scope
 from app.db_models import (
     DataImportBatchRecord,
     LessonFactRecord,
+    NotificationRecord,
     OpsCaseRecord,
     PersonalizedTriggerMatchRecord,
     SourceRecord,
     TaskAssignmentRecord,
 )
 from app.main import app
+from app.operations_service import OperationsService
 
 
 client = TestClient(app)
@@ -95,8 +98,13 @@ def _seed_operations_evidence() -> None:
                 creator_system="TRIGGER_CENTER",
                 status="ASSIGNED",
                 priority="P1",
-                why="该课程迟到，请完成出席培训。",
-                display_title="出席问题",
+                why=(
+                    "This lesson recorded a late arrival. "
+                    "Complete the attendance training and quiz. "
+                    f"Evidence: Lesson IDs: LESSON-{teacher_id}; "
+                    "late arrival recorded."
+                ),
+                display_title="Attendance Improvement",
                 evidence_snapshot={"lesson_id": lesson_id, "is_late": True},
                 due_at=None,
                 timezone_used=None,
@@ -240,10 +248,233 @@ def test_operations_overview_and_intervention_drilldown() -> None:
     interventions = client.get("/api/operations/interventions?domain=RELIABILITY")
     assert interventions.status_code == 200
     assert interventions.json()["total"] == 1
+    assert interventions.json()["counts_by_type"] == {"TEACHER_TASK": 1}
     item = interventions.json()["items"][0]
-    assert item["title"] == "出席问题"
+    assert item["title"] == "Attendance Improvement"
     assert item["source_lesson_id"] == "LESSON-REAL-1"
     assert item["status"] == "ASSIGNED"
+
+    combined_outputs = client.get(
+        "/api/operations/interventions",
+        params={
+            "type": "NOTIFICATION,OPS_CASE,PENDING_DATA",
+            "page": 1,
+            "page_size": 2,
+        },
+    )
+    assert combined_outputs.status_code == 200
+    assert combined_outputs.json()["total"] == 2
+    assert combined_outputs.json()["counts_by_type"] == {
+        "OPS_CASE": 1,
+        "PENDING_DATA": 1,
+    }
+    assert len(combined_outputs.json()["items"]) == 2
+
+
+def test_operations_reads_keep_query_count_bounded_by_page_not_match_count() -> None:
+    _seed_operations_evidence()
+    statements: list[str] = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        OperationsService(engine).overview()
+        overview_query_count = len(statements)
+        statements.clear()
+        result = OperationsService(engine).interventions(
+            page=1,
+            page_size=2,
+        )
+        intervention_query_count = len(statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert overview_query_count == 2
+    assert intervention_query_count == 3
+    assert len(result["items"]) == 2
+    assert result["total"] == 3
+
+
+def test_intervention_evidence_is_bounded_per_output() -> None:
+    _seed_operations_evidence()
+    now = datetime(2026, 7, 22, 13, 0, tzinfo=timezone.utc)
+    with session_scope(engine) as session:
+        session.add_all(
+            [
+                PersonalizedTriggerMatchRecord(
+                    trigger_match_id=f"MATCH-TASK-SAMPLE-{index:02d}",
+                    trigger_code="TR-REL-ATTENDANCE",
+                    rule_version="2026-07-22",
+                    teacher_id="T-1001",
+                    lesson_id="LESSON-REAL-1",
+                    source_record_id="SOURCE-LESSON-TEST",
+                    complaint_rule_id=None,
+                    scope_key=f"LESSON-REAL-1:{index}",
+                    dedupe_key=f"match:attendance:sample:{index}",
+                    output_type="TEACHER_TASK",
+                    output_title="Attendance Improvement",
+                    output_id="TASK-PERSONALIZED-1",
+                    match_status="MATERIALIZED",
+                    evidence_snapshot={
+                        "domain": "RELIABILITY",
+                        "priority": "P1",
+                        "why": "Repeated attendance signal.",
+                        "evidence": {
+                            "lesson_id": "LESSON-REAL-1",
+                            "sample": index,
+                        },
+                    },
+                    matched_at=now + timedelta(seconds=index),
+                    materialized_at=now,
+                )
+                for index in range(25)
+            ]
+        )
+
+    response = client.get(
+        "/api/operations/interventions?domain=RELIABILITY"
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["signal_count"] == 26
+    assert item["evidence_sampled"] is True
+
+
+def test_notification_copy_is_read_directly_from_database() -> None:
+    _seed_operations_evidence()
+    now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+    notification_id = "NOTIFICATION-DIRECT-DATABASE-COPY"
+    stored_title = "In-Class Quality Alert"
+    stored_body = (
+        "This lesson had an in-class quality issue: high network delay was "
+        "detected. Check and improve the class setup. "
+        "Evidence: Lesson IDs: LESSON-REAL-1; "
+        "quality anomalies: high network delay."
+    )
+    with session_scope(engine) as session:
+        session.add(
+            NotificationRecord(
+                notification_id=notification_id,
+                task_id=None,
+                source_ref="legacy-quality-alert:LESSON-REAL-1",
+                teacher_id="T-1001",
+                channel="WEBAPP_INBOX",
+                priority="P1",
+                status="STORED",
+                requested_at=now,
+                stored_at=now,
+                read_at=None,
+                clicked_at=None,
+                response_due_at=None,
+                failure_reason=None,
+                payload={
+                    "title": stored_title,
+                    "body": stored_body,
+                    "evidence": {
+                        "lesson_id": "LESSON-REAL-1",
+                        "anomalies": ["网络延迟过高"],
+                    },
+                },
+            )
+        )
+        session.add(
+            PersonalizedTriggerMatchRecord(
+                trigger_match_id="MATCH-NOTIFICATION-LEGACY",
+                trigger_code="TR-QUALITY-IN-CLASS",
+                rule_version="2026-07-22",
+                teacher_id="T-1001",
+                lesson_id="LESSON-REAL-1",
+                source_record_id="SOURCE-LESSON-TEST",
+                complaint_rule_id=None,
+                scope_key="LESSON-REAL-1:quality",
+                dedupe_key="match:notification:legacy",
+                output_type="NOTIFICATION",
+                output_title="课中质量问题",
+                output_id=notification_id,
+                match_status="MATERIALIZED",
+                evidence_snapshot={
+                    "domain": "CLASS_QUALITY",
+                    "priority": "P1",
+                    "why": "该课程检测到课堂质量问题。",
+                    "evidence": {
+                        "lesson_id": "LESSON-REAL-1",
+                        "anomalies": ["网络延迟过高"],
+                    },
+                },
+                matched_at=now,
+                materialized_at=now,
+            )
+        )
+
+    response = client.get(
+        "/api/operations/interventions?type=NOTIFICATION&page=1&page_size=10"
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    item = response.json()["items"][0]
+    assert item["title"] == stored_title
+    assert item["why"] == stored_body
+
+
+def test_missing_materialized_output_keeps_trigger_copy_and_is_not_open() -> None:
+    _seed_operations_evidence()
+    now = datetime(2026, 7, 22, 12, 30, tzinfo=timezone.utc)
+    with session_scope(engine) as session:
+        session.add(
+            PersonalizedTriggerMatchRecord(
+                trigger_match_id="MATCH-MISSING-TASK",
+                trigger_code="TR-REL-MISSING-TASK",
+                rule_version="2026-07-22",
+                teacher_id="T-1001",
+                lesson_id="LESSON-REAL-1",
+                source_record_id="SOURCE-LESSON-TEST",
+                complaint_rule_id=None,
+                scope_key="missing-task",
+                dedupe_key="match:missing-task",
+                output_type="TEACHER_TASK",
+                output_title="Unmaterialized reliability task",
+                output_id="TASK-DOES-NOT-EXIST",
+                match_status="FAILED",
+                evidence_snapshot={
+                    "domain": "RELIABILITY",
+                    "priority": "P2",
+                    "why": "Materialization failed after the trigger matched.",
+                },
+                matched_at=now,
+                materialized_at=None,
+            )
+        )
+
+    response = client.get(
+        "/api/operations/interventions",
+        params={"status": "OUTPUT_MISSING"},
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["title"] == "Unmaterialized reliability task"
+    assert item["why"] == "Materialization failed after the trigger matched."
+    assert item["priority"] == "P2"
+
+    open_response = client.get(
+        "/api/operations/interventions",
+        params={
+            "status": "OUTPUT_MISSING",
+            "open_only": "true",
+        },
+    )
+    assert open_response.status_code == 200
+    assert open_response.json()["items"] == []
+    assert open_response.json()["total"] == 0
 
 
 def test_current_ops_todo_excludes_terminal_case_statuses() -> None:
@@ -363,6 +594,31 @@ def test_lesson_evidence_is_safe_and_filterable() -> None:
     assert item["risk_domains"] == ["RELIABILITY", "USER_FEEDBACK"]
     assert "student_id" not in item
     assert "raw_payload" not in item
+
+
+def test_lesson_evidence_excludes_suppressed_matches() -> None:
+    _seed_operations_evidence()
+    with session_scope(engine) as session:
+        for match in session.scalars(
+            select(PersonalizedTriggerMatchRecord).where(
+                PersonalizedTriggerMatchRecord.lesson_id
+                == "LESSON-REAL-1"
+            )
+        ).all():
+            match.match_status = "SUPPRESSED"
+
+    response = client.get(
+        "/api/lessons?risk_only=true&lesson_id=LESSON-REAL-1"
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+
+    all_lessons = client.get(
+        "/api/lessons?risk_only=false&lesson_id=LESSON-REAL-1"
+    )
+    assert all_lessons.status_code == 200
+    assert all_lessons.json()["items"][0]["risk_domains"] == []
+    assert all_lessons.json()["items"][0]["signals"] == []
 
 
 def test_severe_complaint_case_can_be_processed_and_resolved() -> None:

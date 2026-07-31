@@ -2,7 +2,7 @@
 
 The teacher app owns writes to ``task_assignments``.  A database trigger
 records status changes in the internal outbox, and this worker is
-the only path that turns a REAL G01-G10 completion into score ledger rows.
+the only path that turns a current REAL mandatory completion into score ledger rows.
 Nothing in this module publishes an external message.
 """
 
@@ -15,23 +15,33 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import Engine, func, select
+from sqlalchemy import Engine, delete, func, literal_column, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from .config_models import ConfigKey, ConfigStatus, ConfigVersionRecord
+from .config_models import (
+    ConfigKey,
+    ConfigStatus,
+    ConfigVersionRecord,
+    ScoreGraduationConfig,
+)
 from .config_service import validate_config_payload
 from .database import engine as default_engine
 from .db_models import (
     AuditEventRecord,
     OutboxEventRecord,
     ScoreAccountRecord,
+    ScoreComponentAccountRecord,
     ScoreEntryRecord,
     TaskAssignmentRecord,
     TaskTemplateRecord,
     TeacherMetricSnapshotRecord,
     TeacherRecord,
 )
+from .services import GrowthService
+from .task_catalog import MANDATORY_TASK_CODES
+from .score_projection_lock import acquire_score_projection_lock
 
 
 EVENT_TYPE = "task.assignment_changed.shared"
@@ -40,8 +50,10 @@ ACCOUNT_DIMENSION = "NEW_TEACHER_TASK"
 ENTRY_TYPE = "FIXED_TASK_AWARD"
 SYSTEM_SOURCE_MODE = "SYSTEM_TASK_STATUS"
 MAXIMUM_FIXED_GROWTH_POINTS = 30.0
-FIXED_GROWTH_CODES = tuple(f"G{number:02d}" for number in range(1, 11))
-DIRECT_EXTERNAL_SCALE_POLICY_VERSIONS = frozenset({"v3", "v4", "v5", "v6", "v7"})
+FIXED_GROWTH_CODES = MANDATORY_TASK_CODES
+DIRECT_EXTERNAL_SCALE_POLICY_VERSIONS = frozenset(
+    {"v1", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"}
+)
 LEGAL_TASK_STATUSES = frozenset(
     {
         "ASSIGNED",
@@ -81,6 +93,14 @@ class SettlementDataError(RuntimeError):
     """A persisted fact violates the score-settlement contract."""
 
 
+class SettlementEventDataError(SettlementDataError):
+    """A malformed persisted event that can be failed without its siblings."""
+
+    def __init__(self, outbox_id: str, reason: str) -> None:
+        super().__init__(reason)
+        self.outbox_id = outbox_id
+
+
 @dataclass(frozen=True)
 class _Outcome:
     code: str
@@ -96,9 +116,23 @@ class SharedTaskScoreSettlementWorker:
         bind: Engine = default_engine,
         *,
         retry_delay: timedelta = timedelta(minutes=5),
+        max_retry_delay: timedelta = timedelta(hours=1),
+        max_attempts: int = 5,
+        retry_jitter_ratio: float = 0.2,
     ) -> None:
+        if retry_delay < timedelta(0):
+            raise ValueError("retry_delay must not be negative")
+        if max_retry_delay < retry_delay:
+            raise ValueError("max_retry_delay must be at least retry_delay")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if not 0 <= retry_jitter_ratio <= 1:
+            raise ValueError("retry_jitter_ratio must be between 0 and 1")
         self.engine = bind
         self.retry_delay = retry_delay
+        self.max_retry_delay = max_retry_delay
+        self.max_attempts = max_attempts
+        self.retry_jitter_ratio = retry_jitter_ratio
         self._sessions = sessionmaker(bind=bind, expire_on_commit=False, class_=Session)
 
     def run_once(self, *, max_events: int = 100) -> dict[str, Any]:
@@ -113,27 +147,91 @@ class SharedTaskScoreSettlementWorker:
             "skipped_non_real": 0,
             "skipped_non_fixed": 0,
             "failed": 0,
+            "dead_lettered": 0,
             "score_entries_created": 0,
+            "projection_refreshes": 0,
         }
-
-        for _ in range(max_events):
+        attempted = 0
+        excluded_outbox_ids: set[str] = set()
+        while attempted < max_events:
             outbox_id: str | None = None
+            failure_outbox_ids: list[str] = []
             try:
+                group_outcomes: list[_Outcome] = []
+                score_entries_created = 0
+                projection_refreshed = False
                 with self._sessions() as session, session.begin():
-                    event = self._claim_next(session)
-                    if event is None:
-                        break
-                    outbox_id = event.outbox_id
-                    result["claimed"] += 1
-                    outcome = self._process_locked_event(session, event)
-                    event.attempt_count = int(event.attempt_count or 0) + 1
-                    event.status = "PUBLISHED"
-                    event.last_error = None
-                    event.published_at = _utcnow()
-                    result["published"] += 1
+                    acquire_score_projection_lock(session)
+                    events = self._claim_next_group(
+                        session,
+                        limit=max_events - attempted,
+                        excluded_outbox_ids=excluded_outbox_ids,
+                    )
+                    if not events:
+                        return result
+                    outbox_id = events[0].outbox_id
+                    failure_outbox_ids = [
+                        event.outbox_id for event in events
+                    ]
+                    prepared = self._prepare_events(session, events)
+                    eligible_assignments = [
+                        assignment
+                        for _, _, assignment in prepared
+                        if assignment is not None
+                    ]
+                    eligible_outbox_ids = [
+                        event.outbox_id
+                        for event, _, assignment in prepared
+                        if assignment is not None
+                    ]
+                    if eligible_outbox_ids:
+                        # A projection/config/database failure affects the whole
+                        # same-teacher group. Retry all those events together
+                        # instead of re-reading N-1 siblings on every loop.
+                        failure_outbox_ids = eligible_outbox_ids
+                    settlement: _Outcome | None = None
+                    if eligible_assignments:
+                        outbox_id = next(
+                            event.outbox_id
+                            for event, _, assignment in prepared
+                            if assignment is not None
+                        )
+                        settlement = self._settle_eligible_assignment(
+                            session,
+                            eligible_assignments[0],
+                        )
+                        score_entries_created = (
+                            settlement.score_entries_created
+                        )
+                        projection_refreshed = True
+                    published_at = _utcnow()
+                    for event, outcome, assignment in prepared:
+                        if assignment is not None:
+                            outcome = _Outcome(
+                                "SETTLED",
+                                account_score=(
+                                    settlement.account_score
+                                    if settlement is not None
+                                    else None
+                                ),
+                            )
+                        assert outcome is not None
+                        group_outcomes.append(outcome)
+                        event.attempt_count = int(event.attempt_count or 0) + 1
+                        event.status = "PUBLISHED"
+                        event.last_error = None
+                        event.published_at = published_at
+
+                attempted += len(group_outcomes)
+                result["claimed"] += len(group_outcomes)
+                result["published"] += len(group_outcomes)
+                result["score_entries_created"] += score_entries_created
+                result["projection_refreshes"] += int(
+                    projection_refreshed
+                )
+                for outcome in group_outcomes:
                     if outcome.code == "SETTLED":
                         result["settled"] += 1
-                        result["score_entries_created"] += outcome.score_entries_created
                     elif outcome.code == "SKIPPED_NON_COMPLETED":
                         result["skipped_non_completed"] += 1
                     elif outcome.code == "SKIPPED_NON_REAL":
@@ -141,61 +239,245 @@ class SharedTaskScoreSettlementWorker:
                     elif outcome.code == "SKIPPED_NON_FIXED":
                         result["skipped_non_fixed"] += 1
             except Exception as exc:  # the settlement transaction has rolled back
-                result["failed"] += 1
-                if outbox_id is not None:
-                    self._record_failure(outbox_id, exc)
+                if isinstance(exc, SettlementEventDataError):
+                    failure_outbox_ids = [exc.outbox_id]
+                elif not failure_outbox_ids and outbox_id is not None:
+                    failure_outbox_ids = [outbox_id]
+                failure_outbox_ids = list(dict.fromkeys(failure_outbox_ids))
+                if not failure_outbox_ids:
+                    raise
+                failed_count = len(failure_outbox_ids)
+                attempted += failed_count
+                result["failed"] += failed_count
+                result["claimed"] += len(failure_outbox_ids)
+                excluded_outbox_ids.update(failure_outbox_ids)
+                failure_states = self._record_failures(
+                    failure_outbox_ids,
+                    exc,
+                )
+                result["dead_lettered"] += sum(
+                    state == "DEAD_LETTER"
+                    for state in failure_states.values()
+                )
 
         return result
 
-    def _claim_next(self, session: Session) -> OutboxEventRecord | None:
-        return session.scalar(
+    def _claim_next_group(
+        self,
+        session: Session,
+        *,
+        limit: int,
+        excluded_outbox_ids: set[str],
+    ) -> list[OutboxEventRecord]:
+        conditions = [
+            OutboxEventRecord.status == literal_column("'PENDING'"),
+            OutboxEventRecord.event_type.in_((EVENT_TYPE, LEGACY_EVENT_TYPE)),
+            OutboxEventRecord.aggregate_type == "TASK_ASSIGNMENT",
+            OutboxEventRecord.available_at <= _utcnow(),
+        ]
+        if excluded_outbox_ids:
+            conditions.append(
+                OutboxEventRecord.outbox_id.notin_(excluded_outbox_ids)
+            )
+        first = session.scalar(
             select(OutboxEventRecord)
             .where(
-                OutboxEventRecord.status == "PENDING",
-                OutboxEventRecord.event_type.in_((EVENT_TYPE, LEGACY_EVENT_TYPE)),
-                OutboxEventRecord.aggregate_type == "TASK_ASSIGNMENT",
-                OutboxEventRecord.available_at <= _utcnow(),
+                *conditions,
             )
-            .order_by(OutboxEventRecord.available_at, OutboxEventRecord.created_at)
+            .order_by(
+                OutboxEventRecord.available_at,
+                OutboxEventRecord.created_at,
+                OutboxEventRecord.outbox_id,
+            )
             .with_for_update(skip_locked=True)
             .limit(1)
         )
+        if first is None:
+            return []
+        if limit == 1:
+            return [first]
+        teacher_id = session.scalar(
+            select(TaskAssignmentRecord.teacher_id).where(
+                TaskAssignmentRecord.assignment_id == first.aggregate_id
+            )
+        )
+        if teacher_id is None:
+            return [first]
+        same_teacher_assignments = select(
+            TaskAssignmentRecord.assignment_id
+        ).where(TaskAssignmentRecord.teacher_id == teacher_id)
+        additional = list(
+            session.scalars(
+                select(OutboxEventRecord)
+                .where(
+                    *conditions,
+                    OutboxEventRecord.outbox_id != first.outbox_id,
+                    OutboxEventRecord.aggregate_id.in_(
+                        same_teacher_assignments
+                    ),
+                )
+                .order_by(
+                    OutboxEventRecord.available_at,
+                    OutboxEventRecord.created_at,
+                    OutboxEventRecord.outbox_id,
+                )
+                .with_for_update(skip_locked=True)
+                .limit(limit - 1)
+            ).all()
+        )
+        return [first, *additional]
+
+    @staticmethod
+    def _event_data_error(
+        event: OutboxEventRecord,
+        reason: str,
+    ) -> SettlementEventDataError:
+        return SettlementEventDataError(event.outbox_id, reason)
+
+    def _prepare_events(
+        self,
+        session: Session,
+        events: list[OutboxEventRecord],
+    ) -> list[
+        tuple[
+            OutboxEventRecord,
+            _Outcome | None,
+            TaskAssignmentRecord | None,
+        ]
+    ]:
+        staged: list[
+            tuple[OutboxEventRecord, _Outcome | None, str | None]
+        ] = []
+        assignment_ids: set[str] = set()
+        for event in events:
+            payload = event.payload
+            if not isinstance(payload, dict):
+                raise self._event_data_error(
+                    event,
+                    "OUTBOX_PAYLOAD_MUST_BE_AN_OBJECT",
+                )
+            to_status = str(payload.get("to_status") or "")
+            if to_status not in LEGAL_TASK_STATUSES:
+                raise self._event_data_error(
+                    event,
+                    "OUTBOX_TO_STATUS_IS_INVALID",
+                )
+            if to_status != "COMPLETED":
+                staged.append(
+                    (event, _Outcome("SKIPPED_NON_COMPLETED"), None)
+                )
+                continue
+            assignment_id = str(
+                payload.get("assignment_id")
+                or event.aggregate_id
+                or ""
+            )
+            if not assignment_id or assignment_id != event.aggregate_id:
+                raise self._event_data_error(
+                    event,
+                    "OUTBOX_ASSIGNMENT_ID_MISMATCH",
+                )
+            assignment_ids.add(assignment_id)
+            staged.append((event, None, assignment_id))
+
+        assignments_by_id = (
+            {
+                item.assignment_id: item
+                for item in session.scalars(
+                    select(TaskAssignmentRecord)
+                    .where(
+                        TaskAssignmentRecord.assignment_id.in_(
+                            assignment_ids
+                        )
+                    )
+                    .order_by(TaskAssignmentRecord.assignment_id)
+                    .with_for_update()
+                ).all()
+            }
+            if assignment_ids
+            else {}
+        )
+
+        prepared: list[
+            tuple[
+                OutboxEventRecord,
+                _Outcome | None,
+                TaskAssignmentRecord | None,
+            ]
+        ] = []
+        for event, outcome, assignment_id in staged:
+            if assignment_id is None:
+                prepared.append((event, outcome, None))
+                continue
+            assignment = assignments_by_id.get(assignment_id)
+            if assignment is None:
+                raise self._event_data_error(
+                    event,
+                    "TASK_ASSIGNMENT_NOT_FOUND",
+                )
+            payload = event.payload
+            assert isinstance(payload, dict)
+            payload_teacher_id = str(payload.get("teacher_id") or "")
+            if (
+                payload_teacher_id
+                and payload_teacher_id != assignment.teacher_id
+            ):
+                raise self._event_data_error(
+                    event,
+                    "OUTBOX_TEACHER_ID_MISMATCH",
+                )
+            if (
+                assignment.status != "COMPLETED"
+                or assignment.completed_at is None
+            ):
+                raise self._event_data_error(
+                    event,
+                    "COMPLETED_EVENT_DOES_NOT_MATCH_ASSIGNMENT",
+                )
+            if (
+                assignment.task_kind != "FIXED_GROWTH"
+                or assignment.creator_system != "TRIGGER_CENTER"
+                or assignment.task_code not in FIXED_GROWTH_CODES
+            ):
+                prepared.append(
+                    (event, _Outcome("SKIPPED_NON_FIXED"), None)
+                )
+                continue
+            if assignment.source_mode != "REAL":
+                prepared.append(
+                    (event, _Outcome("SKIPPED_NON_REAL"), None)
+                )
+                continue
+            prepared.append((event, None, assignment))
+        return prepared
+
+    def _prepare_event(
+        self,
+        session: Session,
+        event: OutboxEventRecord,
+    ) -> tuple[_Outcome | None, TaskAssignmentRecord | None]:
+        _, outcome, assignment = self._prepare_events(
+            session,
+            [event],
+        )[0]
+        return outcome, assignment
 
     def _process_locked_event(
         self,
         session: Session,
         event: OutboxEventRecord,
     ) -> _Outcome:
-        payload = event.payload
-        if not isinstance(payload, dict):
-            raise SettlementDataError("OUTBOX_PAYLOAD_MUST_BE_AN_OBJECT")
-        to_status = str(payload.get("to_status") or "")
-        if to_status not in LEGAL_TASK_STATUSES:
-            raise SettlementDataError("OUTBOX_TO_STATUS_IS_INVALID")
-        if to_status != "COMPLETED":
-            return _Outcome("SKIPPED_NON_COMPLETED")
+        outcome, assignment = self._prepare_event(session, event)
+        if outcome is not None:
+            return outcome
+        assert assignment is not None
+        return self._settle_eligible_assignment(session, assignment)
 
-        assignment_id = str(payload.get("assignment_id") or event.aggregate_id or "")
-        if not assignment_id or assignment_id != event.aggregate_id:
-            raise SettlementDataError("OUTBOX_ASSIGNMENT_ID_MISMATCH")
-        assignment = session.scalar(
-            select(TaskAssignmentRecord)
-            .where(TaskAssignmentRecord.assignment_id == assignment_id)
-            .with_for_update()
-        )
-        if assignment is None:
-            raise SettlementDataError("TASK_ASSIGNMENT_NOT_FOUND")
-        if assignment.status != "COMPLETED" or assignment.completed_at is None:
-            raise SettlementDataError("COMPLETED_EVENT_DOES_NOT_MATCH_ASSIGNMENT")
-        if (
-            assignment.task_kind != "FIXED_GROWTH"
-            or assignment.creator_system != "TRIGGER_CENTER"
-            or assignment.task_code not in FIXED_GROWTH_CODES
-        ):
-            return _Outcome("SKIPPED_NON_FIXED")
-        if assignment.source_mode != "REAL":
-            return _Outcome("SKIPPED_NON_REAL")
-
+    def _settle_eligible_assignment(
+        self,
+        session: Session,
+        assignment: TaskAssignmentRecord,
+    ) -> _Outcome:
         # This row lock serializes different G-task events for one teacher even
         # when multiple workers claim different outbox rows concurrently.
         teacher = session.scalar(
@@ -241,29 +523,49 @@ class SharedTaskScoreSettlementWorker:
             raise SettlementDataError("FIXED_GROWTH_CONFIG_MAXIMUM_MUST_BE_30")
 
         points_by_assignment: dict[str, float] = {}
-        for item in baseline_by_code.values():
-            template = session.scalar(
+        template_ids = {
+            item.template_version_id
+            for item in baseline_by_code.values()
+            if item.template_version_id
+        }
+        templates_by_id = {
+            item.row_id: item
+            for item in session.scalars(
                 select(TaskTemplateRecord)
-                .where(TaskTemplateRecord.row_id == item.template_version_id)
+                .where(TaskTemplateRecord.row_id.in_(template_ids))
                 .with_for_update()
+            ).all()
+        }
+        for item in baseline_by_code.values():
+            points_by_assignment[item.assignment_id] = self._template_points(
+                item,
+                templates_by_id.get(item.template_version_id),
             )
-            points_by_assignment[item.assignment_id] = self._template_points(item, template)
         score_rule_version = (
             "fixed-task:"
             f"{config_snapshot['policy_version']}:"
             f"{config_snapshot['payload_sha256'][:12]}"
         )
+        completed_assignment_ids = {
+            item.assignment_id
+            for item in baseline_by_code.values()
+            if item.status == "COMPLETED"
+        }
+        existing_award_assignment_ids = set(
+            session.scalars(
+                select(ScoreEntryRecord.task_assignment_id).where(
+                    ScoreEntryRecord.entry_type == ENTRY_TYPE,
+                    ScoreEntryRecord.task_assignment_id.in_(
+                        completed_assignment_ids
+                    ),
+                )
+            ).all()
+        )
         created = 0
         for item in baseline_by_code.values():
             if item.status != "COMPLETED":
                 continue
-            existing = session.scalar(
-                select(ScoreEntryRecord).where(
-                    ScoreEntryRecord.entry_type == ENTRY_TYPE,
-                    ScoreEntryRecord.task_assignment_id == item.assignment_id,
-                )
-            )
-            if existing is not None:
+            if item.assignment_id in existing_award_assignment_ids:
                 continue
             score = points_by_assignment[item.assignment_id]
             session.add(
@@ -396,6 +698,55 @@ class SharedTaskScoreSettlementWorker:
             expected_count=len(FIXED_GROWTH_CODES),
             score_rule_version=score_rule_version,
             config_snapshot=config_snapshot,
+            task_components=[
+                {
+                    "code": code,
+                    "metric": "task_assignments.status",
+                    "value": (
+                        1
+                        if baseline_by_code.get(code) is not None
+                        and baseline_by_code[code].status == "COMPLETED"
+                        else 0
+                    ),
+                    "points_per_unit": (
+                        points_by_assignment[
+                            baseline_by_code[code].assignment_id
+                        ]
+                        if baseline_by_code.get(code) is not None
+                        else 0.0
+                    ),
+                    "score": (
+                        points_by_assignment[
+                            baseline_by_code[code].assignment_id
+                        ]
+                        if baseline_by_code.get(code) is not None
+                        and baseline_by_code[code].status == "COMPLETED"
+                        else 0.0
+                    ),
+                    "source_mode": (
+                        SYSTEM_SOURCE_MODE
+                        if baseline_by_code.get(code) is not None
+                        else "TASK_BASELINE_INCOMPLETE"
+                    ),
+                    "assignment_id": (
+                        baseline_by_code[code].assignment_id
+                        if baseline_by_code.get(code) is not None
+                        else None
+                    ),
+                    "status": (
+                        baseline_by_code[code].status
+                        if baseline_by_code.get(code) is not None
+                        else None
+                    ),
+                    "template_version_id": (
+                        baseline_by_code[code].template_version_id
+                        if baseline_by_code.get(code) is not None
+                        else None
+                    ),
+                }
+                for code in FIXED_GROWTH_CODES
+            ],
+            trigger_ref=assignment.assignment_id,
         )
         return _Outcome("SETTLED", score_entries_created=created, account_score=ledger_score)
 
@@ -484,6 +835,8 @@ class SharedTaskScoreSettlementWorker:
         expected_count: int,
         score_rule_version: str,
         config_snapshot: dict[str, Any],
+        task_components: list[dict[str, Any]],
+        trigger_ref: str,
     ) -> None:
         """Persist the current task score into the current teacher projection.
 
@@ -539,7 +892,7 @@ class SharedTaskScoreSettlementWorker:
             ),
             "note": (
                 "Mandatory-growth points are the configured values of current "
-                "COMPLETED G01-G10 assignments."
+                "COMPLETED assignments in the current mandatory catalog."
             ),
         }
         input_updates = {
@@ -601,6 +954,230 @@ class SharedTaskScoreSettlementWorker:
                 "updated_at": now.isoformat(),
             }
         )
+        policy = ScoreGraduationConfig.model_validate(config_snapshot["payload"])
+        current_accounts = list(
+            session.scalars(
+                select(ScoreAccountRecord).where(
+                    ScoreAccountRecord.teacher_id == teacher.teacher_id
+                )
+            ).all()
+        )
+        score_overrides: dict[str, dict[str, Any]] = {}
+        for current_account in current_accounts:
+            current_payload = (
+                current_account.payload
+                if isinstance(current_account.payload, dict)
+                else {}
+            )
+            score_overrides[current_account.dimension] = {
+                "score": float(current_account.current_score),
+                "source_mode": str(
+                    current_payload.get("source_mode")
+                    or current_payload.get("data_mode")
+                    or "PERSISTED_ACCOUNT"
+                ),
+            }
+        score_overrides[ACCOUNT_DIMENSION] = {
+            "score": round(task_score, 2),
+            "assignment_count": assignment_count,
+            "completed_count": completed_count,
+            "expected_count": expected_count,
+            "source_mode": SYSTEM_SOURCE_MODE,
+        }
+        quality_rule = getattr(policy.scoring_items, "classroom_quality", None)
+        if (
+            quality_rule is not None
+            and getattr(quality_rule, "metric", None)
+            == "lesson_hardware_quality_passed"
+        ):
+            quality_account = next(
+                (
+                    item
+                    for item in current_accounts
+                    if item.dimension == "CLASS_QUALITY"
+                ),
+                None,
+            )
+            quality_score = float(
+                quality_account.current_score
+                if quality_account is not None
+                else snapshot.class_quality_score
+                if snapshot is not None
+                else 0
+            )
+            score_overrides["CLASS_QUALITY"] = {
+                "score": quality_score,
+                "count": (
+                    quality_score / float(quality_rule.points_per_unit)
+                    if float(quality_rule.points_per_unit)
+                    else 0.0
+                ),
+                "source_mode": (
+                    str(
+                        (
+                            quality_account.payload
+                            if quality_account is not None
+                            and isinstance(quality_account.payload, dict)
+                            else {}
+                        ).get("source_mode")
+                        or "DERIVED_REAL"
+                    )
+                ),
+            }
+        projector = GrowthService(
+            None,  # type: ignore[arg-type]
+            config_reader=lambda key: (
+                deepcopy(config_snapshot["payload"])
+                if ConfigKey(key) == ConfigKey.SCORE_GRADUATION
+                else None
+            ),
+        )
+        projected = projector._project_teacher_scoring(
+            teacher_payload,
+            (policy, "PUBLISHED"),
+            score_overrides,
+        )
+        projected_task_score = float(
+            next(
+                (
+                    item.get("score", 0)
+                    for item in projected.get("dimensions") or []
+                    if item.get("code") == ACCOUNT_DIMENSION
+                ),
+                0,
+            )
+        )
+        projected_non_task_score = (
+            float(projected.get("raw_total_score") or 0)
+            - projected_task_score
+        )
+        persisted_non_task_score = previous_raw_total - previous_task_score
+        if math.isclose(
+            projected_non_task_score,
+            persisted_non_task_score,
+            abs_tol=1e-6,
+        ):
+            # Only grant new irreversible qualifications when all other
+            # persisted dimensions can be reconstructed from current facts.
+            teacher_payload.update(
+                {
+                    "graduation_state": projected["graduation_state"],
+                    "graduation_score_threshold_met": projected[
+                        "graduation_score_threshold_met"
+                    ],
+                    "graduation_criteria_met": projected[
+                        "graduation_criteria_met"
+                    ],
+                    "graduation_qualified": projected[
+                        "graduation_qualified"
+                    ],
+                    "gold_score_threshold_met": projected[
+                        "gold_score_threshold_met"
+                    ],
+                    "gold_criteria_met": projected["gold_criteria_met"],
+                    "gold_qualified": projected["gold_qualified"],
+                    "hard_gates": deepcopy(projected["hard_gates"]),
+                }
+            )
+            teacher.graduation_state = str(projected["graduation_state"])
+            teacher.gold_qualified = bool(projected["gold_qualified"])
+        else:
+            teacher_payload["graduation_qualified"] = bool(
+                teacher_payload.get("graduation_qualified")
+                or teacher.graduation_state == "GRADUATED"
+            )
+            teacher_payload["gold_qualified"] = bool(
+                teacher_payload.get("gold_qualified")
+                or teacher.gold_qualified
+            )
+
+        projection_id = f"SPR-{uuid4().hex}"
+        task_component_by_code = {
+            str(item["code"]): item for item in task_components
+        }
+        existing_components = {
+            item.component_code: item
+            for item in session.scalars(
+                select(ScoreComponentAccountRecord)
+                .where(
+                    ScoreComponentAccountRecord.teacher_id
+                    == teacher.teacher_id,
+                    ScoreComponentAccountRecord.dimension
+                    == ACCOUNT_DIMENSION,
+                )
+                .with_for_update()
+            ).all()
+        }
+        obsolete_codes = set(existing_components) - set(
+            task_component_by_code
+        )
+        if obsolete_codes:
+            session.execute(
+                delete(ScoreComponentAccountRecord).where(
+                    ScoreComponentAccountRecord.teacher_id
+                    == teacher.teacher_id,
+                    ScoreComponentAccountRecord.component_code.in_(
+                        obsolete_codes
+                    ),
+                )
+            )
+        for code, component in task_component_by_code.items():
+            component_payload = {
+                **deepcopy(component),
+                "score_config_version_id": config_snapshot["version_id"],
+                "projection_id": projection_id,
+                "projection_trigger": {
+                    "type": "TASK_STATUS_UPDATED",
+                    "ref": trigger_ref,
+                },
+                "attribution_contract": (
+                    "task-status-ledger-is-authoritative"
+                ),
+            }
+            component_record = existing_components.get(code)
+            component_values = {
+                "camp_enrollment_id": teacher.camp_enrollment_id,
+                "dimension": ACCOUNT_DIMENSION,
+                "source_scope": "TASK",
+                "source_metric": "task_assignments.status",
+                "unit_count": float(component.get("value") or 0),
+                "points_per_unit": float(
+                    component.get("points_per_unit") or 0
+                ),
+                "current_score": float(component.get("score") or 0),
+                "lesson_attributed_count": 0,
+                "lesson_attributed_score": 0.0,
+                "unattributed_score": float(
+                    component.get("score") or 0
+                ),
+                "reconciliation_status": "NOT_APPLICABLE",
+                "score_rule_version": score_rule_version,
+                "source_teacher_batch_id": teacher.source_batch_id,
+                "source_lesson_batch_id": None,
+                "calculated_at": now,
+                "payload": component_payload,
+            }
+            if component_record is None:
+                session.add(
+                    ScoreComponentAccountRecord(
+                        component_account_id=f"{teacher.teacher_id}:{code}",
+                        teacher_id=teacher.teacher_id,
+                        component_code=code,
+                        projection_revision=1,
+                        **component_values,
+                    )
+                )
+            else:
+                changed = any(
+                    getattr(component_record, field) != value
+                    for field, value in component_values.items()
+                )
+                for field, value in component_values.items():
+                    setattr(component_record, field, value)
+                if changed:
+                    component_record.projection_revision = (
+                        int(component_record.projection_revision or 0) + 1
+                    )
         teacher.total_score = raw_total_score
         teacher.payload = teacher_payload
         teacher.updated_at = now
@@ -744,28 +1321,85 @@ class SharedTaskScoreSettlementWorker:
             )
         )
 
-    def _record_failure(self, outbox_id: str, exc: Exception) -> None:
-        safe_message = f"{type(exc).__name__}:{str(exc)}"[:1000]
+    def _retry_delay_for(
+        self,
+        *,
+        outbox_id: str,
+        attempt_number: int,
+    ) -> timedelta:
+        base_seconds = self.retry_delay.total_seconds() * (
+            2 ** max(attempt_number - 1, 0)
+        )
+        digest = hashlib.sha256(
+            f"{outbox_id}:{attempt_number}".encode("utf-8")
+        ).digest()
+        unit = int.from_bytes(digest[:8], "big") / float((1 << 64) - 1)
+        jitter_factor = 1 + ((unit * 2) - 1) * self.retry_jitter_ratio
+        delay_seconds = min(
+            max(base_seconds * jitter_factor, 0.0),
+            self.max_retry_delay.total_seconds(),
+        )
+        return timedelta(seconds=delay_seconds)
+
+    def _record_failure(
+        self,
+        outbox_id: str,
+        exc: Exception,
+    ) -> str | None:
+        return self._record_failures([outbox_id], exc).get(outbox_id)
+
+    def _record_failures(
+        self,
+        outbox_ids: list[str],
+        exc: Exception,
+    ) -> dict[str, str | None]:
+        if not outbox_ids:
+            return {}
+        safe_message = (
+            f"{type(exc).__name__}:{str(exc)}"
+            if isinstance(exc, SettlementDataError)
+            else type(exc).__name__
+        )[:1000]
         try:
             with self._sessions() as session, session.begin():
-                event = session.scalar(
-                    select(OutboxEventRecord)
-                    .where(
-                        OutboxEventRecord.outbox_id == outbox_id,
-                        OutboxEventRecord.status == "PENDING",
-                    )
-                    .with_for_update(skip_locked=True)
+                events = list(
+                    session.scalars(
+                        select(OutboxEventRecord)
+                        .where(
+                            OutboxEventRecord.outbox_id.in_(outbox_ids),
+                            OutboxEventRecord.status
+                            == literal_column("'PENDING'"),
+                        )
+                        .order_by(OutboxEventRecord.outbox_id)
+                        .with_for_update(skip_locked=True)
+                    ).all()
                 )
-                if event is None:
-                    return
-                event.attempt_count = int(event.attempt_count or 0) + 1
-                event.last_error = safe_message
-                event.available_at = _utcnow() + self.retry_delay
-                event.published_at = None
+                states: dict[str, str | None] = {
+                    outbox_id: None for outbox_id in outbox_ids
+                }
+                for event in events:
+                    attempt_number = int(event.attempt_count or 0) + 1
+                    event.attempt_count = attempt_number
+                    event.last_error = safe_message
+                    event.published_at = None
+                    if attempt_number >= self.max_attempts:
+                        event.status = "DEAD_LETTER"
+                        event.available_at = _utcnow()
+                        states[event.outbox_id] = "DEAD_LETTER"
+                        continue
+                    event.available_at = (
+                        _utcnow()
+                        + self._retry_delay_for(
+                            outbox_id=event.outbox_id,
+                            attempt_number=attempt_number,
+                        )
+                    )
+                    states[event.outbox_id] = "RETRY_SCHEDULED"
+                return states
         except Exception:
             # Settlement already rolled back and the event is still PENDING.
             # Failure reporting must never turn a retryable event into data loss.
-            return
+            return {outbox_id: None for outbox_id in outbox_ids}
 
 
 def settle_shared_task_scores_once(

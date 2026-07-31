@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canRetryOutput, displayError, employmentStatusLabel, isOperationalOutput, isOperationalTaskAssignment, normalizeOutputList, outputDisplayTypeLabels, outputTypeLabels, sortTasksForDisplay, summarizeOutputs } from './domain'
+import { canRetryOutput, displayError, employmentStatusLabel, eventLabel, isOperationalOutput, isOperationalTaskAssignment, methodLabel, normalizeOutputList, outputDisplayTypeLabel, outputDisplayTypeLabels, outputStatusLabel, outputTypeLabel, outputTypeLabels, sortTasksForDisplay, summarizeOutputs } from './domain'
 import type { OutputRecord, SharedTaskAssignment, Task } from './types'
 
 const output = {
@@ -72,6 +72,16 @@ describe('运营错误展示', () => {
     )
   })
 
+  it('英文模式翻译框架文案并保留错误代码', () => {
+    expect(displayError({ body: { error_code: 'TEACHER_TIMEZONE_UNAVAILABLE', field_path: '$.teacher_id' } }, 'en-US')).toBe(
+      'The task was not assigned because a trusted teacher timezone is unavailable (TEACHER_TIMEZONE_UNAVAILABLE) · $.teacher_id',
+    )
+    expect(methodLabel('QUIZ', 'en-US')).toBe('Learning quiz')
+    expect(eventLabel('ops_case.decided.v1', 'en-US')).toBe('Operations decision recorded')
+    expect(outputTypeLabel('TEACHER_TASK', 'en-US')).toBe('Teacher task')
+    expect(outputDisplayTypeLabel('IN_APP_NOTIFICATION', 'en-US')).toBe('In-app notification')
+    expect(outputStatusLabel('DELIVERED', 'en-US')).toBe('Delivered')
+  })
 })
 
 describe('教师在职状态展示', () => {
@@ -81,6 +91,8 @@ describe('教师在职状态展示', () => {
     expect(employmentStatusLabel('hei')).toBe('已拉黑删除')
     expect(employmentStatusLabel('UNKNOWN')).toBe('状态待确认')
     expect(employmentStatusLabel(null)).toBe('状态待确认')
+    expect(employmentStatusLabel('hei', 'en-US')).toBe('Blacklisted / removed')
+    expect(employmentStatusLabel(null, 'en-US')).toBe('Status pending')
   })
 })
 

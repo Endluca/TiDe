@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Iterator
 from uuid import uuid4
 
@@ -16,11 +18,15 @@ from app.auth import (
     COOKIE_NAME,
     OperatorIdentity,
     auth_router,
+    current_operator,
     get_db_session,
     hash_password,
+    hash_session_token,
+    now_utc,
     require_roles,
     verify_password,
 )
+import app.auth as auth_module
 from app.auth_models import OperatorAccount, OperatorRole, OperatorRoleGrant, OperatorSession
 from app.database import Base
 
@@ -147,6 +153,81 @@ def test_unknown_username_and_wrong_password_have_identical_error(auth_context: 
     assert wrong.status_code == 401
     assert unknown.json() == wrong.json()
     assert unknown.json()["detail"]["code"] == "INVALID_CREDENTIALS"
+
+
+def test_current_operator_releases_read_transaction_before_business_work(
+    auth_context: AuthContext,
+) -> None:
+    account = create_account(auth_context, OperatorRole.VIEWER)
+    raw_token = "request-scoped-token"
+    with auth_context.sessions() as db:
+        db.add(
+            OperatorSession(
+                session_id=str(uuid4()),
+                operator_id=account.operator_id,
+                token_hash=hash_session_token(raw_token),
+                created_at=now_utc(),
+                expires_at=now_utc() + timedelta(hours=1),
+                last_seen_at=now_utc(),
+            )
+        )
+        db.commit()
+
+        identity = current_operator(token=raw_token, db=db)
+
+        assert identity.operator_id == account.operator_id
+        assert identity.roles == [OperatorRole.VIEWER]
+        assert not db.in_transaction()
+
+
+def test_login_rejects_when_argon2_capacity_is_full(
+    auth_context: AuthContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = threading.BoundedSemaphore(1)
+    assert gate.acquire(blocking=False)
+    monkeypatch.setattr(auth_module, "_PASSWORD_VERIFY_SLOTS", gate)
+
+    response = auth_context.client.post(
+        "/api/auth/login",
+        json={"username": "unknown.user", "password": "wrong-password"},
+    )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "1"
+    assert response.json()["detail"]["code"] == "AUTHENTICATION_CAPACITY_EXCEEDED"
+    gate.release()
+
+
+def test_login_rate_limit_runs_before_password_hash(
+    auth_context: AuthContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limiter = auth_module._LoginRateLimiter(
+        attempts=2,
+        window_seconds=60,
+        max_keys=100,
+    )
+    monkeypatch.setattr(auth_module, "_LOGIN_RATE_LIMITER", limiter)
+
+    first = auth_context.client.post(
+        "/api/auth/login",
+        json={"username": "rate.limited", "password": "wrong-password"},
+    )
+    second = auth_context.client.post(
+        "/api/auth/login",
+        json={"username": "rate.limited", "password": "wrong-password"},
+    )
+    limited = auth_context.client.post(
+        "/api/auth/login",
+        json={"username": "rate.limited", "password": "wrong-password"},
+    )
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert limited.status_code == 429
+    assert limited.json()["detail"]["code"] == "AUTHENTICATION_RATE_LIMITED"
+    assert int(limited.headers["retry-after"]) >= 1
 
 
 def test_role_dependency_rejects_authenticated_operator_without_role(auth_context: AuthContext) -> None:

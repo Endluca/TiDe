@@ -1,4 +1,5 @@
 import type { TaskTemplate } from './types'
+import type { AppLocale } from './i18n'
 
 export interface TaskTemplateFilters {
   keyword: string
@@ -25,18 +26,22 @@ export function filterTaskTemplates(
       template.why_template,
       template.how_summary,
       template.completion_standard,
+      template.benefit,
+      template.content_status,
     ].join(' ').toLocaleLowerCase()
     return (!needle || searchable.includes(needle))
       && (!filters.stage || template.stage === filters.stage)
   })
 }
 
-export function taskScoreSummary(template: Pick<TaskTemplate, 'score_type' | 'score_value'>): string {
-  if (template.score_type === 'FIXED') return `${template.score_value} 分`
-  if (template.score_type === 'ZERO') return '0 分'
-  return '不计分'
+export function taskScoreSummary(template: Pick<TaskTemplate, 'score_type' | 'score_value'>, locale: AppLocale = 'zh-CN'): string {
+  if (template.score_type === 'FIXED') return locale === 'en-US' ? `${template.score_value} pts` : `${template.score_value} 分`
+  if (template.score_type === 'ZERO') return locale === 'en-US' ? '0 pts' : '0 分'
+  return locale === 'en-US' ? 'No points' : '不计分'
 }
 
-export function taskOwnerLabel(template: Pick<TaskTemplate, 'execution_owner'>): string {
-  return template.execution_owner === 'TEACHER_APP' ? '教师端' : template.execution_owner
+export function taskOwnerLabel(template: Pick<TaskTemplate, 'execution_owner'>, locale: AppLocale = 'zh-CN'): string {
+  return template.execution_owner === 'TEACHER_APP'
+    ? (locale === 'en-US' ? 'Teacher app' : '教师端')
+    : template.execution_owner
 }

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 
 from app.config_models import (
     SCORE_POLICY_V4_PAYLOAD,
@@ -21,6 +21,7 @@ from app.db_models import (
     DataImportBatchRecord,
     NotificationRecord,
     ScoreAccountRecord,
+    ScoreComponentAccountRecord,
     ScoreEntryRecord,
     TaskAssignmentRecord,
     TeacherMetricSnapshotRecord,
@@ -188,13 +189,32 @@ def test_import_is_idempotent_without_rewriting_snapshot_or_accounts(tmp_path: P
         assert session.scalar(select(func.count()).select_from(TeacherMetricSnapshotRecord)) == 2
         assert session.scalar(select(func.count()).select_from(TeacherRecord)) == 2
         assert session.scalar(select(func.count()).select_from(ScoreAccountRecord)) == 10
+        assert (
+            session.scalar(
+                select(func.count()).select_from(
+                    ScoreComponentAccountRecord
+                )
+            )
+            == 30
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(ScoreComponentAccountRecord)
+                .where(
+                    ScoreComponentAccountRecord.component_code
+                    == "FEEDBACK_REBOOK_15D"
+                )
+            )
+            == 0
+        )
         assignments = session.scalars(
             select(TaskAssignmentRecord).order_by(
                 TaskAssignmentRecord.teacher_id,
                 TaskAssignmentRecord.task_code,
             )
         ).all()
-        assert len(assignments) == 20
+        assert len(assignments) == 18
         assert {item.status for item in assignments} == {"ASSIGNED"}
         assert {item.task_kind for item in assignments} == {"FIXED_GROWTH"}
         assert {item.creator_system for item in assignments} == {"TRIGGER_CENTER"}
@@ -209,6 +229,53 @@ def test_import_is_idempotent_without_rewriting_snapshot_or_accounts(tmp_path: P
             )
         ).updated_at
         assert after == before
+
+
+def test_import_prefetches_teacher_state_without_per_teacher_selects(
+    tmp_path: Path,
+) -> None:
+    source = _write_workbook(
+        tmp_path / "teacher-metrics-batch.xlsx",
+        [_source_row(10_000 + index) for index in range(25)],
+    )
+    selected_engine = _engine(tmp_path, "teacher-import-query-count.db")
+    select_count = 0
+
+    def count_selects(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        nonlocal select_count
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_count += 1
+
+    event.listen(
+        selected_engine,
+        "before_cursor_execute",
+        count_selects,
+    )
+    try:
+        import_teacher_metrics(
+            source,
+            bind=selected_engine,
+            snapshot_label="query-count",
+            expected_row_count=25,
+        )
+    finally:
+        event.remove(
+            selected_engine,
+            "before_cursor_execute",
+            count_selects,
+        )
+
+    # This bound is independent of the 25-row cohort. Before batch prefetch,
+    # teacher/milestone/snapshot/account merge checks alone added hundreds of
+    # SELECT round trips.
+    assert select_count <= 25
 
 
 def test_import_keeps_lossless_source_row_and_explicit_provenance(tmp_path: Path) -> None:
@@ -234,10 +301,12 @@ def test_import_keeps_lossless_source_row_and_explicit_provenance(tmp_path: Path
             "SOURCE_MISSING"
         )
         assert teacher.payload["metric_inputs"]["real_absent_cnt"] == 0
+        assert teacher.payload["metric_inputs"]["absent_cnt"] == 1
+        assert teacher.payload["metric_provenance"]["absent_cnt"]["source_mode"] == "REAL"
         assert teacher.payload["metric_inputs"]["new_teacher_task_score"] == 0
         assert teacher.payload["metric_inputs"]["class_quality_no_issue_rate"] == 0
         assert teacher.payload["metric_inputs"]["perfect_cnt"] == 8
-        assert snapshot.class_quality_score == 16
+        assert snapshot.class_quality_score == 0
         assert teacher.payload["metric_provenance"]["perfect_cnt"]["source_mode"] == "REAL"
         assert teacher.payload["metric_provenance"]["new_teacher_task_score"][
             "source_mode"

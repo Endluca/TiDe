@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Engine, case, func, select
+from sqlalchemy import Engine, case, func, or_, select, update
 
 from .database import engine as default_engine
 from .database import session_scope
@@ -16,12 +17,13 @@ from .db_models import (
     TaskTemplateRecord,
     TeacherRecord,
 )
-from .services import DomainError
+from .errors import DomainError
 from .task_models import (
     CreateTaskTemplateRequest,
     PublishTaskTemplateRequest,
     UpdateTaskTemplateRequest,
 )
+from .task_catalog import MANDATORY_TASK_CODE_SET
 
 
 def _now() -> datetime:
@@ -62,7 +64,7 @@ def _raise(
 class TaskService:
     """Current task-template configuration and shared assignment reads."""
 
-    FIXED_GROWTH_TASK_CODES = {f"G{index:02d}" for index in range(1, 11)}
+    FIXED_GROWTH_TASK_CODES = MANDATORY_TASK_CODE_SET
 
     def __init__(self, bind: Engine | None = None) -> None:
         self.engine = bind or default_engine
@@ -178,6 +180,7 @@ class TaskService:
         template: TaskTemplateRecord,
     ) -> dict[str, Any]:
         template_payload = template.payload if isinstance(template.payload, dict) else {}
+        title = assignment.display_title or template_payload.get("title")
         return {
             "assignment_id": assignment.assignment_id,
             "teacher_id": assignment.teacher_id,
@@ -188,7 +191,7 @@ class TaskService:
             "status": assignment.status,
             "priority": assignment.priority,
             "why": assignment.why,
-            "title": assignment.display_title or template_payload.get("title"),
+            "title": title,
             "evidence_snapshot": deepcopy(assignment.evidence_snapshot or {}),
             "what_to_do": template_payload.get("how_summary"),
             "completion_standard": template_payload.get("completion_standard"),
@@ -232,6 +235,59 @@ class TaskService:
                 status_code=409,
                 details={"expected_revision": revision},
             )
+
+    @staticmethod
+    def _cas_update_template(
+        session: Any,
+        *,
+        row_id: str,
+        expected_revision: int,
+        values: dict[str, Any],
+    ) -> bool:
+        """Apply a draft mutation only if the database revision is unchanged."""
+
+        result = session.execute(
+            update(TaskTemplateRecord)
+            .where(
+                TaskTemplateRecord.row_id == row_id,
+                TaskTemplateRecord.status == "DRAFT",
+                TaskTemplateRecord.revision == expected_revision,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        return result.rowcount == 1
+
+    @staticmethod
+    def _raise_template_cas_failure(
+        session: Any,
+        *,
+        row_id: str,
+    ) -> None:
+        current = session.execute(
+            select(
+                TaskTemplateRecord.status,
+                TaskTemplateRecord.revision,
+            ).where(TaskTemplateRecord.row_id == row_id)
+        ).one_or_none()
+        if current is None:
+            _raise(
+                "TASK_TEMPLATE_NOT_FOUND",
+                "task.error.template_not_found",
+                status_code=404,
+            )
+        if current.status != "DRAFT":
+            _raise(
+                "TASK_TEMPLATE_IMMUTABLE",
+                "task.error.immutable",
+                status_code=409,
+            )
+        _raise(
+            "TASK_TEMPLATE_REVISION_CONFLICT",
+            "task.error.revision_conflict",
+            status_code=409,
+            details={"expected_revision": int(current.revision)},
+        )
 
     def list_templates(self, status: str | None = None) -> list[dict[str, Any]]:
         with session_scope(self.engine) as session:
@@ -350,22 +406,35 @@ class TaskService:
             response = {
                 "template_id": template_id,
                 "status": record.status,
-                "revision": record.revision + 1,
+                "revision": request.expected_revision + 1,
                 **definition,
                 "created_by": record.created_by,
                 "updated_by": actor_id,
                 "created_at": _iso(record.created_at),
                 "updated_at": _iso(now),
             }
-            record.revision += 1
-            record.output_type = request.output_type
-            record.execution_owner = request.execution_owner
-            record.integration_mode = request.integration_mode
-            record.external_task_template_code = request.external_task_template_code
-            record.source_mode = request.source_mode
-            record.payload = deepcopy(response)
-            record.updated_by = actor_id
-            record.updated_at = now
+            if not self._cas_update_template(
+                session,
+                row_id=record.row_id,
+                expected_revision=request.expected_revision,
+                values={
+                    "revision": request.expected_revision + 1,
+                    "output_type": request.output_type,
+                    "execution_owner": request.execution_owner,
+                    "integration_mode": request.integration_mode,
+                    "external_task_template_code": (
+                        request.external_task_template_code
+                    ),
+                    "source_mode": request.source_mode,
+                    "payload": deepcopy(response),
+                    "updated_by": actor_id,
+                    "updated_at": now,
+                },
+            ):
+                self._raise_template_cas_failure(
+                    session,
+                    row_id=record.row_id,
+                )
             return response
 
     def publish_template(
@@ -388,20 +457,74 @@ class TaskService:
                 kind="TASK_TEMPLATE",
             )
             now = _now()
-            record.status = "PUBLISHED"
-            record.revision += 1
-            record.updated_by = actor_id
-            record.updated_at = now
-            record.payload = {
+            next_revision = request.expected_revision + 1
+            published_payload = {
                 **deepcopy(record.payload),
                 "status": "PUBLISHED",
-                "revision": record.revision,
+                "revision": next_revision,
                 "updated_by": actor_id,
                 "updated_at": _iso(now),
                 "published_at": _iso(now),
                 "published_by": actor_id,
             }
-            return self._template_response(record)
+            if not self._cas_update_template(
+                session,
+                row_id=record.row_id,
+                expected_revision=request.expected_revision,
+                values={
+                    "status": "PUBLISHED",
+                    "revision": next_revision,
+                    "updated_by": actor_id,
+                    "updated_at": now,
+                    "payload": deepcopy(published_payload),
+                },
+            ):
+                self._raise_template_cas_failure(
+                    session,
+                    row_id=record.row_id,
+                )
+            response = deepcopy(published_payload)
+            response.pop("template_version", None)
+            response.pop("source_version", None)
+            response.update(
+                status="PUBLISHED",
+                revision=next_revision,
+                integration_mode=record.integration_mode,
+                updated_by=actor_id,
+                created_at=_iso(record.created_at),
+                updated_at=_iso(now),
+            )
+            return response
+
+    @staticmethod
+    def _assignment_statement(
+        *,
+        teacher_id: str | None = None,
+        status: str | None = None,
+        task_kind: str | None = None,
+        include_mock: bool = True,
+    ) -> Any:
+        statement = (
+            select(TaskAssignmentRecord, TeacherRecord, TaskTemplateRecord)
+            .join(TeacherRecord, TeacherRecord.teacher_id == TaskAssignmentRecord.teacher_id)
+            .join(
+                TaskTemplateRecord,
+                TaskTemplateRecord.row_id
+                == TaskAssignmentRecord.template_version_id,
+            )
+            .where(TaskTemplateRecord.status == "PUBLISHED")
+        )
+        if teacher_id:
+            statement = statement.where(TaskAssignmentRecord.teacher_id == teacher_id)
+        if status:
+            statement = statement.where(TaskAssignmentRecord.status == status)
+        if task_kind:
+            statement = statement.where(TaskAssignmentRecord.task_kind == task_kind)
+        if not include_mock:
+            statement = statement.where(
+                ~TaskAssignmentRecord.source_mode.like("MOCK%")
+            )
+        return statement
 
     def list_assignments(
         self,
@@ -409,23 +532,15 @@ class TaskService:
         teacher_id: str | None = None,
         status: str | None = None,
         task_kind: str | None = None,
+        include_mock: bool = True,
     ) -> list[dict[str, Any]]:
         with session_scope(self.engine) as session:
-            statement = (
-                select(TaskAssignmentRecord, TeacherRecord, TaskTemplateRecord)
-                .join(TeacherRecord, TeacherRecord.teacher_id == TaskAssignmentRecord.teacher_id)
-                .join(
-                    TaskTemplateRecord,
-                    TaskTemplateRecord.row_id
-                    == TaskAssignmentRecord.template_version_id,
-                )
+            statement = self._assignment_statement(
+                teacher_id=teacher_id,
+                status=status,
+                task_kind=task_kind,
+                include_mock=include_mock,
             )
-            if teacher_id:
-                statement = statement.where(TaskAssignmentRecord.teacher_id == teacher_id)
-            if status:
-                statement = statement.where(TaskAssignmentRecord.status == status)
-            if task_kind:
-                statement = statement.where(TaskAssignmentRecord.task_kind == task_kind)
             rows = session.execute(
                 statement.order_by(
                     TaskAssignmentRecord.updated_at.desc(),
@@ -433,6 +548,47 @@ class TaskService:
                 )
             ).all()
             return [self._assignment_response(*row) for row in rows]
+
+    def list_assignment_page(
+        self,
+        *,
+        teacher_id: str | None = None,
+        status: str | None = None,
+        task_kind: str | None = None,
+        include_mock: bool = True,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        with session_scope(self.engine) as session:
+            statement = self._assignment_statement(
+                teacher_id=teacher_id,
+                status=status,
+                task_kind=task_kind,
+                include_mock=include_mock,
+            )
+            total = int(
+                session.scalar(
+                    select(func.count()).select_from(
+                        statement.order_by(None).subquery()
+                    )
+                )
+                or 0
+            )
+            rows = session.execute(
+                statement.order_by(
+                    TaskAssignmentRecord.updated_at.desc(),
+                    TaskAssignmentRecord.assignment_id,
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).all()
+            return {
+                "items": [self._assignment_response(*row) for row in rows],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": (total + page_size - 1) // page_size,
+            }
 
     @staticmethod
     def _assignment_title_expression() -> Any:
@@ -442,58 +598,85 @@ class TaskService:
             TaskAssignmentRecord.task_code,
         )
 
-    def list_task_progress(self) -> dict[str, Any]:
+    @staticmethod
+    def _task_progress_source_filter() -> Any:
+        non_mock = ~TaskAssignmentRecord.source_mode.like("MOCK%")
+        if os.getenv("APP_ENV", "").strip().lower() == "test":
+            return non_mock | (
+                TaskAssignmentRecord.source_mode == "MOCK_SIMULATION"
+            )
+        return non_mock
+
+    def list_task_progress(self, *, keyword: str | None = None) -> dict[str, Any]:
         """Return one compact row per visible task definition/title."""
 
-        title = self._assignment_title_expression().label("title")
-        not_started = func.sum(
-            case(
-                (TaskAssignmentRecord.status.in_(("ASSIGNED", "VIEWED")), 1),
-                else_=0,
-            )
-        ).label("not_started")
-        in_progress = func.sum(
-            case(
-                (
-                    TaskAssignmentRecord.status.in_(
-                        ("IN_PROGRESS", "SUBMITTED", "UNDER_REVIEW")
-                    ),
-                    1,
-                ),
-                else_=0,
-            )
-        ).label("in_progress")
-        completed = func.sum(
-            case((TaskAssignmentRecord.status == "COMPLETED", 1), else_=0)
-        ).label("completed")
-        other = func.sum(
-            case(
-                (
-                    TaskAssignmentRecord.status.in_(
-                        ("FAILED", "EXPIRED", "WAIVED", "CANCELLED")
-                    ),
-                    1,
-                ),
-                else_=0,
-            )
-        ).label("other")
+        title_expression = self._assignment_title_expression()
+        title = title_expression.label("title")
+        needle = str(keyword or "").strip().casefold()
 
         with session_scope(self.engine) as session:
-            rows = session.execute(
+            statement = (
                 select(
-                    TaskAssignmentRecord.task_code,
+                    TaskAssignmentRecord.task_code.label("task_code"),
                     title,
-                    TaskAssignmentRecord.task_kind,
-                    func.count(func.distinct(TaskAssignmentRecord.teacher_id)).label(
-                        "assigned_teacher_count"
-                    ),
-                    func.count(TaskAssignmentRecord.assignment_id).label(
-                        "assignment_count"
-                    ),
-                    not_started,
-                    in_progress,
-                    completed,
-                    other,
+                    TaskAssignmentRecord.task_kind.label("task_kind"),
+                    func.count(
+                        func.distinct(TaskAssignmentRecord.teacher_id)
+                    ).label("assigned_teacher_count"),
+                    func.count().label("assignment_count"),
+                    func.sum(
+                        case(
+                            (
+                                TaskAssignmentRecord.status.in_(
+                                    ("ASSIGNED", "VIEWED")
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("not_started"),
+                    func.sum(
+                        case(
+                            (
+                                TaskAssignmentRecord.status.in_(
+                                    (
+                                        "IN_PROGRESS",
+                                        "SUBMITTED",
+                                        "UNDER_REVIEW",
+                                    )
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("in_progress"),
+                    func.sum(
+                        case(
+                            (
+                                TaskAssignmentRecord.status == "COMPLETED",
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("completed"),
+                    func.sum(
+                        case(
+                            (
+                                TaskAssignmentRecord.status.not_in(
+                                    (
+                                        "ASSIGNED",
+                                        "VIEWED",
+                                        "IN_PROGRESS",
+                                        "SUBMITTED",
+                                        "UNDER_REVIEW",
+                                        "COMPLETED",
+                                    )
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("other"),
                 )
                 .select_from(TaskAssignmentRecord)
                 .join(
@@ -501,10 +684,30 @@ class TaskService:
                     TaskTemplateRecord.row_id
                     == TaskAssignmentRecord.template_version_id,
                 )
-                .where(~TaskAssignmentRecord.source_mode.like("MOCK%"))
-                .group_by(
+                .where(
+                    self._task_progress_source_filter(),
+                    TaskTemplateRecord.status == "PUBLISHED",
+                )
+            )
+            if needle:
+                pattern = f"%{needle}%"
+                statement = statement.where(
+                    or_(
+                        func.lower(
+                            TaskAssignmentRecord.task_code
+                        ).like(pattern),
+                        func.lower(
+                            title_expression
+                        ).like(pattern),
+                        func.lower(
+                            TaskAssignmentRecord.teacher_id
+                        ).like(pattern),
+                    )
+                )
+            rows = session.execute(
+                statement.group_by(
                     TaskAssignmentRecord.task_code,
-                    title,
+                    title_expression,
                     TaskAssignmentRecord.task_kind,
                 )
                 .order_by(
@@ -519,19 +722,21 @@ class TaskService:
 
             items: list[dict[str, Any]] = []
             for row in rows:
-                assignment_count = int(row.assignment_count)
-                completed_count = int(row.completed)
+                assignment_count = int(row.assignment_count or 0)
+                completed_count = int(row.completed or 0)
                 items.append(
                     {
                         "task_code": row.task_code,
                         "title": row.title,
                         "task_kind": row.task_kind,
-                        "assigned_teacher_count": int(row.assigned_teacher_count),
+                        "assigned_teacher_count": int(
+                            row.assigned_teacher_count or 0
+                        ),
                         "assignment_count": assignment_count,
-                        "not_started": int(row.not_started),
-                        "in_progress": int(row.in_progress),
+                        "not_started": int(row.not_started or 0),
+                        "in_progress": int(row.in_progress or 0),
                         "completed": completed_count,
-                        "other": int(row.other),
+                        "other": int(row.other or 0),
                         "completion_rate": (
                             completed_count / assignment_count
                             if assignment_count
@@ -549,36 +754,56 @@ class TaskService:
         task_kind: str,
         page: int,
         page_size: int,
+        keyword: str | None = None,
     ) -> dict[str, Any]:
         """Page assignment facts for one task-progress row."""
 
         title_expression = self._assignment_title_expression()
-        filters = (
+        filters: list[Any] = [
             TaskAssignmentRecord.task_code == task_code,
             TaskAssignmentRecord.task_kind == task_kind,
+            self._task_progress_source_filter(),
+            TaskTemplateRecord.status == "PUBLISHED",
             title_expression == title,
-            ~TaskAssignmentRecord.source_mode.like("MOCK%"),
-        )
+        ]
+        needle = str(keyword or "").strip().casefold()
+        if needle:
+            pattern = f"%{needle}%"
+            filters.append(
+                or_(
+                    func.lower(TaskAssignmentRecord.task_code).like(pattern),
+                    func.lower(title_expression).like(pattern),
+                    func.lower(TaskAssignmentRecord.teacher_id).like(pattern),
+                )
+            )
 
         with session_scope(self.engine) as session:
+            filtered = (
+                select(TaskAssignmentRecord.assignment_id)
+                .select_from(TaskAssignmentRecord)
+                .join(
+                    TaskTemplateRecord,
+                    TaskTemplateRecord.row_id
+                    == TaskAssignmentRecord.template_version_id,
+                )
+                .where(*filters)
+            )
             total = int(
                 session.scalar(
-                    select(func.count(TaskAssignmentRecord.assignment_id))
-                    .select_from(TaskAssignmentRecord)
-                    .join(
-                        TaskTemplateRecord,
-                        TaskTemplateRecord.row_id
-                        == TaskAssignmentRecord.template_version_id,
-                    )
-                    .where(*filters)
+                    select(func.count()).select_from(filtered.subquery())
                 )
                 or 0
             )
-            rows = session.execute(
-                select(TaskAssignmentRecord, TeacherRecord, TaskTemplateRecord)
+            page_rows = session.execute(
+                select(
+                    TaskAssignmentRecord,
+                    TeacherRecord,
+                    TaskTemplateRecord,
+                )
                 .join(
                     TeacherRecord,
-                    TeacherRecord.teacher_id == TaskAssignmentRecord.teacher_id,
+                    TeacherRecord.teacher_id
+                    == TaskAssignmentRecord.teacher_id,
                 )
                 .join(
                     TaskTemplateRecord,
@@ -594,7 +819,9 @@ class TaskService:
                 .limit(page_size)
             ).all()
             return {
-                "items": [self._assignment_response(*row) for row in rows],
+                "items": [
+                    self._assignment_response(*row) for row in page_rows
+                ],
                 "total": total,
                 "page": page,
                 "page_size": page_size,

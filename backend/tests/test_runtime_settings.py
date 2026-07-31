@@ -1,0 +1,305 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from app.database import build_engine
+from app.runtime_settings import (
+    PRODUCTION_INTEGER_SETTINGS,
+    allowed_hosts,
+    allowed_origins,
+    validate_alembic_runtime,
+    validate_production_migration_runtime,
+    validate_production_migration_identity,
+    validate_production_runtime,
+)
+
+
+def set_safe_database_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    values = {
+        "TIT_DB_POOL_SIZE": "5",
+        "TIT_DB_MAX_OVERFLOW": "2",
+        "TIT_DB_POOL_TIMEOUT_SECONDS": "5",
+        "TIT_DB_POOL_RECYCLE_SECONDS": "1800",
+        "TIT_DB_CONNECT_TIMEOUT_SECONDS": "8",
+        "TIT_DB_LOCK_TIMEOUT_MS": "5000",
+        "TIT_DB_IDLE_TRANSACTION_TIMEOUT_MS": "60000",
+        "TIT_DB_STATEMENT_TIMEOUT_MS": "30000",
+        "TIT_ARGON2_MAX_CONCURRENCY": "2",
+        "TIT_LOGIN_RATE_LIMIT_ATTEMPTS": "10",
+        "TIT_LOGIN_RATE_LIMIT_WINDOW_SECONDS": "60",
+        "TIT_LOGIN_RATE_LIMIT_MAX_KEYS": "10000",
+        "TIT_SLOW_REQUEST_MS": "1000",
+        "TIT_API_WORKERS": "2",
+        "TIT_API_LIMIT_CONCURRENCY": "8",
+        "TIT_API_KEEPALIVE_SECONDS": "5",
+    }
+    assert set(values) == set(PRODUCTION_INTEGER_SETTINGS)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("TIT_HEALTHCHECK_HOST", "tit-growth.example.com")
+
+
+def test_local_runtime_uses_loopback_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("TIT_ALLOWED_HOSTS", raising=False)
+    monkeypatch.delenv("TIT_ALLOWED_ORIGINS", raising=False)
+
+    assert "127.0.0.1" in allowed_hosts()
+    assert "http://127.0.0.1:5174" in allowed_origins()
+    validate_production_runtime()
+
+
+def test_production_runtime_fails_closed_without_tls_and_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("TIT_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://app:secret@db.example/tit?sslmode=disable",
+    )
+
+    with pytest.raises(RuntimeError, match="TIT_ALLOWED_HOSTS"):
+        validate_production_runtime()
+
+
+def test_production_runtime_accepts_verified_postgresql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_ALLOWED_HOSTS", "tit-growth.example.com")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://app:secret@db.example/tit?sslmode=verify-full",
+    )
+    set_safe_database_runtime(monkeypatch)
+
+    validate_production_runtime()
+
+
+def test_production_runtime_requires_explicit_pool_and_timeout_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_ALLOWED_HOSTS", "tit-growth.example.com")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://app:secret@db.example/tit?sslmode=verify-full",
+    )
+    for name in PRODUCTION_INTEGER_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(RuntimeError, match="TIT_DB_POOL_SIZE is required"):
+        validate_production_runtime()
+
+
+def test_production_runtime_rejects_duplicate_sslmode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_ALLOWED_HOSTS", "tit-growth.example.com")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        (
+            "postgresql+psycopg://app:secret@db.example/tit"
+            "?sslmode=verify-full&sslmode=disable"
+        ),
+    )
+    set_safe_database_runtime(monkeypatch)
+
+    with pytest.raises(
+        RuntimeError,
+        match="exactly one sslmode",
+    ):
+        validate_production_runtime()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("TIT_DB_STATEMENT_TIMEOUT_MS", "not-an-int"),
+        ("TIT_API_WORKERS", "10000"),
+        ("TIT_API_LIMIT_CONCURRENCY", "0"),
+        ("TIT_API_KEEPALIVE_SECONDS", "999"),
+    ],
+)
+def test_production_runtime_rejects_unsafe_process_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_ALLOWED_HOSTS", "tit-growth.example.com")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://app:secret@db.example/tit?sslmode=verify-full",
+    )
+    set_safe_database_runtime(monkeypatch)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match=name):
+        validate_production_runtime()
+
+
+def test_production_example_matches_same_origin_proxy_contract() -> None:
+    backend_root = Path(__file__).resolve().parents[1]
+    environment = {
+        key: value
+        for line in (backend_root / ".env.production.example").read_text().splitlines()
+        if line and not line.startswith("#") and "=" in line
+        for key, value in [line.split("=", 1)]
+    }
+    nginx = (backend_root.parent / "frontend" / "nginx.conf").read_text()
+
+    assert "proxy_set_header Host $host;" in nginx
+    assert environment["TIT_ALLOWED_HOSTS"] == "tit-growth.example.com"
+    assert environment["TIT_HEALTHCHECK_HOST"] == "tit-growth.example.com"
+    assert environment["TIT_ALLOWED_ORIGINS"] == ""
+    assert {
+        "TIT_DB_POOL_SIZE",
+        "TIT_DB_MAX_OVERFLOW",
+        "TIT_DB_POOL_TIMEOUT_SECONDS",
+        "TIT_DB_POOL_RECYCLE_SECONDS",
+        "TIT_DB_CONNECT_TIMEOUT_SECONDS",
+        "TIT_DB_LOCK_TIMEOUT_MS",
+        "TIT_DB_IDLE_TRANSACTION_TIMEOUT_MS",
+        "TIT_DB_STATEMENT_TIMEOUT_MS",
+        "TIT_ARGON2_MAX_CONCURRENCY",
+        "TIT_LOGIN_RATE_LIMIT_ATTEMPTS",
+        "TIT_LOGIN_RATE_LIMIT_WINDOW_SECONDS",
+        "TIT_LOGIN_RATE_LIMIT_MAX_KEYS",
+        "TIT_SLOW_REQUEST_MS",
+        "TIT_API_WORKERS",
+        "TIT_API_LIMIT_CONCURRENCY",
+        "TIT_API_KEEPALIVE_SECONDS",
+    } <= set(environment)
+
+
+def test_production_runtime_rejects_health_host_outside_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_ALLOWED_HOSTS", "tit-growth.example.com")
+    monkeypatch.setenv("TIT_HEALTHCHECK_HOST", "127.0.0.1")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://app:secret@db.example/tit?sslmode=verify-full",
+    )
+    set_safe_database_runtime(monkeypatch)
+    monkeypatch.setenv("TIT_HEALTHCHECK_HOST", "127.0.0.1")
+
+    with pytest.raises(RuntimeError, match="must be included"):
+        validate_production_runtime()
+
+
+def test_production_migration_requires_exact_tls_database_without_api_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_MIGRATION_MODE", "true")
+    monkeypatch.setenv("TIT_MIGRATION_EXPECTED_DATABASE", "tit_growth")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        (
+            "postgresql+psycopg://tit_growth_migrator:secret@db.example/"
+            "tit_growth?sslmode=verify-full"
+        ),
+    )
+    for name in PRODUCTION_INTEGER_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+
+    validate_production_migration_runtime()
+    validate_alembic_runtime()
+
+
+def test_production_alembic_requires_explicit_migration_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("TIT_MIGRATION_MODE", raising=False)
+
+    with pytest.raises(RuntimeError, match="TIT_MIGRATION_MODE=true"):
+        validate_alembic_runtime()
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgresql://tit_growth_migrator:secret@db.example/other?sslmode=verify-full",
+        "postgresql://tit_growth_migrator:secret@db.example/tit_growth?sslmode=require",
+        (
+            "postgresql://tit_growth_migrator:secret@db.example/tit_growth"
+            "?sslmode=verify-full&sslmode=disable"
+        ),
+        (
+            "postgresql://tit_growth_migrator:secret@db.example/tit_growth"
+            "?sslmode=verify-full&ssl=false"
+        ),
+    ],
+)
+def test_production_migration_rejects_wrong_target_or_tls(
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_MIGRATION_MODE", "true")
+    monkeypatch.setenv("TIT_MIGRATION_EXPECTED_DATABASE", "tit_growth")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    with pytest.raises(RuntimeError, match="Unsafe production migration"):
+        validate_production_migration_runtime()
+
+
+@pytest.mark.parametrize(
+    ("role", "database", "is_superuser"),
+    [
+        ("postgres", "tit_growth", True),
+        ("tit_growth_migrator", "other", False),
+        ("unexpected_migrator", "tit_growth", False),
+    ],
+)
+def test_production_migration_rejects_wrong_live_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    database: str,
+    is_superuser: bool,
+) -> None:
+    monkeypatch.setenv("TIT_MIGRATION_EXPECTED_DATABASE", "tit_growth")
+
+    with pytest.raises(RuntimeError, match="non-superuser"):
+        validate_production_migration_identity(
+            role=role,
+            database=database,
+            is_superuser=is_superuser,
+        )
+
+
+def test_production_migration_accepts_exact_live_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TIT_MIGRATION_EXPECTED_DATABASE", "tit_growth")
+
+    validate_production_migration_identity(
+        role="tit_growth_migrator",
+        database="tit_growth",
+        is_superuser=False,
+    )
+
+
+def test_postgresql_engine_uses_explicit_bounded_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TIT_DB_POOL_SIZE", "3")
+    monkeypatch.setenv("TIT_DB_MAX_OVERFLOW", "1")
+    monkeypatch.setenv("TIT_DB_POOL_TIMEOUT_SECONDS", "7")
+    selected = build_engine(
+        "postgresql+psycopg://app@localhost/tit?sslmode=disable"
+    )
+    try:
+        assert selected.pool.size() == 3
+        assert selected.pool._max_overflow == 1
+        assert selected.pool._timeout == 7
+    finally:
+        selected.dispose()

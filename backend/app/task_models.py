@@ -44,6 +44,7 @@ class TaskTemplateDefinition(BaseModel):
     stage: str = Field(min_length=2, max_length=64)
     ops_name_zh: str = Field(min_length=2, max_length=120)
     content_locale: str = Field(default="en", min_length=2, max_length=16)
+    content_status: Literal["READY", "PENDING_JIAHE"] = "READY"
     title: str = Field(min_length=2, max_length=160)
     why_template: str = Field(min_length=4, max_length=1200)
     how_summary: str = Field(min_length=4, max_length=1600)

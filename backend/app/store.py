@@ -29,6 +29,7 @@ from .db_models import (
     PersonalizedTriggerMatchRecord,
     ProviderCallRecord,
     ScoreAccountRecord,
+    ScoreComponentAccountRecord,
     ScoreEntryRecord,
     SourceRecord,
     TaskAssignmentRecord,
@@ -37,6 +38,7 @@ from .db_models import (
     TeacherRecord,
 )
 from .mock_data import seed_teachers
+from .task_catalog import MANDATORY_TASK_CODE_SET
 
 
 def _now() -> datetime:
@@ -162,6 +164,21 @@ def _normalize_notification_payload(record: NotificationRecord) -> dict[str, Any
     }
 
 
+def _normalize_audit_event_payload(record: AuditEventRecord) -> dict[str, Any]:
+    """Merge immutable audit columns into legacy payload-only event rows."""
+
+    return {
+        **deepcopy(record.payload or {}),
+        "event_id": record.event_id,
+        "event_type": record.event_type,
+        "teacher_id": record.teacher_id,
+        "task_id": record.task_id,
+        "case_id": record.case_id,
+        "occurred_at": record.occurred_at.isoformat(),
+        "actor_type": record.actor_type,
+    }
+
+
 class DatabaseStore:
     """SQLAlchemy-backed persistence with a compatibility working set.
 
@@ -226,6 +243,7 @@ class DatabaseStore:
                 timezone=teacher.get("timezone") or "UTC",
                 camp_day=int(teacher.get("camp_day", 0)),
                 graduation_state=teacher.get("graduation_state", "IN_PROGRESS"),
+                gold_qualified=bool(teacher.get("gold_qualified", False)),
                 total_score=float(teacher.get("total_score", 0)),
                 graduation_threshold=float(teacher.get("graduation_threshold", 0)),
                 data_mode=teacher.get("data_mode", "MOCK"),
@@ -365,6 +383,7 @@ class DatabaseStore:
             LessonFactRecord,
             ComplaintCategoryRuleRecord,
             SourceRecord,
+            ScoreComponentAccountRecord,
             ScoreAccountRecord,
             TeacherMetricSnapshotRecord,
             TeacherRecord,
@@ -541,6 +560,11 @@ class DatabaseStore:
             mock_teacher_ids,
         )
         delete_ids(LessonFactRecord, LessonFactRecord.teacher_id, mock_teacher_ids)
+        delete_ids(
+            ScoreComponentAccountRecord,
+            ScoreComponentAccountRecord.teacher_id,
+            mock_teacher_ids,
+        )
         delete_ids(ScoreAccountRecord, ScoreAccountRecord.teacher_id, mock_teacher_ids)
         delete_ids(TeacherRecord, TeacherRecord.teacher_id, mock_teacher_ids)
 
@@ -593,6 +617,11 @@ class DatabaseStore:
             self.teachers = {}
             for item in teachers:
                 payload = deepcopy(item.payload)
+                payload["graduation_state"] = item.graduation_state
+                payload["graduation_qualified"] = (
+                    item.graduation_state == "GRADUATED"
+                )
+                payload["gold_qualified"] = bool(item.gold_qualified)
                 payload.setdefault("data_mode", item.data_mode)
                 payload.setdefault("source_batch_id", item.source_batch_id)
                 payload.setdefault(
@@ -669,7 +698,7 @@ class DatabaseStore:
                 item.notification_event_id: deepcopy(item.payload) for item in notification_events
             }
             self.events = [
-                deepcopy(item.payload)
+                _normalize_audit_event_payload(item)
                 for item in session.scalars(select(AuditEventRecord).order_by(AuditEventRecord.sequence)).all()
             ]
             decisions = session.scalars(select(AgentDecisionRecord)).all()
@@ -737,7 +766,7 @@ class DatabaseStore:
         normalized_ids = {str(teacher_id) for teacher_id in teacher_ids if str(teacher_id)}
         if not normalized_ids:
             return {}
-        fixed_codes = {f"G{number:02d}" for number in range(1, 11)}
+        fixed_codes = MANDATORY_TASK_CODE_SET
         with session_scope(self.engine) as session:
             rows = session.execute(
                 select(TaskAssignmentRecord, TaskTemplateRecord)
@@ -892,6 +921,7 @@ class DatabaseStore:
                         timezone=teacher.get("timezone") or "UTC",
                         camp_day=int(teacher.get("camp_day", 0)),
                         graduation_state=teacher.get("graduation_state", "IN_PROGRESS"),
+                        gold_qualified=bool(teacher.get("gold_qualified", False)),
                         total_score=float(teacher.get("total_score", 0)),
                         graduation_threshold=float(teacher.get("graduation_threshold", 0)),
                         data_mode=teacher.get("data_mode", "MOCK"),

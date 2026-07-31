@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -24,6 +24,7 @@ from .config_models import (
     ScoreGraduationConfig,
 )
 from .config_service import get_published_payload
+from .errors import DomainError
 from .models import (
     CaseDecision,
     EscalationRunRequest,
@@ -33,12 +34,17 @@ from .models import (
     TaskCommand,
     TrustedResult,
 )
-from .store import InMemoryStore
 from .template_rules import (
     signals_within_merge_window,
     template_cooldown_block,
     template_matches_signal,
 )
+from .task_catalog import MANDATORY_TASK_CODES
+
+if TYPE_CHECKING:
+    from .store import InMemoryStore
+else:
+    InMemoryStore = Any
 
 
 UNTRUSTED_TIMEZONE_SOURCE_MODES = frozenset(
@@ -69,8 +75,12 @@ SCORE_DIMENSION_CONFIG_KEYS = {
     "CAPACITY": "capacity",
     "NEW_TEACHER_TASK": "new_teacher_tasks",
 }
-MILESTONE_POLICY_VERSIONS = frozenset({"v4", "v5", "v6", "v7"})
-MANDATORY_GROWTH_POLICY_VERSIONS = frozenset({"v3", "v4", "v5", "v6", "v7"})
+MILESTONE_POLICY_VERSIONS = frozenset(
+    {"v1", "v4", "v5", "v6", "v7", "v8", "v9", "v10"}
+)
+MANDATORY_GROWTH_POLICY_VERSIONS = frozenset(
+    {"v1", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"}
+)
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 TASK_CATEGORY_ORDER = {
     "MANUAL_CONFIRMATION": 0,
@@ -118,36 +128,6 @@ def persisted_command(method):
     return wrapped
 
 
-class DomainError(Exception):
-    def __init__(
-        self,
-        code: str,
-        message_key: str,
-        *,
-        status_code: int = 400,
-        field_path: str | None = None,
-        retryable: bool = False,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(code)
-        self.code = code
-        self.message_key = message_key
-        self.status_code = status_code
-        self.field_path = field_path
-        self.retryable = retryable
-        self.details = details or {}
-
-    def response(self) -> dict:
-        return {
-            "accepted": False,
-            "error_code": self.code,
-            "field_path": self.field_path,
-            "retryable": self.retryable,
-            "message_key": self.message_key,
-            "details": self.details,
-        }
-
-
 class GrowthService:
     def __init__(
         self,
@@ -182,16 +162,19 @@ class GrowthService:
     def _score_policy(self) -> tuple[ScoreGraduationConfig, str]:
         payload = self.config_reader(ConfigKey.SCORE_GRADUATION)
         if payload is not None:
-            # v1 used capped, weighted dimensions and cannot faithfully express
-            # either event-based policy.  v2 remains readable for historical
-            # publications; v7 is the current policy and keeps the v6 gates.
+            # v1 is the consolidated current baseline. v2-v10 remain readable
+            # only for imported historical snapshots.
             if not isinstance(payload, dict) or payload.get("policy_version") not in {
+                "v1",
                 "v2",
                 "v3",
                 "v4",
                 "v5",
                 "v6",
                 "v7",
+                "v8",
+                "v9",
+                "v10",
             }:
                 return DEFAULT_SCORE_POLICY, "CODE_DEFAULT_LEGACY_CONFIG"
             try:
@@ -328,8 +311,10 @@ class GrowthService:
         teacher: dict,
         resolved_score_policy: tuple[ScoreGraduationConfig, str] | None = None,
         score_account_overrides: dict[str, dict[str, Any]] | None = None,
+        *,
+        copy_payload: bool = True,
     ) -> dict:
-        projected = deepcopy(teacher)
+        projected = deepcopy(teacher) if copy_payload else dict(teacher)
         policy, policy_source = resolved_score_policy or self._score_policy()
         metrics, metric_provenance = self._metric_payload(projected)
         if score_account_overrides is None:
@@ -374,7 +359,7 @@ class GrowthService:
         metric_sources: dict[str, str] = {}
         mandatory_task_assignment_count = 0
         mandatory_task_completed_count = 0
-        mandatory_task_expected_count = 10
+        mandatory_task_expected_count = len(MANDATORY_TASK_CODES)
 
         if metrics is not None:
             def nonnegative(metric: str, default: float = 0.0) -> float:
@@ -392,7 +377,10 @@ class GrowthService:
                 nonnegative("mandatory_task_completed_count")
             )
             mandatory_task_expected_count = int(
-                nonnegative("mandatory_task_expected_count", 10)
+                nonnegative(
+                    "mandatory_task_expected_count",
+                    len(MANDATORY_TASK_CODES),
+                )
             )
             task_account = score_account_overrides.get("NEW_TEACHER_TASK")
             if task_account:
@@ -403,7 +391,10 @@ class GrowthService:
                     self._score_number(task_account.get("completed_count"), 0)
                 )
                 mandatory_task_expected_count = int(
-                    self._score_number(task_account.get("expected_count"), 10)
+                    self._score_number(
+                        task_account.get("expected_count"),
+                        len(MANDATORY_TASK_CODES),
+                    )
                 )
             task_value = (
                 max(self._score_number(task_account.get("score")), 0.0)
@@ -457,44 +448,86 @@ class GrowthService:
             rebook = nonnegative("completed_again_student_15d_cnt")
             praise_score = praise * policy.scoring_items.feedback_praise.points_per_unit
             favorite_score = favorite * policy.scoring_items.feedback_favorite.points_per_unit
-            rebook_score = rebook * policy.scoring_items.feedback_rebook_15d.points_per_unit
+            rebook_rule = getattr(
+                policy.scoring_items, "feedback_rebook_15d", None
+            )
+            rebook_score = (
+                rebook * rebook_rule.points_per_unit
+                if rebook_rule is not None
+                else 0.0
+            )
 
-            if metrics.get("on_time_completed_cnt") is not None:
-                on_time = nonnegative("on_time_completed_cnt")
-                on_time_mode = source_mode("on_time_completed_cnt")
-            elif metrics.get("total_completed_cnt") is not None:
-                # Compatibility for payloads produced before the derived field
-                # was promoted: a punctual completion excludes late or early
-                # lessons. Counts cannot make the result negative.
-                on_time = max(
-                    nonnegative("total_completed_cnt")
-                    - nonnegative("late_cnt")
-                    - nonnegative("early_cnt"),
-                    0.0,
+            reliability_perfect_rule = getattr(
+                policy.scoring_items,
+                "reliability_perfect",
+                None,
+            )
+            if reliability_perfect_rule is not None:
+                reliability_primary_count = nonnegative("perfect_cnt")
+                reliability_primary_mode = source_mode(
+                    "perfect_cnt",
+                    fallback_mode="SOURCE_MISSING",
+                    note=(
+                        "perfect_cnt was unavailable; reliability scoring used zero."
+                    ),
                 )
-                derived_inputs_mode = self._dominant_source_mode(
-                    source_mode("total_completed_cnt"),
-                    source_mode("late_cnt"),
-                    source_mode("early_cnt"),
-                )
-                on_time_mode = (
-                    "DERIVED_REAL"
-                    if derived_inputs_mode in {"REAL", "DERIVED_REAL"}
-                    else derived_inputs_mode
+                reliability_primary_code = "PERFECT_COMPLETED"
+                reliability_primary_metric = "perfect_cnt"
+                reliability_primary_points = (
+                    reliability_perfect_rule.points_per_unit
                 )
             else:
-                # Old transitional payloads called this stricter source metric
-                # perfect_cnt. It is not used when the formal on-time inputs are
-                # available.
-                on_time = nonnegative("perfect_cnt")
-                on_time_mode = source_mode("perfect_cnt")
+                if metrics.get("on_time_completed_cnt") is not None:
+                    reliability_primary_count = nonnegative(
+                        "on_time_completed_cnt"
+                    )
+                    reliability_primary_mode = source_mode(
+                        "on_time_completed_cnt"
+                    )
+                elif metrics.get("total_completed_cnt") is not None:
+                    # Historical compatibility: punctual completion excluded
+                    # late or early lessons.
+                    reliability_primary_count = max(
+                        nonnegative("total_completed_cnt")
+                        - nonnegative("late_cnt")
+                        - nonnegative("early_cnt"),
+                        0.0,
+                    )
+                    derived_inputs_mode = self._dominant_source_mode(
+                        source_mode("total_completed_cnt"),
+                        source_mode("late_cnt"),
+                        source_mode("early_cnt"),
+                    )
+                    reliability_primary_mode = (
+                        "DERIVED_REAL"
+                        if derived_inputs_mode in {"REAL", "DERIVED_REAL"}
+                        else derived_inputs_mode
+                    )
+                else:
+                    reliability_primary_count = nonnegative("perfect_cnt")
+                    reliability_primary_mode = source_mode("perfect_cnt")
+                reliability_primary_code = "ON_TIME_COMPLETED"
+                reliability_primary_metric = "on_time_completed_cnt"
+                reliability_primary_points = (
+                    policy.scoring_items.reliability_on_time.points_per_unit
+                )
             peak = nonnegative("peak_completed_cnt")
-            on_time_score = on_time * policy.scoring_items.reliability_on_time.points_per_unit
+            reliability_primary_score = (
+                reliability_primary_count * reliability_primary_points
+            )
             peak_score = peak * policy.scoring_items.reliability_peak.points_per_unit
 
             completed = nonnegative("total_completed_cnt")
-            quality_rule = policy.scoring_items.classroom_quality
-            if getattr(quality_rule, "metric", None) == "perfect_cnt":
+            quality_rule = getattr(
+                policy.scoring_items,
+                "classroom_quality",
+                None,
+            )
+            quality_component: dict[str, Any] | None = None
+            if quality_rule is None:
+                quality_score = 0.0
+                quality_source_mode = "NOT_APPLICABLE"
+            elif getattr(quality_rule, "metric", None) == "perfect_cnt":
                 perfect = nonnegative("perfect_cnt")
                 quality_source_mode = source_mode(
                     "perfect_cnt",
@@ -508,6 +541,36 @@ class GrowthService:
                     code="CLASS_QUALITY_PERFECT_COUNT",
                     metric="perfect_cnt",
                     value=perfect,
+                    points_per_unit=quality_rule.points_per_unit,
+                    score=quality_score,
+                    source_mode=quality_source_mode,
+                )
+            elif (
+                getattr(quality_rule, "metric", None)
+                == "lesson_hardware_quality_passed"
+            ):
+                quality_account = score_account_overrides.get("CLASS_QUALITY")
+                quality_count = max(
+                    self._score_number(
+                        quality_account.get("count")
+                        if quality_account
+                        else None,
+                        0.0,
+                    ),
+                    0.0,
+                )
+                quality_source_mode = (
+                    str(quality_account.get("source_mode"))
+                    if quality_account
+                    else "SOURCE_MISSING"
+                )
+                quality_score = (
+                    quality_count * quality_rule.points_per_unit
+                )
+                quality_component = self._score_component(
+                    code="CLASS_QUALITY_HARDWARE",
+                    metric="lesson_hardware_quality_passed",
+                    value=quality_count,
                     points_per_unit=quality_rule.points_per_unit,
                     score=quality_score,
                     source_mode=quality_source_mode,
@@ -539,12 +602,12 @@ class GrowthService:
             component_sets = {
                 "RELIABILITY": [
                     self._score_component(
-                        code="ON_TIME_COMPLETED",
-                        metric="on_time_completed_cnt",
-                        value=on_time,
-                        points_per_unit=policy.scoring_items.reliability_on_time.points_per_unit,
-                        score=on_time_score,
-                        source_mode=on_time_mode,
+                        code=reliability_primary_code,
+                        metric=reliability_primary_metric,
+                        value=reliability_primary_count,
+                        points_per_unit=reliability_primary_points,
+                        score=reliability_primary_score,
+                        source_mode=reliability_primary_mode,
                     ),
                     self._score_component(
                         code="PEAK_COMPLETED",
@@ -572,16 +635,28 @@ class GrowthService:
                         score=favorite_score,
                         source_mode=source_mode("feedback_favorite_cnt"),
                     ),
-                    self._score_component(
-                        code="FEEDBACK_REBOOK_15D",
-                        metric="completed_again_student_15d_cnt",
-                        value=rebook,
-                        points_per_unit=policy.scoring_items.feedback_rebook_15d.points_per_unit,
-                        score=rebook_score,
-                        source_mode=source_mode("completed_again_student_15d_cnt"),
-                    ),
-                ],
-                "CLASS_QUALITY": [quality_component],
+                ]
+                + (
+                    [
+                        self._score_component(
+                            code="FEEDBACK_REBOOK_15D",
+                            metric="completed_again_student_15d_cnt",
+                            value=rebook,
+                            points_per_unit=rebook_rule.points_per_unit,
+                            score=rebook_score,
+                            source_mode=source_mode(
+                                "completed_again_student_15d_cnt"
+                            ),
+                        )
+                    ]
+                    if rebook_rule is not None
+                    else []
+                ),
+                "CLASS_QUALITY": (
+                    [quality_component]
+                    if quality_component is not None
+                    else []
+                ),
                 "CAPACITY": [
                     self._score_component(
                         code=(
@@ -636,7 +711,7 @@ class GrowthService:
                 ],
             }
             score_by_code = {
-                "RELIABILITY": on_time_score + peak_score,
+                "RELIABILITY": reliability_primary_score + peak_score,
                 "USER_FEEDBACK": praise_score + favorite_score + rebook_score,
                 "CLASS_QUALITY": quality_score,
                 "CAPACITY": capacity_score,
@@ -649,8 +724,15 @@ class GrowthService:
                         "code": code,
                         "label": labels[code],
                         "score": round(score_by_code[code], 2),
-                        "source_mode": self._dominant_source_mode(
-                            *(component["source_mode"] for component in components)
+                        "source_mode": (
+                            quality_source_mode
+                            if code == "CLASS_QUALITY" and not components
+                            else self._dominant_source_mode(
+                                *(
+                                    component["source_mode"]
+                                    for component in components
+                                )
+                            )
                         ),
                         "components": components,
                     }
@@ -667,6 +749,7 @@ class GrowthService:
                 "total_completed_cnt": completed,
                 "late_cnt": nonnegative("late_cnt"),
                 "early_cnt": nonnegative("early_cnt"),
+                "absent_cnt": nonnegative("absent_cnt"),
                 "real_absent_cnt": nonnegative("real_absent_cnt"),
                 "severe_redline_event": severe_redline,
                 "l0_complaint_cnt": l0_complaint_count,
@@ -732,6 +815,7 @@ class GrowthService:
                 ),
                 "late_cnt": 0.0,
                 "early_cnt": 0.0,
+                "absent_cnt": 0.0,
                 "real_absent_cnt": 0.0,
                 "severe_redline_event": False,
                 "l0_complaint_cnt": 0,
@@ -740,6 +824,7 @@ class GrowthService:
                 "total_completed_cnt": "LEGACY_DIMENSION",
                 "late_cnt": "MOCK",
                 "early_cnt": "MOCK",
+                "absent_cnt": "SOURCE_MISSING",
                 "real_absent_cnt": "MOCK",
                 "severe_redline_event": "MOCK",
                 "l0_complaint_cnt": "SOURCE_MISSING",
@@ -775,7 +860,7 @@ class GrowthService:
         }
         graduation_config = policy.hard_gates.graduation
         graduation_score_met = raw_total >= thresholds.graduation_raw_score
-        if policy.policy_version in {"v5", "v6", "v7"}:
+        if policy.policy_version in {"v1", "v5", "v6", "v7", "v8", "v9", "v10"}:
             task_source_mode = dimension_source["NEW_TEACHER_TASK"]
             total_score_source_mode = self._dominant_source_mode(
                 *dimension_source.values()
@@ -935,7 +1020,7 @@ class GrowthService:
             met=graduation_criteria_met,
             source_mode=inherited_gate_source_mode,
         )
-        if policy.policy_version in {"v6", "v7"}:
+        if policy.policy_version in {"v6", "v7", "v8"}:
             gold_items = [
                 inherited_gold_item,
                 self._hard_gate_item(
@@ -946,6 +1031,66 @@ class GrowthService:
                     actual=raw_total,
                     met=gold_score_met,
                     source_mode=self._dominant_source_mode(*dimension_source.values()),
+                ),
+            ]
+        elif policy.policy_version in {"v1", "v9", "v10"}:
+            gold_config = policy.hard_gates.gold
+
+            def confirmed_count_gate(
+                *,
+                code: str,
+                metric: str,
+                operator: str,
+                threshold: float,
+                exact: bool,
+            ) -> dict[str, Any]:
+                actual = metric_values[metric]
+                source = metric_sources[metric]
+                source_confirmed = source in {"REAL", "DERIVED_REAL"}
+                comparison_met = actual == threshold if exact else actual <= threshold
+                return self._hard_gate_item(
+                    code=code,
+                    metric=metric,
+                    operator=operator,
+                    threshold=threshold,
+                    actual=actual,
+                    met=source_confirmed and comparison_met,
+                    source_mode=source,
+                )
+
+            gold_items = [
+                inherited_gold_item,
+                self._hard_gate_item(
+                    code="MINIMUM_GOLD_TOTAL_SCORE",
+                    metric="raw_total_score",
+                    operator=">=",
+                    threshold=thresholds.gold_raw_score,
+                    actual=raw_total,
+                    met=gold_score_met,
+                    source_mode=self._dominant_source_mode(
+                        *dimension_source.values()
+                    ),
+                ),
+                confirmed_count_gate(
+                    code="MAXIMUM_LATE_COUNT",
+                    metric="late_cnt",
+                    operator="<=",
+                    threshold=gold_config.maximum_late_count,
+                    exact=False,
+                ),
+                confirmed_count_gate(
+                    code="ZERO_EARLY_COUNT",
+                    metric="early_cnt",
+                    operator="==",
+                    threshold=gold_config.maximum_early_count,
+                    exact=True,
+                ),
+                confirmed_count_gate(
+                    code="ZERO_ABSENT_COUNT",
+                    metric="absent_cnt",
+                    operator="==",
+                    threshold=gold_config.maximum_absent_count,
+                    exact=True,
                 ),
             ]
         else:
@@ -1022,7 +1167,17 @@ class GrowthService:
         gold_criteria_met = graduation_criteria_met and gold_score_met and gold_gates_met
 
         original_state = projected.get("graduation_state", "IN_PROGRESS")
-        if original_state == "GRADUATED" or graduation_criteria_met:
+        previously_graduation_qualified = bool(
+            projected.get("graduation_qualified")
+        ) or original_state == "GRADUATED"
+        previously_gold_qualified = bool(projected.get("gold_qualified"))
+        graduation_qualified = bool(
+            previously_graduation_qualified
+            or previously_gold_qualified
+            or graduation_criteria_met
+        )
+        gold_qualified = bool(previously_gold_qualified or gold_criteria_met)
+        if graduation_qualified:
             effective_state = "GRADUATED"
         else:
             effective_state = "IN_PROGRESS"
@@ -1042,8 +1197,10 @@ class GrowthService:
                 "graduation_state": effective_state,
                 "graduation_score_threshold_met": graduation_score_met,
                 "graduation_criteria_met": graduation_criteria_met,
+                "graduation_qualified": graduation_qualified,
                 "gold_score_threshold_met": gold_score_met,
                 "gold_criteria_met": gold_criteria_met,
+                "gold_qualified": gold_qualified,
                 "hard_gates": {
                     "graduation": {"met": graduation_gates_met, "items": graduation_items},
                     "gold": {
@@ -1149,6 +1306,7 @@ class GrowthService:
                     item,
                     resolved_score_policy,
                     account_override,
+                    copy_payload=False,
                 )
             )
         tasks = list(self.state.tasks.values())
@@ -1161,7 +1319,9 @@ class GrowthService:
                 "teacher_count": 0,
                 "graduation_score_reached_count": 0,
                 "graduation_criteria_met_count": 0,
+                "graduation_qualified_count": 0,
                 "gold_eligible_count": 0,
+                "gold_qualified_count": 0,
             }
             for status in ("on", "off", "hei")
         }
@@ -1184,10 +1344,16 @@ class GrowthService:
                     teacher["graduation_score_threshold_met"]
                 )
                 employment_funnel["graduation_criteria_met_count"] += int(
-                    teacher["graduation_criteria_met"]
+                    teacher["graduation_qualified"]
+                )
+                employment_funnel["graduation_qualified_count"] += int(
+                    teacher["graduation_qualified"]
                 )
                 employment_funnel["gold_eligible_count"] += int(
-                    teacher["gold_criteria_met"]
+                    teacher["gold_qualified"]
+                )
+                employment_funnel["gold_qualified_count"] += int(
+                    teacher["gold_qualified"]
                 )
 
         def counts_as_active(teacher: dict) -> bool:
@@ -1217,11 +1383,15 @@ class GrowthService:
                 item["graduation_score_threshold_met"] for item in teachers
             ),
             "graduation_criteria_met_count": sum(
-                item["graduation_criteria_met"] for item in teachers
+                item["graduation_qualified"] for item in teachers
             ),
             "gold_score_reached_count": sum(item["gold_score_threshold_met"] for item in teachers),
-            "gold_eligible_count": sum(item["gold_criteria_met"] for item in teachers),
+            "gold_eligible_count": sum(item["gold_qualified"] for item in teachers),
             "gold_criteria_met_count": sum(item["gold_criteria_met"] for item in teachers),
+            "graduation_qualified_count": sum(
+                item["graduation_qualified"] for item in teachers
+            ),
+            "gold_qualified_count": sum(item["gold_qualified"] for item in teachers),
             "data_mode_counts": data_mode_counts,
             "employment_status_counts": employment_status_counts,
             "funnel_by_employment_status": funnel_by_employment_status,
@@ -1296,8 +1466,10 @@ class GrowthService:
             "graduation_effect",
             "graduation_score_threshold_met",
             "graduation_criteria_met",
+            "graduation_qualified",
             "gold_score_threshold_met",
             "gold_criteria_met",
+            "gold_qualified",
             "graduation_state",
             "data_mode",
             "employment_status",
@@ -4248,7 +4420,12 @@ class GrowthService:
         type_filter: str | None = None,
         status: str | None = None,
         teacher_id: str | None = None,
-    ) -> list[dict]:
+        keyword: str | None = None,
+        operational_only: bool = True,
+        include_task_assignments: bool = False,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> dict[str, Any]:
         outputs = [deepcopy(item) for item in self.state.outbound_outputs.values()]
         # Agent/provider records are visible for debugging on the same page, but
         # they are not persisted as one of the four business output categories.
@@ -4263,11 +4440,67 @@ class GrowthService:
             outputs = [item for item in outputs if item["status"] == status]
         if teacher_id:
             outputs = [item for item in outputs if item.get("teacher_id") == teacher_id]
-        return sorted(
+        if operational_only:
+            outputs = [
+                item
+                for item in outputs
+                if not item.get("non_business")
+                and item.get("display_type") != "PROVIDER_REQUEST"
+                and not any(
+                    marker in (
+                        f"{item.get('title') or ''} "
+                        f"{item.get('body') or item.get('content') or ''}"
+                    ).casefold()
+                    for marker in ("mock", "模拟", "调试")
+                )
+            ]
+        if not include_task_assignments:
+            outputs = [
+                item
+                for item in outputs
+                if item.get("display_type") != "TASK_ASSIGNMENT"
+            ]
+        needle = str(keyword or "").strip().casefold()
+        if needle:
+            outputs = [
+                item
+                for item in outputs
+                if needle
+                in " ".join(
+                    str(item.get(field) or "")
+                    for field in (
+                        "output_id",
+                        "title",
+                        "body",
+                        "content",
+                        "recipient_id",
+                        "recipient_name",
+                        "teacher_id",
+                        "source_type",
+                        "source_id",
+                    )
+                ).casefold()
+            ]
+        outputs = sorted(
             outputs,
             key=lambda item: (item["created_at"], item["output_id"]),
             reverse=True,
         )
+        counts_by_type: dict[str, int] = {}
+        for item in outputs:
+            display_type = str(item.get("display_type") or "UNKNOWN")
+            counts_by_type[display_type] = (
+                counts_by_type.get(display_type, 0) + 1
+            )
+        total = len(outputs)
+        start = (page - 1) * page_size
+        return {
+            "items": outputs[start : start + page_size],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "counts_by_type": counts_by_type,
+        }
 
     def _agent_debug_outputs(self) -> list[dict]:
         debug: list[dict] = []
@@ -4985,6 +5218,36 @@ class GrowthService:
 
     def list_events(self) -> list[dict]:
         return [deepcopy(item) for item in reversed(self.state.events)]
+
+    def list_event_page(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        teacher_id: str | None = None,
+        keyword: str | None = None,
+    ) -> dict:
+        normalized_keyword = (keyword or "").strip().lower()
+        items = []
+        for item in reversed(self.state.events):
+            if teacher_id and item.get("teacher_id") != teacher_id:
+                continue
+            if normalized_keyword and normalized_keyword not in json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).lower():
+                continue
+            items.append(item)
+        total = len(items)
+        start = (page - 1) * page_size
+        return {
+            "items": [deepcopy(item) for item in items[start : start + page_size]],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
 
     def _transition(
         self,

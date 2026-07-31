@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from app.database import engine, session_scope
 from app.db_models import (
     DataImportBatchRecord,
+    LessonDimensionScoreRecord,
     LessonFactRecord,
     NotificationRecord,
     OpsCaseRecord,
@@ -193,6 +194,7 @@ def test_real_lesson_import_is_atomic_aggregated_and_idempotent(tmp_path) -> Non
             item.why.startswith("This task was triggered by ")
             for item in assignments
         )
+        assert all("Evidence:" in item.why for item in assignments)
         memo = next(item for item in assignments if item.task_code == "P-REL-MEMO")
         assert memo.evidence_snapshot["hit_count"] == 2
         assert memo.evidence_snapshot["lesson_ids"] == ["1001", "1002"]
@@ -214,13 +216,31 @@ def test_real_lesson_import_is_atomic_aggregated_and_idempotent(tmp_path) -> Non
             "TR-QUALITY-IN-CLASS",
         }
         assert session.scalar(select(func.count()).select_from(NotificationRecord)) == 1
+        notification = session.scalar(select(NotificationRecord))
+        assert notification is not None
+        assert notification.payload["title"] == "In-Class Quality Alert"
+        assert "Evidence:" in notification.payload["body"]
+        assert not contains_han(notification.payload["body"])
         assert session.scalar(select(func.count()).select_from(OpsCaseRecord)) == 1
+        lesson_scores = session.scalars(
+            select(LessonDimensionScoreRecord).where(
+                LessonDimensionScoreRecord.teacher_id == "90001"
+            )
+        ).all()
+        assert len(lesson_scores) == 18
+        assert {
+            item.dimension for item in lesson_scores
+        } == {"USER_FEEDBACK", "RELIABILITY", "CLASS_QUALITY"}
+        assert all(
+            isinstance(item.payload.get("business_facts"), list)
+            for item in lesson_scores
+        )
         negative_tasks = [
             item for item in assignments if item.task_code == "P-FB-NEGATIVE"
         ]
         assert {item.display_title for item in negative_tasks} == {
-            "差评-缺少互动问题",
-            "差评-缺乏热情问题",
+            "Negative Feedback - Insufficient Interaction",
+            "Negative Feedback - Lack of Enthusiasm",
         }
         assert all(item.evidence_snapshot["hit_count"] == 2 for item in negative_tasks)
 

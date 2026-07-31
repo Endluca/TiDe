@@ -36,6 +36,11 @@ describe('运营视图文案与排序', () => {
     expect(lessonStatusLabel('s_absent')).toBe('学员缺席')
     expect(interventionStatusLabel('IN_REVIEW')).toBe('处理中')
     expect(lessonSignalLabel({ code: 'CAMERA_OFF', label: '未开摄像头' })).toBe('未开摄像头')
+    expect(operationDomainLabel('RELIABILITY', undefined, 'en-US')).toBe('Reliability')
+    expect(interventionStatusLabel('ACTION_PENDING', 'en-US')).toBe('Pending approval')
+    expect(lessonStatusLabel('TEACHER_ABSENT', 'en-US')).toBe('Teacher absent')
+    expect(lessonSignalLabel({ code: 'CAMERA_OFF', label: '未开摄像头' }, 'en-US')).toBe('Camera off')
+    expect(interventionOutputTypeLabel('PENDING_DATA', 'en-US')).toBe('Data pending (internal)')
   })
 
   it('处置事项先按优先级、再按触发时间排序', () => {
@@ -126,5 +131,24 @@ describe('运营与课程接口', () => {
         body: JSON.stringify({ decision: 'START_PROCESSING', note: '' }),
       }),
     )
+  })
+
+  it('服务返回非 JSON 错误时不暴露解析异常', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      json: async () => {
+        throw new SyntaxError('Unexpected token')
+      },
+    }))
+
+    await expect(api.operationsInterventions({ type: 'NOTIFICATION' })).rejects.toMatchObject({
+      status: 500,
+      body: {
+        error_code: 'HTTP_500',
+        detail: 'Internal Server Error',
+      },
+    })
   })
 })

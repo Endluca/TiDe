@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
+!.env.migration.production.example
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -15,3 +17,16 @@ test-results/
 .tmp/
 .runtime/
 output/
+
+# Combined-repository teacher source. Keep only deployable source/config/docs;
+# local QA artifacts, reference imports, runtime storage and Sites binding stay
+# outside the production repository.
+teacher/.git/
+teacher/outputs/
+teacher/tmp/
+teacher/backend/reference/
+teacher/backend/storage/
+teacher/frontend/.openai/
+teacher/frontend/public/assets/tasks/**/*.mp4
+teacher/frontend/public/assets/tasks/**/*.webm
+teacher/frontend/public/assets/tasks/**/*.mov

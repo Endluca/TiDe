@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.auth import OperatorIdentity, current_operator
 from app.auth_models import OperatorRole
@@ -17,13 +18,15 @@ from app.db_models import (
 )
 from app.main import app
 from app.task_catalog import (
+    MANDATORY_TASK_CODE_SET,
     task_template_seed_payloads,
 )
 from app.task_seed import seed_task_catalog
+from app.task_service import TaskService
 
 
 client = TestClient(app)
-EXPECTED_G_CODES = {f"G{index:02d}" for index in range(1, 11)}
+EXPECTED_G_CODES = set(MANDATORY_TASK_CODE_SET)
 EXPECTED_PERSONALIZED_CODES = {
     "P-REL-MEMO",
     "P-REL-ATTENDANCE",
@@ -32,16 +35,81 @@ EXPECTED_PERSONALIZED_CODES = {
     "P-FB-BLACKLIST",
 }
 EXPECTED_MANDATORY_CATALOG = {
-    "G01": ("Profile & Credentials Completion", 4, "DAY_1_7"),
-    "G02": ("Device & Network Check", 3, "DAY_1_7"),
-    "G03": ("Platform Policies", 3, "DAY_1_7"),
-    "G04": ("How to handle different types of students", 1, "DAY_1_7"),
-    "G05": ("Lesson Preparation", 3, "DAY_1_7"),
-    "G06": ("TTP Orientation", 1, "DAY_8_14"),
-    "G07": ("ME Culture & PARSNIP", 2, "DAY_8_14"),
-    "G08": ("Reliability Training", 2, "DAY_8_14"),
-    "G09": ("Cocos Course Training", 10, "DAY_15_30"),
-    "G10": ("SET Teaching Fundamentals", 1, "DAY_15_30"),
+    "G01": ("Profile & Credentials Completion", 3, "DAY_1_7"),
+    "G02": ("Platform Policies", 2, "DAY_1_7"),
+    "G03": ("How to handle different types of students", 2, "DAY_1_7"),
+    "G04": ("Lesson Preparation&Device Network Check", 3, "DAY_1_7"),
+    "G05": ("TTP Orientation", 3, "DAY_8_14"),
+    "G06": ("ME Culture & PARSNIP", 4, "DAY_8_14"),
+    "G07": ("Reliability Training", 3, "DAY_8_14"),
+    "G08": ("Cocos Course Training", 5, "DAY_15_30"),
+    "G09": ("SET Teaching Fundamentals", 5, "DAY_15_30"),
+}
+
+EXPECTED_MANDATORY_COPY = {
+    "G01": (
+        "Complete the required profile statuses and TESOL learning evidence.",
+        "Confirm Self-intro and TESOL, pass all 61 questions, complete the Essay and submit the completion proof.",
+        "Self-intro and TESOL are complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.",
+        "Your profile and required TESOL learning evidence are complete.",
+        "READY",
+    ),
+    "G02": (
+        "Learn the essential classroom and account-safety rules.",
+        "Read the in-platform policy guide and complete its quiz.",
+        "The policy guide is confirmed and the quiz requirements pass.",
+        "You can apply the core platform policies in class.",
+        "READY",
+    ),
+    "G03": (
+        "Build practical responses for different learner needs.",
+        "Complete the learning content configured by Jiahe.",
+        "Meet every requirement in the published Student Types configuration.",
+        "You can adapt your teaching to different learner types.",
+        "PENDING_JIAHE",
+    ),
+    "G04": (
+        "Complete lesson preparation and confirm that your teaching setup is ready before class.",
+        "Confirm lesson preparation, check the camera, microphone and network, then take one teaching-environment photo.",
+        "Lesson preparation is confirmed, camera, microphone and network pass, and the teaching-environment photo passes AI review.",
+        "Your lesson preparation and pre-class setup are recorded as ready.",
+        "READY",
+    ),
+    "G05": (
+        "Understand TTP and its key business scenarios.",
+        "Watch the in-platform TTP video and confirm every item in the learning checklist.",
+        "The TTP video is watched in full and every published checklist item is confirmed.",
+        "You understand the key TTP workflow and commitments.",
+        "READY",
+    ),
+    "G06": (
+        "Learn cross-cultural classroom guidance.",
+        "Complete the configured videos and quiz.",
+        "All configured videos and quiz requirements pass.",
+        "You can apply the culture guidance appropriately.",
+        "READY",
+    ),
+    "G07": (
+        "Strengthen dependable attendance habits.",
+        "Complete the configured training and quiz.",
+        "All configured training and quiz requirements pass.",
+        "You have a clear reliability routine.",
+        "READY",
+    ),
+    "G08": (
+        "Learn the core Cocos teaching flow.",
+        "Complete the configured in-platform videos and quiz.",
+        "All configured videos and quiz requirements pass.",
+        "You can prepare for a Cocos class.",
+        "READY",
+    ),
+    "G09": (
+        "Learn the fundamentals of SET teaching.",
+        "Watch the in-platform Mock video slot and complete the five-question Mock check.",
+        "The Mock video is watched in full and the five-question check reaches 80%.",
+        "You understand the SET teaching foundation.",
+        "READY",
+    ),
 }
 
 
@@ -127,8 +195,16 @@ def _insert_personalized_assignment(
                 creator_system="TRIGGER_CENTER",
                 status=status,
                 priority="P1",
-                why=f"Complaint evidence triggered {title}.",
+                why=(
+                    "Complaint evidence triggered this learning task. "
+                    f"Evidence: Lesson IDs: LESSON-{assignment_id}; "
+                    "complaint category recorded."
+                ),
                 display_title=title,
+                evidence_snapshot={
+                    "lesson_ids": [f"LESSON-{assignment_id}"],
+                    "complaint_level3": title,
+                },
                 due_at=None,
                 timezone_used=None,
                 timezone_source=None,
@@ -156,7 +232,7 @@ def test_seed_is_idempotent_and_contains_current_catalog() -> None:
     result = seed_task_catalog(engine)
     repeated = seed_task_catalog(engine)
 
-    assert result["template_catalog_size"] == 15
+    assert result["template_catalog_size"] == 14
     assert result["templates_created"] == 0
     assert repeated["templates_created"] == 0
 
@@ -185,7 +261,7 @@ def test_seed_is_idempotent_and_contains_current_catalog() -> None:
         if item.template_id in EXPECTED_G_CODES
     }
     assert sum(points.values()) == 30
-    assert points["G09"] == 10
+    assert points["G08"] == 5
     actual_catalog = {
         item.template_id: (
             item.payload["title"],
@@ -196,6 +272,18 @@ def test_seed_is_idempotent_and_contains_current_catalog() -> None:
         if item.template_id in EXPECTED_G_CODES
     }
     assert actual_catalog == EXPECTED_MANDATORY_CATALOG
+    actual_copy = {
+        item.template_id: (
+            item.payload["why_template"],
+            item.payload["how_summary"],
+            item.payload["completion_standard"],
+            item.payload["benefit"],
+            item.payload["content_status"],
+        )
+        for item in templates
+        if item.template_id in EXPECTED_G_CODES
+    }
+    assert actual_copy == EXPECTED_MANDATORY_COPY
     assert all(
         "Free Trial" not in str(item.payload)
         for item in templates
@@ -262,13 +350,59 @@ def test_current_template_create_update_publish_lifecycle_and_role_boundary() ->
     assert published.json()["revision"] == 3
 
 
+def test_template_update_compare_and_swap_rejects_a_stale_second_session() -> None:
+    request = _personalized_template_request()
+    created = client.post("/api/task-templates", json=request)
+    assert created.status_code == 201
+
+    with Session(engine) as first_session, Session(engine) as second_session:
+        first_revision = first_session.scalar(
+            select(TaskTemplateRecord.revision).where(
+                TaskTemplateRecord.template_id == "TEST-CURRENT-01"
+            )
+        )
+        stale_revision = second_session.scalar(
+            select(TaskTemplateRecord.revision).where(
+                TaskTemplateRecord.template_id == "TEST-CURRENT-01"
+            )
+        )
+        second_session.rollback()
+        assert first_revision == stale_revision == 1
+
+        assert TaskService._cas_update_template(
+            first_session,
+            row_id="TEST-CURRENT-01:v1",
+            expected_revision=first_revision,
+            values={"revision": 2},
+        )
+        first_session.commit()
+
+        assert not TaskService._cas_update_template(
+            second_session,
+            row_id="TEST-CURRENT-01:v1",
+            expected_revision=stale_revision,
+            values={"revision": 2},
+        )
+        second_session.rollback()
+
+    with session_scope(engine) as session:
+        assert session.scalar(
+            select(TaskTemplateRecord.revision).where(
+                TaskTemplateRecord.template_id == "TEST-CURRENT-01"
+            )
+        ) == 2
+
+
 def test_shared_assignment_list_joins_current_template_and_supports_filters() -> None:
     _insert_fixed_assignment()
 
     response = client.get("/api/task-assignments")
     assert response.status_code == 200
-    assert len(response.json()) == 1
-    assignment = response.json()[0]
+    assert response.json()["total"] == 1
+    assert response.json()["page"] == 1
+    assert response.json()["page_size"] == 20
+    assert response.json()["total_pages"] == 1
+    assignment = response.json()["items"][0]
     assert assignment["assignment_id"] == "ASSIGNMENT-CURRENT-G01"
     assert assignment["teacher_id"] == "T-1001"
     assert assignment["teacher_name"] == "Maria Santos"
@@ -280,12 +414,52 @@ def test_shared_assignment_list_joins_current_template_and_supports_filters() ->
     assert assignment["status"] == "ASSIGNED"
     assert assignment["row_version"] == 1
 
-    assert len(client.get("/api/task-assignments?teacher_id=T-1001").json()) == 1
-    assert client.get("/api/task-assignments?teacher_id=T-UNKNOWN").json() == []
-    assert client.get("/api/task-assignments?status=COMPLETED").json() == []
+    assert client.get(
+        "/api/task-assignments?teacher_id=T-1001"
+    ).json()["total"] == 1
+    assert client.get(
+        "/api/task-assignments?teacher_id=T-UNKNOWN"
+    ).json()["items"] == []
+    assert client.get(
+        "/api/task-assignments?status=COMPLETED"
+    ).json()["items"] == []
     assert client.get(
         "/api/task-assignments?task_kind=PERSONALIZED_IMPROVEMENT"
-    ).json() == []
+    ).json()["items"] == []
+
+
+def test_shared_assignment_list_uses_server_side_pagination() -> None:
+    _insert_fixed_assignment(
+        assignment_id="ASSIGNMENT-CURRENT-G01-PAGE-1",
+        teacher_id="T-1001",
+    )
+    _insert_fixed_assignment(
+        assignment_id="ASSIGNMENT-CURRENT-G01-PAGE-2",
+        teacher_id="T-1002",
+    )
+
+    first_page = client.get("/api/task-assignments?page=1&page_size=1")
+    second_page = client.get("/api/task-assignments?page=2&page_size=1")
+
+    assert first_page.status_code == 200
+    assert first_page.json()["total"] == 2
+    assert first_page.json()["total_pages"] == 2
+    assert len(first_page.json()["items"]) == 1
+    assert second_page.status_code == 200
+    assert second_page.json()["total"] == 2
+    assert second_page.json()["page"] == 2
+    assert len(second_page.json()["items"]) == 1
+    assert (
+        first_page.json()["items"][0]["assignment_id"]
+        != second_page.json()["items"][0]["assignment_id"]
+    )
+
+    operational = client.get(
+        "/api/task-assignments?include_mock=false&page=1&page_size=10"
+    )
+    assert operational.status_code == 200
+    assert operational.json()["total"] == 0
+    assert operational.json()["items"] == []
 
 
 def test_task_progress_aggregates_operational_assignments_and_pages_details() -> None:
@@ -308,24 +482,24 @@ def test_task_progress_aggregates_operational_assignments_and_pages_details() ->
     _insert_personalized_assignment(
         assignment_id="P-COMPLAINT-1",
         teacher_id="T-1001",
-        title="一般投诉-A问题",
+        title="General Complaint - A",
     )
     _insert_personalized_assignment(
         assignment_id="P-COMPLAINT-2",
         teacher_id="T-1002",
-        title="一般投诉-A问题",
+        title="General Complaint - A",
         status="COMPLETED",
     )
     _insert_personalized_assignment(
         assignment_id="P-COMPLAINT-3",
         teacher_id="T-1003",
-        title="一般投诉-A问题",
+        title="General Complaint - A",
         status="UNDER_REVIEW",
     )
     _insert_personalized_assignment(
         assignment_id="P-COMPLAINT-4",
         teacher_id="T-1004",
-        title="一般投诉-B问题",
+        title="General Complaint - B",
         status="EXPIRED",
     )
 
@@ -352,7 +526,7 @@ def test_task_progress_aggregates_operational_assignments_and_pages_details() ->
     personalized = next(
         item
         for item in body["items"]
-        if item["title"] == "一般投诉-A问题"
+        if item["title"] == "General Complaint - A"
     )
     assert personalized["assigned_teacher_count"] == 3
     assert personalized["assignment_count"] == 3
@@ -366,7 +540,7 @@ def test_task_progress_aggregates_operational_assignments_and_pages_details() ->
         "/api/task-progress/assignments",
         params={
             "task_code": "P-FB-COMPLAINT",
-            "title": "一般投诉-A问题",
+            "title": "General Complaint - A",
             "task_kind": "PERSONALIZED_IMPROVEMENT",
             "page": 1,
             "page_size": 2,
@@ -381,13 +555,13 @@ def test_task_progress_aggregates_operational_assignments_and_pages_details() ->
     assert len(detail_body["items"]) == 2
     assert {
         item["title"] for item in detail_body["items"]
-    } == {"一般投诉-A问题"}
+    } == {"General Complaint - A"}
 
     second_page = client.get(
         "/api/task-progress/assignments",
         params={
             "task_code": "P-FB-COMPLAINT",
-            "title": "一般投诉-A问题",
+            "title": "General Complaint - A",
             "task_kind": "PERSONALIZED_IMPROVEMENT",
             "page": 2,
             "page_size": 2,
@@ -395,6 +569,89 @@ def test_task_progress_aggregates_operational_assignments_and_pages_details() ->
     )
     assert second_page.status_code == 200
     assert len(second_page.json()["items"]) == 1
+
+    teacher_search = client.get(
+        "/api/task-progress",
+        params={"keyword": "T-1002"},
+    )
+    assert teacher_search.status_code == 200
+    assert {
+        (item["task_code"], item["title"])
+        for item in teacher_search.json()["items"]
+    } == {
+        ("G01", "Profile & Credentials Completion"),
+        ("P-FB-COMPLAINT", "General Complaint - A"),
+    }
+
+    teacher_detail = client.get(
+        "/api/task-progress/assignments",
+        params={
+            "task_code": "P-FB-COMPLAINT",
+            "title": "General Complaint - A",
+            "task_kind": "PERSONALIZED_IMPROVEMENT",
+            "keyword": "T-1002",
+            "page": 1,
+            "page_size": 10,
+        },
+    )
+    assert teacher_detail.status_code == 200
+    assert teacher_detail.json()["total"] == 1
+    assert teacher_detail.json()["items"][0]["teacher_id"] == "T-1002"
+    with session_scope(engine) as session:
+        stored = session.get(TaskAssignmentRecord, "P-COMPLAINT-2")
+        assert stored is not None
+        assert teacher_detail.json()["items"][0]["why"] == stored.why
+        assert "Evidence:" in stored.why
+    assert "Evidence:" in teacher_detail.json()["items"][0]["why"]
+
+
+def test_task_progress_aggregates_and_pages_in_sql() -> None:
+    _insert_fixed_assignment(
+        assignment_id="FIXED-G01-SQL-1",
+        teacher_id="T-1001",
+        source_mode="REAL",
+    )
+    _insert_fixed_assignment(
+        assignment_id="FIXED-G01-SQL-2",
+        teacher_id="T-1002",
+        source_mode="REAL",
+    )
+    statements: list[str] = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        progress = TaskService(engine).list_task_progress()
+        progress_statements = list(statements)
+        statements.clear()
+        detail = TaskService(engine).list_task_progress_assignments(
+            task_code="G01",
+            title="Profile & Credentials Completion",
+            task_kind="FIXED_GROWTH",
+            page=1,
+            page_size=1,
+        )
+        detail_statements = list(statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert progress["total"] == 1
+    assert len(progress_statements) == 1
+    assert "GROUP BY" in progress_statements[0].upper()
+    assert detail["total"] == 2
+    assert len(detail["items"]) == 1
+    assert len(detail_statements) == 2
+    assert "LIMIT" in detail_statements[-1].upper()
 
 
 def test_shared_assignment_schema_excludes_retired_transport_fields() -> None:

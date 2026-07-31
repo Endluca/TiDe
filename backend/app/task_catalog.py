@@ -8,7 +8,7 @@ MANDATORY_TASKS = [
         "G01",
         "资料与资质完善",
         "Profile & Credentials Completion",
-        4,
+        3,
         "DAY_1_7",
         "P1",
         7,
@@ -16,62 +16,52 @@ MANDATORY_TASKS = [
     ),
     (
         "G02",
-        "设备与网络检测",
-        "Device & Network Check",
-        3,
-        "DAY_1_7",
-        "P1",
-        7,
-        "BEFORE_FIRST_LESSON",
-    ),
-    (
-        "G03",
         "平台政策学习",
         "Platform Policies",
-        3,
+        2,
         "DAY_1_7",
         "P1",
         7,
         "BEFORE_FIRST_PUSH",
     ),
     (
-        "G04",
+        "G03",
         "不同类型学员应对",
         "How to handle different types of students",
-        1,
+        2,
         "DAY_1_7",
         "P1",
         7,
         None,
     ),
     (
-        "G05",
-        "首课备课",
-        "Lesson Preparation",
+        "G04",
+        "首课备课与设备网络检测",
+        "Lesson Preparation&Device Network Check",
         3,
         "DAY_1_7",
         "P1",
         7,
         "BEFORE_FIRST_LESSON",
     ),
-    ("G06", "TTP 入门", "TTP Orientation", 1, "DAY_8_14", "P2", 14, None),
+    ("G05", "TTP 入门", "TTP Orientation", 3, "DAY_8_14", "P2", 14, None),
     (
-        "G07",
+        "G06",
         "ME 文化与 PARSNIP",
         "ME Culture & PARSNIP",
-        2,
+        4,
         "DAY_8_14",
         "P2",
         14,
         None,
     ),
-    ("G08", "可靠性培训", "Reliability Training", 2, "DAY_8_14", "P1", 14, None),
-    ("G09", "Cocos 课程培训", "Cocos Course Training", 10, "DAY_15_30", "P2", 30, None),
+    ("G07", "可靠性培训", "Reliability Training", 3, "DAY_8_14", "P1", 14, None),
+    ("G08", "Cocos 课程培训", "Cocos Course Training", 5, "DAY_15_30", "P2", 30, None),
     (
-        "G10",
+        "G09",
         "SET 教学基础",
         "SET Teaching Fundamentals",
-        1,
+        5,
         "DAY_15_30",
         "P2",
         30,
@@ -79,70 +69,67 @@ MANDATORY_TASKS = [
     ),
 ]
 
+MANDATORY_TASK_CODES = tuple(item[0] for item in MANDATORY_TASKS)
+MANDATORY_TASK_CODE_SET = frozenset(MANDATORY_TASK_CODES)
+RETIRED_MANDATORY_TASK_CODES = frozenset({"G00"})
 
-# Current teacher-side implementation copy grounded in the 2026-07-20 task list.
-# These strings and scores remain frozen while the runtime seed is narrowed to
-# the ten mandatory tasks.
+
+# Current approved teacher-facing copy. Mandatory codes and scores remain the
+# current G01-G09 catalog; G03 content is explicitly pending Jiahe's final input.
 TASK_COPY: dict[str, tuple[str, str, str, str]] = {
     "G01": (
-        "Your trial-camp profile, self-introduction and required credentials must be completed as part of first-push readiness.",
-        "Complete the self-introduction flow, register the required web-app profile, and submit all required credentials for review.",
-        "Return COMPLETED only after every required profile and credential item is present and the configured AI or human review has passed.",
-        "Earn 4 mandatory-growth points once. This completes one component of first-push readiness and counts toward the 30-point mandatory total.",
+        "Complete the required profile statuses and TESOL learning evidence.",
+        "Confirm Self-intro and TESOL, pass all 61 questions, complete the Essay and submit the completion proof.",
+        "Self-intro and TESOL are complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.",
+        "Your profile and required TESOL learning evidence are complete.",
     ),
     "G02": (
-        "A verified device and network check is required before your first lesson and no later than Day 7.",
-        "Open the trusted device-check entry, test your computer, network, microphone, speaker and camera, then follow any repair guidance.",
-        "Return COMPLETED only after the trusted check result is PASS. An approved exception must return WAIVED, not COMPLETED.",
-        "Earn 3 mandatory-growth points once and complete the device component of first-lesson readiness.",
+        "Learn the essential classroom and account-safety rules.",
+        "Read the in-platform policy guide and complete its quiz.",
+        "The policy guide is confirmed and the quiz requirements pass.",
+        "You can apply the core platform policies in class.",
     ),
     "G03": (
-        "Platform policies and compliance rules must be understood before first-push eligibility can be confirmed.",
-        "Study the assigned platform-policy content and complete the required knowledge check.",
-        "Return COMPLETED only after all required policy modules are viewed and the configured quiz or acknowledgement passes.",
-        "Earn 3 mandatory-growth points once and complete the policy component of first-push readiness.",
+        "Build practical responses for different learner needs.",
+        "Complete the learning content configured by Jiahe.",
+        "Meet every requirement in the published Student Types configuration.",
+        "You can adapt your teaching to different learner types.",
     ),
     "G04": (
-        "Learning how to respond to different student types is required during Day 1-7.",
-        "Complete the assigned learning module on recognizing and responding to different types of students.",
-        "Return COMPLETED only after the required module and knowledge check are completed in the teacher app.",
-        "Earn 1 mandatory-growth point once; it counts toward the 30-point mandatory total.",
+        "Complete lesson preparation and confirm that your teaching setup is ready before class.",
+        "Confirm lesson preparation, check the camera, microphone and network, then take one teaching-environment photo.",
+        "Lesson preparation is confirmed, camera, microphone and network pass, and the teaching-environment photo passes AI review.",
+        "Your lesson preparation and pre-class setup are recorded as ready.",
     ),
     "G05": (
-        "Lesson-preparation routines must be completed before your first lesson and no later than Day 7.",
-        "Complete the preparation checklist, including lesson-material review and the required pre-class setup steps.",
-        "Return COMPLETED only after every required checklist item is confirmed by the teacher app.",
-        "Earn 3 mandatory-growth points once and complete the preparation component of first-lesson readiness.",
+        "Understand TTP and its key business scenarios.",
+        "Watch the in-platform TTP video and confirm every item in the learning checklist.",
+        "The TTP video is watched in full and every published checklist item is confirmed.",
+        "You understand the key TTP workflow and commitments.",
     ),
     "G06": (
-        "You have entered Day 8-14 and TTP orientation is part of the required trial-camp learning path.",
-        "Complete the TTP orientation module and its required checklist.",
-        "Return COMPLETED only after all required TTP orientation items are finished.",
-        "Earn 1 mandatory-growth point once; it counts toward the 30-point mandatory total.",
+        "Learn cross-cultural classroom guidance.",
+        "Complete the configured videos and quiz.",
+        "All configured videos and quiz requirements pass.",
+        "You can apply the culture guidance appropriately.",
     ),
     "G07": (
-        "ME culture and PARSNIP boundaries are required learning during Day 8-14.",
-        "Study the assigned culture and PARSNIP content, then complete the configured quiz or acknowledgement.",
-        "Return COMPLETED only after the required content and knowledge check pass.",
-        "Earn 2 mandatory-growth points once; it counts toward the 30-point mandatory total.",
+        "Strengthen dependable attendance habits.",
+        "Complete the configured training and quiz.",
+        "All configured training and quiz requirements pass.",
+        "You have a clear reliability routine.",
     ),
     "G08": (
-        "Reliability, attendance, late and early-leave rules are required learning during Day 8-14.",
-        "Complete the reliability training and its attendance-rule knowledge check.",
-        "Return COMPLETED only after the required module is finished and the knowledge check passes.",
-        "Earn 2 mandatory-growth points once; it counts toward the 30-point mandatory total.",
+        "Learn the core Cocos teaching flow.",
+        "Complete the configured in-platform videos and quiz.",
+        "All configured videos and quiz requirements pass.",
+        "You can prepare for a Cocos class.",
     ),
     "G09": (
-        "Cocos course training is a required Day 15-30 capability task.",
-        "Complete the assigned Cocos training in the linked training system.",
-        "Return COMPLETED only after the trusted training system returns a valid Cocos completion tag.",
-        "Earn 10 mandatory-growth points once; it counts toward the 30-point mandatory total.",
-    ),
-    "G10": (
-        "SET teaching fundamentals are required during Day 15-30.",
-        "Complete the assigned SET fundamentals training in the linked training system.",
-        "Return COMPLETED only after the trusted training system returns a valid SET completion tag.",
-        "Earn 1 mandatory-growth point once; it counts toward the 30-point mandatory total.",
+        "Learn the fundamentals of SET teaching.",
+        "Watch the in-platform Mock video slot and complete the five-question Mock check.",
+        "The Mock video is watched in full and the five-question check reaches 80%.",
+        "You understand the SET teaching foundation.",
     ),
     "P-REL-MEMO": (
         "A completed lesson was recorded with an unfilled Lesson Memo.",
@@ -229,7 +216,7 @@ def task_template_seed_payloads() -> list[dict[str, Any]]:
         for task_id, ops_name, title, dimension, priority, due_hours in PERSONALIZED_TASKS
     ]
     payloads = mandatory_payloads + personalized_payloads
-    assert len(mandatory_payloads) == 10
+    assert len(mandatory_payloads) == 9
     assert len(personalized_payloads) == 5
     assert {item["template_id"] for item in payloads} == set(TASK_COPY)
     return payloads
@@ -264,6 +251,11 @@ def _template(
         "stage": stage,
         "ops_name_zh": ops_name_zh,
         "content_locale": "en",
+        "content_status": (
+            "PENDING_JIAHE"
+            if task_id == "G03"
+            else "READY"
+        ),
         "title": title,
         "why_template": why_template,
         "how_summary": how_summary,

@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  printf '联合部署预检失败：%s\n' "$1" >&2
+  exit 1
+}
+
+parse_ipv4() {
+  local address="$1"
+  local label="$2"
+  local octet_1 octet_2 octet_3 octet_4 octet
+
+  [[ "${address}" =~ ^[^:]+$ ]] \
+    || fail "${label} 暂不接受 IPv6；必须使用显式 IPv4"
+  [[ "${address}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
+    || fail "${label} 必须是显式 IPv4"
+  IFS='.' read -r octet_1 octet_2 octet_3 octet_4 <<<"${address}"
+  for octet in "${octet_1}" "${octet_2}" "${octet_3}" "${octet_4}"; do
+    [[ "${octet}" =~ ^(0|[1-9][0-9]{0,2})$ ]] \
+      || fail "${label} 必须使用无前导零的规范 IPv4"
+    ((10#${octet} <= 255)) || fail "${label} 含非法 IPv4 段"
+  done
+  PARSED_IPV4_INT=$(( \
+    (10#${octet_1} << 24) \
+    | (10#${octet_2} << 16) \
+    | (10#${octet_3} << 8) \
+    | 10#${octet_4} \
+  ))
+}
+
+is_rfc1918_ipv4() {
+  local address_int="$1"
+  ((
+    (address_int >= 167772160 && address_int <= 184549375)
+    || (address_int >= 2886729728 && address_int <= 2887778303)
+    || (address_int >= 3232235520 && address_int <= 3232301055)
+  ))
+}
+
+is_loopback_or_rfc1918_ipv4() {
+  local address_int="$1"
+  ((
+    (address_int >= 2130706432 && address_int <= 2147483647)
+  )) || is_rfc1918_ipv4 "${address_int}"
+}
+
+parse_cidr() {
+  local cidr="$1"
+  local label="$2"
+  local minimum_prefix="$3"
+  local maximum_prefix="$4"
+  local address prefix
+
+  [[ "${cidr}" == */* && "${cidr#*/}" != */* ]] \
+    || fail "${label} 必须是单个显式 IPv4 CIDR"
+  address="${cidr%/*}"
+  prefix="${cidr##*/}"
+  [[ "${prefix}" =~ ^(0|[1-9][0-9]?)$ ]] \
+    || fail "${label} 前缀格式不安全"
+  ((10#${prefix} >= minimum_prefix && 10#${prefix} <= maximum_prefix)) \
+    || fail "${label} 前缀必须位于 /${minimum_prefix} 到 /${maximum_prefix}"
+
+  parse_ipv4 "${address}" "${label}"
+  PARSED_CIDR_ADDRESS_INT="${PARSED_IPV4_INT}"
+  PARSED_CIDR_PREFIX=$((10#${prefix}))
+  PARSED_CIDR_MASK=$(( \
+    (0xFFFFFFFF << (32 - PARSED_CIDR_PREFIX)) \
+    & 0xFFFFFFFF \
+  ))
+  PARSED_CIDR_NETWORK_INT=$(( \
+    PARSED_CIDR_ADDRESS_INT & PARSED_CIDR_MASK \
+  ))
+  PARSED_CIDR_BROADCAST_INT=$(( \
+    PARSED_CIDR_NETWORK_INT | (0xFFFFFFFF ^ PARSED_CIDR_MASK) \
+  ))
+  ((PARSED_CIDR_ADDRESS_INT == PARSED_CIDR_NETWORK_INT)) \
+    || fail "${label} 必须填写规范网络地址，不能携带主机位"
+}
+
+required_variables=(
+  TIDE_OPS_HOST
+  TIDE_TEACHER_HOST
+  TIDE_EDGE_BIND_ADDRESS
+  TIDE_EDGE_NETWORK_SUBNET
+  TIDE_EDGE_PROXY_IP
+  TIDE_COMPANY_GATEWAY_CIDR
+  TIDE_DATABASE_NAME
+  TIDE_OPS_ENV_FILE
+  TIDE_OPS_MIGRATION_ENV_FILE
+  TIDE_CONTRACT_PROBE_ENV_FILE
+  TIDE_TEACHER_ENV_FILE
+  TIDE_TEACHER_MIGRATION_ENV_FILE
+  TIDE_TEACHER_REPO_PATH
+  TIDE_TEACHER_EXPECTED_COMMIT
+  TIDE_TEACHER_PUBLIC_ASSET_BASE_URL
+)
+
+for variable_name in "${required_variables[@]}"; do
+  [[ -n "${!variable_name:-}" ]] || fail "缺少 ${variable_name}"
+done
+
+[[ "${TIDE_OPS_HOST}" != "${TIDE_TEACHER_HOST}" ]] \
+  || fail "运营端与教师端必须使用不同域名"
+[[ "${TIDE_OPS_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+  || fail "运营端域名格式不安全"
+[[ "${TIDE_TEACHER_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+  || fail "教师端域名格式不安全"
+[[ "${TIDE_DATABASE_NAME}" =~ ^[a-z_][a-z0-9_]{0,62}$ ]] \
+  || fail "目标数据库名格式不安全"
+[[ "${TIDE_TEACHER_PUBLIC_ASSET_BASE_URL}" == https://* ]] \
+  || fail "教师端公共素材地址必须是 HTTPS"
+parse_ipv4 "${TIDE_EDGE_BIND_ADDRESS}" "Edge 监听地址"
+edge_bind_int="${PARSED_IPV4_INT}"
+is_loopback_or_rfc1918_ipv4 "${edge_bind_int}" \
+  || fail "Edge 监听地址只能使用 loopback 或 RFC1918 私网 IPv4"
+
+parse_ipv4 "${TIDE_EDGE_PROXY_IP}" "Edge 容器可信代理地址"
+edge_proxy_int="${PARSED_IPV4_INT}"
+parse_cidr "${TIDE_EDGE_NETWORK_SUBNET}" "Edge 容器网络" 8 30
+edge_network_int="${PARSED_CIDR_NETWORK_INT}"
+edge_network_broadcast_int="${PARSED_CIDR_BROADCAST_INT}"
+edge_network_mask="${PARSED_CIDR_MASK}"
+is_rfc1918_ipv4 "${edge_network_int}" \
+  && is_rfc1918_ipv4 "${edge_network_broadcast_int}" \
+  || fail "Edge 容器网络必须完整位于同一个 RFC1918 私网段"
+(( (edge_proxy_int & edge_network_mask) == edge_network_int )) \
+  || fail "Edge 容器可信代理地址不在声明的容器网络内"
+(( edge_proxy_int != edge_network_int \
+    && edge_proxy_int != edge_network_broadcast_int )) \
+  || fail "Edge 容器可信代理地址不能是网络地址或广播地址"
+
+# 信任范围必须足够具体；更宽的私网段会让同网段直连者伪造客户端地址。
+parse_cidr "${TIDE_COMPANY_GATEWAY_CIDR}" "公司网关可信源" 24 32
+company_gateway_network_int="${PARSED_CIDR_NETWORK_INT}"
+company_gateway_broadcast_int="${PARSED_CIDR_BROADCAST_INT}"
+is_loopback_or_rfc1918_ipv4 "${company_gateway_network_int}" \
+  && is_loopback_or_rfc1918_ipv4 "${company_gateway_broadcast_int}" \
+  || fail "公司网关可信源必须完整位于 loopback 或 RFC1918 私网"
+
+[[ "${TIDE_OPS_ENV_FILE}" == /* ]] || fail "运营端环境文件必须使用绝对路径"
+[[ "${TIDE_OPS_MIGRATION_ENV_FILE}" == /* ]] \
+  || fail "运营端迁移环境文件必须使用绝对路径"
+[[ "${TIDE_CONTRACT_PROBE_ENV_FILE}" == /* ]] \
+  || fail "契约探针环境文件必须使用绝对路径"
+[[ "${TIDE_TEACHER_ENV_FILE}" == /* ]] || fail "教师端环境文件必须使用绝对路径"
+[[ "${TIDE_TEACHER_MIGRATION_ENV_FILE}" == /* ]] \
+  || fail "教师端迁移环境文件必须使用绝对路径"
+[[ "${TIDE_OPS_ENV_FILE}" != "${TIDE_OPS_MIGRATION_ENV_FILE}" ]] \
+  || fail "运营运行与迁移环境文件不得复用"
+[[ "${TIDE_CONTRACT_PROBE_ENV_FILE}" != "${TIDE_OPS_ENV_FILE}" \
+    && "${TIDE_CONTRACT_PROBE_ENV_FILE}" != "${TIDE_OPS_MIGRATION_ENV_FILE}" \
+    && "${TIDE_CONTRACT_PROBE_ENV_FILE}" != "${TIDE_TEACHER_ENV_FILE}" \
+    && "${TIDE_CONTRACT_PROBE_ENV_FILE}" != "${TIDE_TEACHER_MIGRATION_ENV_FILE}" ]] \
+  || fail "契约探针必须使用独立只读账号环境文件"
+[[ "${TIDE_TEACHER_ENV_FILE}" != "${TIDE_TEACHER_MIGRATION_ENV_FILE}" ]] \
+  || fail "教师运行与迁移环境文件不得复用"
+[[ "${TIDE_TEACHER_REPO_PATH}" == /* ]] || fail "教师端仓库必须使用绝对路径"
+[[ "${TIDE_TEACHER_EXPECTED_COMMIT}" =~ ^[0-9a-f]{40}$ ]] \
+  || fail "教师端固定提交必须是完整 40 位 SHA"
+[[ -f "${TIDE_OPS_ENV_FILE}" ]] || fail "运营端生产环境文件不存在"
+[[ -f "${TIDE_OPS_MIGRATION_ENV_FILE}" ]] || fail "运营端迁移环境文件不存在"
+[[ -f "${TIDE_CONTRACT_PROBE_ENV_FILE}" ]] || fail "契约探针环境文件不存在"
+[[ -f "${TIDE_TEACHER_ENV_FILE}" ]] || fail "教师端生产环境文件不存在"
+[[ -f "${TIDE_TEACHER_MIGRATION_ENV_FILE}" ]] || fail "教师端迁移环境文件不存在"
+protected_environment_files=(
+  "${TIDE_OPS_ENV_FILE}"
+  "${TIDE_OPS_MIGRATION_ENV_FILE}"
+  "${TIDE_CONTRACT_PROBE_ENV_FILE}"
+  "${TIDE_TEACHER_ENV_FILE}"
+  "${TIDE_TEACHER_MIGRATION_ENV_FILE}"
+)
+for ((left_index = 0; left_index < ${#protected_environment_files[@]}; left_index++)); do
+  for ((right_index = left_index + 1; right_index < ${#protected_environment_files[@]}; right_index++)); do
+    [[ ! "${protected_environment_files[left_index]}" \
+          -ef "${protected_environment_files[right_index]}" ]] \
+      || fail "运行、迁移和契约探针环境文件不得通过软链接或硬链接复用"
+  done
+done
+git -C "${TIDE_TEACHER_REPO_PATH}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  || fail "教师端路径不在 Git 工作副本内"
+
+actual_commit="$(
+  git -C "${TIDE_TEACHER_REPO_PATH}" rev-parse HEAD
+)"
+[[ "${actual_commit}" == "${TIDE_TEACHER_EXPECTED_COMMIT}" ]] \
+  || fail "教师端提交不是已评审固定版本：${actual_commit}"
+
+source_git_root="$(
+  git -C "${TIDE_TEACHER_REPO_PATH}" rev-parse --show-toplevel
+)"
+[[ -z "$(git -C "${source_git_root}" status --porcelain)" ]] \
+  || fail "部署源码所在 Git 工作副本存在未提交改动"
+
+teacher_service="${TIDE_TEACHER_REPO_PATH}/backend/src/tide/tide.service.ts"
+teacher_catalog="${TIDE_TEACHER_REPO_PATH}/backend/scripts/sync-current-task-catalog.ts"
+teacher_growth="${TIDE_TEACHER_REPO_PATH}/backend/src/notifications/growth-stage-notification.repository.ts"
+teacher_migrator="${TIDE_TEACHER_REPO_PATH}/backend/database/scripts/apply-production.sh"
+teacher_semantic_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0025_fixed_task_semantic_alignment.up.sql"
+
+[[ -f "${teacher_service}" ]] || fail "缺少教师端任务服务"
+[[ -f "${teacher_catalog}" ]] || fail "缺少教师端任务目录同步器"
+[[ -f "${teacher_growth}" ]] || fail "缺少教师端成长阶段读取逻辑"
+[[ -f "${teacher_semantic_migration}" ]] \
+  || fail "缺少教师端 0025 固定任务语义迁移"
+
+if grep -Eq "HIDDEN_FIXED_TASK_CODES.*G02|new Set\\(\\['G02'\\]\\)" "${teacher_service}"; then
+  fail "教师端仍隐藏当前 G02 平台政策任务"
+fi
+if grep -q "code: 'G10'" "${teacher_catalog}"; then
+  fail "教师端执行目录仍使用退役编码 G10"
+fi
+if grep -q "'G10'" "${teacher_growth}"; then
+  fail "教师端成长阶段逻辑仍使用退役编码 G10"
+fi
+
+python3 - "${teacher_catalog}" <<'PY' \
+  || fail "教师端执行目录不是精确的新 G01-G09 标题与分值"
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+catalog_path = Path(sys.argv[1])
+catalog_source = catalog_path.read_text(encoding="utf-8")
+expected = {
+    "G01": ("Profile & Credentials Completion", 3),
+    "G02": ("Platform Policies", 2),
+    "G03": ("How to handle different types of students", 2),
+    "G04": ("Lesson Preparation&Device Network Check", 3),
+    "G05": ("TTP Orientation", 3),
+    "G06": ("ME Culture & PARSNIP", 4),
+    "G07": ("Reliability Training", 3),
+    "G08": ("Cocos Course Training", 5),
+    "G09": ("SET Teaching Fundamentals", 5),
+}
+task_start = re.compile(
+    r"^\s+code:\s*(?P<code_quote>['\"])(?P<code>G\d{2})(?P=code_quote),\s*$"
+    r"\n^\s+title:\s*(?P<title_quote>['\"])(?P<title>.*?)(?P=title_quote),\s*$",
+    re.MULTILINE,
+)
+matches = list(task_start.finditer(catalog_source))
+declared_codes = re.findall(
+    r"^\s+code:\s*['\"](G\d{2})['\"],\s*$",
+    catalog_source,
+    re.MULTILINE,
+)
+actual: dict[str, tuple[str, int]] = {}
+duplicate_codes: set[str] = set()
+for index, match in enumerate(matches):
+    code = match.group("code")
+    block_end = matches[index + 1].start() if index + 1 < len(matches) else len(
+        catalog_source
+    )
+    block = catalog_source[match.end() : block_end]
+    score_match = re.search(r"^\s+score:\s*(\d+),\s*$", block, re.MULTILINE)
+    if score_match is None:
+        raise SystemExit(f"{code} has no static integer score")
+    if code in actual:
+        duplicate_codes.add(code)
+    actual[code] = (match.group("title"), int(score_match.group(1)))
+
+if sorted(declared_codes) != sorted(expected) or duplicate_codes or actual != expected:
+    raise SystemExit(
+        "teacher catalog mismatch: "
+        f"declared={declared_codes!r}, "
+        f"duplicates={sorted(duplicate_codes)}, actual={actual!r}"
+    )
+PY
+
+[[ -f "${teacher_migrator}" ]] || fail "缺少教师端正式生产迁移器"
+[[ -f "${TIDE_TEACHER_REPO_PATH}/backend/Dockerfile" ]] \
+  || fail "缺少教师端 API 生产镜像"
+[[ -f "${TIDE_TEACHER_REPO_PATH}/frontend/Dockerfile" ]] \
+  || fail "缺少教师端 Web 生产镜像"
+python3 - "${teacher_migrator}" <<'PY' \
+  || fail "教师端生产迁移器不是以 0025 结尾的完整有序生产链"
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+migrator_source = Path(sys.argv[1]).read_text(encoding="utf-8")
+expected = [
+    "0001_initial",
+    "0002_shared_database_exchange",
+    "0003_file_upload_intents",
+    "0004_task_command_receipts",
+    "0005_faq_message_commands",
+    "0006_teacher_profile_g01_support",
+    "0007_shared_task_assignment_links",
+    "0008_remove_legacy_task_exchange",
+    "0009_task_view_command",
+    "0010_current_task_execution",
+    "0011_system_notification_delivery",
+    "0012_system_notification_publication_guards",
+    "0013_system_notification_owner_maintenance",
+    "0014_teacher_photo_processing",
+    "0015_teacher_photo_filter_strength",
+    "0016_database_quiz_banks",
+    "0019_growth_stage_notification_state",
+    "0020_product_analytics",
+    "0021_teacher_support_tickets",
+    "0022_performance_job_leases",
+    "0023_teacher_support_operator_atomicity",
+    "0024_support_ticket_cas_and_function_owner",
+    "0025_fixed_task_semantic_alignment",
+]
+target_match = re.search(
+    r'TARGET_MIGRATION="\$\{TIDE_MIGRATION_TARGET:-([^}]+)\}"',
+    migrator_source,
+)
+list_match = re.search(
+    r"^PRODUCTION_MIGRATIONS=\(\s*$"
+    r"(?P<body>.*?)"
+    r"^\)\s*$",
+    migrator_source,
+    re.MULTILINE | re.DOTALL,
+)
+if target_match is None or list_match is None:
+    raise SystemExit("cannot parse production migration manifest")
+actual = re.findall(
+    r"^\s+([0-9]{4}_[a-z0-9_]+)\s*$",
+    list_match.group("body"),
+    re.MULTILINE,
+)
+if target_match.group(1) != expected[-1] or actual != expected:
+    raise SystemExit(
+        "teacher migration manifest mismatch: "
+        f"target={target_match.group(1)!r}, actual={actual!r}"
+    )
+PY
+[[ -f "${TIDE_TEACHER_REPO_PATH}/backend/Dockerfile.migrate" ]] \
+  || fail "缺少教师端独立生产迁移镜像"
+if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_teacher_response" "${teacher_migrator}"; then
+  fail "教师端生产迁移器仍越权修改 public.task_assignments"
+fi
+
+printf '联合部署静态预检通过；仍需执行数据库契约探针和发布门禁。\n'

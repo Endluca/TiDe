@@ -98,6 +98,17 @@ class PerfectCompletionQualityScoreRule(UnitScoreRule):
     source_mode: Literal["REAL_TEACHER_SNAPSHOT"] = "REAL_TEACHER_SNAPSHOT"
 
 
+class LessonHardwareQualityScoreRule(UnitScoreRule):
+    """Lesson-level hardware quality backed by three typed lesson facts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: Literal[
+        "lesson_hardware_quality_passed"
+    ] = "lesson_hardware_quality_passed"
+    source_mode: Literal["REAL_LESSON_FACTS"] = "REAL_LESSON_FACTS"
+
+
 class ScoreItemsV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -112,6 +123,39 @@ class ScoreItemsV2(BaseModel):
         ClassroomQualityScoreRule,
         PerfectCompletionQualityScoreRule,
     ]
+
+
+class ScoreItemsV8(BaseModel):
+    """Current scoring items; 15-day rebooking remains a fact, not a score item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capacity: CapacityMilestoneScoreRule
+    new_teacher_tasks: FixedBaseScoreRule
+    feedback_praise: UnitScoreRule
+    feedback_favorite: UnitScoreRule
+    reliability_on_time: UnitScoreRule
+    reliability_peak: UnitScoreRule
+    classroom_quality: PerfectCompletionQualityScoreRule
+
+
+class ScoreItemsV9(BaseModel):
+    """Current scoring items after moving perfect completions into reliability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capacity: CapacityMilestoneScoreRule
+    new_teacher_tasks: FixedBaseScoreRule
+    feedback_praise: UnitScoreRule
+    feedback_favorite: UnitScoreRule
+    reliability_perfect: UnitScoreRule
+    reliability_peak: UnitScoreRule
+
+
+class ScoreItemsV1(ScoreItemsV9):
+    """Approved v1 items including lesson-level hardware quality."""
+
+    classroom_quality: LessonHardwareQualityScoreRule
 
 
 class ScoreThresholdsV2(BaseModel):
@@ -188,15 +232,40 @@ class ScoreHardGatesV6(BaseModel):
     gold: GoldHardGatesV6
 
 
+class GoldHardGatesV9(BaseModel):
+    """Current Gold contract with source-count attendance gates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inherits_graduation: Literal[True] = True
+    maximum_late_count: int = Field(ge=0)
+    maximum_early_count: int = Field(ge=0)
+    maximum_absent_count: int = Field(ge=0)
+
+
+class ScoreHardGatesV9(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    graduation: GraduationHardGatesV5
+    gold: GoldHardGatesV9
+
+
 class ScoreGraduationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Historical policies remain readable. v7 keeps the v6 gates and raises
-    # the perfect-completion classroom-quality award from 1.6 to 2 points.
-    policy_version: Literal["v2", "v3", "v4", "v5", "v6", "v7"]
-    scoring_items: ScoreItemsV2
+    # Historical payloads remain readable for imported snapshots. v1 is the
+    # single current product baseline after the score-policy history reset.
+    policy_version: Literal[
+        "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"
+    ]
+    scoring_items: Union[ScoreItemsV2, ScoreItemsV8, ScoreItemsV9, ScoreItemsV1]
     thresholds: ScoreThresholdsV2
-    hard_gates: Union[ScoreHardGatesV2, ScoreHardGatesV5, ScoreHardGatesV6]
+    hard_gates: Union[
+        ScoreHardGatesV2,
+        ScoreHardGatesV5,
+        ScoreHardGatesV6,
+        ScoreHardGatesV9,
+    ]
     graduation_effect: Literal["IMMEDIATE_ON_CRITERIA"] = "IMMEDIATE_ON_CRITERIA"
 
     @model_validator(mode="after")
@@ -422,6 +491,123 @@ class ScoreGraduationConfig(BaseModel):
                     "当前出营规则及两项金牌门槛："
                     "满足出营资格且 raw 总分不低于 200；再次变化必须发布新的 policy_version"
                 )
+        if self.policy_version == "v8":
+            expected_scoring_items = {
+                "capacity": {
+                    "milestone_id": "CAPACITY_PEAK_SLOT_40",
+                    "metric": "peak_slot_cnt",
+                    "operator": "GTE",
+                    "threshold": 40,
+                    "score_value": 10.0,
+                    "maximum_points": 10.0,
+                    "settlement_mode": "FIRST_ACHIEVEMENT_LOCKED",
+                },
+                "new_teacher_tasks": {"maximum_points": 30.0},
+                "feedback_praise": {"points_per_unit": 5.0},
+                "feedback_favorite": {"points_per_unit": 5.0},
+                "reliability_on_time": {"points_per_unit": 2.0},
+                "reliability_peak": {"points_per_unit": 1.0},
+                "classroom_quality": {
+                    "points_per_unit": 2.0,
+                    "metric": "perfect_cnt",
+                    "source_mode": "REAL_TEACHER_SNAPSHOT",
+                },
+            }
+            expected_thresholds = {
+                "graduation_raw_score": 100.0,
+                "gold_raw_score": 200.0,
+                "graduation_external_score": 100.0,
+                "gold_external_score": 200.0,
+            }
+            expected_hard_gates = {
+                "graduation": {
+                    "required_mandatory_task_count": 10,
+                    "maximum_l0_complaint_count": 0,
+                },
+                "gold": {"inherits_graduation": True},
+            }
+            if (
+                not isinstance(self.scoring_items, ScoreItemsV8)
+                or self.scoring_items.model_dump(mode="json") != expected_scoring_items
+                or self.thresholds.model_dump(mode="json") != expected_thresholds
+                or self.hard_gates.model_dump(mode="json") != expected_hard_gates
+            ):
+                raise ValueError(
+                    "v8 已冻结用户反馈仅由好评与去重收藏计分；15 日复约继续保留为"
+                    "业务事实但不计分。再次变化必须发布新的 policy_version"
+                )
+        if self.policy_version == "v1":
+            scoring_items = self.scoring_items
+            graduation_gates = self.hard_gates.graduation
+            gold_gates = self.hard_gates.gold
+            if (
+                not isinstance(scoring_items, ScoreItemsV1)
+                or not isinstance(scoring_items.capacity, CapacityMilestoneScoreRule)
+                or scoring_items.new_teacher_tasks.maximum_points != 30
+                or scoring_items.classroom_quality.points_per_unit != 2
+                or self.thresholds.graduation_external_score != 100
+                or self.thresholds.gold_external_score != 200
+                or not isinstance(graduation_gates, GraduationHardGatesV5)
+                or graduation_gates.required_mandatory_task_count != 9
+                or not isinstance(gold_gates, GoldHardGatesV9)
+                or not gold_gates.inherits_graduation
+            ):
+                raise ValueError(
+                    "v1 只允许调整已批准计分项的分值、供给阈值、出营/金牌"
+                    "累计分数线和投诉/出席次数门槛；9 项必修任务、30 分任务总分、"
+                    "课堂硬件质量每节 2 分、对外显示 100/200、数据字段和结算方式"
+                    "不可修改"
+                )
+        if self.policy_version in {"v9", "v10"}:
+            mandatory_task_count = 9 if self.policy_version == "v10" else 10
+            expected_scoring_items = {
+                "capacity": {
+                    "milestone_id": "CAPACITY_PEAK_SLOT_40",
+                    "metric": "peak_slot_cnt",
+                    "operator": "GTE",
+                    "threshold": 40,
+                    "score_value": 10.0,
+                    "maximum_points": 10.0,
+                    "settlement_mode": "FIRST_ACHIEVEMENT_LOCKED",
+                },
+                "new_teacher_tasks": {"maximum_points": 30.0},
+                "feedback_praise": {"points_per_unit": 5.0},
+                "feedback_favorite": {"points_per_unit": 5.0},
+                "reliability_perfect": {"points_per_unit": 4.0},
+                "reliability_peak": {"points_per_unit": 2.0},
+            }
+            expected_thresholds = {
+                "graduation_raw_score": 100.0,
+                "gold_raw_score": 200.0,
+                "graduation_external_score": 100.0,
+                "gold_external_score": 200.0,
+            }
+            expected_hard_gates = {
+                "graduation": {
+                    "required_mandatory_task_count": mandatory_task_count,
+                    "maximum_l0_complaint_count": 0,
+                },
+                "gold": {
+                    "inherits_graduation": True,
+                    "maximum_late_count": 1,
+                    "maximum_early_count": 0,
+                    "maximum_absent_count": 0,
+                },
+            }
+            if (
+                not isinstance(self.scoring_items, ScoreItemsV9)
+                or self.scoring_items.model_dump(mode="json")
+                != expected_scoring_items
+                or self.thresholds.model_dump(mode="json")
+                != expected_thresholds
+                or self.hard_gates.model_dump(mode="json")
+                != expected_hard_gates
+            ):
+                raise ValueError(
+                    f"{self.policy_version} 已冻结可靠性 perfect_cnt × 4、"
+                    "peak_completed_cnt × 2、课堂质量暂无加分项、金牌出席门槛及"
+                    f"{mandatory_task_count} 项必修任务"
+                )
         return self
 
 
@@ -595,8 +781,75 @@ SCORE_POLICY_V7_PAYLOAD: dict[str, Any] = {
 }
 
 
+SCORE_POLICY_V8_PAYLOAD: dict[str, Any] = {
+    **deepcopy(SCORE_POLICY_V7_PAYLOAD),
+    "policy_version": "v8",
+    "scoring_items": {
+        key: deepcopy(value)
+        for key, value in SCORE_POLICY_V7_PAYLOAD["scoring_items"].items()
+        if key != "feedback_rebook_15d"
+    },
+}
+
+
+SCORE_POLICY_V9_PAYLOAD: dict[str, Any] = {
+    **deepcopy(SCORE_POLICY_V8_PAYLOAD),
+    "policy_version": "v9",
+    "scoring_items": {
+        "capacity": deepcopy(SCORE_POLICY_V8_PAYLOAD["scoring_items"]["capacity"]),
+        "new_teacher_tasks": deepcopy(
+            SCORE_POLICY_V8_PAYLOAD["scoring_items"]["new_teacher_tasks"]
+        ),
+        "feedback_praise": deepcopy(
+            SCORE_POLICY_V8_PAYLOAD["scoring_items"]["feedback_praise"]
+        ),
+        "feedback_favorite": deepcopy(
+            SCORE_POLICY_V8_PAYLOAD["scoring_items"]["feedback_favorite"]
+        ),
+        "reliability_perfect": {"points_per_unit": 4},
+        "reliability_peak": {"points_per_unit": 2},
+    },
+    "hard_gates": {
+        "graduation": deepcopy(
+            SCORE_POLICY_V8_PAYLOAD["hard_gates"]["graduation"]
+        ),
+        "gold": {
+            "inherits_graduation": True,
+            "maximum_late_count": 1,
+            "maximum_early_count": 0,
+            "maximum_absent_count": 0,
+        },
+    },
+}
+
+SCORE_POLICY_V10_PAYLOAD: dict[str, Any] = {
+    **deepcopy(SCORE_POLICY_V9_PAYLOAD),
+    "policy_version": "v10",
+    "hard_gates": {
+        "graduation": {
+            "required_mandatory_task_count": 9,
+            "maximum_l0_complaint_count": 0,
+        },
+        "gold": deepcopy(SCORE_POLICY_V9_PAYLOAD["hard_gates"]["gold"]),
+    },
+}
+
+SCORE_POLICY_V1_PAYLOAD: dict[str, Any] = {
+    **deepcopy(SCORE_POLICY_V10_PAYLOAD),
+    "policy_version": "v1",
+    "scoring_items": {
+        **deepcopy(SCORE_POLICY_V10_PAYLOAD["scoring_items"]),
+        "classroom_quality": {
+            "metric": "lesson_hardware_quality_passed",
+            "points_per_unit": 2,
+            "source_mode": "REAL_LESSON_FACTS",
+        },
+    },
+}
+
+
 DEFAULT_CONFIG_PAYLOADS: dict[ConfigKey, dict[str, Any]] = {
-    ConfigKey.SCORE_GRADUATION: deepcopy(SCORE_POLICY_V7_PAYLOAD),
+    ConfigKey.SCORE_GRADUATION: deepcopy(SCORE_POLICY_V1_PAYLOAD),
     ConfigKey.AGENT_POLICY: {
         "enabled": True,
         "kill_switch": False,

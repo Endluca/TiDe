@@ -19,6 +19,7 @@ function template(overrides: Partial<TaskTemplate> = {}): TaskTemplate {
     integration_mode: 'INBOUND_STATUS_ONLY',
     ops_name_zh: '资料与资质完善',
     content_locale: 'en',
+    content_status: 'READY',
     category: 'MANDATORY_GROWTH',
     dimension: 'NEW_TEACHER_TASK',
     stage: 'DAY_1_7',
@@ -45,9 +46,10 @@ function template(overrides: Partial<TaskTemplate> = {}): TaskTemplate {
 
 describe('当前任务定义', () => {
   it('按编号、内容和阶段筛选', () => {
-    const items = [template(), template({ template_id: 'G09', stage: 'DAY_15_30', ops_name_zh: 'Cocos 课程培训' })]
+    const items = [template(), template({ template_id: 'G08', stage: 'DAY_15_30', ops_name_zh: 'Cocos 课程培训' })]
     expect(filterTaskTemplates(items, { keyword: 'cocos', stage: 'DAY_15_30' })).toEqual([items[1]])
     expect(filterTaskTemplates(items, { keyword: 'G01', stage: '' })).toEqual([items[0]])
+    expect(filterTaskTemplates([template()], { keyword: 'earn 4 points', stage: '' })).toHaveLength(1)
   })
 
   it('兼容数组和 items 包装的列表响应', () => {

@@ -4,6 +4,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .teacher_copy import personalized_task_title
+
 
 ATTENDANCE_COMPLAINT_CATEGORY = "出席问题"
 QUALITY_COMPLAINT_CATEGORY = "网络设备问题"
@@ -54,7 +56,7 @@ def _attendance_decision(*, reasons: list[str], evidence: dict[str, Any]) -> Tri
         domain="RELIABILITY",
         output_type="TEACHER_TASK",
         task_code="P-REL-ATTENDANCE",
-        title="出席问题",
+        title=personalized_task_title("P-REL-ATTENDANCE"),
         priority="P1",
         why=(
             "This lesson was flagged for attendance because "
@@ -106,7 +108,7 @@ def evaluate_lesson(
                 domain="RELIABILITY",
                 output_type="TEACHER_TASK",
                 task_code="P-REL-MEMO",
-                title="出席（未填写lesson-memo）问题",
+                title=personalized_task_title("P-REL-MEMO"),
                 priority="P1",
                 why=(
                     "This completed lesson was recorded with an unfilled Lesson Memo. "
@@ -169,7 +171,7 @@ def evaluate_lesson(
                 rule_code="TR-QUALITY-COMPLAINT",
                 domain="CLASS_QUALITY",
                 output_type="NOTIFICATION",
-                title="课中质量问题",
+                title="In-Class Quality Alert",
                 priority="P1",
                 why=(
                     "This lesson received a network or device complaint. "
@@ -231,7 +233,10 @@ def evaluate_lesson(
                     domain="USER_FEEDBACK",
                     output_type="TEACHER_TASK",
                     task_code="P-FB-COMPLAINT",
-                    title=f"一般投诉-{complaint_l3}问题",
+                    title=personalized_task_title(
+                        "P-FB-COMPLAINT",
+                        complaint_l3,
+                    ),
                     priority="P1",
                     why=(
                         "This lesson received a general complaint classified as "
@@ -265,7 +270,7 @@ def evaluate_lesson(
                 rule_code="TR-QUALITY-IN-CLASS",
                 domain="CLASS_QUALITY",
                 output_type="NOTIFICATION",
-                title="课中质量问题",
+                title="In-Class Quality Alert",
                 priority="P1",
                 why=(
                     "This lesson had an in-class quality issue: "

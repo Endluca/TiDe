@@ -48,7 +48,7 @@ def seed_task_catalog(
         if item["template_id"] in expected_codes
     }
     if set(approved) != expected_codes:
-        raise RuntimeError("G01-G10 task-template catalog is incomplete")
+        raise RuntimeError("current task-template catalog is incomplete")
     mandatory = {code: item for code, item in approved.items() if code.startswith("G")}
     personalized = {code: item for code, item in approved.items() if code.startswith("P-")}
     if any(
@@ -57,7 +57,7 @@ def seed_task_catalog(
         or item["source_mode"] != "REAL"
         for item in mandatory.values()
     ):
-        raise RuntimeError("G01-G10 templates must be published, inbound-only and REAL")
+        raise RuntimeError("mandatory templates must be published, inbound-only and REAL")
     if any(
         item["status"] != "PUBLISHED"
         or item["integration_mode"] != "OUTBOUND_MANAGED"
@@ -70,8 +70,19 @@ def seed_task_catalog(
             "personalized templates must be published, outbound-managed, REAL and zero-point"
         )
     points = {code: float(item["score_value"]) for code, item in mandatory.items()}
-    if sum(points.values()) != 30 or points["G09"] != 10:
-        raise RuntimeError("G01-G10 fixed points must total 30 and G09 must equal 10")
+    expected_points = {
+        "G01": 3,
+        "G02": 2,
+        "G03": 2,
+        "G04": 3,
+        "G05": 3,
+        "G06": 4,
+        "G07": 3,
+        "G08": 5,
+        "G09": 5,
+    }
+    if points != expected_points or sum(points.values()) != 30:
+        raise RuntimeError("mandatory fixed points must match the approved 30-point catalog")
     return {
         "template_catalog_size": len(task_template_seed_payloads()),
         "templates_created": created_templates,
