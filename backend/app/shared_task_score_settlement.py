@@ -1257,7 +1257,6 @@ class SharedTaskScoreSettlementWorker:
                 TaskAssignmentRecord.source_mode == "REAL",
                 TaskAssignmentRecord.status == "COMPLETED",
             )
-            .with_for_update()
         ).all()
         total = 0.0
         for entry, assignment in rows:

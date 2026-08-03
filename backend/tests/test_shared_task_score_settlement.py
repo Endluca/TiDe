@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 
 from sqlalchemy import event, func, select
+from sqlalchemy.dialects import postgresql
 
 from app.config_service import seed_default_configs
 from app.database import engine, session_scope
@@ -30,6 +31,36 @@ from app.task_catalog import MANDATORY_TASK_CODES
 
 NOW = datetime(2026, 7, 22, 3, 0, tzinfo=timezone.utc)
 TASK_CODES = MANDATORY_TASK_CODES
+
+
+def test_valid_ledger_read_does_not_require_score_entry_update_privilege() -> None:
+    class _Rows:
+        @staticmethod
+        def all() -> list[tuple[object, object]]:
+            return []
+
+    class _CapturingSession:
+        statement = None
+
+        def execute(self, statement):
+            self.statement = statement
+            return _Rows()
+
+    session = _CapturingSession()
+
+    assert SharedTaskScoreSettlementWorker._valid_ledger_score(
+        session,
+        teacher_id="TEACHER-READ-ONLY-LEDGER",
+        expected_points={},
+    ) == 0
+    assert session.statement is not None
+    sql = str(
+        session.statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "FOR UPDATE" not in sql.upper()
 
 
 def _teacher(
