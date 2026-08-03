@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import OperatorIdentity, auth_router, require_roles
@@ -18,6 +19,7 @@ from .audit_service import AuditService
 from .config_routes import router as config_router
 from .database import database_health, database_pool_status, engine
 from .errors import DomainError
+from .frontend_static import install_frontend_static
 from .output_service import OutputService
 from .services import GrowthService
 from .operations_routes import router as operations_router
@@ -68,6 +70,7 @@ if configured_origins := allowed_origins():
         allow_methods=["*"],
         allow_headers=["*"],
     )
+app.add_middleware(GZipMiddleware, minimum_size=512, compresslevel=5)
 app.include_router(auth_router)
 app.include_router(config_router)
 app.include_router(task_router)
@@ -130,6 +133,16 @@ async def add_api_security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = (
         "camera=(), microphone=(), geolocation=()"
     )
+    development_docs = not is_production() and (
+        request.url.path.startswith("/docs") or request.url.path == "/redoc"
+    )
+    if not development_docs:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; "
+            "object-src 'none'; script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "font-src 'self' data:; connect-src 'self'"
+        )
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     if is_production():
@@ -367,3 +380,9 @@ def retry_output(
     ),
 ) -> dict:
     return output_service.retry_output(output_id, actor_id=operator.operator_id)
+
+
+# Keep this last. Starlette matches routes in registration order, so the
+# packaged frontend must never shadow an API route or production's disabled
+# documentation endpoints.
+install_frontend_static(app)

@@ -35,6 +35,12 @@ def test_health_is_public_and_reports_persistent_database() -> None:
     assert body["status"] == "ok"
     assert body["database"]["status"] == "ok"
     assert body["runtime"] == {"single_process_required": False}
+    assert response.headers["content-security-policy"] == (
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; "
+        "object-src 'none'; script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "font-src 'self' data:; connect-src 'self'"
+    )
 
 
 def test_pool_timeout_returns_bounded_retryable_503() -> None:
@@ -91,6 +97,13 @@ def test_retired_task_transport_and_legacy_runtime_routes_are_absent() -> None:
 
 
 def test_openapi_exposes_one_current_task_surface_only() -> None:
+    docs = client.get("/docs")
+    assert docs.status_code == 200
+    assert "content-security-policy" not in docs.headers
+    oauth_redirect = client.get("/docs/oauth2-redirect")
+    assert oauth_redirect.status_code == 200
+    assert "content-security-policy" not in oauth_redirect.headers
+
     paths = set(client.get("/openapi.json").json()["paths"])
 
     assert {

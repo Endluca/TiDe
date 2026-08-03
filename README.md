@@ -5,7 +5,7 @@
 
 当前状态：**公司测试环境可运行，尚未生产上线。**
 
-## 业务方快速启动
+## 业务方本地开发启动
 
 前提：
 
@@ -94,6 +94,7 @@ Tide_teachers_camp/
 ├── teacher/           # 教师端 NestJS API、React Web App 及其文档
 ├── contracts/         # 两端共享任务和课程数据契约
 ├── deploy/combined/   # 两端同机、不同域名的联合部署入口
+├── gaea/              # 运营 UI/API 合一与单实例结算 Worker 的 Gaea 配置
 ├── docs/              # 架构、数据、积分、认证和配置说明
 ├── project-context/   # 业务方与 AI 的项目背景
 └── scripts/           # 运营端一键安装和启动
@@ -110,12 +111,30 @@ Tide_teachers_camp/
 - 原始 Excel、学生身份、数据库 dump、环境文件和日志都不进入 Git。
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
-  本地一键启动仍默认单进程，便于开发排查。
+  本地一键启动中的运营 API 默认单 Worker，便于开发排查。
 - 外部数据日更、教师端生产接入、真实通知回执、监控、备份和回滚仍待完成。
 
-## 生产部署骨架
+## Gaea 部署骨架（运营 UI/API 合一）
 
-仓库提供生产镜像和同源反向代理示例；它用于构建可追溯产物，不代表公司生产资源已经开通：
+[`gaea/operations/Dockerfile`](gaea/operations/Dockerfile) 使用公司内部 Node 22 镜像
+编译根目录运营前端，再把 `frontend/dist` 复制到 Python 包内的 `app/static`。最终镜像
+只运行 FastAPI/Uvicorn：FastAPI 在 8010 端口提供同源 `/api/*`，`StaticFiles` 托管
+`/assets/*`，不再运行独立前端容器或 Nginx：
+
+```bash
+docker build -f gaea/operations/Dockerfile -t tide-operations:gaea .
+docker build -f gaea/score-settlement/Dockerfile -t tide-score-settlement:gaea .
+```
+
+`gaea/gaea.yml` 同时声明 `operations` 与 `score-settlement` 两个模块。完整环境变量、
+健康检查和发布顺序见 [Gaea 部署说明](gaea/README.md)。前者只合并根目录运营端 React
+与 FastAPI；后者保持固定任务积分结算单实例。`teacher/` 教师端仍是独立系统，Alembic
+仍须作为发布前独立作业执行。
+
+## 现有分离式生产部署骨架
+
+原有 Compose 继续保留为分离式部署和联合部署参考；它用于构建可追溯产物，不代表公司
+生产资源已经开通，也不是 Gaea UI/API 合一镜像的启动方式：
 
 ```bash
 export TIDE_RUNTIME_ENV_FILE=/安全路径/TiDe.runtime.production.env

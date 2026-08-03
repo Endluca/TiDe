@@ -24,6 +24,11 @@ OpenAI Key 不是当前确定性任务触发所必需。默认
 模型相关变量均为可选。真实环境文件应复制为 `backend/.env.local`，或把其路径传给
 `scripts/setup.sh` 和 `scripts/start.sh`。
 
+Gaea 运行时使用 `gaea/operations/Dockerfile` 将运营前端编译进 Python 包，由 FastAPI
+同源提供页面和 API；`gaea/score-settlement/Dockerfile` 提供独立单实例积分结算模块。
+生产变量必须通过 Gaea 配置/密钥管理注入；完整清单见 `gaea/README.md`。两个模块都不
+包含 `teacher/`，也不自动执行 Alembic。
+
 ## 数据边界
 
 - 当前教师和课程数据是一次性测试基线，不是每日实时数据。
