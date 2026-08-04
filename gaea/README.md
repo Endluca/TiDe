@@ -81,7 +81,7 @@ Pod A 上传、Pod B 下载，Pod B 删除、Pod A 读回失败；视频预热�
 
 | 参数 | TEST 默认值 | 说明 |
 |---|---|---|
-| `VITE_API_BASE_URL` | `https://tide-camp-teacher.test.51talk.biz` | 教师 Web 与 API 的同源 HTTPS Origin |
+| `VITE_API_BASE_URL` | `https://tide.51talk.com` | 教师 Web 与 API 的同源 HTTPS Origin |
 | `VITE_PUBLIC_ASSET_BASE_URL` | `https://tide-media.51talkjr.com` | 已发布教师素材的 HTTPS 基址 |
 
 TEST 默认值固化在 Dockerfile，Gaea 无额外 build args 时可以直接构建。它不是生产安全
@@ -96,7 +96,7 @@ Origin 晋级。Docker 构建会额外加载 NestJS 与原生 `sharp` 模块并�
 | 容器端口 | 访问方式 | TEST 域名 | 用途 |
 |---:|---|---|---|
 | `8010` | Ingress / HTTP(S) | `https://tide-camp-ops.test.51talk.biz` | 运营端页面和 API |
-| `8080` | Ingress / HTTP(S) | `https://tide-camp-teacher.test.51talk.biz` | 教师端页面和同源 API |
+| `8080` | Ingress / HTTP(S) | `https://tide.51talk.com` | 教师端页面和同源 API |
 
 Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两个域名都指向同一个端口：两端
 都有 `/api/*`，按端口分流才能避免路径冲突。`EXPOSE` 只描述镜像端口，不会替代平台上的
@@ -178,7 +178,7 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 | 变量名 | 必填 | TEST 建议值/默认值 | 说明 |
 |---|---|---|---|
 | `TIDE_TEACHER_NODE_ENV` | 否 | `test` | 仅办公室 TEST 可设 `test`；未设置时失败关闭地使用 `production` |
-| `TIDE_TEACHER_HOST` | 是 | 教师域名（不带 scheme） | 聚合健康检查的 Host，例如 `tide-camp-teacher.test.51talk.biz` |
+| `TIDE_TEACHER_HOST` | 是 | 教师域名（不带 scheme） | 聚合健康检查的 Host，例如 `tide.51talk.com` |
 | `TIDE_TRUSTED_PROXY_CIDRS` | 否 | 复用 `TIT_TRUSTED_PROXY_IPS` | 教师入口不同时再覆盖；拒绝全网段和非法值 |
 | `TRUST_PROXY_HOPS` | 是 | `1` | 只信任本 Pod 的教师 Nginx 一跳 |
 | `CORS_ORIGINS` | 是 | 教师域名 | 教师页面与 API 同源 |
@@ -192,7 +192,7 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 | `SHIWEN_ALLOW_TIDE_FIXTURE_FALLBACK` | 是 | `false` | 禁止用 fixture 冒充真实数据 |
 | `SHIWEN_TEACHER_IDENTITY_VIEW` | 条件必填 | 无 | `VIEWS` 模式时必填 |
 | `PUBLIC_APP_URL` | 是 | 教师 HTTPS Origin | 邮件与深链基址 |
-| `PUBLIC_API_URL` | 是 | 教师 HTTPS Origin | 文件与 API 公共基址 |
+| `PUBLIC_API_URL` | 是 | 教师 HTTPS Origin | 文件与 API 公共基址；只填 Origin，不附加 `/api` |
 | `KUOZHI_LOGIN_URL` | 是 | `https://edu.51talk.com/login/ticket` | 阔知免登票证入口 |
 | `KUOZHI_COURSE_URL` | 是 | `https://edu.51talk.com` | 阔知课程页 Origin |
 | `KUOZHI_APP_KEY` / `KUOZHI_SECRET_KEY` | 是 | 密钥管理注入 | 只允许教师后端持有，禁止进入前端和日志 |
@@ -258,9 +258,9 @@ docker run --rm -d \
 ```bash
 curl -fsS -H 'Host: tide-camp-ops.test.51talk.biz' \
   http://127.0.0.1:8010/api/health
-curl -fsS -H 'Host: tide-camp-teacher.test.51talk.biz' \
+curl -fsS -H 'Host: tide.51talk.com' \
   http://127.0.0.1:8080/healthz
-curl -fsS -H 'Host: tide-camp-teacher.test.51talk.biz' \
+curl -fsS -H 'Host: tide.51talk.com' \
   http://127.0.0.1:8080/health/ready
 docker exec tide-camp-gaea-test \
   curl -fsS http://127.0.0.1:3000/health/ready

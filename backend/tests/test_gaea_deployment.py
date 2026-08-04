@@ -117,6 +117,8 @@ def test_gaea_image_builds_both_frontends_and_both_backends() -> None:
         "COPY teacher/frontend/package.json teacher/frontend/pnpm-lock.yaml ./"
         in dockerfile
     )
+    assert "ARG VITE_API_BASE_URL=https://tide.51talk.com" in dockerfile
+    assert "tide-camp-teacher.test.51talk.biz" not in dockerfile
     assert "RUN pnpm run build:nginx" in dockerfile
     assert "--from=teacher-frontend-build /build/teacher-frontend/dist" in dockerfile
     assert "/usr/share/nginx/teacher" in dockerfile
@@ -379,6 +381,8 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "TIT_SCORE_WORKER_HEARTBEAT" in readme
     assert "TIT_BOOTSTRAP_USERNAME" in readme
     assert "TIT_BOOTSTRAP_PASSWORD" in readme
+    assert "`https://tide.51talk.com`" in readme
+    assert "tide-camp-teacher.test.51talk.biz" not in readme
     assert "不代表" in readme
 
 
