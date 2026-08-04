@@ -52,6 +52,17 @@ export interface TaskValidationResponse {
   status: 'PENDING' | 'UNDER_REVIEW' | 'PASSED' | 'FAILED' | 'ERROR';
   resultCode: string | null;
   teacherMessage: string | null;
+  imageReview?: {
+    criteriaVersion: string;
+    decision: 'PASS' | 'RETRY' | 'ERROR';
+    teacherReason: string;
+    confidenceSummary: Record<string, unknown>;
+    items: Array<{
+      criterionKey: string;
+      result: 'PASS' | 'FAIL' | 'UNKNOWN';
+      teacherMessage: string | null;
+    }>;
+  } | null;
 }
 
 export interface TaskMutationResponse {

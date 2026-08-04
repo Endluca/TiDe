@@ -109,16 +109,12 @@
 .message-detail-placeholder p { margin: 12px 0 0; color: var(--message-muted); font-size: 13px; line-height: 1.65; }
 .message-mobile-back { display: none; }
 
-.nav-message-link { display: flex !important; grid-auto-flow: column; gap: 7px; }
-.nav-unread-badge { display: inline-grid; min-width: 19px; height: 19px; padding: 0 5px; place-items: center; border-radius: 999px; color: #fff; background: #e8473f; box-shadow: 0 0 0 2px #fff; font-size: 10px; font-weight: 900; line-height: 1; }
-
 @media (max-width: 900px) and (min-width: 721px) {
   .messages-workspace { grid-template-columns: minmax(330px, .92fr) minmax(0, 1.08fr); }
   .message-list-toolbar { align-items: flex-start; flex-direction: column; }
 }
 
 @media (max-width: 720px) {
-  .ref-mobile-nav { grid-template-columns: repeat(3, 1fr); }
   .messages-screen { padding-top: 14px; padding-bottom: 22px; }
   .messages-hero { min-height: 164px; padding: 24px 22px; border-radius: 0; }
   .messages-kicker { margin-bottom: 10px; font-size: 10px; }
@@ -148,8 +144,6 @@
   .message-task-action.is-available { align-items: stretch; flex-direction: column; }
   .message-task-action a, .message-task-action button { width: 100%; }
   .message-read-note { margin-top: 26px; padding-top: 0; }
-  .ref-mobile-nav .nav-message-link { display: grid !important; grid-auto-flow: row; gap: 3px; }
-  .ref-mobile-nav .nav-unread-badge { position: absolute; top: 11px; left: calc(50% + 8px); }
 }
 
 @media (max-width: 390px) {
@@ -321,4 +315,16 @@
   .ticket-thread { max-height: none; }
   .ticket-resolution > div { flex-direction: column; }
   .ticket-resolution button { width: 100%; }
+
+  .messages-screen button,
+  .messages-screen a,
+  .ticket-workspace button,
+  .ticket-workspace a,
+  .ticket-reply-actions label {
+    min-height: 44px;
+  }
+
+  .message-filters button {
+    min-width: 44px;
+  }
 }

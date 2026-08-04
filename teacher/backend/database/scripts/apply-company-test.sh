@@ -138,6 +138,7 @@ migration_files=(
   "${DB_DIR}/migrations/0023_teacher_support_operator_atomicity.up.sql"
   "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
   "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
+  "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
 )
 
 if [[ "${tide_schema_exists}" == "t" ]]; then
@@ -311,6 +312,8 @@ fi
 
 "${ADMIN_PSQL[@]}" --quiet \
   -f "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
+"${ADMIN_PSQL[@]}" --quiet \
+  -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
 
 template_snapshot_before="$("${ADMIN_PSQL[@]}" -Atqc "
   select md5(string_agg(row_to_json(template)::text, '' order by row_id))
@@ -383,6 +386,11 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     to_regclass('public.teacher_support_tickets') is not null,
     to_regclass('tide.teacher_photo_runs') is not null,
     to_regclass('tide.task_quiz_banks') is not null,
+    to_regclass('tide.kuozhi_course_syncs') is not null,
+    has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'SELECT'),
+    has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'INSERT'),
+    has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'UPDATE'),
+    has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'DELETE'),
     (
       select count(*) = 0
       from information_schema.columns
@@ -481,9 +489,9 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     )
   )
 ")"
-if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|f|f|f|f|10|f|14|f|t|t|f|f|f|t" ]]; then
+if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|t|t|t|f|f|f|f|10|f|14|f|t|t|f|f|f|t" ]]; then
   echo "应用账号验收失败：${verification}" >&2
   exit 1
 fi
 
-echo "公司测试库初始化完成：tide Schema、多副本任务租约、0025 固定任务语义与分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、数据库题库、通知状态、共享事实说明字段清理、首课画面处理和应用账号权限均已验证。"
+echo "公司测试库初始化完成：tide Schema、多副本任务租约、0026 阔知课程同步、固定任务语义与分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、数据库题库、通知状态、共享事实说明字段清理、首课画面处理和应用账号权限均已验证。"

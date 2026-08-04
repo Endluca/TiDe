@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   isReadinessPendingStatus,
   normalizeReadinessAnalysis,
+  readinessPayloadFromValidation,
 } from "../src/features/task-content/readiness-analysis.js";
 
 const criteria = [
@@ -151,4 +152,74 @@ test("Chinese results may keep backend teacher and criterion copy", () => {
   assert.equal(result.teacherMessage, "请根据检测结果调整");
   assert.equal(result.checks[0].message, "镜头位置偏低");
   assert.equal(result.checks[0].suggestion, "请将镜头抬高");
+});
+
+test("an external AI pass below 0.85 is shown as uncertain", () => {
+  const result = normalizeReadinessAnalysis(
+    {
+      checks: criteria.map((criterion, index) => ({
+        id: criterion.id,
+        status: "pass",
+        confidence: index === 1 ? 0.82 : 0.96,
+      })),
+    },
+    criteria,
+    c,
+  );
+
+  assert.equal(result.status, "changes_requested");
+  assert.equal(result.checks[1].status, "uncertain");
+  assert.equal(result.checks[1].confidence, 0.82);
+});
+
+test("central overexposure overrides an external AI lighting pass", () => {
+  const result = normalizeReadinessAnalysis(
+    {
+      checks: criteria.map((criterion) => ({
+        id: criterion.id,
+        status: "pass",
+        confidence: 0.98,
+      })),
+    },
+    criteria,
+    c,
+    { centralMeanLuma: 196, centralClippedLumaRatio: 0.32 },
+  );
+
+  assert.equal(result.status, "changes_requested");
+  assert.equal(result.checks[1].status, "fail");
+  assert.match(result.checks[1].message, /过曝/);
+});
+
+test("restores the saved four-item photo review from the formal validation API", () => {
+  const payload = readinessPayloadFromValidation({
+    status: "FAILED",
+    resultCode: "STEPS_INCOMPLETE",
+    imageReview: {
+      criteriaVersion: "lesson-preparation-camera-view-2026-08-v7-background-veto",
+      decision: "PASS",
+      teacherReason: "四项均已通过。",
+      confidenceSummary: {
+        criteria: {
+          camera_angle: 0.96,
+          lighting: 0.95,
+          background: 0.97,
+          dressing: 0.98,
+        },
+      },
+      items: criteria.map((criterion) => ({
+        criterionKey: criterion.id,
+        result: "PASS",
+        teacherMessage: null,
+      })),
+    },
+  });
+  const result = normalizeReadinessAnalysis(payload, criteria, c);
+
+  assert.equal(result.status, "approved");
+  assert.equal(result.checks.length, 4);
+  assert.deepEqual(
+    result.checks.map((check) => check.confidence),
+    [0.96, 0.95, 0.97, 0.98],
+  );
 });

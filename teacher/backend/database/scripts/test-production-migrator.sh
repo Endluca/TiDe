@@ -149,11 +149,12 @@ SELECT
     NOT EXISTS (SELECT 1 FROM tide.task_execution_versions),
     NOT EXISTS (SELECT 1 FROM tide.task_quiz_banks),
     NOT EXISTS (SELECT 1 FROM tide.knowledge_documents),
+    to_regclass('tide.kuozhi_course_syncs') IS NOT NULL,
     count(*)
 FROM tide.schema_migrations;
 SQL
 )"
-if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|23" ]]; then
+if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|24" ]]; then
   echo "生产 fresh 迁移状态异常：${fresh_state}" >&2
   exit 1
 fi
@@ -1099,4 +1100,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、0022–0025、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"
+echo "生产 migrator fresh/upgrade、0022–0026、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"

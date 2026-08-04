@@ -276,6 +276,7 @@ if [[ "${support_ticket_security_hardened}" != "t" ]]; then
 fi
 
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
@@ -283,4 +284,4 @@ pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0025、共享表本地契约、题库和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0026、共享表本地契约、题库和当前 Seeds 已检查并执行。"

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -18,6 +19,7 @@ import {
 import { TaskService } from './task.service';
 import { MutationMetaDto } from './dto/mutation-meta.dto';
 import { RetryTaskDto } from './dto/retry-task.dto';
+import { RefreshKuozhiProgressDto } from './dto/refresh-kuozhi-progress.dto';
 import { SaveProgressDto } from './dto/save-progress.dto';
 import { SubmitTaskDto } from './dto/submit-task.dto';
 import { VideoHeartbeatDto } from './dto/video-heartbeat.dto';
@@ -38,6 +40,42 @@ export class TaskController {
     @Param('taskInstanceId') taskInstanceId: string,
   ) {
     return this.tasks.get(request.auth, taskInstanceId);
+  }
+
+  @Get(':taskInstanceId/kuozhi-launch')
+  @Header('Cache-Control', 'no-store, max-age=0')
+  @Header('Pragma', 'no-cache')
+  kuozhiLaunch(
+    @Req() request: AuthenticatedRequest,
+    @Param('taskInstanceId') taskInstanceId: string,
+  ) {
+    return this.tasks.getKuozhiLaunch(request.auth, taskInstanceId);
+  }
+
+  @Get(':taskInstanceId/kuozhi-progress')
+  @Header('Cache-Control', 'no-store, max-age=0')
+  @Header('Pragma', 'no-cache')
+  kuozhiProgress(
+    @Req() request: AuthenticatedRequest,
+    @Param('taskInstanceId') taskInstanceId: string,
+  ) {
+    return this.tasks.getKuozhiProgress(request.auth, taskInstanceId);
+  }
+
+  @Post(':taskInstanceId/kuozhi-progress/refresh')
+  @HttpCode(HttpStatus.OK)
+  refreshKuozhiProgress(
+    @Req() request: AuthenticatedRequest,
+    @Param('taskInstanceId') taskInstanceId: string,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() input: RefreshKuozhiProgressDto,
+  ) {
+    return this.tasks.refreshKuozhiProgress(
+      request.auth,
+      taskInstanceId,
+      idempotencyKey,
+      input,
+    );
   }
 
   @Post(':taskInstanceId/start')

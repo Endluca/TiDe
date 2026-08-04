@@ -47,6 +47,13 @@ describe('environment configuration', () => {
     );
     expect(environment.AI_GATEWAY_PROVIDER).toBe('VOLCENGINE');
     expect(environment.AI_GATEWAY_MODEL).toBe('doubao-seed-2-0-lite');
+    expect(environment.KUOZHI_DETAIL_URL).toBe(
+      'http://edu.51talk.me/api/me/TeacherCourseDetail',
+    );
+    expect(environment.KUOZHI_DETAIL_HOST_IP).toBeUndefined();
+    expect(environment.KUOZHI_DETAIL_TIMEOUT_MS).toBe(8_000);
+    expect(environment.KUOZHI_DETAIL_RETRY_COUNT).toBe(1);
+    expect(environment.KUOZHI_SAMPLE_MODE).toBe(false);
     expect(parseCorsOrigins('https://a.example, https://b.example')).toEqual([
       'https://a.example',
       'https://b.example',
@@ -80,6 +87,56 @@ describe('environment configuration', () => {
         AI_GATEWAY_API_KEY: 'test-key',
       }).AI_GATEWAY_ENABLED,
     ).toBe(true);
+  });
+
+  it('requires all Kuozhi ticket settings when any one is configured', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        KUOZHI_APP_KEY: 'test-app-key',
+      }),
+    ).toThrow('KUOZHI_LOGIN_URL');
+
+    const environment = validateEnvironment({
+      NODE_ENV: 'test',
+      KUOZHI_LOGIN_URL: 'https://edu.51suyang.cn/login/ticket',
+      KUOZHI_COURSE_URL: 'https://edu.51talk.com',
+      KUOZHI_APP_KEY: 'test-app-key',
+      KUOZHI_SECRET_KEY: 'test-secret-key',
+    });
+    expect(environment.KUOZHI_COURSE_CONFIG_PATH).toBe(
+      './config/kuozhi-courses.json',
+    );
+  });
+
+  it('requires a teacher id only when Kuozhi sample mode is enabled', () => {
+    expect(() =>
+      validateEnvironment({ NODE_ENV: 'test', KUOZHI_SAMPLE_MODE: 'true' }),
+    ).toThrow('KUOZHI_SAMPLE_TEACHER_ID');
+
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'test',
+        KUOZHI_SAMPLE_MODE: 'true',
+        KUOZHI_SAMPLE_TEACHER_ID: '360107609',
+      }).KUOZHI_SAMPLE_MODE,
+    ).toBe(true);
+  });
+
+  it('accepts only an IPv4 override for the Kuozhi detail host', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        KUOZHI_DETAIL_HOST_IP: 'edu.51talk.me',
+      }),
+    ).toThrow('KUOZHI_DETAIL_HOST_IP');
+
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'test',
+        KUOZHI_DETAIL_HOST_IP: '172.16.0.54',
+      }).KUOZHI_DETAIL_HOST_IP,
+    ).toBe('172.16.0.54');
   });
 
   it('requires complete OSS settings only when OSS storage is enabled', () => {

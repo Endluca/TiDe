@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 
 const optionalPostgresUrl = z.preprocess(
   (value) => (value === '' ? undefined : value),
@@ -20,6 +21,14 @@ const optionalString = z.preprocess(
 const optionalUrl = z.preprocess(
   (value) => (value === '' ? undefined : value),
   z.string().url().optional(),
+);
+
+const optionalIpv4 = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z
+    .string()
+    .refine((value) => isIP(value) === 4, '必须使用合法的 IPv4 地址')
+    .optional(),
 );
 
 const optionalIsoDateTime = z.preprocess(
@@ -156,6 +165,28 @@ export const environmentSchema = z
       .min(1)
       .default('reset-password'),
     PUBLIC_API_URL: z.string().url().default('http://localhost:3000'),
+    KUOZHI_LOGIN_URL: optionalUrl,
+    KUOZHI_COURSE_URL: optionalUrl,
+    KUOZHI_APP_KEY: optionalString,
+    KUOZHI_SECRET_KEY: optionalString,
+    KUOZHI_COURSE_CONFIG_PATH: z
+      .string()
+      .min(1)
+      .default('./config/kuozhi-courses.json'),
+    KUOZHI_DETAIL_URL: z
+      .string()
+      .url()
+      .default('http://edu.51talk.me/api/me/TeacherCourseDetail'),
+    KUOZHI_DETAIL_HOST_IP: optionalIpv4,
+    KUOZHI_DETAIL_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(30_000)
+      .default(8_000),
+    KUOZHI_DETAIL_RETRY_COUNT: z.coerce.number().int().min(0).max(2).default(1),
+    KUOZHI_SAMPLE_MODE: booleanFromEnvironment,
+    KUOZHI_SAMPLE_TEACHER_ID: optionalString,
     FILE_STORAGE_PROVIDER: z.enum(['LOCAL', 'OSS']).default('LOCAL'),
     LOCAL_FILE_STORAGE_DIR: z.string().min(1).default('./storage/private'),
     OSS_REGION: optionalString,
@@ -281,6 +312,41 @@ export const environmentSchema = z
       .default(30_000),
   })
   .superRefine((environment, context) => {
+    const kuozhiSettings = [
+      'KUOZHI_LOGIN_URL',
+      'KUOZHI_COURSE_URL',
+      'KUOZHI_APP_KEY',
+      'KUOZHI_SECRET_KEY',
+    ] as const;
+    const configuredKuozhiSettings = kuozhiSettings.filter(
+      (setting) => environment[setting],
+    );
+    if (
+      configuredKuozhiSettings.length > 0 &&
+      configuredKuozhiSettings.length < kuozhiSettings.length
+    ) {
+      for (const setting of kuozhiSettings) {
+        if (!environment[setting]) {
+          context.addIssue({
+            code: 'custom',
+            path: [setting],
+            message: '启用阔知免登时不能为空',
+          });
+        }
+      }
+    }
+
+    if (
+      environment.KUOZHI_SAMPLE_MODE &&
+      !environment.KUOZHI_SAMPLE_TEACHER_ID
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['KUOZHI_SAMPLE_TEACHER_ID'],
+        message: '启用阔知示例模式时不能为空',
+      });
+    }
+
     const tideDatabaseRequired =
       environment.DATABASE_REQUIRED || environment.NODE_ENV === 'production';
 
@@ -343,6 +409,20 @@ export const environmentSchema = z
       ] as const;
       for (const [setting, value] of publicUrls) {
         if (!isHttpsUrl(value)) {
+          context.addIssue({
+            code: 'custom',
+            path: [setting],
+            message: '生产环境必须使用 HTTPS',
+          });
+        }
+      }
+
+      const kuozhiUrls = [
+        ['KUOZHI_LOGIN_URL', environment.KUOZHI_LOGIN_URL],
+        ['KUOZHI_COURSE_URL', environment.KUOZHI_COURSE_URL],
+      ] as const;
+      for (const [setting, value] of kuozhiUrls) {
+        if (value && !isHttpsUrl(value)) {
           context.addIssue({
             code: 'custom',
             path: [setting],

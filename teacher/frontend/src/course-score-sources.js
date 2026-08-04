@@ -95,15 +95,6 @@ const visibleCourseFactDefinitions = [
     ),
   },
   {
-    dimension: "USER_FEEDBACK",
-    sourceKey: "FEEDBACK_REBOOK_15D",
-    read: (facts) => factValue(
-      facts.rebooked,
-      { en: "Rebooked within 15 days", zh: "15 天内已复约" },
-      { en: "No rebooking within 15 days", zh: "暂无 15 天内复约" },
-    ),
-  },
-  {
     dimension: "RELIABILITY",
     sourceKey: "ON_TIME_COMPLETED",
     read: (facts) => {

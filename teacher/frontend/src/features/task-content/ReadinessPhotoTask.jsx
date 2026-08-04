@@ -5,7 +5,6 @@ import {
   CheckCircle,
   SealCheck,
   ShieldCheck,
-  Monitor,
   HourglassMedium,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -15,28 +14,29 @@ import {
 } from "../../api-error-copy";
 import { useI18n } from "../../i18n";
 import { publicAsset } from "../../public-assets";
+import ReadinessExampleGallery from "./ReadinessExampleGallery";
+import {
+  normalizeReadinessAnalysis,
+  readinessPayloadFromValidation,
+} from "./readiness-analysis";
 import "./readiness-photo-task.css";
 
-const SELF_INTRO_REFERENCE_PHOTO = publicAsset("/readiness/self-intro-reference-51talk.webp");
+const CHECKLIST_REFERENCE_PHOTO = publicAsset(
+  "/readiness/lesson-preparation-examples/camera-angle-good-front.jpg",
+);
 
 const standards = {
   en: [
-    ["Clear lighting", "Both sides of your face and facial features must be clearly visible in even front light. Strong backlight, darkness, heavy shadows or overexposure do not pass."],
-    ["Complete framing", "Use a 16:9 landscape frame with exactly one teacher. Keep your full unobstructed face centered, leave a little space above your head and show your upper body from the chest up."],
-    ["Suitable camera position and presence", "Keep the camera level with your eyes, look toward it and maintain a natural, positive teaching presence."],
-    ["Teaching headset worn", "Wear a teaching headset with its microphone clearly visible. Single-ear and double-ear headsets are both acceptable."],
-    ["Class-appropriate clothing", "Wear clean, presentable clothing suitable for a formal online class."],
-    ["Tidy, stable background", "Keep the view free of obvious clutter, unrelated people or animals, and sensitive personal information."],
-    ["Clear, detectable photo", "Use your real teaching environment. Any serious blur, facial obstruction, masking filter, screenshot artifact or compression distortion requires a retake."],
+    ["camera_angle", "Camera angle", "Face the camera directly and keep your head upright. Align your face and shoulders with the guide, with the camera at eye level. Side profiles or visibly turned, tilted, raised or lowered heads will not pass."],
+    ["lighting", "Lighting", "Keep your face evenly and brightly lit. It should not be too dark, overexposed or strongly backlit."],
+    ["background", "Background", "Use a clean, appropriate background without distractions. A virtual background must display clearly without covering your face or body."],
+    ["dressing", "Dressing", "Wear neat, professional clothing that is suitable for teaching young learners online."],
   ],
   zh: [
-    ["光线清楚", "面部两侧与五官必须清楚可辨，正面光线均匀；明显逆光、过暗、重阴影或过曝不通过。"],
-    ["人物完整入镜", "使用 16:9 横向画面，只保留一位老师；面部无遮挡且完整，人物居中，头顶适当留白，完整拍到胸部以上。"],
-    ["机位与状态合适", "镜头与视线平齐，看向镜头，保持自然、积极的授课状态与表情。"],
-    ["佩戴授课耳麦", "清楚佩戴带麦克风的授课耳麦，话筒在画面中可见；单耳或双耳均可。"],
-    ["着装适合授课", "保持整洁、得体、适合正式线上课堂。"],
-    ["背景整洁稳定", "画面无明显杂乱、无关人员或动物，不暴露敏感个人信息。"],
-    ["照片清晰可检测", "使用真实授课环境拍摄；严重模糊、面部遮挡、遮盖五官的滤镜、截图痕迹或压缩失真都需要重拍。"],
+    ["camera_angle", "摄像头角度", "必须正脸面对摄像头并保持头部端正，脸部和肩部尽量贴合辅助线，摄像头与视线平齐；侧脸、明显转头、仰头、低头或头部侧倾不通过。"],
+    ["lighting", "光线", "面部光线均匀、明亮，不能过暗、过曝或有明显逆光。"],
+    ["background", "背景", "背景干净、合适且不分散注意力；使用虚拟背景时须显示清晰，不遮挡面部或身体。"],
+    ["dressing", "着装", "穿着整洁、专业，并适合给少儿进行线上授课。"],
   ],
 };
 
@@ -58,22 +58,20 @@ export default function ReadinessPhotoTask({ task }) {
   const [opening, setOpening] = useState(false);
   const [photo, setPhoto] = useState(task.readinessPhoto || "");
   const [photoFile, setPhotoFile] = useState(null);
+  const [photoApproved, setPhotoApproved] = useState(task.status === "completed");
+  const [reviewChecks, setReviewChecks] = useState(task.readinessChecks || []);
   const [analyzing, setAnalyzing] = useState(false);
-  const [checkingDevice, setCheckingDevice] = useState(false);
   const executionReady = Boolean(task.execution?.live);
-  const deviceStep = task.execution?.findStep("DEVICE_CHECK");
-  const deviceProgress = task.execution?.steps?.[deviceStep?.stepKey];
-  const devicePassed = deviceProgress?.status === "COMPLETED";
+  const taskCompleted = task.status === "completed";
   const coursewareStep = task.execution?.findStep("COURSEWARE_CONFIRMATION")
     || task.execution?.findStep("CHECKLIST");
   const coursewareItem = coursewareStep?.config?.items?.[0];
   const coursewareProgress = task.execution?.steps?.[coursewareStep?.stepKey];
   const coursewareRequired = Boolean(coursewareStep);
   const [coursewareConfirmed, setCoursewareConfirmed] = useState(
-    task.status === "completed" || !coursewareRequired || coursewareProgress?.status === "COMPLETED",
+    taskCompleted || !coursewareRequired || coursewareProgress?.status === "COMPLETED",
   );
   const [savingCourseware, setSavingCourseware] = useState(false);
-  const [deviceResults, setDeviceResults] = useState(deviceProgress?.details?.results || {});
   const [error, setError] = useState("");
 
   const stopCamera = () => {
@@ -90,9 +88,34 @@ export default function ReadinessPhotoTask({ task }) {
   }, [photo]);
   useEffect(() => {
     setCoursewareConfirmed(
-      task.status === "completed" || !coursewareRequired || coursewareProgress?.status === "COMPLETED",
+      taskCompleted || !coursewareRequired || coursewareProgress?.status === "COMPLETED",
     );
-  }, [coursewareProgress?.status, coursewareRequired, task.status]);
+  }, [coursewareProgress?.status, coursewareRequired, taskCompleted]);
+  useEffect(() => {
+    if (taskCompleted) setPhotoApproved(true);
+  }, [taskCompleted]);
+
+  const applyValidation = (validation) => {
+    const payload = readinessPayloadFromValidation(validation);
+    if (!payload) return null;
+    const analysis = normalizeReadinessAnalysis(
+      payload,
+      criteria.map(([id, title, detail]) => ({ id, title, detail })),
+      c,
+    );
+    setReviewChecks(analysis.checks);
+    setPhotoApproved(analysis.status === "approved");
+    return analysis;
+  };
+
+  useEffect(() => {
+    if (!executionReady || !task.execution?.loadValidation || taskCompleted) return;
+    const controller = new AbortController();
+    task.execution.loadValidation(controller.signal)
+      .then((validation) => applyValidation(validation))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [executionReady, language, task.backendId, taskCompleted]);
 
   useEffect(() => {
     if (!cameraOpen || !videoRef.current || !streamRef.current) return;
@@ -173,69 +196,6 @@ export default function ReadinessPhotoTask({ task }) {
     }
   };
 
-  const runDeviceCheck = async () => {
-    if (checkingDevice) return;
-    setCheckingDevice(true);
-    setError("");
-    if (!executionReady || !task.execution) {
-      setError(c("This task is not connected to the execution service.", "当前任务尚未连接执行服务，请稍后重试。"));
-      setCheckingDevice(false);
-      return;
-    }
-    const results = {
-      camera: "FAILED",
-      microphone: "FAILED",
-      network: navigator.onLine ? "PASSED" : "FAILED",
-    };
-    try {
-      if (navigator.mediaDevices?.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        task.execution?.track?.("CAMERA_PERMISSION_RESULT", {
-          stepKey: deviceStep?.stepKey || "DEVICE_CHECK",
-          stepType: "DEVICE_CHECK",
-          permission: "GRANTED",
-          result: "SUCCESS",
-        });
-        results.camera = stream.getVideoTracks().length > 0 ? "PASSED" : "FAILED";
-        results.microphone = stream.getAudioTracks().length > 0 ? "PASSED" : "FAILED";
-        stream.getTracks().forEach((track) => track.stop());
-      } else {
-        task.execution?.track?.("CAMERA_PERMISSION_RESULT", {
-          stepKey: deviceStep?.stepKey || "DEVICE_CHECK",
-          stepType: "DEVICE_CHECK",
-          permission: "UNSUPPORTED",
-          result: "FAILURE",
-        });
-      }
-      const response = await task.execution.saveStep("DEVICE_CHECK", { results });
-      setDeviceResults(results);
-      if (response?.step?.status !== "COMPLETED") {
-        setError(c("Check the device permission and network, then try again.", "请检查摄像头、麦克风权限和网络后重试。"));
-      }
-    } catch (caught) {
-      task.execution?.track?.("CAMERA_PERMISSION_RESULT", {
-        stepKey: deviceStep?.stepKey || "DEVICE_CHECK",
-        stepType: "DEVICE_CHECK",
-        permission: caught?.name === "NotAllowedError" ? "DENIED" : "UNAVAILABLE",
-        errorCode: caught?.name || caught?.code || "DEVICE_CHECK_FAILED",
-        result: "FAILURE",
-      });
-      task.execution?.track?.("CAMERA_FAILED", {
-        stepKey: deviceStep?.stepKey || "DEVICE_CHECK",
-        stepType: "DEVICE_CHECK",
-        errorCode: caught?.name || caught?.code || "DEVICE_CHECK_FAILED",
-        result: "FAILURE",
-      });
-      setError(localizeApiError(
-        caught,
-        language,
-        c("The device check failed. Please retry.", "设备检测失败，请重试。"),
-      ));
-    } finally {
-      setCheckingDevice(false);
-    }
-  };
-
   const confirmCourseware = async () => {
     if (!coursewareRequired || savingCourseware) return;
     if (!executionReady || !task.execution || !coursewareItem?.key) {
@@ -248,7 +208,18 @@ export default function ReadinessPhotoTask({ task }) {
       const response = await task.execution.saveStep(coursewareStep.stepKey, {
         checkedItemKeys: [coursewareItem.key],
       });
-      setCoursewareConfirmed(response?.step?.status === "COMPLETED");
+      const confirmed = response?.step?.status === "COMPLETED";
+      setCoursewareConfirmed(confirmed);
+      if (confirmed && photoApproved) {
+        const completion = await task.execution.submit();
+        if (completion?.status === "FAILED") {
+          setError(localizedValidationMessage(
+            completion.validation,
+            language,
+            c("The task could not be completed. Please retry.", "任务完成失败，请重试。"),
+          ));
+        }
+      }
     } catch (caught) {
       setError(localizeApiError(
         caught,
@@ -309,13 +280,15 @@ export default function ReadinessPhotoTask({ task }) {
     photoTakenRef.current = true;
     if (photo.startsWith("blob:")) URL.revokeObjectURL(photo);
     const file = new File([blob], `g02-environment-${Date.now()}.jpg`, { type: "image/jpeg" });
+    setPhotoApproved(false);
+    setReviewChecks([]);
     setPhotoFile(file);
     setPhoto(URL.createObjectURL(blob));
     stopCamera();
   };
 
   const submit = async () => {
-    if (analyzing || !devicePassed || !coursewareConfirmed) return;
+    if (analyzing || photoApproved) return;
     if (!executionReady || !photoFile || !task.execution) {
       setError(c("This task is not connected to the execution service.", "当前任务尚未连接执行服务，请稍后重试。"));
       return;
@@ -325,7 +298,17 @@ export default function ReadinessPhotoTask({ task }) {
     try {
       await task.execution.uploadStep("ENVIRONMENT_PHOTO", photoFile);
       const response = await task.execution.submit();
-      if (response?.status === "FAILED") {
+      const persistedValidation = task.execution.loadValidation
+        ? await task.execution.loadValidation()
+        : response?.validation;
+      const analysis = applyValidation(persistedValidation);
+      const photoPassed = analysis?.status === "approved"
+        || response?.status === "COMPLETED"
+        || response?.validation?.status === "PASSED"
+        || response?.validation?.resultCode === "STEPS_INCOMPLETE";
+      if (photoPassed) {
+        setPhotoApproved(true);
+      } else if (response?.status === "FAILED") {
         setError(localizedValidationMessage(
           response.validation,
           language,
@@ -343,7 +326,12 @@ export default function ReadinessPhotoTask({ task }) {
     }
   };
 
-  const completedChecks = task.readinessChecks || [];
+  const completedChecks = reviewChecks.length > 0
+    ? reviewChecks
+    : task.readinessChecks || [];
+  const exampleFocusId = completedChecks.find((check) => (
+    ["fail", "uncertain"].includes(check.status)
+  ))?.id || "camera_angle";
 
   return (
     <div className="readiness-photo-task">
@@ -351,28 +339,122 @@ export default function ReadinessPhotoTask({ task }) {
         <div>
           <span className="eyebrow">{c("PRE-CLASS ENVIRONMENT", "课前环境确认")}</span>
           <h3>{c("Take one photo using the Self-intro standard", "按 Self-intro 标准拍一张照片")}</h3>
-          <p>{c("All seven items are checked one by one. The task completes when every item passes.", "系统会按 7 项标准逐项检测；全部通过后任务自动完成。")}</p>
+          <p>{c("The same photo checks all four items from the lesson-preparation checklist.", "同一张照片会按首课准备清单检测以下 4 项画面标准。")}</p>
         </div>
         <Camera size={28} weight="fill" />
       </div>
 
       <div className="readiness-guidelines">
-        {criteria.map(([title, detail], index) => (
-          <article key={title}>
+        {criteria.map(([id, title, detail], index) => (
+          <article key={id}>
             <span>{String(index + 1).padStart(2, "0")}</span>
             <div><strong>{title}</strong><p>{detail}</p></div>
           </article>
         ))}
       </div>
 
+      <ReadinessExampleGallery initialActiveId={exampleFocusId} />
+
+      {completedChecks.length > 0 && (
+        <div className="readiness-result-list">
+          {completedChecks.map((check) => {
+            const status = ["fail", "uncertain"].includes(check.status) ? check.status : "pass";
+            return (
+              <article className={`result-${status}`} key={check.id || check.title}>
+                <span>{status === "pass" ? <Check size={16} weight="bold" /> : <WarningCircle size={16} weight="fill" />}</span>
+                <div><strong>{check.title}</strong>{check.message && <small>{check.message}</small>}{check.suggestion && <p>{check.suggestion}</p>}</div>
+                <em>{status === "pass" ? c("Passed", "通过") : status === "fail" ? c("Adjust", "需调整") : c("Uncertain", "无法判断")}</em>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      {photoApproved && !taskCompleted && (
+        <div className="readiness-complete" role="status">
+          <SealCheck size={30} weight="fill" />
+          <div><strong>{c("The photo check passed", "照片检测已通过")}</strong><p>{c("The photo workflow is complete. Lesson preparation confirmation does not affect this result.", "拍照检测流程已完成，底部备课确认不会影响本次检测结果。")}</p></div>
+        </div>
+      )}
+
+      {error && <div className="readiness-error" role="alert"><WarningCircle size={20} weight="fill" />{error}</div>}
+
+      {taskCompleted ? (
+        <div className="readiness-complete" role="status">
+          <SealCheck size={30} weight="fill" />
+          <div><strong>{c("Your pre-class teaching view passed", "课前授课画面已通过")}</strong><p>{c("Your first qualified photo and its result are recorded as the completion evidence and cannot be replaced by a later photo.", "首次合格照片及检测结果已记录为完成证据，后续照片不会覆盖。")}</p></div>
+        </div>
+      ) : task.status === "verifying" ? (
+        <div className="readiness-complete" role="status">
+          <HourglassMedium size={30} weight="fill" />
+          <div><strong>{c("AI review is in progress", "AI 正在审核")}</strong><p>{c("The photo is saved. No repeated submission is needed while the result is updating.", "照片已经保存，结果更新期间无需重复提交。")}</p></div>
+        </div>
+      ) : photoApproved ? null : (
+        <>
+          <section className="readiness-capture">
+            {cameraOpen ? (
+              <div className="readiness-live">
+                <div className="readiness-camera-stage">
+                  <video ref={videoRef} autoPlay muted playsInline onCanPlay={() => setCameraReady(true)} />
+                  <div className="readiness-person-guide" aria-hidden="true">
+                    <svg viewBox="0 0 640 360"><ellipse cx="320" cy="105" rx="45" ry="58" /><path d="M190 310 C198 242 236 202 287 187 C296 184 302 177 304 166 M336 166 C338 177 344 184 353 187 C404 202 442 242 450 310" /></svg>
+                    <span>{c("Face forward and align with the guide", "保持正脸并贴合辅助线")}</span>
+                  </div>
+                </div>
+                <div className="readiness-camera-actions">
+                  <button className="primary-button" type="button" disabled={!cameraReady} onClick={capture}><Camera size={18} weight="fill" />{cameraReady ? c("Take photo", "立即拍照") : c("Preparing camera…", "正在准备画面…")}</button>
+                  <button className="secondary-button" type="button" onClick={stopCamera}>{c("Cancel", "取消")}</button>
+                </div>
+              </div>
+            ) : photo ? (
+              <div className="readiness-photo-preview">
+                <img src={photo} alt={c("Photo ready for the pre-class check", "待提交的课前准备照片")} />
+                <div className="readiness-person-guide" aria-hidden="true">
+                  <svg viewBox="0 0 640 360"><ellipse cx="320" cy="105" rx="45" ry="58" /><path d="M190 310 C198 242 236 202 287 187 C296 184 302 177 304 166 M336 166 C338 177 344 184 353 187 C404 202 442 242 450 310" /></svg>
+                  <span>{c("Check: front-facing and aligned", "请确认：正脸且贴合辅助线")}</span>
+                </div>
+                <span><CheckCircle size={18} weight="fill" />{c("Photo ready", "照片已拍摄")}</span>
+                <button className="secondary-button" type="button" onClick={() => { if (photo.startsWith("blob:")) URL.revokeObjectURL(photo); setPhotoApproved(false); setReviewChecks([]); setPhoto(""); setPhotoFile(null); }}>{c("Retake", "重新拍摄")}</button>
+              </div>
+            ) : (
+              <div className="readiness-empty">
+                <div className="readiness-example">
+                  <img src={CHECKLIST_REFERENCE_PHOTO} alt={c("Qualified Self-intro example", "Self-intro 合格示例")} />
+                  <span>{c("Qualified example", "合格示例")}</span>
+                </div>
+                <div className="readiness-empty-copy">
+                  <Camera size={38} weight="duotone" />
+                  <strong>{c("Take the photo in your real teaching position", "在真实授课位置拍摄")}</strong>
+                  <small>{c("Use a clear 16:9 landscape photo. Face forward and align your face and shoulders with the guide.", "使用清晰的 16:9 横向画面；保持正脸，让脸部和肩部贴合辅助线。")}</small>
+                  <button className="primary-button" type="button" disabled={opening} onClick={openCamera}><Camera size={18} weight="fill" />{opening ? c("Opening camera…", "正在打开摄像头…") : c("Open camera", "打开相机拍照")}</button>
+                </div>
+              </div>
+            )}
+          </section>
+          <button className="primary-button wide-button" type="button" disabled={!photoFile || analyzing || photoApproved} onClick={submit}>
+            {photoApproved
+              ? c("Photo check passed", "照片检测已通过")
+              : analyzing
+                ? c("Checking the four items…", "正在检测 4 项画面标准…")
+                : c("Submit photo and start check", "提交照片并开始检测")}
+          </button>
+          <p className="readiness-retake-note">{c(
+            "You can retake and resubmit until all four items pass. The first qualified photo becomes the completion evidence.",
+            "4 项全部通过前可反复重拍并提交；首次合格照片将作为完成证据。",
+          )}</p>
+          <p className="readiness-privacy"><ShieldCheck size={17} weight="fill" />{c("Use your real teaching environment and keep private information out of view.", "请使用真实授课环境拍摄，并避免在画面中暴露个人隐私信息。")}</p>
+        </>
+      )}
       {coursewareRequired && (
-        <section className="readiness-complete" aria-label={c("Lesson preparation", "首课备课")}>
-          <CheckCircle size={30} weight="duotone" />
+        <section className={`readiness-preparation-confirm ${coursewareConfirmed ? "is-confirmed" : ""}`} aria-label={c("Lesson preparation", "首课备课")}>
           <div>
-            <strong>{c("Confirm lesson preparation", "确认已完成备课")}</strong>
-            <p>{coursewareItem?.[language === "zh" ? "labelZh" : "label"]
-              || coursewareItem?.label
-              || c("Review the lesson slides and finish preparing before class.", "浏览全部课件，并在上课前完成备课。")}</p>
+            <CheckCircle size={24} weight={coursewareConfirmed ? "fill" : "duotone"} />
+            <span>
+              <strong>{c("Confirm lesson preparation", "确认已完成备课")}</strong>
+              <small>{coursewareItem?.[language === "zh" ? "labelZh" : "label"]
+                || coursewareItem?.label
+                || c("I have reviewed all lesson slides and finished preparing.", "我已浏览全部课件，并完成本节课备课。")}</small>
+            </span>
           </div>
           <button
             className="secondary-button"
@@ -387,88 +469,6 @@ export default function ReadinessPhotoTask({ task }) {
                 : c("Confirm", "确认完成")}
           </button>
         </section>
-      )}
-
-      <section className="readiness-complete" aria-label={c("Device and network check", "设备与网络检查")}>
-        <Monitor size={30} weight="duotone" />
-        <div>
-          <strong>{c("Camera, microphone and network", "摄像头、麦克风和网络")}</strong>
-          <p>{devicePassed
-            ? c("All three checks passed.", "三项检测均已通过。")
-            : c("Run the three checks before taking the environment photo.", "请先完成三项检测，再拍摄授课环境照片。")}</p>
-          {Object.keys(deviceResults).length > 0 && (
-            <small>{Object.entries(deviceResults).map(([key, value]) => `${key}: ${value}`).join(" · ")}</small>
-          )}
-        </div>
-        {!devicePassed && <button className="secondary-button" type="button" disabled={checkingDevice} onClick={runDeviceCheck}>{checkingDevice ? c("Checking…", "检测中…") : c("Run checks", "开始检测")}</button>}
-      </section>
-
-      <p className="readiness-boundary-note">
-        <WarningCircle size={18} weight="fill" />
-        {c("Camera, microphone, network and the teaching-environment photo are all completed inside this task.", "摄像头、麦克风、网络和授课环境照片均在本任务内完成。")}
-      </p>
-
-      {completedChecks.length > 0 && (
-        <div className="readiness-result-list">
-          {completedChecks.map((check) => (
-            <article key={check.title}><span><Check size={16} weight="bold" /></span><strong>{check.title}</strong><em>{c("Passed", "通过")}</em></article>
-          ))}
-        </div>
-      )}
-
-      {task.status === "completed" ? (
-        <div className="readiness-complete" role="status">
-          <SealCheck size={30} weight="fill" />
-          <div><strong>{c("Your pre-class teaching view passed", "课前授课画面已通过")}</strong><p>{c("The check result has been recorded. No additional photo is needed.", "检测结果已经记录，无需重复拍照。")}</p></div>
-        </div>
-      ) : task.status === "verifying" ? (
-        <div className="readiness-complete" role="status">
-          <HourglassMedium size={30} weight="fill" />
-          <div><strong>{c("AI review is in progress", "AI 正在审核")}</strong><p>{c("The photo is saved. No repeated submission is needed while the result is updating.", "照片已经保存，结果更新期间无需重复提交。")}</p></div>
-        </div>
-      ) : (
-        <>
-          {error && <div className="readiness-error" role="alert"><WarningCircle size={20} weight="fill" />{error}</div>}
-          <section className="readiness-capture">
-            {cameraOpen ? (
-              <div className="readiness-live">
-                <div className="readiness-camera-stage">
-                  <video ref={videoRef} autoPlay muted playsInline onCanPlay={() => setCameraReady(true)} />
-                  <div className="readiness-person-guide" aria-hidden="true">
-                    <svg viewBox="0 0 640 360"><ellipse cx="320" cy="105" rx="45" ry="58" /><path d="M190 310 C198 242 236 202 287 187 C296 184 302 177 304 166 M336 166 C338 177 344 184 353 187 C404 202 442 242 450 310" /></svg>
-                  </div>
-                </div>
-                <div className="readiness-camera-actions">
-                  <button className="primary-button" type="button" disabled={!cameraReady} onClick={capture}><Camera size={18} weight="fill" />{cameraReady ? c("Take photo", "立即拍照") : c("Preparing camera…", "正在准备画面…")}</button>
-                  <button className="secondary-button" type="button" onClick={stopCamera}>{c("Cancel", "取消")}</button>
-                </div>
-              </div>
-            ) : photo ? (
-              <div className="readiness-photo-preview">
-                <img src={photo} alt={c("Photo ready for the pre-class check", "待提交的课前准备照片")} />
-                <span><CheckCircle size={18} weight="fill" />{c("Photo ready", "照片已拍摄")}</span>
-                <button className="secondary-button" type="button" onClick={() => { if (photo.startsWith("blob:")) URL.revokeObjectURL(photo); setPhoto(""); setPhotoFile(null); }}>{c("Retake", "重新拍摄")}</button>
-              </div>
-            ) : (
-              <div className="readiness-empty">
-                <div className="readiness-example">
-                  <img src={SELF_INTRO_REFERENCE_PHOTO} alt={c("Qualified Self-intro example", "Self-intro 合格示例")} />
-                  <span>{c("Qualified example", "合格示例")}</span>
-                </div>
-                <div className="readiness-empty-copy">
-                  <Camera size={38} weight="duotone" />
-                  <strong>{c("Take the photo in your real teaching position", "在真实授课位置拍摄")}</strong>
-                  <small>{c("16:9 landscape, upper body visible from the chest up, with a teaching headset", "16:9 横向，完整拍到胸部以上，并佩戴带麦耳麦")}</small>
-          <button className="primary-button" type="button" disabled={opening || !devicePassed || !coursewareConfirmed} onClick={openCamera}><Camera size={18} weight="fill" />{opening ? c("Opening camera…", "正在打开摄像头…") : c("Open camera", "打开相机拍照")}</button>
-                </div>
-              </div>
-            )}
-          </section>
-          <button className="primary-button wide-button" type="button" disabled={!photoFile || analyzing || !devicePassed || !coursewareConfirmed} onClick={submit}>
-            {analyzing ? c("Checking the seven items…", "正在逐项检测…") : c("Submit photo and start check", "提交照片并开始检测")}
-          </button>
-          <p className="readiness-privacy"><ShieldCheck size={17} weight="fill" />{c("Use your real teaching environment and keep private information out of view.", "请使用真实授课环境拍摄，并避免在画面中暴露个人隐私信息。")}</p>
-        </>
       )}
     </div>
   );

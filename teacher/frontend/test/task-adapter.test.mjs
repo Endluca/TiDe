@@ -7,8 +7,6 @@ import {
   sortTaskContexts,
   taskCodeToRouteId,
 } from "../src/task-adapter.js";
-import { getLearningTaskContent } from "../src/data/tasks/learning-task-content.js";
-import { defaultVideoAssetBaseUrl } from "../src/public-assets.js";
 import { localizePersonalizedTask } from "../src/task-localization.js";
 import { taskNeedsStart } from "../src/task-status.js";
 import { formatTaskDueAt } from "../src/task-due.js";
@@ -57,12 +55,12 @@ test("adapts live task state and capabilities instead of localStorage state", ()
   const task = adaptTaskContext(context());
   assert.equal(task.id, "platform-policies");
   assert.equal(task.status, "started");
-  assert.equal(task.method, "document_quiz");
+  assert.equal(task.method, "external_course");
   assert.equal(task.progress, 50);
   assert.equal(task.stateVersion, 2);
 });
 
-test("renders G02 as the native policy document instead of a video", () => {
+test("routes G02 to Kuozhi instead of the legacy native policy document", () => {
   const task = adaptTaskContext(context({
     capabilities: ["DOCUMENT", "QUIZ"],
     steps: [
@@ -97,11 +95,7 @@ test("renders G02 as the native policy document instead of a video", () => {
     },
   }));
 
-  assert.equal(task.method, "document_quiz");
-  assert.equal(task.documentContent.sourceTitle, "Overseas NT Policies");
-  assert.equal(task.documentCompleted, true);
-  assert.equal(task.quizQuestions[0].id, "overseas-nt-policies-q1");
-  assert.equal(task.quizQuestions[0].explanation, "");
+  assert.equal(task.method, "external_course");
 });
 
 test("maps the blacklist custom text step to the factual response flow", () => {
@@ -128,7 +122,7 @@ test("maps the blacklist custom text step to the factual response flow", () => {
   assert.equal(task.method, "factual_response");
 });
 
-test("maps live video steps to the in-platform player", () => {
+test("routes G06 to the Kuozhi external course instead of the local player", () => {
   const task = adaptTaskContext(context({
     taskCode: "G06",
     capabilities: ["VIDEO", "QUIZ"],
@@ -161,22 +155,11 @@ test("maps live video steps to the in-platform player", () => {
       },
     ],
   }));
-  const content = getLearningTaskContent(task);
-
-  assert.equal(task.method, "learning_quiz");
+  assert.equal(task.method, "external_course");
   assert.equal(task.quizQuestions.length, 0);
-  assert.equal(content.chapters.length, 2);
-  assert.equal(
-    content.chapters[0].videoSrc,
-    `${defaultVideoAssetBaseUrl}/videos/g07-me-culture/v1/01.mp4`,
-  );
-  assert.equal(
-    content.chapters[1].videoSrc,
-    `${defaultVideoAssetBaseUrl}/videos/g07-me-culture/v1/02.mp4`,
-  );
 });
 
-test("keeps a video plus checklist task in the checklist flow with an embedded player", () => {
+test("routes G05 to Kuozhi even while legacy checklist steps remain in the backend context", () => {
   const task = adaptTaskContext(context({
     taskCode: "G05",
     capabilities: ["VIDEO", "CHECKLIST"],
@@ -202,17 +185,10 @@ test("keeps a video plus checklist task in the checklist flow with an embedded p
     ],
   }));
 
-  assert.equal(task.method, "learning_checklist");
-  assert.deepEqual(task.steps, ["Understand the TTP commitment"]);
-  assert.equal(task.videoMock, true);
-  assert.equal(task.videoRequired, true);
-  assert.equal(
-    task.videoSrc,
-    `${defaultVideoAssetBaseUrl}/videos/g06-ttp-orientation/v1/01.mp4`,
-  );
+  assert.equal(task.method, "external_course");
 });
 
-test("maps the migrated G05 reference video without changing its checklist completion method", () => {
+test("keeps G05 on Kuozhi when an older reference-video config is still present", () => {
   const task = adaptTaskContext(context({
     taskCode: "G05",
     capabilities: ["CHECKLIST"],
@@ -232,14 +208,7 @@ test("maps the migrated G05 reference video without changing its checklist compl
     ],
   }));
 
-  assert.equal(task.method, "learning_checklist");
-  assert.equal(task.referenceVideo, true);
-  assert.equal(
-    task.videoSrc,
-    `${defaultVideoAssetBaseUrl}/videos/g06-ttp-orientation/v1/01.mp4`,
-  );
-  assert.equal(task.videoDuration, 314);
-  assert.equal(task.videoStepKey, null);
+  assert.equal(task.method, "external_course");
 });
 
 test("maps the backend ASSIGNED state to an available task", () => {

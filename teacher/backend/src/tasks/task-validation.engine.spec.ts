@@ -13,9 +13,10 @@ const rule = {
 };
 
 describe('TaskValidationEngine', () => {
+  const evaluateImage = jest.fn();
   const imageReview = {
     ruleType: 'AI_IMAGE_REVIEW',
-    evaluate: jest.fn(),
+    evaluate: evaluateImage,
   } as unknown as AiImageReviewRuleHandler;
   const g01ExternalStatus = {
     ruleType: 'G01_EXTERNAL_STATUS',
@@ -63,6 +64,95 @@ describe('TaskValidationEngine', () => {
     });
   });
 
+  it('does not require the retired device step for the current G04 flow', async () => {
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [rule],
+        steps: [
+          {
+            stepKey: 'g02-courseware-confirmation',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+          {
+            stepKey: 'g02-device-check',
+            status: 'NOT_STARTED',
+            percent: 0,
+          },
+          {
+            stepKey: 'g02-environment-photo',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toMatchObject({
+      status: 'PASSED',
+      resultCode: 'ALL_RULES_PASSED',
+    });
+  });
+
+  it('reviews the G04 photo before checking the separate preparation confirmation', async () => {
+    evaluateImage.mockResolvedValueOnce({
+      passed: true,
+      resultCode: 'IMAGE_REVIEW_PASSED',
+      teacherMessage: null,
+    });
+    const imageRule = {
+      ...rule,
+      ruleKey: 'g04-image-review',
+      ruleType: 'AI_IMAGE_REVIEW',
+      config: { stepKey: 'g02-environment-photo' },
+    };
+
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [rule, imageRule],
+        steps: [
+          {
+            stepKey: 'g02-courseware-confirmation',
+            status: 'NOT_STARTED',
+            percent: 0,
+          },
+          {
+            stepKey: 'g02-environment-photo',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toMatchObject({
+      status: 'FAILED',
+      resultCode: 'STEPS_INCOMPLETE',
+    });
+    expect(evaluateImage).toHaveBeenCalled();
+  });
+
+  it('still requires every step outside the current G04 flow', async () => {
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [rule],
+        steps: [
+          { stepKey: 'read', status: 'COMPLETED', percent: 100 },
+          {
+            stepKey: 'device-check',
+            status: 'NOT_STARTED',
+            percent: 0,
+          },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toMatchObject({
+      status: 'FAILED',
+      resultCode: 'STEPS_INCOMPLETE',
+    });
+  });
+
   it('keeps a completed response under review when manual validation is configured', async () => {
     await expect(
       engine.evaluate({
@@ -96,7 +186,7 @@ describe('TaskValidationEngine', () => {
   });
 
   it('keeps technical image review failures under review', async () => {
-    (imageReview.evaluate as jest.Mock).mockResolvedValueOnce({
+    evaluateImage.mockResolvedValueOnce({
       passed: false,
       deferred: true,
       resultCode: 'AI_GATEWAY_UNAVAILABLE',

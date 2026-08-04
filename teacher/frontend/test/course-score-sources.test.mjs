@@ -167,6 +167,53 @@ test("does not expose components that the source view did not award", () => {
   );
 });
 
+test("shows only Shiwen-awarded favorite courses across the full lesson set", () => {
+  const favoriteCourse = (lessonSequence, awarded) => ({
+    ...course,
+    lessonId: `lesson-${lessonSequence}`,
+    lessonSequence,
+    facts: { ...course.facts, favorited: true },
+    dimensions: [{
+      code: "USER_FEEDBACK",
+      components: [{
+        code: "FEEDBACK_FAVORITE",
+        score: awarded ? 5 : 0,
+        awarded,
+        evidenceStatus: "CONFIRMED",
+      }],
+    }],
+  });
+  const courses = [
+    favoriteCourse(8, true),
+    favoriteCourse(15, true),
+    favoriteCourse(21, true),
+    favoriteCourse(41, true),
+    favoriteCourse(50, false),
+  ];
+
+  const sources = mergeScorecardCourseSources(courses, "userFeedback", [{
+    sourceKey: "FEEDBACK_FAVORITE",
+    value: 4,
+    unit: "CLASSES",
+    score: 20,
+    pointsPerUnit: 5,
+  }]);
+
+  assert.deepEqual(
+    sources.map(({ lessonNumber, score, summaryScore }) => ({
+      lessonNumber,
+      score,
+      summaryScore,
+    })),
+    [
+      { lessonNumber: 8, score: 5, summaryScore: 20 },
+      { lessonNumber: 15, score: 5, summaryScore: 20 },
+      { lessonNumber: 21, score: 5, summaryScore: 20 },
+      { lessonNumber: 41, score: 5, summaryScore: 20 },
+    ],
+  );
+});
+
 test("keeps a later favorite fact visible without presenting a zero score", () => {
   const laterFavorite = {
     ...course,
@@ -198,7 +245,7 @@ test("keeps a later favorite fact visible without presenting a zero score", () =
 
 test("keeps every safe course fact with a teacher-facing value", () => {
   const indicators = visibleCourseIndicators(course);
-  assert.equal(indicators.length, 9);
+  assert.equal(indicators.length, 8);
   assert.deepEqual(
     indicators.map(({ sourceKey, value, tone, score }) => ({
       sourceKey,
@@ -209,7 +256,6 @@ test("keeps every safe course fact with a teacher-facing value", () => {
     [
       { sourceKey: "FEEDBACK_PRAISE", value: "已收到好评", tone: "positive", score: 5 },
       { sourceKey: "FEEDBACK_FAVORITE", value: "暂无收藏", tone: "neutral", score: null },
-      { sourceKey: "FEEDBACK_REBOOK_15D", value: "暂无 15 天内复约", tone: "neutral", score: null },
       { sourceKey: "ON_TIME_COMPLETED", value: "准时完成", tone: "positive", score: 2 },
       { sourceKey: "RELIABILITY_NO_EARLY_LEAVE", value: "完整完成", tone: "positive", score: null },
       { sourceKey: "RELIABILITY_EARLY_LEAVE_CORRECTED", value: "无修正记录", tone: "neutral", score: null },
@@ -227,7 +273,7 @@ test("shows missing values as unavailable instead of treating them as negative f
       Object.keys(course.facts).map((key) => [key, null]),
     ),
   });
-  assert.equal(indicators.length, 9);
+  assert.equal(indicators.length, 8);
   assert.equal(indicators.every((indicator) => indicator.value.zh.includes("暂无") || indicator.value.zh.includes("不完整")), true);
   assert.equal(indicators.every((indicator) => indicator.tone === "missing"), true);
 });

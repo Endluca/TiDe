@@ -1,5 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import type { AppEventService } from '../app-events/app-event.service';
+import type { KuozhiService } from '../integrations/kuozhi/kuozhi.service';
 import type { TaskRepository } from './task.repository';
 import { TaskService } from './task.service';
 
@@ -107,6 +108,37 @@ describe('TaskService', () => {
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(fixture.listTasksWithContexts).not.toHaveBeenCalled();
+  });
+
+  it('uses the authenticated account binding for the Kuozhi launch ticket', async () => {
+    const repository = {
+      findTask: jest.fn().mockResolvedValue({
+        taskInstanceId: 'assignment-006',
+        taskCode: 'G06',
+      }),
+      findBinding: jest.fn().mockResolvedValue({
+        bindingId: 'binding-001',
+        teacherId: 'TEACHER-001',
+      }),
+    } as unknown as TaskRepository;
+    const createLaunch = jest.fn().mockResolvedValue({
+      provider: 'KUOZHI',
+      embedMode: 'IFRAME',
+      courseId: '520',
+      courseTaskId: '2791',
+      launchUrl: 'https://login.example.test/ticket',
+    });
+    const service = new TaskService(repository, undefined, {
+      createLaunch,
+    } as unknown as KuozhiService);
+
+    await expect(
+      service.getKuozhiLaunch(
+        { accountId: 'account-001', sessionId: 'session-001' },
+        'assignment-006',
+      ),
+    ).resolves.toMatchObject({ courseId: '520' });
+    expect(createLaunch).toHaveBeenCalledWith('G06', 'TEACHER-001');
   });
 
   it('marks a task viewed only through an explicit idempotent command', async () => {

@@ -153,13 +153,10 @@ const aiReviewRule = (input: {
 });
 
 const environmentCriteria = [
+  'camera_angle',
   'lighting',
-  'framing',
-  'posture',
-  'headset',
-  'appearance',
   'background',
-  'clarity',
+  'dressing',
 ];
 
 const pending = (
@@ -253,10 +250,11 @@ export const currentTaskCatalog: CatalogTask[] = [
     title: 'Lesson Preparation&Device Network Check',
     why: 'Complete lesson preparation and confirm that your teaching setup is ready before class.',
     whatToDo:
-      'Confirm lesson preparation, check the camera, microphone and network, then take one teaching-environment photo.',
+      'Take one teaching-environment photo for AI review, then confirm that lesson preparation is complete.',
     completionStandard:
-      'Lesson preparation is confirmed, camera, microphone and network pass, and the teaching-environment photo passes AI review.',
-    benefit: 'Your lesson preparation and pre-class setup are recorded as ready.',
+      'The teaching-environment photo passes AI review and lesson preparation is confirmed.',
+    benefit:
+      'Your lesson preparation and pre-class teaching view are recorded as ready.',
     priority: 'P1',
     score: 3,
     stage: 'FOUNDATION',
@@ -284,16 +282,6 @@ export const currentTaskCatalog: CatalogTask[] = [
         },
       },
       {
-        key: 'g02-device-check',
-        type: 'DEVICE_CHECK',
-        title: 'Check camera, microphone and network',
-        config: {
-          version: 'g02-device-2026-07-22',
-          role: 'DEVICE_CHECK',
-          items: ['camera', 'microphone', 'network'],
-        },
-      },
-      {
         key: 'g02-environment-photo',
         type: 'UPLOAD',
         title: 'Take a teaching-environment photo',
@@ -307,14 +295,15 @@ export const currentTaskCatalog: CatalogTask[] = [
       },
     ],
     rules: [
-      allStepsRule('请先完成备课确认、设备网络检查和授课环境照片检查。'),
+      allStepsRule('请完成备课确认和授课环境照片检查。'),
       aiReviewRule({
         key: 'g02-environment-ai-review',
         stepKey: 'g02-environment-photo',
-        criteriaVersion: 'g02-environment-2026-07-v2-strict',
+        criteriaVersion:
+          'lesson-preparation-camera-view-2026-08-v7-background-veto',
         criteriaKeys: environmentCriteria,
         userText:
-          'Review this real teaching-environment photo strictly. It must be a clear 16:9 landscape photo with exactly one teacher; the full face and chest-up upper body must be visible without obstruction, the camera must be near eye level, facial features must be evenly lit, the teaching headset and microphone boom must be clearly visible, clothing must be class-appropriate, the background must contain no unrelated people, animals, obvious clutter or identifiable private information, and the image must have no serious blur or distortion.',
+          'Review this real teaching-environment photo strictly against camera angle, lighting, background and dressing only.',
       }),
     ],
   },
@@ -323,7 +312,8 @@ export const currentTaskCatalog: CatalogTask[] = [
     title: 'Platform Policies',
     why: 'Learn the essential classroom and account-safety rules.',
     whatToDo: 'Read the in-platform policy guide and complete its quiz.',
-    completionStandard: 'The policy guide is confirmed and the quiz requirements pass.',
+    completionStandard:
+      'The policy guide is confirmed and the quiz requirements pass.',
     benefit: 'You can apply the core platform policies in class.',
     priority: 'P1',
     score: 2,
@@ -800,15 +790,10 @@ async function assertCurrentSharedCatalog(client: Client): Promise<void> {
     `,
     [currentFixedTasks.map((task) => task.code)],
   );
-  const actualByCode = new Map(
-    result.rows.map((row) => [row.taskCode, row]),
-  );
+  const actualByCode = new Map(result.rows.map((row) => [row.taskCode, row]));
   const mismatches = currentFixedTasks.flatMap((task) => {
     const actual = actualByCode.get(task.code);
-    if (
-      actual?.title === task.title &&
-      Number(actual.score) === task.score
-    ) {
+    if (actual?.title === task.title && Number(actual.score) === task.score) {
       return [];
     }
     return [
@@ -958,8 +943,7 @@ async function upsertTemplate(
       task.kind === 'FIXED_GROWTH'
         ? 'MANDATORY_GROWTH'
         : 'PERSONALIZED_IMPROVEMENT',
-    content_status:
-      task.contentStatus === 'READY' ? 'READY' : 'PENDING_JIAHE',
+    content_status: task.contentStatus === 'READY' ? 'READY' : 'PENDING_JIAHE',
     priority: task.priority,
     score_value: task.score,
     stage: task.stage,

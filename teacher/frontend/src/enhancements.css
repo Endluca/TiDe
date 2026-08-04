@@ -6299,8 +6299,20 @@ button.matrix-score-value:hover {
   border-left: 0;
 }
 
-.score-rule-group.required_tasks li small {
-  display: none;
+.score-rule-group.required_tasks li.is-earned {
+  background: #f7fcf9;
+}
+
+.score-rule-group.required_tasks li.is-pending {
+  background: #fffdf7;
+}
+
+.score-rule-group.required_tasks li.is-earned small {
+  color: #07804d;
+}
+
+.score-rule-group.required_tasks li.is-pending small {
+  color: #8a6700;
 }
 
 .score-rules-empty {
@@ -6734,5 +6746,175 @@ button.matrix-score-value:hover {
   .score-sync-toast.is-syncing > svg,
   .score-sync-toast.is-delayed > svg {
     animation: none;
+  }
+}
+
+/* Global UI spacing and overflow hardening. */
+.reference-app :where(.ref-page, .section-card, .task-main-card, .dimension-detail-panel,
+  .faq-help-dialog, .auth-panel-card, .profile-popover, .message-item, .message-detail-card) {
+  min-width: 0;
+}
+
+.reference-app :where(h1, h2, h3, h4, p, li, dd, label, small, strong) {
+  overflow-wrap: break-word;
+}
+
+.reference-app :where(img, video, svg) {
+  max-width: 100%;
+}
+
+.profile-account-summary small {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  body {
+    padding-bottom: calc(78px + env(safe-area-inset-bottom));
+  }
+
+  .reference-app {
+    padding-top: calc(66px + env(safe-area-inset-top));
+  }
+
+  .ref-header {
+    height: calc(66px + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .ref-mobile-nav {
+    height: calc(76px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .detail-route .ref-page {
+    padding-bottom: calc(90px + env(safe-area-inset-bottom));
+  }
+
+  .task-continue {
+    bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .faq-help-header {
+    min-height: calc(66px + env(safe-area-inset-top));
+    padding: calc(11px + env(safe-area-inset-top)) 14px 11px;
+  }
+
+  .ref-header-actions > button,
+  .language-menu > button,
+  .profile-button,
+  .growth-view-switch button,
+  .profile-popover button,
+  .auth-language button,
+  .auth-forgot-link,
+  .auth-mode-switch button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .task-screen :where(button, .primary-button, .secondary-button, .text-button, .task-home-button),
+  .messages-screen :where(.message-filters button, .message-task-action a, .message-task-action button,
+    .message-empty-state button),
+  .faq-help-dialog button {
+    min-height: 44px;
+  }
+
+  .reference-app .task-screen .kuozhi-course-error button,
+  .reference-app .task-screen .kuozhi-course-actions button,
+  .reference-app .task-screen .kuozhi-course-actions a,
+  .reference-app .task-screen .kuozhi-external-panel > a {
+    min-height: 44px;
+  }
+
+  .auth-forgot-link,
+  .auth-mode-switch button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .dimension-card-new > button {
+    min-height: 92px;
+  }
+
+  .dimension-card-heading h3,
+  .dimension-card-new button > p {
+    display: -webkit-box;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .reference-app .dimension-board-shell .dimension-card-heading h3,
+  .reference-app .dimension-board-shell .dimension-card-new button > p {
+    display: block;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    -webkit-line-clamp: unset;
+  }
+
+  .tit-score-track {
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .tit-score-marker small,
+  .tit-score-marker.gold.is-current-stage small {
+    display: grid;
+    width: max-content;
+    max-width: 104px;
+    gap: 1px;
+    line-height: 1.2;
+    white-space: normal;
+  }
+
+  .tit-score-marker small > span + span::before {
+    content: "";
+  }
+
+  .tit-score-marker.graduation small {
+    transform: translateX(-18%);
+  }
+
+  .tit-score-marker.gold small,
+  .tit-score-marker.gold.is-current-stage small {
+    right: 0;
+    left: auto;
+    justify-items: end;
+    text-align: right;
+  }
+
+  .tit-growth-tip-card {
+    min-height: 380px;
+    padding-bottom: 76px;
+  }
+
+  .tit-growth-tip-heading {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .tit-growth-tip-card h2,
+  .tit-growth-tip-card > p,
+  .toki-growth-action {
+    width: calc(100% - 112px);
+    max-width: none;
+  }
+
+  .toki-growth-action {
+    min-width: 0;
+  }
+
+  .toki-growth-action span {
+    display: block;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    -webkit-line-clamp: unset;
+  }
+
+  .tit-growth-tip-card > button {
+    min-height: 44px;
   }
 }

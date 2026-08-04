@@ -11,9 +11,16 @@ import { TaskValidationEngine } from './task-validation.engine';
 import { G01ExternalStatusRuleHandler } from './g01-external-status-rule.handler';
 import { AiImageReviewRuleHandler } from './ai-image-review-rule.handler';
 import { ImageReviewRepository } from './image-review.repository';
+import { KuozhiModule } from '../integrations/kuozhi/kuozhi.module';
 
 @Module({
-  imports: [AuthModule, FileModule, AiGatewayModule, AppEventStoreModule],
+  imports: [
+    AuthModule,
+    FileModule,
+    AiGatewayModule,
+    AppEventStoreModule,
+    KuozhiModule,
+  ],
   controllers: [TaskController],
   providers: [
     AllStepsCompleteRuleHandler,

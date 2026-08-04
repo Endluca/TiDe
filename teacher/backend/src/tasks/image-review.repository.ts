@@ -76,6 +76,24 @@ export class ImageReviewRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  async hasPassedReview(
+    client: PoolClient,
+    input: { fileId: string; criteriaVersion: string },
+  ): Promise<boolean> {
+    const result = await client.query(
+      `
+        SELECT 1
+        FROM tide.image_reviews
+        WHERE file_id = $1
+          AND criteria_version = $2
+          AND decision = 'PASS'
+        LIMIT 1
+      `,
+      [input.fileId, input.criteriaVersion],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async save(
     client: PoolClient,
     input: {

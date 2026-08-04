@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TIDE Teacher API Contract
-  version: 0.10.0
+  version: 0.12.0
   description: >-
     教师端公共合同。包含教师端任务、文件和 My TIDE 安全读取；
     各模块实现状态见 contracts/README。任务、G01 状态和外部消息直接使用共享 PostgreSQL 契约表；
@@ -223,6 +223,72 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TaskContext' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/tasks/{taskInstanceId}/kuozhi-launch:
+    get:
+      tags: [Tasks]
+      summary: 为当前教师生成阔知课程免登地址
+      description: >-
+        后端按当前账号绑定的 teacher_id 生成短期课程票证；响应禁止缓存，
+        前端不得持有 appkey 对应的 secretKey。一个 TIDE 任务可映射多门课程。
+      operationId: getKuozhiCourseLaunch
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+      responses:
+        '200':
+          description: 当前任务的阔知 iframe 免登地址
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'no-store, max-age=0' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KuozhiLaunchResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/tasks/{taskInstanceId}/kuozhi-progress:
+    get:
+      tags: [Tasks]
+      summary: 获取当前任务最近一次阔知进度快照
+      operationId: getKuozhiCourseProgress
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+      responses:
+        '200':
+          description: 已归一化的阔知进度；从未刷新时返回 NOT_SYNCED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KuozhiProgressResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/tasks/{taskInstanceId}/kuozhi-progress/refresh:
+    post:
+      tags: [Tasks]
+      summary: 查询阔知并幂等刷新当前任务进度
+      description: >-
+        teacher_id 和 course_id 均由后端认证绑定与版本化映射取得。示例模式只返回
+        SAMPLE_DRY_RUN 数据，不保存快照，也不更新当前老师的任务状态。
+      operationId: refreshKuozhiCourseProgress
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MutationMeta' }
+      responses:
+        '200':
+          description: 本次阔知查询、判定与 assignment 更新结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KuozhiProgressResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/tasks/{taskInstanceId}/view:
     post:
       tags: [Tasks]
@@ -1074,6 +1140,88 @@ components:
         dueAt: { type: [string, 'null'], format: date-time }
         completedAt: { type: [string, 'null'], format: date-time }
         dataOrigin: { type: string, enum: [REAL, DERIVED_REAL, MOCK, MOCK_SIMULATION, MOCK_PROXY] }
+    KuozhiLaunchResponse:
+      type: object
+      additionalProperties: false
+      required: [provider, dataMode, integrationStatus, mappingVersion, courses]
+      properties:
+        provider: { type: string, const: KUOZHI }
+        dataMode: { type: string, enum: [REAL, SAMPLE_DRY_RUN] }
+        integrationStatus: { type: string, enum: [ACTIVE, PARTIAL, MAPPING_ONLY] }
+        mappingVersion: { type: integer, minimum: 1 }
+        courses:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [courseId, title, embedMode, launchUrl]
+            properties:
+              courseId: { type: string, pattern: '^\d+$' }
+              title: { type: [string, 'null'] }
+              embedMode: { type: string, enum: [IFRAME, NEW_WINDOW] }
+              launchUrl: { type: string, format: uri }
+    KuozhiProgressResponse:
+      type: object
+      additionalProperties: false
+      required: [provider, dataMode, integrationStatus, mappingVersion, syncStatus, refreshedAt, courses, completion, assignment]
+      properties:
+        provider: { type: string, const: KUOZHI }
+        dataMode: { type: string, enum: [REAL, SAMPLE_DRY_RUN] }
+        integrationStatus: { type: string, enum: [ACTIVE, PARTIAL, MAPPING_ONLY] }
+        mappingVersion: { type: integer, minimum: 1 }
+        syncStatus: { type: string, enum: [NOT_SYNCED, AVAILABLE, PARTIAL, NO_DATA] }
+        refreshedAt: { type: [string, 'null'], format: date-time }
+        courses:
+          type: array
+          items: { $ref: '#/components/schemas/KuozhiProgressCourse' }
+        completion:
+          type: object
+          additionalProperties: false
+          required: [enabled, completed, reasonCode]
+          properties:
+            enabled: { type: boolean }
+            completed: { type: boolean }
+            reasonCode:
+              type: string
+              enum: [NOT_SYNCED, COMPLETED, COMPLETION_DISABLED, NO_DATA, REQUIRED_TASK_MISSING, SOURCE_VALUE_INVALID, REQUIREMENTS_INCOMPLETE]
+        assignment:
+          type: object
+          additionalProperties: false
+          required: [status, stateVersion, stateUpdated]
+          properties:
+            status: { $ref: '#/components/schemas/TaskStatus' }
+            stateVersion: { type: integer, minimum: 1 }
+            stateUpdated: { type: boolean }
+    KuozhiProgressCourse:
+      type: object
+      additionalProperties: false
+      required: [courseId, title, sourceAvailable, percent, completed, tasks]
+      properties:
+        courseId: { type: string, pattern: '^\d+$' }
+        title: { type: string }
+        sourceAvailable: { type: boolean }
+        percent: { type: [number, 'null'], minimum: 0, maximum: 100 }
+        completed: { type: boolean }
+        tasks:
+          type: array
+          items: { $ref: '#/components/schemas/KuozhiProgressTask' }
+    KuozhiProgressTask:
+      type: object
+      additionalProperties: false
+      required: [courseTaskId, title, type, required, sourceStatus, percent, score, normalizedScorePercent, passScorePercent, testTimes, completed]
+      properties:
+        courseTaskId: { type: string, pattern: '^\d+$' }
+        title: { type: string }
+        type: { type: string, enum: [VIDEO, TESTPAPER] }
+        required: { type: boolean }
+        sourceStatus: { type: string, enum: [AVAILABLE, MISSING, INVALID] }
+        percent: { type: [number, 'null'], minimum: 0, maximum: 100 }
+        score: { type: [number, 'null'] }
+        normalizedScorePercent: { type: [number, 'null'], minimum: 0 }
+        passScorePercent: { type: [number, 'null'], minimum: 0, maximum: 100 }
+        testTimes: { type: [number, 'null'], minimum: 0 }
+        completed: { type: boolean }
     TaskContent:
       type: object
       additionalProperties: false

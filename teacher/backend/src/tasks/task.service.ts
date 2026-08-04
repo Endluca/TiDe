@@ -19,17 +19,30 @@ import type { RetryTaskDto } from './dto/retry-task.dto';
 import type { SaveProgressDto } from './dto/save-progress.dto';
 import type { SubmitTaskDto } from './dto/submit-task.dto';
 import type { VideoHeartbeatDto } from './dto/video-heartbeat.dto';
+import type { RefreshKuozhiProgressDto } from './dto/refresh-kuozhi-progress.dto';
 import {
   OwnedTaskNotFoundError,
   TaskCommandConflictError,
   TaskRepository,
 } from './task.repository';
+import { KuozhiService } from '../integrations/kuozhi/kuozhi.service';
+import type {
+  KuozhiLaunchResponse,
+  KuozhiProgressResponse,
+} from '../integrations/kuozhi/kuozhi.models';
+import {
+  KuozhiOwnedTaskNotFoundError,
+  KuozhiProgressConflictError,
+  KuozhiProgressRepository,
+} from '../integrations/kuozhi/kuozhi-progress.repository';
 
 @Injectable()
 export class TaskService {
   constructor(
     private readonly repository: TaskRepository,
     @Optional() private readonly events?: AppEventService,
+    @Optional() private readonly kuozhi?: KuozhiService,
+    @Optional() private readonly kuozhiProgress?: KuozhiProgressRepository,
   ) {}
 
   async list(principal: AuthPrincipal): Promise<TaskListResponse> {
@@ -53,6 +66,114 @@ export class TaskService {
       throw this.notFound();
     }
     return task;
+  }
+
+  async getKuozhiLaunch(
+    principal: AuthPrincipal,
+    taskInstanceId: string,
+  ): Promise<KuozhiLaunchResponse> {
+    const [task, binding] = await Promise.all([
+      this.repository.findTask(principal.accountId, taskInstanceId),
+      this.repository.findBinding(principal.accountId),
+    ]);
+    if (!task || !binding) {
+      throw this.notFound();
+    }
+    if (!this.kuozhi) {
+      throw new UnprocessableEntityException({
+        code: 'KUOZHI_INTEGRATION_UNAVAILABLE',
+        message: '课程服务暂不可用，请稍后重试',
+        retryable: true,
+      });
+    }
+    return this.kuozhi.createLaunch(task.taskCode, binding.teacherId);
+  }
+
+  async getKuozhiProgress(
+    principal: AuthPrincipal,
+    taskInstanceId: string,
+  ): Promise<KuozhiProgressResponse> {
+    const { task, resolved } = await this.kuozhiContext(
+      principal,
+      taskInstanceId,
+    );
+    const latest =
+      resolved.dataMode === 'REAL' && this.kuozhiProgress
+        ? await this.kuozhiProgress.getLatest(
+            principal.accountId,
+            taskInstanceId,
+          )
+        : null;
+    return {
+      ...(latest ?? this.kuozhi!.emptyProgress(resolved)),
+      assignment: {
+        status: task.status,
+        stateVersion: task.stateVersion,
+        stateUpdated: false,
+      },
+    };
+  }
+
+  async refreshKuozhiProgress(
+    principal: AuthPrincipal,
+    taskInstanceId: string,
+    idempotencyKey: string | undefined,
+    input: RefreshKuozhiProgressDto,
+  ): Promise<KuozhiProgressResponse> {
+    const { task, resolved } = await this.kuozhiContext(
+      principal,
+      taskInstanceId,
+    );
+    const command = this.commandInput(
+      principal,
+      taskInstanceId,
+      idempotencyKey,
+      'KUOZHI_PROGRESS_REFRESH',
+      input,
+    );
+    const references = this.kuozhi!.passScoreReferences(resolved.mapping);
+    const passScores =
+      references.length > 0
+        ? await this.requiredKuozhiProgress().loadPublishedPassScores(
+            references,
+          )
+        : new Map<string, number>();
+    const progress = await this.kuozhi!.fetchProgress(resolved, passScores);
+
+    if (resolved.dataMode === 'SAMPLE_DRY_RUN') {
+      return {
+        ...progress,
+        assignment: {
+          status: task.status,
+          stateVersion: task.stateVersion,
+          stateUpdated: false,
+        },
+      };
+    }
+
+    try {
+      return await this.requiredKuozhiProgress().persistRefresh({
+        ...command,
+        expectedStateVersion: input.expectedStateVersion,
+        progress,
+      });
+    } catch (error) {
+      if (error instanceof KuozhiOwnedTaskNotFoundError) throw this.notFound();
+      if (error instanceof KuozhiProgressConflictError) {
+        throw new ConflictException({
+          code: error.reason,
+          message:
+            error.reason === 'STATE_VERSION_CONFLICT'
+              ? '任务状态已更新，请重新读取后再刷新'
+              : '幂等键或命令编号已用于其他请求',
+          retryable: error.reason === 'STATE_VERSION_CONFLICT',
+          ...(Object.keys(error.details).length > 0
+            ? { details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
   }
 
   async start(
@@ -365,6 +486,40 @@ export class TaskService {
         )
         .digest('hex'),
     };
+  }
+
+  private async kuozhiContext(
+    principal: AuthPrincipal,
+    taskInstanceId: string,
+  ) {
+    const [task, binding] = await Promise.all([
+      this.repository.findTask(principal.accountId, taskInstanceId),
+      this.repository.findBinding(principal.accountId),
+    ]);
+    if (!task || !binding) throw this.notFound();
+    if (!this.kuozhi) {
+      throw new UnprocessableEntityException({
+        code: 'KUOZHI_INTEGRATION_UNAVAILABLE',
+        message: '课程服务暂不可用，请稍后重试',
+        retryable: true,
+      });
+    }
+    const resolved = await this.kuozhi.resolveMapping(
+      task.taskCode,
+      binding.teacherId,
+    );
+    return { task, resolved };
+  }
+
+  private requiredKuozhiProgress(): KuozhiProgressRepository {
+    if (!this.kuozhiProgress) {
+      throw new UnprocessableEntityException({
+        code: 'KUOZHI_PROGRESS_UNAVAILABLE',
+        message: '课程进度同步暂不可用，请稍后重试',
+        retryable: true,
+      });
+    }
+    return this.kuozhiProgress;
   }
 
   private async captureValidationFailure(

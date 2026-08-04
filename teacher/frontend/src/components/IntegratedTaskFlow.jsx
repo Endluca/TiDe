@@ -3,6 +3,7 @@ import "../task-flows.css";
 import { WarningCircle } from "@phosphor-icons/react";
 import { uploadTaskFile } from "../api/file-api";
 import {
+  getTaskValidation,
   retryTask,
   saveTaskProgress,
   saveVideoHeartbeat,
@@ -478,7 +479,9 @@ export default function IntegratedTaskFlow({ task, onRefresh, onTaskSubmitted, o
     context,
     steps,
     findStep,
+    start: ensureStarted,
     refresh: refreshLatestContext,
+    loadValidation: (signal) => getTaskValidation(task.backendId, signal),
     saveStep,
     saveVideo,
     uploadStep,
@@ -494,7 +497,7 @@ export default function IntegratedTaskFlow({ task, onRefresh, onTaskSubmitted, o
       { task, properties },
       uniqueKey,
     ),
-  }), [context, finalize, findStep, refreshLatestContext, reportError, retry, saveStep, saveVideo, steps, task, uploadStep]);
+  }), [context, ensureStarted, finalize, findStep, refreshLatestContext, reportError, retry, saveStep, saveVideo, steps, task, uploadStep]);
 
   const presentationTask = useMemo(() => ({
     ...localizeTask(hydratedTask(task, context, status, steps), language),

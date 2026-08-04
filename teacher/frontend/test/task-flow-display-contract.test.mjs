@@ -117,6 +117,60 @@ test("task details show the reason only once in the why-this-task section", asyn
   assert.match(app, /<h3>\{copy\(language, "Why this task", "为什么要做"\)\}<\/h3>/);
 });
 
+test("G04 keeps preparation confirmation at the very bottom without gating photo review", async () => {
+  const [integratedTaskFlow, readinessPhoto] = await Promise.all([
+    source("components/IntegratedTaskFlow.jsx"),
+    source("features/task-content/ReadinessPhotoTask.jsx"),
+  ]);
+
+  assert.match(readinessPhoto, /disabled=\{opening\} onClick=\{openCamera\}/);
+  assert.match(
+    readinessPhoto,
+    /disabled=\{!photoFile \|\| analyzing \|\| photoApproved\} onClick=\{submit\}/,
+  );
+  assert.doesNotMatch(readinessPhoto, /analyzing \|\| !coursewareConfirmed/);
+  assert.doesNotMatch(
+    readinessPhoto,
+    /DEVICE_CHECK|devicePassed|deviceProgress|checkingDevice|runDeviceCheck/,
+  );
+  assert.match(integratedTaskFlow, /loadValidation: \(signal\) => getTaskValidation/);
+  assert.match(readinessPhoto, /readinessPayloadFromValidation/);
+
+  const captureIndex = readinessPhoto.indexOf('className="readiness-capture"');
+  const submitIndex = readinessPhoto.indexOf('className="primary-button wide-button"');
+  const privacyIndex = readinessPhoto.indexOf("readiness-privacy");
+  const confirmationIndex = readinessPhoto.indexOf("readiness-preparation-confirm");
+  assert.ok(captureIndex >= 0);
+  assert.ok(submitIndex > captureIndex);
+  assert.ok(privacyIndex > submitIndex);
+  assert.ok(confirmationIndex > privacyIndex);
+});
+
+test("G04 uses Sophia's checklist first qualified photo as its camera reference", async () => {
+  const readinessPhoto = await source("features/task-content/ReadinessPhotoTask.jsx");
+
+  assert.match(
+    readinessPhoto,
+    /lesson-preparation-examples\/camera-angle-good-front\.jpg/,
+  );
+  assert.doesNotMatch(readinessPhoto, /self-intro-reference-51talk\.webp/);
+});
+
+test("G04 shows Sophia's four visual checks with their example gallery", async () => {
+  const [app, readinessPhoto] = await Promise.all([
+    source("App.jsx"),
+    source("features/task-content/ReadinessPhotoTask.jsx"),
+  ]);
+
+  for (const criterion of ["camera_angle", "lighting", "background", "dressing"]) {
+    assert.match(readinessPhoto, new RegExp(`\\["${criterion}"`));
+  }
+  assert.match(readinessPhoto, /<ReadinessExampleGallery initialActiveId=\{exampleFocusId\} \/>/);
+  assert.doesNotMatch(readinessPhoto, /Teaching headset worn|佩戴授课耳麦|seven items|7 项/);
+  assert.match(app, /four lesson-preparation checks/);
+  assert.doesNotMatch(app, /all seven readiness checks|7 项准备检测结果/);
+});
+
 test("all four task summary regions use Shiwen content instead of local execution steps", async () => {
   const [app, localization, i18n] = await Promise.all([
     source("App.jsx"),

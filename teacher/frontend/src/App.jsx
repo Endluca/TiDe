@@ -67,6 +67,7 @@ import { Toki as MotionToki } from "./components/UI";
 import { logoutTeacher, requestPasswordReset } from "./api/auth-api";
 import { restoreSession } from "./api/api-client";
 import {
+  getAllCourses,
   getCourses,
   getG01Review,
   getNotifications,
@@ -120,6 +121,7 @@ import {
 } from "./lesson-pagination";
 import { pollScorecard } from "./score-sync";
 import {
+  presentStageAction,
   presentScorecardRules,
   scoreStageStates,
 } from "./score-presentation";
@@ -271,7 +273,7 @@ const workspaceMeta = {
   document_quiz: ["Policy reading and practice", "规则阅读与练习", "Read the policy guide, then pass the exercise to complete this task.", "阅读平台规则文档，再通过课后练习，即可完成任务。"],
   video_learning: ["Video training", "视频培训", "Watch the complete training video to finish this task.", "完整看完培训视频即可完成任务。"],
   external_status: ["Review status", "审核状态", "Check the latest available result.", "查看最新审核结果。"],
-  readiness_photo: ["Pre-class environment check", "课前环境确认", "Take one photo in your real teaching position and review all seven readiness checks.", "在真实授课位置拍一张照片，并逐项查看 7 项准备检测结果。"],
+  readiness_photo: ["Pre-class environment check", "课前环境确认", "Take one photo in your real teaching position and review the four lesson-preparation checks.", "在真实授课位置拍一张照片，并逐项查看首课准备的 4 项画面检测结果。"],
   upload_review: ["Submit for review", "上传材料", "Follow the steps below to submit your material for review.", "按照下方要求提交材料并查看审核结果。"],
   environment_photo: ["First-lesson preparation", "首课准备中心", "Check four visible items in one live camera photo and confirm your courseware preparation.", "用一张实时摄像头照片检测四项画面内容，并确认课件准备。"],
   embedded_course: ["In-platform course", "站内课程", "Complete every learning section inside this task page.", "在当前任务页内完成全部学习内容。"],
@@ -619,7 +621,11 @@ function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onM
         </NavLink>
       </nav>
       <div className="ref-header-actions">
-        <button type="button" onClick={onHelp}>
+        <button
+          type="button"
+          onClick={onHelp}
+          aria-label={copy(language, "Help", "帮助")}
+        >
           <Question size={20} />
           <span>{copy(language, "Help", "帮助")}</span>
         </button>
@@ -2408,7 +2414,11 @@ function AttributionMatrix({ dimension, language, onOpenTask }) {
   );
 }
 
-function DimensionDetails({ dimension, language }) {
+function DimensionDetails({
+  dimension,
+  language,
+  attributionUnavailable = false,
+}) {
   const DimensionIcon = dimensionIcons[dimension.id] || ChartLineUp;
   const progress = dimension.progress;
   const [matrixPage, setMatrixPage] = useState(1);
@@ -2611,15 +2621,22 @@ function DimensionDetails({ dimension, language }) {
             : isCapacityDimension
               ? copy(language, "See the current peak-time availability, target and point status.", "查看当前高峰时段可约课时数、达标线和积分状态。")
               : isRequiredTaskDimension
-                ? copy(language, "See every required task and the score returned by Shiwen.", "直接查看每项必修任务及世文返回的积分。")
-                : copy(language, "See each component total returned by Shiwen.", "查看世文返回的各子项累计积分。")}</p>
+                ? copy(language, "See every required task and its current points.", "直接查看每项必修任务及当前积分。")
+                : copy(language, "See each component's accumulated points.", "查看各子项累计积分。")}</p>
         </div>
       </div>
       <div className="dimension-data-meta">
         <span><Clock size={17} />{copy(language, "Updated", "更新于")}：{localizeTitValue(dimension.updated, language)}</span>
       </div>
       <div className="dimension-summary-only">
-        {usesCourseMatrix ? (
+        {isCourseScoreDimension && attributionUnavailable ? (
+          <SourceUnavailableCard
+            compact
+            language={language}
+            title={copy(language, "Class attribution is temporarily unavailable", "逐课积分归因暂时无法加载")}
+            message={copy(language, "The cumulative score is still available. Reload later to view its full class attribution.", "累计积分仍可正常查看，请稍后重新加载完整逐课归因。")}
+          />
+        ) : usesCourseMatrix ? (
           <article className="dimension-course-matrix">
             <header className="dimension-course-matrix-heading">
               <div>
@@ -2644,14 +2661,13 @@ function DimensionDetails({ dimension, language }) {
             </header>
 
             <div className="dimension-course-matrix-desktop">
-              <table>
-                <caption className="sr-only">
-                  {copy(
-                    language,
-                    `${localizeTitValue(dimension.title, language)} indicator scores by class`,
-                    `${localizeTitValue(dimension.title, language)}各指标逐课积分分布`,
-                  )}
-                </caption>
+              <table
+                aria-label={copy(
+                  language,
+                  `${localizeTitValue(dimension.title, language)} indicator scores by class`,
+                  `${localizeTitValue(dimension.title, language)}各指标逐课积分分布`,
+                )}
+              >
                 <thead>
                   <tr>
                     <th scope="col">{copy(language, "Indicator", "指标")}</th>
@@ -2679,8 +2695,8 @@ function DimensionDetails({ dimension, language }) {
                                 )
                               : copy(
                                   language,
-                                  `${Number.isFinite(group.summaryValue) ? `${group.summaryValue} classes in Shiwen's summary · ` : ""}No class attribution yet`,
-                                  `${Number.isFinite(group.summaryValue) ? `世文汇总 ${group.summaryValue} 节 · ` : ""}暂无逐课归因`,
+                                  `${Number.isFinite(group.summaryValue) ? `${group.summaryValue} classes in the score summary · ` : ""}No class attribution yet`,
+                                  `${Number.isFinite(group.summaryValue) ? `积分汇总 ${group.summaryValue} 节 · ` : ""}暂无逐课归因`,
                                 )
                             : copy(
                                 language,
@@ -2850,7 +2866,7 @@ function DimensionDetails({ dimension, language }) {
               <ListChecks size={22} weight="duotone" />
               <div>
                 <strong>{copy(language, "Required-task details", "必修任务明细")}</strong>
-                <p>{copy(language, "Task status and points come from the shared task table and Shiwen scorecard.", "任务状态与积分分别来自共享任务表和世文积分卡。")}</p>
+                <p>{copy(language, "See each required task's latest status and points.", "查看每项必修任务的最新状态与积分。")}</p>
               </div>
               {progress && (
                 <span>
@@ -2903,19 +2919,19 @@ function DimensionDetails({ dimension, language }) {
         {isCapacityDimension
           ? copy(
               language,
-              "The current value and point status come directly from Shiwen's latest scorecard.",
-              "当前值和积分状态直接读取世文最新积分卡。",
+              "The current value and point status use the latest scorecard.",
+              "当前值和积分状态以最新积分卡为准。",
             )
           : isRequiredTaskDimension
             ? copy(
                 language,
-                "Task status comes from shared assignments; each task score comes from Shiwen's NEW_TEACHER_TASK components.",
-                "任务状态来自共享任务表；各任务积分来自世文 NEW_TEACHER_TASK 子项。",
+                "Task status and points use the latest available results.",
+                "任务状态与积分以系统最新结果为准。",
               )
             : copy(
                 language,
-                "The backend passes through Shiwen's dimension and component results without recalculating them.",
-                "后端直接透传世文维度与子项结果，不再自行计算。",
+                "Dimension and component points use the latest available results.",
+                "各维度与子项积分均以系统最新结果为准。",
               )}
       </footer>
     </section>
@@ -3078,8 +3094,12 @@ function LessonCourseView({
         <div className={`data-score-guide lesson-data-score-guide ${activeLesson.scoreStatus === "SOURCE_MISSING" ? "is-warning" : ""}`}>
           <Info size={14} />
           {activeLesson.scoreStatus === "SOURCE_MISSING"
-            ? copy(language, "Shiwen marked part of this class evidence as unavailable; no local score was inferred.", "世文标记本课部分证据缺失，教师端没有自行推算积分。")
-            : copy(language, `Course facts and scores come directly from Shiwen's ${activeLesson.scoreRuleVersion || "current"} result.`, `课程事实与积分直接读取世文 ${activeLesson.scoreRuleVersion || "当前"} 结果。`)}
+            ? copy(language, "Part of this class evidence is currently unavailable, so no points were inferred.", "本课部分证据暂时缺失，系统未推算积分。")
+            : copy(
+                language,
+                `Course facts and scores use the ${activeLesson.scoreRuleVersion || "current"} result.`,
+                `课程事实与积分以${activeLesson.scoreRuleVersion ? ` ${activeLesson.scoreRuleVersion} ` : "当前"}结果为准。`,
+              )}
         </div>
 
         {activeLesson.groups.length > 0 && (
@@ -3186,7 +3206,7 @@ function LessonCourseView({
 
         <footer className="lesson-report-note">
           <Info size={17} />
-          <span>{copy(language, "Course facts outside the scoring rules are shown without points. Cumulative totals come directly from Shiwen's scorecard.", "不在积分规则中的课程事实不标分数；累计分直接读取世文积分卡。")}</span>
+          <span>{copy(language, "Course facts outside the scoring rules are shown without points. Cumulative totals use the current scorecard.", "不在积分规则中的课程事实不标分数；累计分以当前积分卡为准。")}</span>
         </footer>
       </article>
     </section>
@@ -3213,26 +3233,17 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
       reached: score.goldQualified === true,
     },
   };
-  const stageStatus = (stage, target) => {
-    if (stage.reached) {
-      return copy(language, "Achieved", "已达成");
-    }
-    if (stage.gap === null) {
-      return copy(language, "Waiting for score", "等待积分更新");
-    }
-    if (stage.gap === 0) {
-      return copy(
-        language,
-        "Score reached; other eligibility conditions still apply",
-        "积分已达标，仍需满足其他资格条件",
-      );
-    }
-    return copy(
-      language,
-      `${stage.gap.toFixed(1)} points to go`,
-      `还差 ${stage.gap.toFixed(1)} 分`,
-    );
-  };
+  const availableTaskByCode = new Map(
+    score.availableItems.map((item) => [item.taskCode, item]),
+  );
+  const remainingRequiredTasks = availableTaskByCode.size;
+  const stageStatus = (stage) => presentStageAction(
+    stage,
+    remainingRequiredTasks,
+    language,
+  );
+  const graduationStatus = stageStatus(stageStates.graduation);
+  const goldStatus = stageStatus(stageStates.gold);
   useEffect(() => {
     if (!open) return undefined;
     const close = (event) => event.key === "Escape" && onClose();
@@ -3257,8 +3268,8 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
         <p className="score-dialog-intro">
           {copy(
             language,
-            "Current points come directly from Shiwen's latest scorecard. Available points are the sum of unfinished required tasks and disappear after all required tasks are complete.",
-            "已获得积分直接读取世文最新积分卡；可获得积分为未完成必修任务分值之和，全部完成后不再显示。",
+            "Current points use the latest scorecard. Available points are the sum of unfinished required tasks and disappear after all required tasks are complete.",
+            "已获得积分以最新积分卡为准；可获得积分为未完成必修任务分值之和，全部完成后不再显示。",
           )}
         </p>
         <div className="score-dialog-summary">
@@ -3295,11 +3306,13 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
                 </div>
                 <strong>{score.graduationMilestone} {copy(language, "pts", "分")}</strong>
               </div>
-              <p>{copy(language, "Reaching 100 points enters the graduation and probation-passed milestone; the final status still uses the system result.", "达到 100 分进入出营与通过试用期里程碑，最终状态仍以系统返回结果为准。")}</p>
-              <div className="score-stage-progress-copy">
-                <span>{stageStatus(stageStates.graduation, score.graduationMilestone)}</span>
-                {stageStates.graduation.current && <em>{copy(language, "Current goal", "当前目标")}</em>}
-              </div>
+              <p>{copy(language, "Work toward 100 points and all 9 required tasks; the final graduation status uses the system result.", "出营阶段关注达到 100 分并完成 9 项必修任务；最终状态以系统返回结果为准。")}</p>
+              {graduationStatus && (
+                <div className="score-stage-progress-copy">
+                  <span>{graduationStatus}</span>
+                  {stageStates.graduation.current && <em>{copy(language, "Current goal", "当前目标")}</em>}
+                </div>
+              )}
               <aside>
                 <Sparkle size={16} weight="fill" />
                 <span><b>{copy(language, "Incentive:", "激励说明：")}</b>{copy(language, " After graduation, your Rank increases by 1 level.", "成功出营后，你的 Rank 将提升 1 级。")}</span>
@@ -3321,15 +3334,13 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
                 </div>
                 <strong>{score.goldMilestone} {copy(language, "pts", "分")}</strong>
               </div>
-              <p>{copy(
-                language,
-                "After reaching 200 points, the Gold Teacher stage also requires no more than 1 late arrival, 0 early departures and 0 confirmed absences.",
-                "达到 200 分后，还需同时满足：迟到不超过 1 次、早退 0 次、真实缺席 0 次。",
-              )}</p>
-              <div className="score-stage-progress-copy">
-                <span>{stageStatus(stageStates.gold, score.goldMilestone)}</span>
-                {stageStates.gold.current && <em>{stageStates.gold.reached ? copy(language, "Current stage", "当前阶段") : copy(language, "Next goal", "下一目标")}</em>}
-              </div>
+              <p>{copy(language, "Reaching 200 points advances you to the Gold Teacher assessment; the final status uses the system result.", "达到 200 分后进入金牌教师评定；最终状态以系统返回结果为准。")}</p>
+              {goldStatus && (
+                <div className="score-stage-progress-copy">
+                  <span>{goldStatus}</span>
+                  {stageStates.gold.current && <em>{stageStates.gold.reached ? copy(language, "Current stage", "当前阶段") : copy(language, "Next goal", "下一目标")}</em>}
+                </div>
+              )}
               <aside>
                 <Sparkle size={16} weight="fill" />
                 <span><b>{copy(language, "Incentive:", "激励说明：")}</b>{copy(language, " After becoming a Gold Teacher, your Rank increases by another level.", "成为金牌教师后，你的 Rank 将再提升 1 级。")}</span>
@@ -3342,7 +3353,7 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
             <span><ChartLineUp size={20} weight="duotone" /></span>
             <div>
               <h3 id="score-rules-title">{copy(language, "Point rules", "积分规则说明")}</h3>
-              <p>{copy(language, "The positive rules below come directly from Shiwen's current scorecard.", "以下正向加分规则直接读取世文当前积分卡。")}</p>
+              <p>{copy(language, "The positive rules below reflect the current scorecard.", "以下正向加分规则以当前积分卡为准。")}</p>
             </div>
             <small className="score-rules-version">
               {copy(language, "Version", "版本")}：{score.resultVersion}
@@ -3352,33 +3363,63 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
             <div className="score-rule-grid">
               {publicRuleGroups.map((group) => {
                 const RuleIcon = scoreRuleGroupIcons[group.code] || ChartLineUp;
-                const groupClass = group.code === "NEW_TEACHER_TASK"
+                const isRequiredTaskGroup = group.code === "NEW_TEACHER_TASK";
+                const groupClass = isRequiredTaskGroup
                   ? "required_tasks"
                   : group.code.toLowerCase();
+                const requiredTaskCurrentScore = Number(group.currentScore) || 0;
+                const requiredTaskAvailableScore = score.availableItems.reduce(
+                  (total, item) => total + (Number(item.score) || 0),
+                  0,
+                );
+                const requiredTaskTotalScore = requiredTaskCurrentScore
+                  + requiredTaskAvailableScore;
+                const formatScore = (value) => new Intl.NumberFormat(
+                  language === "zh" ? "zh-CN" : "en-US",
+                  { maximumFractionDigits: 2 },
+                ).format(value);
                 return (
                   <article className={`score-rule-group ${groupClass}`} key={group.code}>
                     <header>
                       <span><RuleIcon size={19} weight="duotone" /></span>
                       <div>
-                        <h4>{group.title}</h4>
-                        <p>{group.description}</p>
+                        <h4>{isRequiredTaskGroup ? copy(language, "Required-task points", "必修任务积分") : group.title}</h4>
+                        <p>{isRequiredTaskGroup ? copy(language, "See earned and remaining points in one place.", "统一查看每项任务的积分与完成状态。") : group.description}</p>
                       </div>
                       {Number.isFinite(group.currentScore) && (
                         <b className="score-rule-current">
-                          {copy(language, "Current", "当前")} {group.currentScore} {copy(language, "pts", "分")}
+                          {isRequiredTaskGroup
+                            ? copy(
+                                language,
+                                `Earned ${formatScore(requiredTaskCurrentScore)} / ${formatScore(requiredTaskTotalScore)} pts`,
+                                `已获得 ${formatScore(requiredTaskCurrentScore)} / ${formatScore(requiredTaskTotalScore)} 分`,
+                              )
+                            : `${copy(language, "Current", "当前")} ${group.currentScore} ${copy(language, "pts", "分")}`}
                         </b>
                       )}
                     </header>
                     <ul>
-                      {group.items.map((item) => (
-                        <li key={item.code}>
-                          <div>
-                            <strong>{item.title}</strong>
-                            <small>{item.condition}</small>
-                          </div>
-                          <em>{item.pointsLabel}</em>
-                        </li>
-                      ))}
+                      {group.items.map((item) => {
+                        const availableTask = availableTaskByCode.get(item.code);
+                        const taskName = availableTask?.title
+                          || fixedTaskCatalog.find((task) => task.taskCode === item.code)?.name;
+                        return (
+                          <li
+                            className={isRequiredTaskGroup ? (availableTask ? "is-pending" : "is-earned") : ""}
+                            key={item.code}
+                          >
+                            <div>
+                              <strong>{isRequiredTaskGroup && taskName ? `${item.code} · ${taskName}` : item.title}</strong>
+                              <small>{isRequiredTaskGroup
+                                ? availableTask
+                                  ? copy(language, "To do · points available", "待完成 · 完成后可得分")
+                                  : copy(language, "Points earned", "已完成 · 积分已获得")
+                                : item.condition}</small>
+                            </div>
+                            <em>{item.pointsLabel}</em>
+                          </li>
+                        );
+                      })}
                     </ul>
                   </article>
                 );
@@ -3390,36 +3431,10 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
             </div>
           )}
           <footer>
-            <strong>{copy(language, "The total is returned by Shiwen; this page does not recalculate points.", "总分以世文返回结果为准，本页面不重新计算积分。")}</strong>
-            <span>{copy(language, "After Shiwen publishes a rule update and recalculates the scorecard, this summary updates automatically.", "世文发布新规则并重算积分卡后，本说明会自动同步更新。")}</span>
+            <strong>{copy(language, "The total uses the current scorecard; this page does not recalculate points.", "总分以当前积分卡为准，本页面不重新计算积分。")}</strong>
+            <span>{copy(language, "After a rule update recalculates the scorecard, this summary updates automatically.", "积分规则更新并完成重算后，本说明会自动同步更新。")}</span>
           </footer>
         </section>
-        {score.availableItems.length > 0 && (
-          <section className="score-rules-section" aria-labelledby="available-task-score-title">
-            <header>
-              <span><ListChecks size={20} weight="duotone" /></span>
-              <div>
-                <h3 id="available-task-score-title">{copy(language, "Available required-task points", "可获得的必修任务积分")}</h3>
-                <p>{copy(language, "These points come from required tasks that are not complete yet.", "以下积分来自尚未完成的必修任务。")}</p>
-              </div>
-            </header>
-            <div className="score-rule-grid">
-              <article className="score-rule-group required_tasks">
-                <ul>
-                  {score.availableItems.map((item) => (
-                    <li key={item.taskCode}>
-                      <div>
-                        <strong>{item.taskCode} · {item.title || item.taskCode}</strong>
-                        <small>{copy(language, "Complete this required task to earn points", "完成该必修任务后可获得积分")}</small>
-                      </div>
-                      <em>+{item.score}</em>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            </div>
-          </section>
-        )}
       </section>
     </div>
   );
@@ -3474,6 +3489,7 @@ function MyTitPage({
   tasks,
   tideSummary,
   courses,
+  attributionCourses,
   coursePage,
   courseTotalCount,
   coursesLoading,
@@ -3562,7 +3578,7 @@ function MyTitPage({
         dimension.sourceKey,
       )
         ? mergeScorecardCourseSources(
-            courses,
+            attributionCourses,
             dimension.sourceKey,
             scorecardSources,
           )
@@ -3670,8 +3686,8 @@ function MyTitPage({
             }
           : null,
         guidance: {
-          en: "This dimension is read directly from Shiwen's current scorecard.",
-          zh: "本维度直接读取世文当前积分卡。",
+          en: "This dimension uses the current scorecard.",
+          zh: "本维度以当前积分卡为准。",
         },
         updated: updated ? { en: new Date(updated).toLocaleString("en-US"), zh: new Date(updated).toLocaleString("zh-CN") } : { en: "Updating", zh: "更新中" },
         sources,
@@ -3679,7 +3695,7 @@ function MyTitPage({
         liveSummaryOnly: true,
       };
     });
-  }, [courses, tasks, tideSummary]);
+  }, [attributionCourses, tasks, tideSummary]);
   const runtimeLessons = useMemo(() => {
     return courses.map((course, index) => {
       const date = new Date(
@@ -3798,7 +3814,7 @@ function MyTitPage({
             : copy(language, `${currentScore} of ${score.total} points`, `当前 ${currentScore} 分，共 ${score.total} 分`)}>
             <div className="tit-score-track-line"><span style={{ width: `${scoreProgress}%` }} /></div>
             {currentScore !== null && !allScoreMilestonesReached && <span className="tit-score-marker current" style={{ left: `${scoreProgress}%` }}><strong>{currentScore}</strong></span>}
-            <span className={`tit-score-marker graduation ${score.graduationQualified ? "is-achieved" : ""}`} style={{ left: `${(score.graduationMilestone / score.total) * 100}%` }}><i /><b>{score.graduationMilestone}</b><small><span>{copy(language, "Graduation", "出营")}</span><span>{copy(language, "Pass probation", "通过试用期")}</span></small></span>
+            <span className={`tit-score-marker graduation ${score.graduationQualified ? "is-achieved" : ""}`} style={{ left: `${(score.graduationMilestone / score.total) * 100}%` }}><i /><b>{score.graduationMilestone}</b><small><span>{copy(language, "Graduation", "出营")}</span><span>{copy(language, "9 required tasks", "9 项必修任务")}</span></small></span>
             <span className={`tit-score-marker gold ${allScoreMilestonesReached ? "is-current-stage" : ""}`} style={{ left: `${(score.goldMilestone / score.total) * 100}%` }}><i /><b>{score.goldMilestone}</b><small><span>{copy(language, "Gold stage", "金牌阶段")}</span><span>{allScoreMilestonesReached ? copy(language, "Achieved", "已达成") : copy(language, "Excellent", "优秀")}</span></small></span>
             <span className="tit-score-zero">0</span>
           </div>
@@ -3890,6 +3906,7 @@ function MyTitPage({
                     <DimensionDetails
                       dimension={dimension}
                       language={language}
+                      attributionUnavailable={Boolean(sourceErrors.courseAttributions)}
                     />
                   )}
                 </Fragment>
@@ -4035,6 +4052,7 @@ function AppShell() {
   const [scoreSyncStatus, setScoreSyncStatus] = useState("idle");
   const [g01Review, setG01Review] = useState(null);
   const [courses, setCourses] = useState([]);
+  const [attributionCourses, setAttributionCourses] = useState([]);
   const [coursePage, setCoursePage] = useState(1);
   const [courseTotalCount, setCourseTotalCount] = useState(0);
   const [coursesLoading, setCoursesLoading] = useState(false);
@@ -4223,6 +4241,7 @@ function AppShell() {
     messageFilterRef.current = "ALL";
     setMessageFilter("ALL");
     setCourses([]);
+    setAttributionCourses([]);
     setCoursePage(1);
     setCourseTotalCount(0);
     setCoursesLoading(true);
@@ -4289,7 +4308,13 @@ function AppShell() {
           page: 1,
           pageSize: LESSONS_PER_PAGE,
         }),
-      ]).then(([notificationResult, supportTicketResult, courseResult]) => {
+        getAllCourses(controller.signal),
+      ]).then(([
+        notificationResult,
+        supportTicketResult,
+        courseResult,
+        attributionCourseResult,
+      ]) => {
         if (controller.signal.aborted) return;
         setSourceErrors((current) => ({
           ...current,
@@ -4301,6 +4326,9 @@ function AppShell() {
             : null,
           courses: courseResult.status === "rejected"
             ? courseResult.reason
+            : null,
+          courseAttributions: attributionCourseResult.status === "rejected"
+            ? attributionCourseResult.reason
             : null,
         }));
         if (notificationResult.status === "fulfilled") {
@@ -4317,6 +4345,9 @@ function AppShell() {
           setCourses(courseResult.value.items);
           setCoursePage(courseResult.value.page);
           setCourseTotalCount(courseResult.value.totalCount);
+        }
+        if (attributionCourseResult.status === "fulfilled") {
+          setAttributionCourses(attributionCourseResult.value.items);
         }
         setCoursesLoading(false);
       });
@@ -4778,6 +4809,7 @@ function AppShell() {
                 tasks={tasks}
                 tideSummary={tideSummary}
                 courses={courses}
+                attributionCourses={attributionCourses}
                 coursePage={coursePage}
                 courseTotalCount={courseTotalCount}
                 coursesLoading={coursesLoading}
@@ -4866,7 +4898,7 @@ function AppShell() {
               </strong>
               <small>
                 {scoreSyncStatus === "syncing"
-                  ? copy(language, "Task completed. Reading Shiwen's latest scorecard.", "任务已完成，正在读取世文的最新积分卡。")
+                  ? copy(language, "Task completed. Refreshing the latest score.", "任务已完成，正在更新最新积分。")
                   : scoreSyncStatus === "updated"
                     ? copy(language, "My TIDE now shows the latest result.", "My TIDE 已自动更新为最新结果。")
                     : copy(language, "My TIDE will read it again when you return.", "返回 My TIDE 时会继续自动读取。")}

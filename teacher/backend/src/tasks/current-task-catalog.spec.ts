@@ -144,11 +144,7 @@ describe('current task catalog locale fields', () => {
       G01: ['g01-tesol-quiz', 'g01-essay-confirmation', 'g01-completion-proof'],
       G02: ['g03-platform-policies-document', 'g03-knowledge-check'],
       G03: [],
-      G04: [
-        'g02-courseware-confirmation',
-        'g02-device-check',
-        'g02-environment-photo',
-      ],
+      G04: ['g02-courseware-confirmation', 'g02-environment-photo'],
       G05: ['g06-ttp-orientation-video', 'g06-learning-checklist'],
       G06: [
         'g07-me-culture-video',
@@ -176,5 +172,22 @@ describe('current task catalog locale fields', () => {
       ],
       G09: ['g10-set-fundamentals-video', 'g10-knowledge-check'],
     });
+  });
+
+  it("keeps the current G04 image review limited to Sophia's four checks", () => {
+    const g04 = currentTaskCatalog.find((task) => task.code === 'G04');
+    const imageReview = g04?.rules.find(
+      (rule) => rule.type === 'AI_IMAGE_REVIEW',
+    );
+
+    expect(imageReview?.config.criteriaKeys).toEqual([
+      'camera_angle',
+      'lighting',
+      'background',
+      'dressing',
+    ]);
+    expect(imageReview?.config.criteriaVersion).toBe(
+      'lesson-preparation-camera-view-2026-08-v7-background-veto',
+    );
   });
 });

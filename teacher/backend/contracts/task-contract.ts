@@ -227,6 +227,58 @@ export interface TaskContext {
   dataOrigin: DataOrigin;
 }
 
+export interface KuozhiLaunchResponse {
+  provider: 'KUOZHI';
+  dataMode: 'REAL' | 'SAMPLE_DRY_RUN';
+  integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
+  mappingVersion: number;
+  courses: Array<{
+    courseId: string;
+    title: string | null;
+    embedMode: 'IFRAME' | 'NEW_WINDOW';
+    launchUrl: string;
+  }>;
+}
+
+export interface KuozhiProgressResponse {
+  provider: 'KUOZHI';
+  dataMode: 'REAL' | 'SAMPLE_DRY_RUN';
+  integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
+  mappingVersion: number;
+  syncStatus: 'NOT_SYNCED' | 'AVAILABLE' | 'PARTIAL' | 'NO_DATA';
+  refreshedAt: string | null;
+  courses: Array<{
+    courseId: string;
+    title: string;
+    sourceAvailable: boolean;
+    percent: number | null;
+    completed: boolean;
+    tasks: Array<{
+      courseTaskId: string;
+      title: string;
+      type: 'VIDEO' | 'TESTPAPER';
+      required: boolean;
+      sourceStatus: 'AVAILABLE' | 'MISSING' | 'INVALID';
+      percent: number | null;
+      score: number | null;
+      normalizedScorePercent: number | null;
+      passScorePercent: number | null;
+      testTimes: number | null;
+      completed: boolean;
+    }>;
+  }>;
+  completion: {
+    enabled: boolean;
+    completed: boolean;
+    reasonCode: string;
+  };
+  assignment: {
+    status: TaskStatus;
+    stateVersion: number;
+    stateUpdated: boolean;
+  };
+}
+
 export interface MutationMeta {
   commandId: string;
   expectedStateVersion: number;

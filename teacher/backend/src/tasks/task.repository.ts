@@ -172,6 +172,7 @@ interface ValidationRow extends QueryResultRow {
   status: TaskValidationResponse['status'];
   resultCode: string | null;
   teacherMessage: string | null;
+  imageReview: TaskValidationResponse['imageReview'];
 }
 
 type TaskCommandType = 'VIEW' | 'START' | 'PROGRESS' | 'SUBMIT' | 'RETRY';
@@ -724,10 +725,47 @@ export class TaskRepository {
         SELECT
           submission.validation_status AS status,
           submission.result_code AS "resultCode",
-          submission.payload->>'teacherMessage' AS "teacherMessage"
+          submission.payload->>'teacherMessage' AS "teacherMessage",
+          CASE
+            WHEN image_review.id IS NULL THEN NULL
+            ELSE jsonb_build_object(
+              'criteriaVersion', image_review.criteria_version,
+              'decision', image_review.decision,
+              'teacherReason', image_review.teacher_reason,
+              'confidenceSummary', image_review.confidence_summary,
+              'items', image_review.items
+            )
+          END AS "imageReview"
         FROM tide.task_submissions submission
         JOIN public.task_assignments task ON task.assignment_id = submission.task_assignment_id
         JOIN tide.teacher_bindings binding ON binding.teacher_id = task.teacher_id
+        LEFT JOIN LATERAL (
+          SELECT
+            review.id,
+            review.criteria_version,
+            review.decision,
+            review.teacher_reason,
+            review.confidence_summary,
+            COALESCE(
+              (
+                SELECT jsonb_agg(
+                  jsonb_build_object(
+                    'criterionKey', item.criterion_key,
+                    'result', item.result,
+                    'teacherMessage', item.teacher_message
+                  )
+                  ORDER BY item.criterion_key
+                )
+                FROM tide.image_review_items item
+                WHERE item.image_review_id = review.id
+              ),
+              '[]'::jsonb
+            ) AS items
+          FROM tide.image_reviews review
+          WHERE review.submission_id = submission.id
+          ORDER BY review.reviewed_at DESC, review.id DESC
+          LIMIT 1
+        ) image_review ON TRUE
         WHERE submission.task_assignment_id = $1
           AND binding.account_id = $2
           AND binding.status = 'ACTIVE'

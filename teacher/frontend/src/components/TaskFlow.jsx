@@ -30,6 +30,7 @@ import { useI18n } from "../i18n";
 import { publicAsset } from "../public-assets";
 import VideoQuizTask, { ChapterVideoLearning } from "../features/task-content/VideoQuizTask";
 import VideoOnlyTask from "../features/task-content/VideoOnlyTask";
+import KuozhiCourseTask from "../features/task-content/KuozhiCourseTask";
 import EnvironmentPhotoTask from "../features/task-content/EnvironmentPhotoTask";
 import ExternalStatusTask from "../features/task-content/ExternalStatusTask";
 import ReadinessPhotoTask from "../features/task-content/ReadinessPhotoTask";
@@ -948,6 +949,9 @@ const flowComponents = {
 
 export default function TaskFlow({ task, onUpdate, onHelp }) {
   if (task.locked) return <LockedPreview task={task} />;
+  if (task.method === "external_course") {
+    return <KuozhiCourseTask task={task} />;
+  }
   if (["learning_quiz", "document_quiz"].includes(task.method) && !task.locked) {
     return <VideoQuizTask task={task} onUpdate={onUpdate} />;
   }

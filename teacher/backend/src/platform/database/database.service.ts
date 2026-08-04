@@ -50,6 +50,7 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0023_teacher_support_operator_atomicity',
   '0024_support_ticket_cas_and_function_owner',
   '0025_fixed_task_semantic_alignment',
+  '0026_kuozhi_course_syncs',
 ] as const;
 
 @Injectable()
@@ -266,11 +267,12 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0025_fixed_task_semantic_alignment'
+        ) = '0026_kuozhi_course_syncs'
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
         AND to_regclass('tide.teacher_photo_runs') IS NOT NULL
         AND to_regclass('tide.job_leases') IS NOT NULL
+        AND to_regclass('tide.kuozhi_course_syncs') IS NOT NULL
         AND to_regclass('public.task_templates') IS NOT NULL
         AND to_regclass('public.teacher_support_tickets') IS NOT NULL
         AND to_regclass(
@@ -472,6 +474,26 @@ export class DatabaseService implements OnModuleDestroy {
           current_user,
           to_regclass('tide.teacher_photo_runs'),
           'UPDATE'
+        )
+        AND has_table_privilege(
+          current_user,
+          to_regclass('tide.kuozhi_course_syncs'),
+          'SELECT'
+        )
+        AND has_table_privilege(
+          current_user,
+          to_regclass('tide.kuozhi_course_syncs'),
+          'INSERT'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('tide.kuozhi_course_syncs'),
+          'UPDATE'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('tide.kuozhi_course_syncs'),
+          'DELETE'
         )
         AND has_table_privilege(
           current_user,

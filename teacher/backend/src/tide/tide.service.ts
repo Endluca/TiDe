@@ -400,7 +400,7 @@ export class TideService {
   private sourceUnavailable(): ServiceUnavailableException {
     return new ServiceUnavailableException({
       code: 'SOURCE_UNAVAILABLE',
-      message: '世文数据暂时不可用，请稍后重试',
+      message: '所需数据暂时不可用，请稍后重试',
       retryable: true,
     });
   }

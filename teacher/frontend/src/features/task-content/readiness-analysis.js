@@ -1,5 +1,8 @@
 const PENDING_BACKEND_STATUSES = new Set(["UPLOADING", "CHECKING", "BEAUTIFYING"]);
 const UNAVAILABLE_BACKEND_STATUSES = new Set(["UNDER_REVIEW", "PROCESSING_FAILED"]);
+export const READINESS_MIN_CONFIDENCE = 0.85;
+export const READINESS_CENTRAL_MIN_MEAN_LUMA = 60;
+export const READINESS_CENTRAL_MAX_CLIPPED_RATIO = 0.2;
 
 const CHECK_STATUS_COPY = {
   camera_angle: {
@@ -102,7 +105,77 @@ function stableTeacherMessage(status, backendStatus, backendDecision, c) {
   );
 }
 
-export function normalizeReadinessAnalysis(payload, criteria, c) {
+export function centralExposureFailure(signals) {
+  if (!signals) return null;
+  if (signals.centralMeanLuma < READINESS_CENTRAL_MIN_MEAN_LUMA) return "TOO_DARK";
+  if (signals.centralClippedLumaRatio > READINESS_CENTRAL_MAX_CLIPPED_RATIO) return "OVEREXPOSED";
+  return null;
+}
+
+export async function analyzePhotoCentralExposure(file) {
+  const image = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0);
+    const left = Math.floor(image.width * 0.4);
+    const top = Math.floor(image.height * 0.2);
+    const width = Math.max(1, Math.ceil(image.width * 0.2));
+    const height = Math.max(1, Math.ceil(image.height * 0.35));
+    const pixels = context.getImageData(left, top, width, height).data;
+    let pixelCount = 0;
+    let lumaTotal = 0;
+    let clippedCount = 0;
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      const luma = 0.2126 * pixels[offset]
+        + 0.7152 * pixels[offset + 1]
+        + 0.0722 * pixels[offset + 2];
+      pixelCount += 1;
+      lumaTotal += luma;
+      if (luma >= 245) clippedCount += 1;
+    }
+    return {
+      centralMeanLuma: lumaTotal / pixelCount,
+      centralClippedLumaRatio: clippedCount / pixelCount,
+    };
+  } finally {
+    image.close();
+  }
+}
+
+export function readinessPayloadFromValidation(validation) {
+  const review = validation?.imageReview;
+  if (!review || !['PASS', 'RETRY', 'ERROR'].includes(review.decision)) {
+    return null;
+  }
+  const confidenceByCriterion = review.confidenceSummary?.criteria || {};
+  return {
+    status:
+      review.decision === 'PASS'
+        ? 'READY'
+        : review.decision === 'RETRY'
+          ? 'RETRY_REQUIRED'
+          : 'UNDER_REVIEW',
+    decision: review.decision,
+    teacherMessage: review.teacherReason,
+    confidenceSummary: review.confidenceSummary,
+    checks: (review.items || []).map((item) => ({
+      id: item.criterionKey,
+      status:
+        item.result === 'PASS'
+          ? 'pass'
+          : item.result === 'FAIL'
+            ? 'fail'
+            : 'uncertain',
+      confidence: confidenceByCriterion[item.criterionKey],
+      message: item.teacherMessage,
+    })),
+  };
+}
+
+export function normalizeReadinessAnalysis(payload, criteria, c, exposureSignals = null) {
   const backendStatus = String(payload?.status || "").toUpperCase();
   const backendDecision = String(payload?.decision || "").toUpperCase();
   const useBackendCopy = isChineseCopy(c);
@@ -112,16 +185,28 @@ export function normalizeReadinessAnalysis(payload, criteria, c) {
       check,
     ]),
   );
-  const checks = criteria.map((standard) => {
+  let checks = criteria.map((standard) => {
     const supplied = suppliedChecks.get(standard.id) || {};
     const rawStatus = String(supplied.status || "").toLowerCase();
-    const status = ["pass", "fail", "uncertain"].includes(rawStatus)
+    const suppliedConfidence = Number.isFinite(supplied.confidence)
+      ? supplied.confidence
+      : payload?.confidenceSummary?.criteria?.[standard.id];
+    const confidence = Number.isFinite(suppliedConfidence)
+      ? suppliedConfidence
+      : null;
+    const validatedStatus = ["pass", "fail", "uncertain"].includes(rawStatus)
       ? rawStatus
       : "uncertain";
+    const status = validatedStatus === "pass"
+      && confidence !== null
+      && confidence < READINESS_MIN_CONFIDENCE
+      ? "uncertain"
+      : validatedStatus;
     return {
       id: standard.id,
       title: standard.title,
       status,
+      confidence,
       message:
         (useBackendCopy && supplied.message) ||
         checkStatusMessage(standard.id, status, c),
@@ -131,6 +216,22 @@ export function normalizeReadinessAnalysis(payload, criteria, c) {
           : (useBackendCopy && supplied.suggestion) || standard.detail,
     };
   });
+  const exposureIssue = centralExposureFailure(exposureSignals);
+  const cameraPassed = checks.find((check) => check.id === "camera_angle")?.status === "pass";
+  if (cameraPassed && exposureIssue) {
+    checks = checks.map((check) => check.id !== "lighting" || check.status !== "pass"
+      ? check
+      : {
+          ...check,
+          status: "fail",
+          message: exposureIssue === "OVEREXPOSED"
+            ? c("The center of the image is clearly overexposed or affected by strong glare.", "画面中央区域存在明显过曝或强眩光。")
+            : c("The center of the image is too dark.", "画面中央区域明显过暗。"),
+          suggestion: exposureIssue === "OVEREXPOSED"
+            ? c("Lower the front light or change its angle so facial details remain visible.", "降低正面光源亮度或调整角度，保留清楚的面部细节。")
+            : c("Add even front light so both sides of the face are visible.", "增加均匀的正面光线，让面部两侧和五官清楚可见。"),
+        });
+  }
   const hasCompleteChecks = criteria.every((standard) => {
     const check = suppliedChecks.get(standard.id);
     return ["pass", "fail", "uncertain"].includes(
@@ -171,6 +272,9 @@ export function normalizeReadinessAnalysis(payload, criteria, c) {
     photoRunId: payload?.photoRunId || null,
     beautyStatus: payload?.status || null,
     finalPhoto: payload?.finalPhoto || null,
+    confidenceSummary: payload?.confidenceSummary || null,
+    exposureSignals,
+    exposureIssue,
     teacherMessage:
       (useBackendCopy && payload?.teacherMessage) ||
       stableTeacherMessage(status, backendStatus, backendDecision, c),

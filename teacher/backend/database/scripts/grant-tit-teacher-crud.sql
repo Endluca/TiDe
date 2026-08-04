@@ -89,6 +89,9 @@ $$;
 REVOKE INSERT, UPDATE, DELETE ON tide.task_quiz_banks FROM tit_teacher_crud;
 GRANT SELECT ON tide.task_quiz_banks TO tit_teacher_crud;
 
+REVOKE UPDATE, DELETE ON tide.kuozhi_course_syncs FROM tit_teacher_crud;
+GRANT SELECT, INSERT ON tide.kuozhi_course_syncs TO tit_teacher_crud;
+
 REVOKE DELETE ON tide.system_notifications FROM tit_teacher_crud;
 REVOKE UPDATE ON tide.system_notifications FROM tit_teacher_crud;
 GRANT UPDATE (

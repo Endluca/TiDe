@@ -3,14 +3,20 @@ set -euo pipefail
 
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ ! -f "${DB_DIR}/.env" ]]; then
-  echo "缺少 ${DB_DIR}/.env。" >&2
+ENV_FILE="${TIDE_DATABASE_ENV_FILE:-${DB_DIR}/.env}"
+if [[ ! -f "${ENV_FILE}" ]]; then
+  echo "缺少 ${ENV_FILE}。" >&2
   exit 1
 fi
 
 set -a
-source "${DB_DIR}/.env"
+source "${ENV_FILE}"
 set +a
+
+TIDE_DB_HOST="${TIDE_DB_HOST:-${TIDE_ADMIN_DB_HOST:-127.0.0.1}}"
+TIDE_DB_PORT="${TIDE_DB_PORT:-${TIDE_ADMIN_DB_PORT:-5432}}"
+TIDE_DB_USER="${TIDE_DB_USER:-${TIDE_ADMIN_DB_USER:-}}"
+TIDE_DB_PASSWORD="${TIDE_DB_PASSWORD:-${TIDE_ADMIN_DB_PASSWORD:-}}"
 
 export PGPASSWORD="${TIDE_DB_PASSWORD}"
 ADMIN_PSQL=(psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "${TIDE_DB_PORT}" -U "${TIDE_DB_USER}")
@@ -57,6 +63,7 @@ run_sql "${DB_DIR}/migrations/0022_performance_job_leases.up.sql"
 run_sql "${DB_DIR}/migrations/0023_teacher_support_operator_atomicity.up.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
+run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts >/dev/null
@@ -70,6 +77,7 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     to_regclass('tide.app_events') is not null,
     to_regclass('tide.teacher_photo_runs') is not null,
     to_regclass('tide.task_quiz_banks') is not null,
+    to_regclass('tide.kuozhi_course_syncs') is not null,
     (
       select count(*) = 0
       from information_schema.columns
@@ -88,11 +96,12 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     (select count(*) from public.task_templates where status = 'PUBLISHED')
   )
 ")"
-[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
+[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
   echo "空库升级后状态异常: ${final_state}" >&2
   exit 1
 }
 
+run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.down.sql"
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.down.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.down.sql"
 run_sql "${DB_DIR}/migrations/0023_teacher_support_operator_atomicity.down.sql"
@@ -126,4 +135,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0025 并逐级回滚验证通过。"
+echo "空库升级至 0026 并逐级回滚验证通过。"

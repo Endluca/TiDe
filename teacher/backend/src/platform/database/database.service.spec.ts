@@ -224,7 +224,7 @@ describe('DatabaseService', () => {
       shiwenRead: 'not_configured',
     });
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('0025_fixed_task_semantic_alignment'),
+      expect.stringContaining('0026_kuozhi_course_syncs'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.schema_migrations'),
@@ -236,6 +236,9 @@ describe('DatabaseService', () => {
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.job_leases'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('tide.kuozhi_course_syncs'),
     );
     for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
       expect(query).toHaveBeenCalledWith(

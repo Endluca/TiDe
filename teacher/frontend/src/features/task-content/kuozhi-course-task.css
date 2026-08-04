@@ -1,0 +1,240 @@
+.kuozhi-course-flow {
+  display: grid;
+  min-width: 0;
+  padding: 0 24px 24px;
+  gap: 14px;
+}
+
+.kuozhi-course-toolbar,
+.kuozhi-progress-heading,
+.kuozhi-launch-card,
+.kuozhi-progress-course-title,
+.kuozhi-progress-task {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.kuozhi-course-toolbar {
+  padding: 14px 16px;
+  border: 1px solid #dbe7ff;
+  border-radius: 16px;
+  background: #f7faff;
+}
+
+.kuozhi-course-toolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.kuozhi-course-toolbar strong,
+.kuozhi-course-toolbar small,
+.kuozhi-launch-card strong,
+.kuozhi-launch-card small,
+.kuozhi-progress-task strong,
+.kuozhi-progress-task small {
+  display: block;
+}
+
+.kuozhi-course-toolbar small,
+.kuozhi-launch-card small,
+.kuozhi-progress-task small,
+.kuozhi-refreshed-at {
+  margin-top: 3px;
+  color: #64748b;
+}
+
+.kuozhi-course-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  color: #075fec;
+  background: #e7f0ff;
+}
+
+.kuozhi-sample-badge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: #8a5400;
+  background: #fff0bd;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.kuozhi-sample-note,
+.kuozhi-course-error,
+.kuozhi-progress-error {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  border-radius: 12px;
+}
+
+.kuozhi-sample-note {
+  border: 1px solid #f0d486;
+  color: #765000;
+  background: #fff9e8;
+}
+
+.kuozhi-course-error,
+.kuozhi-progress-error {
+  border: 1px solid #f2c2c2;
+  color: #9f2727;
+  background: #fff7f7;
+}
+
+.kuozhi-course-grid,
+.kuozhi-course-entry,
+.kuozhi-progress-courses,
+.kuozhi-progress-tasks {
+  display: grid;
+  gap: 10px;
+}
+
+.kuozhi-course-grid {
+  grid-template-columns: 1fr;
+}
+
+.kuozhi-course-entry {
+  min-width: 0;
+}
+
+.kuozhi-launch-card {
+  min-height: 92px;
+  padding: 16px;
+  border: 1px solid #cfddf7;
+  border-radius: 15px;
+  background: linear-gradient(135deg, #f8fbff, #edf4ff);
+}
+
+.kuozhi-open-external,
+.kuozhi-progress-heading button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #075fec;
+  border-radius: 11px;
+  color: #fff;
+  background: #075fec;
+  font: inherit;
+  font-weight: 750;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.kuozhi-open-secondary {
+  color: #075fec;
+  background: #fff;
+}
+
+.kuozhi-embed-shell {
+  overflow: hidden;
+  min-height: 620px;
+  border: 1px solid #cfddf7;
+  border-radius: 15px;
+  background: #fff;
+}
+
+.kuozhi-embed-shell iframe {
+  display: block;
+  width: 100%;
+  height: min(760px, 78vh);
+  min-height: 620px;
+  border: 0;
+  background: #fff;
+}
+
+.kuozhi-progress-heading button:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
+.kuozhi-loading-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 92px;
+  gap: 10px;
+  color: #527096;
+}
+
+.kuozhi-loading-row svg,
+.kuozhi-spin {
+  animation: kuozhi-spin .9s linear infinite;
+}
+
+.kuozhi-progress-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #d8e2f1;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.kuozhi-progress-heading p {
+  margin: 4px 0 0;
+  color: #5f6f86;
+  line-height: 1.5;
+}
+
+.kuozhi-progress-course {
+  overflow: hidden;
+  border: 1px solid #e1e8f2;
+  border-radius: 13px;
+}
+
+.kuozhi-progress-course-title {
+  padding: 12px 14px;
+  color: #243d63;
+  background: #f7f9fc;
+}
+
+.kuozhi-progress-course-title span {
+  color: #075fec;
+  font-weight: 800;
+}
+
+.kuozhi-progress-tasks {
+  padding: 6px 14px;
+}
+
+.kuozhi-progress-task {
+  justify-content: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.kuozhi-progress-task:last-child { border-bottom: 0; }
+.kuozhi-progress-task > div { flex: 1; }
+.kuozhi-progress-task > svg { color: #8293aa; }
+.kuozhi-progress-task > svg:first-child[weight="fill"] { color: #19a568; }
+.kuozhi-progress-task > span {
+  padding: 4px 8px;
+  border-radius: 7px;
+  color: #52667f;
+  background: #f0f4f8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@keyframes kuozhi-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 720px) {
+  .kuozhi-course-flow { padding: 0 14px 18px; }
+  .kuozhi-course-toolbar,
+  .kuozhi-progress-heading,
+  .kuozhi-launch-card { align-items: stretch; flex-direction: column; }
+  .kuozhi-open-external,
+  .kuozhi-progress-heading button { width: 100%; }
+  .kuozhi-embed-shell,
+  .kuozhi-embed-shell iframe { min-height: 70vh; }
+}

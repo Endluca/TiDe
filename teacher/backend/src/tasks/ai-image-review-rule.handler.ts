@@ -2,6 +2,21 @@ import { Injectable } from '@nestjs/common';
 import { z } from 'zod';
 import { FileStorageAdapter } from '../files/file-storage.adapter';
 import { AiGatewayService } from '../integrations/ai/ai-gateway.service';
+import { parseAiJsonObject } from '../integrations/ai/ai-json-response';
+import {
+  centralExposureFailure,
+  prepareAiReviewImage,
+  type CentralExposureSignals,
+} from '../integrations/ai/image-exposure-signals';
+import {
+  TEACHER_PHOTO_CRITERIA_KEYS,
+  TEACHER_PHOTO_CRITERIA_VERSION,
+  TEACHER_PHOTO_MIN_CONFIDENCE,
+  TEACHER_PHOTO_SYSTEM_PROMPT,
+  TEACHER_PHOTO_USER_TEXT,
+  teacherPhotoBackgroundVetoMessage,
+  teacherPhotoMinimumConfidence,
+} from '../teacher-photo/teacher-photo-review.policy';
 import { TaskRuleHandler } from './task-rule.handler';
 import {
   ImageReviewRepository,
@@ -37,6 +52,7 @@ const reviewResponseSchema = z
             criterionKey: z.string().min(1).max(128),
             result: z.enum(['PASS', 'FAIL', 'UNKNOWN']),
             teacherMessage: z.string().max(2_000).nullable().default(null),
+            confidence: z.number().min(0).max(1).optional(),
           })
           .strict(),
       )
@@ -47,6 +63,12 @@ const reviewResponseSchema = z
 
 const technicalTeacherMessage =
   '暂时无法完成自动检查，本次提交已转为人工复核。';
+const lowConfidenceTeacherMessage = '判断把握不足，请按提示调整后重新拍照。';
+const currentG04PhotoStepKey = 'g02-environment-photo';
+const neutralExposure: CentralExposureSignals = {
+  centralMeanLuma: 128,
+  centralClippedLumaRatio: 0,
+};
 
 @Injectable()
 export class AiImageReviewRuleHandler extends TaskRuleHandler {
@@ -66,8 +88,16 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       return this.deferred('IMAGE_REVIEW_CONFIG_INVALID');
     }
     const config = parsedConfig.data;
+    const isCurrentG04 = config.stepKey === currentG04PhotoStepKey;
+    const criteriaVersion = isCurrentG04
+      ? TEACHER_PHOTO_CRITERIA_VERSION
+      : config.criteriaVersion;
+    const criteriaKeys = isCurrentG04
+      ? [...TEACHER_PHOTO_CRITERIA_KEYS]
+      : config.criteriaKeys;
+    const minimumConfidence = isCurrentG04 ? TEACHER_PHOTO_MIN_CONFIDENCE : 0;
     if (
-      new Set(config.criteriaKeys).size !== config.criteriaKeys.length ||
+      new Set(criteriaKeys).size !== criteriaKeys.length ||
       (config.promptVersionId &&
         !(await this.reviews.isActivePromptVersion(
           context.client,
@@ -95,6 +125,19 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     if (!file || !config.allowedMimeTypes.includes(file.mimeType)) {
       return this.deferred('IMAGE_REVIEW_FILE_INVALID');
     }
+    if (
+      isCurrentG04 &&
+      (await this.reviews.hasPassedReview(context.client, {
+        fileId,
+        criteriaVersion,
+      }))
+    ) {
+      return {
+        passed: true,
+        resultCode: 'IMAGE_REVIEW_PASSED',
+        teacherMessage: null,
+      };
+    }
 
     let content: Buffer;
     try {
@@ -103,30 +146,57 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       return this.saveTechnicalError(
         context,
         fileId,
-        config.criteriaVersion,
-        config.criteriaKeys,
+        criteriaVersion,
+        criteriaKeys,
         null,
         'IMAGE_REVIEW_FILE_UNAVAILABLE',
       );
+    }
+    let reviewContent = content;
+    let reviewFilename = file.originalFilename;
+    let reviewMimeType = file.mimeType;
+    let exposure = neutralExposure;
+    if (isCurrentG04) {
+      try {
+        const prepared = await prepareAiReviewImage(content, {
+          includeCameraGuide: true,
+        });
+        reviewContent = prepared.content;
+        reviewFilename =
+          file.originalFilename.replace(/\.[^.]+$/, '') + '-ai.jpg';
+        reviewMimeType = 'image/jpeg';
+        exposure = prepared.exposure;
+      } catch {
+        return this.saveTechnicalError(
+          context,
+          fileId,
+          criteriaVersion,
+          criteriaKeys,
+          null,
+          'IMAGE_REVIEW_FILE_INVALID',
+        );
+      }
     }
     const execution = await this.gateway.execute({
       capability: 'TASK_IMAGE_REVIEW',
       callerModule: 'TASK_VALIDATION',
       promptVersionId: config.promptVersionId ?? null,
-      systemPrompt: config.systemPrompt,
-      userText: config.userText,
+      systemPrompt: isCurrentG04
+        ? TEACHER_PHOTO_SYSTEM_PROMPT
+        : config.systemPrompt,
+      userText: isCurrentG04 ? TEACHER_PHOTO_USER_TEXT : config.userText,
       file: {
-        content,
-        filename: file.originalFilename,
-        mimeType: file.mimeType,
+        content: reviewContent,
+        filename: reviewFilename,
+        mimeType: reviewMimeType,
       },
     });
     if (execution.status === 'FAILED') {
       return this.saveTechnicalError(
         context,
         fileId,
-        config.criteriaVersion,
-        config.criteriaKeys,
+        criteriaVersion,
+        criteriaKeys,
         execution.aiRunId,
         execution.errorCode,
       );
@@ -134,14 +204,17 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
 
     const parsedReview = this.parseReview(
       execution.content,
-      config.criteriaKeys,
+      criteriaKeys,
+      minimumConfidence,
+      exposure,
+      isCurrentG04,
     );
     if (!parsedReview) {
       return this.saveTechnicalError(
         context,
         fileId,
-        config.criteriaVersion,
-        config.criteriaKeys,
+        criteriaVersion,
+        criteriaKeys,
         execution.aiRunId,
         'IMAGE_REVIEW_RESPONSE_INVALID',
       );
@@ -150,7 +223,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       fileId,
       submissionId: context.submissionId,
       aiRunId: execution.aiRunId,
-      criteriaVersion: config.criteriaVersion,
+      criteriaVersion,
       decision: parsedReview.decision,
       teacherReason: parsedReview.teacherReason,
       confidenceSummary: parsedReview.confidenceSummary,
@@ -172,13 +245,11 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
   private parseReview(
     content: string,
     criteriaKeys: string[],
+    minimumConfidence: number,
+    exposure: CentralExposureSignals,
+    isCurrentG04: boolean,
   ): z.infer<typeof reviewResponseSchema> | null {
-    let json: unknown;
-    try {
-      json = JSON.parse(content);
-    } catch {
-      return null;
-    }
+    const json = parseAiJsonObject(content);
     const parsed = reviewResponseSchema.safeParse(json);
     if (!parsed.success) {
       return null;
@@ -191,17 +262,97 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     ) {
       return null;
     }
-    const allCriteriaPass = parsed.data.criteria.every(
-      (item) => item.result === 'PASS',
-    );
+    let thresholdDowngraded = false;
+    let criteria = parsed.data.criteria.map((item) => {
+      const requiredConfidence = isCurrentG04
+        ? teacherPhotoMinimumConfidence(item.criterionKey)
+        : minimumConfidence;
+      if (
+        item.result === 'PASS' &&
+        requiredConfidence > 0 &&
+        (item.confidence ?? 0) < requiredConfidence
+      ) {
+        thresholdDowngraded = true;
+        return {
+          ...item,
+          result: 'UNKNOWN' as const,
+          teacherMessage: item.teacherMessage ?? lowConfidenceTeacherMessage,
+        };
+      }
+      return item;
+    });
+    const backgroundVetoMessage = isCurrentG04
+      ? teacherPhotoBackgroundVetoMessage(parsed.data.confidenceSummary)
+      : null;
+    if (backgroundVetoMessage) {
+      criteria = criteria.map((item) =>
+        item.criterionKey !== 'background'
+          ? item
+          : {
+              ...item,
+              result: 'FAIL' as const,
+              teacherMessage: backgroundVetoMessage,
+            },
+      );
+    }
+    const exposureIssue = centralExposureFailure(exposure);
+    const cameraPassed =
+      criteria.find((item) => item.criterionKey === 'camera_angle')?.result ===
+      'PASS';
+    if (cameraPassed && exposureIssue) {
+      criteria = criteria.map((item) =>
+        item.criterionKey !== 'lighting' || item.result !== 'PASS'
+          ? item
+          : {
+              ...item,
+              result: 'FAIL' as const,
+              teacherMessage:
+                exposureIssue === 'OVEREXPOSED'
+                  ? '画面中央区域存在明显过曝或强眩光。'
+                  : '画面中央区域明显过暗。',
+            },
+      );
+    }
+    const allCriteriaPass = criteria.every((item) => item.result === 'PASS');
+    const confidences = criteria
+      .map((item) => item.confidence)
+      .filter((value): value is number => typeof value === 'number');
+    const decision =
+      parsed.data.decision === 'ERROR'
+        ? 'ERROR'
+        : parsed.data.decision === 'PASS' && allCriteriaPass
+          ? 'PASS'
+          : 'RETRY';
     return {
       ...parsed.data,
-      decision:
-        parsed.data.decision === 'ERROR'
-          ? 'ERROR'
-          : parsed.data.decision === 'PASS' && allCriteriaPass
-            ? 'PASS'
-            : 'RETRY',
+      decision,
+      teacherReason:
+        decision === 'RETRY'
+          ? (backgroundVetoMessage ??
+            (thresholdDowngraded
+              ? lowConfidenceTeacherMessage
+              : parsed.data.teacherReason))
+          : parsed.data.teacherReason,
+      confidenceSummary: {
+        ...parsed.data.confidenceSummary,
+        minimumRequired: minimumConfidence,
+        minimumRequiredByCriterion: isCurrentG04
+          ? Object.fromEntries(
+              criteriaKeys.map((criterionKey) => [
+                criterionKey,
+                teacherPhotoMinimumConfidence(criterionKey),
+              ]),
+            )
+          : undefined,
+        minimumObserved:
+          confidences.length > 0 ? Math.min(...confidences) : null,
+        criteria: Object.fromEntries(
+          criteria.map((item) => [item.criterionKey, item.confidence ?? null]),
+        ),
+        centralExposure: exposure,
+        centralExposureIssue: exposureIssue,
+      },
+      criteria,
     };
   }
 

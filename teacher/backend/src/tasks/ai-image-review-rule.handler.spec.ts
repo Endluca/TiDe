@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import sharp from 'sharp';
 import type { FileStorageAdapter } from '../files/file-storage.adapter';
 import type { AiGatewayService } from '../integrations/ai/ai-gateway.service';
 import { AiImageReviewRuleHandler } from './ai-image-review-rule.handler';
@@ -13,16 +14,41 @@ const config = {
   userText: 'Review this evidence.',
 };
 
+let validImage: Buffer;
+
+beforeAll(async () => {
+  validImage = await sharp({
+    create: {
+      width: 640,
+      height: 360,
+      channels: 3,
+      background: { r: 128, g: 128, b: 128 },
+    },
+  })
+    .jpeg()
+    .toBuffer();
+});
+
 function createFixture() {
-  const saveReview = jest.fn().mockResolvedValue(undefined);
+  const saveReview = jest
+    .fn<
+      ReturnType<ImageReviewRepository['save']>,
+      Parameters<ImageReviewRepository['save']>
+    >()
+    .mockResolvedValue(undefined);
   const storage = {
-    read: jest.fn().mockResolvedValue(Buffer.from('image')),
+    read: jest.fn().mockResolvedValue(validImage),
   } as unknown as FileStorageAdapter;
+  const executeReview = jest.fn<
+    ReturnType<AiGatewayService['execute']>,
+    Parameters<AiGatewayService['execute']>
+  >();
   const gateway = {
-    execute: jest.fn(),
+    execute: executeReview,
   } as unknown as AiGatewayService;
   const reviews = {
     isActivePromptVersion: jest.fn().mockResolvedValue(true),
+    hasPassedReview: jest.fn().mockResolvedValue(false),
     findSubmissionFile: jest.fn().mockResolvedValue({
       fileId: '8df36fd5-7ef6-47bb-a73e-72e25623c67f',
       storageProvider: 'OSS',
@@ -54,13 +80,13 @@ function createFixture() {
       },
     ],
   };
-  return { handler, gateway, reviews, saveReview, context };
+  return { handler, gateway, reviews, saveReview, executeReview, context };
 }
 
 describe('AiImageReviewRuleHandler', () => {
   it('passes only a strictly valid configured result', async () => {
     const fixture = createFixture();
-    (fixture.gateway.execute as jest.Mock).mockResolvedValue({
+    fixture.executeReview.mockResolvedValue({
       status: 'SUCCEEDED',
       aiRunId: 'run-id',
       content: JSON.stringify({
@@ -83,11 +109,18 @@ describe('AiImageReviewRuleHandler', () => {
       fixture.context.client,
       expect.objectContaining({ decision: 'PASS', aiRunId: 'run-id' }),
     );
+    const gatewayInput = fixture.executeReview.mock.calls[0][0];
+    expect(gatewayInput.systemPrompt).toBe(config.systemPrompt);
+    expect(gatewayInput.userText).toBe(config.userText);
+    expect(gatewayInput.file).toMatchObject({
+      filename: 'evidence.png',
+      mimeType: 'image/png',
+    });
   });
 
   it('maps gateway errors to ERROR and manual review, never teacher failure', async () => {
     const fixture = createFixture();
-    (fixture.gateway.execute as jest.Mock).mockResolvedValue({
+    fixture.executeReview.mockResolvedValue({
       status: 'FAILED',
       aiRunId: 'run-id',
       errorCode: 'AI_GATEWAY_UNAVAILABLE',
@@ -108,7 +141,7 @@ describe('AiImageReviewRuleHandler', () => {
 
   it('rejects malformed or unexpected criteria as a technical error', async () => {
     const fixture = createFixture();
-    (fixture.gateway.execute as jest.Mock).mockResolvedValue({
+    fixture.executeReview.mockResolvedValue({
       status: 'SUCCEEDED',
       aiRunId: 'run-id',
       content: JSON.stringify({
@@ -131,7 +164,7 @@ describe('AiImageReviewRuleHandler', () => {
 
   it('never passes when the overall decision conflicts with a failed item', async () => {
     const fixture = createFixture();
-    (fixture.gateway.execute as jest.Mock).mockResolvedValue({
+    fixture.executeReview.mockResolvedValue({
       status: 'SUCCEEDED',
       aiRunId: 'run-id',
       content: JSON.stringify({
@@ -158,5 +191,158 @@ describe('AiImageReviewRuleHandler', () => {
       fixture.context.client,
       expect.objectContaining({ decision: 'RETRY', aiRunId: 'run-id' }),
     );
+  });
+
+  it('overrides the legacy database rule with the current G04-only policy', async () => {
+    const fixture = createFixture();
+    fixture.context.rule.config = {
+      ...config,
+      stepKey: 'g02-environment-photo',
+      criteriaVersion: 'g02-environment-2026-07-v2-strict',
+      criteriaKeys: [
+        'lighting',
+        'framing',
+        'posture',
+        'headset',
+        'appearance',
+        'background',
+        'clarity',
+      ],
+    };
+    fixture.context.outputs[0].stepKey = 'g02-environment-photo';
+    fixture.executeReview.mockResolvedValue({
+      status: 'SUCCEEDED',
+      aiRunId: 'run-id',
+      content: JSON.stringify({
+        decision: 'PASS',
+        teacherReason: '照片符合要求。',
+        confidenceSummary: { overall: 0.89 },
+        criteria: [
+          {
+            criterionKey: 'camera_angle',
+            result: 'PASS',
+            teacherMessage: null,
+            confidence: 0.89,
+          },
+          {
+            criterionKey: 'lighting',
+            result: 'PASS',
+            teacherMessage: null,
+            confidence: 0.96,
+          },
+          {
+            criterionKey: 'background',
+            result: 'PASS',
+            teacherMessage: null,
+            confidence: 0.96,
+          },
+          {
+            criterionKey: 'dressing',
+            result: 'PASS',
+            teacherMessage: null,
+            confidence: 0.96,
+          },
+        ],
+      }),
+    });
+
+    await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({
+      passed: false,
+      resultCode: 'IMAGE_REVIEW_RETRY',
+      teacherMessage: '判断把握不足，请按提示调整后重新拍照。',
+    });
+    const savedReview = fixture.saveReview.mock.calls[0][1];
+    expect(savedReview.decision).toBe('RETRY');
+    expect(savedReview.criteriaVersion).toBe(
+      'lesson-preparation-camera-view-2026-08-v7-background-veto',
+    );
+    expect(savedReview.items.map((item) => item.criterionKey)).toEqual([
+      'camera_angle',
+      'lighting',
+      'background',
+      'dressing',
+    ]);
+    const g04GatewayInput = fixture.executeReview.mock.calls[0][0];
+    expect(g04GatewayInput.systemPrompt).toContain('camera_angle');
+    expect(g04GatewayInput.systemPrompt).toContain('明显侧脸');
+    expect(g04GatewayInput.systemPrompt).toContain('头部向左/向右侧倾');
+    expect(g04GatewayInput.systemPrompt).toContain('白色虚线辅助轮廓');
+    expect(g04GatewayInput.systemPrompt).toContain('背景必须干净、整洁');
+    expect(g04GatewayInput.systemPrompt).toContain('画面中只能出现当前老师');
+    expect(g04GatewayInput.systemPrompt).toContain('干扰授课的物体');
+    expect(g04GatewayInput.systemPrompt).toContain('backgroundChecks');
+    expect(g04GatewayInput.systemPrompt).toContain('不得增加第五项');
+    expect(g04GatewayInput.userText).toContain('首课准备');
+    expect(g04GatewayInput.userText).toContain('背景不干净整洁');
+    expect(g04GatewayInput.file).toMatchObject({
+      filename: 'evidence-ai.jpg',
+      mimeType: 'image/jpeg',
+    });
+  });
+
+  it('reuses the first passed G04 review for the same photo and policy', async () => {
+    const fixture = createFixture();
+    fixture.context.rule.config = {
+      ...config,
+      stepKey: 'g02-environment-photo',
+    };
+    fixture.context.outputs[0].stepKey = 'g02-environment-photo';
+    (fixture.reviews.hasPassedReview as jest.Mock).mockResolvedValue(true);
+
+    await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({
+      passed: true,
+      resultCode: 'IMAGE_REVIEW_PASSED',
+      teacherMessage: null,
+    });
+    expect(fixture.executeReview).not.toHaveBeenCalled();
+    expect(fixture.saveReview).not.toHaveBeenCalled();
+  });
+
+  it('vetoes a nominal background PASS when the full-frame scan finds another person', async () => {
+    const fixture = createFixture();
+    fixture.context.rule.config = {
+      ...config,
+      stepKey: 'g02-environment-photo',
+    };
+    fixture.context.outputs[0].stepKey = 'g02-environment-photo';
+    fixture.executeReview.mockResolvedValue({
+      status: 'SUCCEEDED',
+      aiRunId: 'run-id',
+      content: JSON.stringify({
+        decision: 'PASS',
+        teacherReason: '照片符合要求。',
+        confidenceSummary: {
+          backgroundChecks: {
+            otherPeopleVisible: true,
+            distractingObjectsVisible: true,
+            clutterVisible: false,
+            sensitiveInformationVisible: false,
+            virtualBackgroundDefect: false,
+          },
+        },
+        criteria: ['camera_angle', 'lighting', 'background', 'dressing'].map(
+          (criterionKey) => ({
+            criterionKey,
+            result: 'PASS',
+            teacherMessage: null,
+            confidence: 0.98,
+          }),
+        ),
+      }),
+    });
+
+    await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({
+      passed: false,
+      resultCode: 'IMAGE_REVIEW_RETRY',
+      teacherMessage: '背景中出现其他人员，请换到无人入镜的授课区域。',
+    });
+    const savedReview = fixture.saveReview.mock.calls[0][1];
+    expect(savedReview.decision).toBe('RETRY');
+    expect(
+      savedReview.items.find((item) => item.criterionKey === 'background'),
+    ).toMatchObject({
+      result: 'FAIL',
+      teacherMessage: '背景中出现其他人员，请换到无人入镜的授课区域。',
+    });
   });
 });

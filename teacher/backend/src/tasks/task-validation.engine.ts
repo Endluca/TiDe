@@ -45,7 +45,19 @@ export class TaskValidationEngine {
       };
     }
 
-    for (const rule of input.rules) {
+    const currentG04ImageRule = input.rules.find(
+      (rule) =>
+        rule.ruleType === 'AI_IMAGE_REVIEW' &&
+        rule.config.stepKey === 'g02-environment-photo',
+    );
+    const rules = currentG04ImageRule
+      ? [
+          currentG04ImageRule,
+          ...input.rules.filter((rule) => rule !== currentG04ImageRule),
+        ]
+      : input.rules;
+
+    for (const rule of rules) {
       const handler = this.handlers.get(rule.ruleType);
       if (!handler) {
         return {
@@ -86,7 +98,7 @@ export class TaskValidationEngine {
       status: 'PASSED',
       resultCode: 'ALL_RULES_PASSED',
       teacherMessage: null,
-      ruleVersion: input.rules
+      ruleVersion: rules
         .map((rule) => `${rule.ruleKey}:${rule.ruleVersion}`)
         .join(','),
     };

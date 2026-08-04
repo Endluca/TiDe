@@ -64,6 +64,7 @@ export function Toki({
   const { t } = useI18n();
   const videoRef = useRef(null);
   const hasStartedRef = useRef(false);
+  const [showStaticFallback, setShowStaticFallback] = useState(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(
     () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
@@ -81,11 +82,18 @@ export function Toki({
 
   useEffect(() => {
     hasStartedRef.current = false;
-  }, [motion]);
+    setShowStaticFallback(false);
+  }, [loop, motion]);
+
+  useEffect(() => {
+    if (!sources || prefersReducedMotion) return;
+    const staticImage = new Image();
+    staticImage.src = poster;
+  }, [poster, prefersReducedMotion, sources]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !sources || prefersReducedMotion) return undefined;
+    if (!video || !sources || prefersReducedMotion || showStaticFallback) return undefined;
 
     const playWhenVisible = () => {
       if (!loop && video.ended) return;
@@ -93,6 +101,8 @@ export function Toki({
         video.currentTime = 0;
         hasStartedRef.current = true;
       }
+      // A rejected play attempt or an unsupported candidate source must not
+      // replace the video: the browser may still continue with the next source.
       video.play()?.catch(() => {});
     };
 
@@ -117,10 +127,16 @@ export function Toki({
       observer.disconnect();
       video.pause();
     };
-  }, [loop, motion, prefersReducedMotion, sources]);
+  }, [loop, motion, prefersReducedMotion, showStaticFallback, sources]);
 
-  if (!sources || prefersReducedMotion) {
-    return <img className={`toki ${className}`} src={poster} alt={accessibleLabel} />;
+  if (!sources || prefersReducedMotion || showStaticFallback) {
+    return (
+      <img
+        className={`toki ${showStaticFallback ? "toki-static-enter" : ""} ${className}`}
+        src={poster}
+        alt={accessibleLabel}
+      />
+    );
   }
 
   return (
@@ -132,7 +148,9 @@ export function Toki({
       playsInline
       loop={loop}
       preload="none"
-      poster={poster}
+      onEnded={() => {
+        if (!loop) setShowStaticFallback(true);
+      }}
       role="img"
       aria-label={accessibleLabel}
     >

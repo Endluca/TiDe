@@ -170,3 +170,47 @@ describe('TaskRepository batch task contexts', () => {
     expect(result.contexts[1].steps).toHaveLength(1);
   });
 });
+
+describe('TaskRepository latest validation', () => {
+  it('returns the latest saved image-review items without changing the schema', async () => {
+    const imageReview = {
+      criteriaVersion:
+        'lesson-preparation-camera-view-2026-08-v7-background-veto',
+      decision: 'PASS',
+      teacherReason: '四项均已通过。',
+      confidenceSummary: { criteria: { background: 0.97 } },
+      items: [
+        {
+          criterionKey: 'background',
+          result: 'PASS',
+          teacherMessage: null,
+        },
+      ],
+    };
+    const queryTide = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          status: 'FAILED',
+          resultCode: 'STEPS_INCOMPLETE',
+          teacherMessage: '请完成备课确认。',
+          imageReview,
+        },
+      ],
+    });
+    const repository = new TaskRepository({ queryTide } as never, {} as never);
+
+    await expect(
+      repository.getLatestValidation('account-001', 'assignment-001'),
+    ).resolves.toMatchObject({ imageReview });
+    for (const fragment of [
+      'LEFT JOIN LATERAL',
+      'tide.image_review_items',
+      'review.submission_id = submission.id',
+    ]) {
+      expect(queryTide).toHaveBeenCalledWith(
+        expect.stringContaining(fragment),
+        ['assignment-001', 'account-001'],
+      );
+    }
+  });
+});

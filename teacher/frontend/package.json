@@ -5,7 +5,7 @@
   "packageManager": "pnpm@11.13.1",
   "type": "module",
   "scripts": {
-    "dev": "VITE_API_BASE_URL=http://127.0.0.1:3000 vite --host 127.0.0.1",
+    "dev": "vite --host 127.0.0.1",
     "build": "node scripts/build-nginx.mjs",
     "build:nginx": "node scripts/build-nginx.mjs",
     "build:sites": "node scripts/build-sites.mjs",

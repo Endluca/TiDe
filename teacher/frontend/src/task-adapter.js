@@ -57,6 +57,8 @@ const growthStageIndex = {
   "Day 15-30": 2,
 };
 
+const externalCourseTaskCodes = new Set(["G02", "G05", "G06", "G07", "G08"]);
+
 function currentGrowthStageIndex(campDay) {
   const day = Number(campDay);
   if (!Number.isFinite(day) || day < 8) return 0;
@@ -66,8 +68,8 @@ function currentGrowthStageIndex(campDay) {
 function inferMethod(context) {
   if (context.execution?.contentStatus !== "READY") return "content_pending";
   if (context.taskCode === "G01") return "profile_credentials";
-  if (context.taskCode === "G02") return "document_quiz";
   if (context.taskCode === "G04") return "readiness_photo";
+  if (externalCourseTaskCodes.has(context.taskCode)) return "external_course";
   if (context.steps.some((step) => (
     step.type === "CUSTOM" && step.config?.kind === "TEXT_SUBMISSION"
   ))) return "factual_response";

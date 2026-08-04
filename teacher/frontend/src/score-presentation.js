@@ -2,22 +2,22 @@ const scorecardGroupCopy = {
   USER_FEEDBACK: {
     title: { en: "User Feedback", zh: "用户反馈" },
     description: {
-      en: "Feedback items returned by Shiwen accumulate under their current rules without a dimension cap.",
-      zh: "世文返回的用户反馈子项按当前规则累计，本维度不封顶。",
+      en: "Praise accumulates by event; favorites count unique learners. This dimension has no cap.",
+      zh: "好评按次累计，收藏按去重学员人数累计，本维度不封顶。",
     },
   },
   RELIABILITY: {
     title: { en: "Class Reliability", zh: "上课稳定度" },
     description: {
-      en: "Eligible classes earn the per-class points returned by Shiwen.",
-      zh: "符合条件的课程按世文返回的单课分值累计。",
+      en: "Eligible classes earn the per-class points in the current scorecard.",
+      zh: "符合条件的课程按当前积分卡中的单课分值累计。",
     },
   },
   CLASS_QUALITY: {
     title: { en: "Hardware Quality", zh: "硬件质量" },
     description: {
-      en: "Hardware-quality points follow Shiwen's current scorecard.",
-      zh: "硬件质量积分以世文当前积分卡为准。",
+      en: "Hardware-quality points follow the current scorecard.",
+      zh: "硬件质量积分以当前积分卡为准。",
     },
   },
   CAPACITY: {
@@ -30,8 +30,8 @@ const scorecardGroupCopy = {
   NEW_TEACHER_TASK: {
     title: { en: "Required Tasks", zh: "必修任务" },
     description: {
-      en: "Each required task earns the points returned by Shiwen after completion.",
-      zh: "每项必修任务完成后，获得世文积分卡返回的对应分值。",
+      en: "Each required task earns the corresponding points after completion.",
+      zh: "每项必修任务完成后，获得对应积分。",
     },
   },
 };
@@ -45,10 +45,10 @@ const scorecardRuleCopy = {
   FEEDBACK_FAVORITE: {
     title: { en: "Learner favorite", zh: "学员收藏" },
     condition: {
-      en: "First eligible favorited class for each learner",
-      zh: "同一学员首节符合条件的收藏课计分 1 次",
+      en: "Each learner's first eligible favorite of this teacher; later favorites do not score again",
+      zh: "每名学员首次符合计分条件的收藏课；后续收藏不重复计分",
     },
-    unit: { en: "/scored favorite", zh: "/次" },
+    unit: { en: "/learner", zh: "/人" },
   },
   FEEDBACK_REBOOK_15D: {
     title: { en: "15-day rebooking", zh: "15 天内复约" },
@@ -182,6 +182,41 @@ export function scoreStageStates(currentValue, graduationTarget, goldTarget) {
         : null,
     },
   };
+}
+
+export function presentStageAction(stage, remainingRequiredTasks, language) {
+  if (stage.reached) {
+    return language === "zh" ? "已达成" : "Achieved";
+  }
+  if (stage.gap === null) {
+    return language === "zh" ? "等待积分更新" : "Waiting for score";
+  }
+
+  const taskCount = Math.max(0, Number(remainingRequiredTasks) || 0);
+  const scoreAction = stage.gap > 0
+    ? language === "zh"
+      ? `还差 ${stage.gap.toFixed(1)} 分`
+      : `${stage.gap.toFixed(1)} points to go`
+    : null;
+  const taskAction = taskCount > 0
+    ? language === "zh"
+      ? `完成 ${taskCount} 项必修任务`
+      : `complete ${taskCount} required ${taskCount === 1 ? "task" : "tasks"}`
+    : null;
+
+  if (scoreAction && taskAction) {
+    return language === "zh"
+      ? `${scoreAction}，并${taskAction}`
+      : `${scoreAction}, and ${taskAction}`;
+  }
+  if (scoreAction) return scoreAction;
+  if (taskAction) {
+    return language === "zh" ? `还需${taskAction}` : `Still need to ${taskAction}`;
+  }
+
+  // No user-actionable gap remains. Do not expose historical conditions that
+  // cannot be reversed or replace the backend's final qualification result.
+  return null;
 }
 
 function roundOneDecimal(value) {
