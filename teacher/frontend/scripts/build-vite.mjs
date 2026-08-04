@@ -4,8 +4,8 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export async function buildFrontend() {
-  await build({
+export async function buildFrontend({ apiBaseUrl } = {}) {
+  const config = {
     build: {
       rolldownOptions: {
         output: {
@@ -33,7 +33,13 @@ export async function buildFrontend() {
         },
       },
     },
-  });
+  };
+  if (apiBaseUrl !== undefined) {
+    config.define = {
+      "import.meta.env.VITE_API_BASE_URL": JSON.stringify(apiBaseUrl),
+    };
+  }
+  await build(config);
 
   const assetsDirectory = new URL("../dist/assets/", import.meta.url);
   const assetsPath = fileURLToPath(assetsDirectory);

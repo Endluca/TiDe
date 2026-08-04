@@ -6,8 +6,11 @@ import {
 } from "./session-store";
 import { getAnalyticsSessionId } from "../analytics/session";
 import { createRequestSignal } from "./request-timeout";
+import { normalizeApiBaseUrl, toApiUrl } from "./api-url";
 
-export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, "");
+export const API_BASE_URL = normalizeApiBaseUrl(
+  import.meta.env.VITE_API_BASE_URL,
+);
 export const DEFAULT_QUERY_TIMEOUT_MS = 15_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 20_000;
 
@@ -48,8 +51,7 @@ function reportApiFailure(input) {
 }
 
 function toUrl(path) {
-  if (/^https?:\/\//.test(path)) return path;
-  return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+  return toApiUrl(path, API_BASE_URL);
 }
 
 async function parseResponse(response, responseType) {

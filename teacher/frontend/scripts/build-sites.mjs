@@ -1,16 +1,15 @@
 import { buildFrontend } from "./build-vite.mjs";
-import { resolvePublicAssetBaseUrl } from "./sites-build-config.mjs";
+import { resolveSitesBuildConfig } from "./sites-build-config.mjs";
+import { loadEnv } from "vite";
 
-const publicAssetBaseUrl = resolvePublicAssetBaseUrl();
+const config = resolveSitesBuildConfig({
+  ...loadEnv("production", process.cwd(), "VITE_"),
+  ...process.env,
+});
 
-if (!/^https:\/\//i.test(publicAssetBaseUrl)) {
-  throw new Error(
-    "Sites builds require an HTTPS VITE_PUBLIC_ASSET_BASE_URL.",
-  );
-}
+process.env.VITE_API_BASE_URL = config.apiBaseUrl;
+process.env.VITE_PUBLIC_ASSET_BASE_URL = config.publicAssetBaseUrl;
 
-process.env.VITE_PUBLIC_ASSET_BASE_URL = publicAssetBaseUrl;
-
-await buildFrontend();
+await buildFrontend({ apiBaseUrl: config.apiBaseUrl });
 
 await import("./prepare-sites-build.mjs");

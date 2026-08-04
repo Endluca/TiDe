@@ -50,7 +50,7 @@ pnpm provision:internal-test
 - `provision:internal-test` 使用 `TIDE_DATABASE_URL` 连接公司测试库，只为库中真实存在的教师创建测试账号，不复制或改写 `public.teachers`，也不生成教师可见的站内通知。
 - 后端与隧道由 `com.aiec.tide-internal-backend`、`com.aiec.tide-internal-tunnel` 两个 LaunchAgent 常驻。
 - 源代码合并后重新运行部署脚本，会同步运行副本并重启后端。
-- Quick Tunnel 重启后地址可能变化。发布 Codex Sites 前，应把最新地址写入 `VITE_API_BASE_URL`，并把 Sites 的精确来源写入 `TIDE_INTERNAL_CORS_ORIGINS` 后重新部署。
+- Quick Tunnel 重启后地址可能变化。只有发布跨域 Codex Sites 前，才应把最新地址写入 `VITE_API_BASE_URL`，并把 Sites 的精确来源写入 `TIDE_INTERNAL_CORS_ORIGINS` 后重新部署；Gaea/Nginx 同源发布不读取该构建变量。
 - 公司测试库使用 `tit_teacher_crud` 读取教师资料以及 `teacher_scorecard_current / teacher_lesson_score_current`；积分接口不启用本地快照或其他兜底。
 
 ## 3. 环境配置

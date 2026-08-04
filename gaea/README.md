@@ -77,16 +77,18 @@ Pod A 上传、Pod B 下载，Pod B 删除、Pod A 读回失败；视频预热�
 
 ## 构建参数
 
-教师前端的 API Origin 和公共素材地址是 Vite 构建时事实：
+教师前端固定使用同源相对路径 `/api/*`，API Origin 不再是镜像构建事实。只有公共素材地址
+仍由 Vite 在构建时写入：
 
 | 参数 | TEST 默认值 | 说明 |
 |---|---|---|
-| `VITE_API_BASE_URL` | `https://tide.51talk.com` | 教师 Web 与 API 的同源 HTTPS Origin |
 | `VITE_PUBLIC_ASSET_BASE_URL` | `https://tide-media.51talkjr.com` | 已发布教师素材的 HTTPS 基址 |
 
-TEST 默认值固化在 Dockerfile，Gaea 无额外 build args 时可以直接构建。它不是生产安全
-门禁：预发布和生产必须用各自已评审 HTTPS 地址覆盖这两个参数并重建镜像，不能把 TEST
-Origin 晋级。Docker 构建会额外加载 NestJS 与原生 `sharp` 模块并执行 `nginx -t`，用来
+素材默认值固化在 Dockerfile，Gaea 无额外 build args 时可以直接构建。预发布和生产若使用
+不同素材 Origin，必须覆盖该参数并重建镜像。教师域名由 DNS/Ingress 和后端运行变量决定；
+Nginx 按当前请求 Host 提供页面、把 `/api/*` 代理到本 Pod NestJS，并运行时生成绝对分享
+图片地址，因此修改教师域名不需要重建镜像。Docker 构建会额外加载 NestJS 与原生 `sharp`
+模块并执行 `nginx -t`，用来
 尽早暴露 Alpine ABI 或 Nginx 配置不兼容；仍需 Gaea 的真实冷构建作为最终证据。
 
 ## Gaea 端口与域名

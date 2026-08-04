@@ -32,12 +32,10 @@ COPY teacher/frontend/package.json teacher/frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY teacher/frontend/ ./
 
-# TEST defaults are explicit so Gaea can build without external build-arg state.
-# Pre-release and production builds must override both arguments with reviewed HTTPS URLs.
-ARG VITE_API_BASE_URL=https://tide.51talk.com
+# The teacher browser always calls the same-origin /api path. Only the public
+# media origin remains a reviewed build-time fact.
 ARG VITE_PUBLIC_ASSET_BASE_URL=https://tide-media.51talkjr.com
-ENV VITE_API_BASE_URL=${VITE_API_BASE_URL} \
-    VITE_PUBLIC_ASSET_BASE_URL=${VITE_PUBLIC_ASSET_BASE_URL}
+ENV VITE_PUBLIC_ASSET_BASE_URL=${VITE_PUBLIC_ASSET_BASE_URL}
 RUN pnpm run build:nginx
 
 # ========== Stage 3: build the teacher NestJS backend ==========

@@ -2,12 +2,10 @@
 
 FROM node:22-bookworm-slim AS build
 
-ARG VITE_API_BASE_URL
 ARG VITE_PUBLIC_ASSET_BASE_URL
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
-ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 ENV VITE_PUBLIC_ASSET_BASE_URL=${VITE_PUBLIC_ASSET_BASE_URL}
 
 RUN corepack enable \
@@ -20,6 +18,7 @@ RUN --mount=type=cache,id=tide-frontend-pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile
 
 COPY index.html ./
+COPY vite.config.js ./
 COPY public ./public
 COPY scripts ./scripts
 COPY src ./src

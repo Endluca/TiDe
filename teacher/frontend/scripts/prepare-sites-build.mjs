@@ -2,14 +2,14 @@ import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   REQUIRED_SITES_PROJECT_ID,
-  resolvePublicAssetBaseUrl,
+  resolveSitesBuildConfig,
 } from "./sites-build-config.mjs";
 
 const root = process.cwd();
 const dist = join(root, "dist");
 const indexHtml = await readFile(join(dist, "index.html"), "utf8");
 const hosting = await readFile(join(root, ".openai", "hosting.json"), "utf8");
-const publicAssetBaseUrl = resolvePublicAssetBaseUrl();
+const config = resolveSitesBuildConfig();
 const hostingConfig = JSON.parse(hosting);
 
 if (hostingConfig.project_id !== REQUIRED_SITES_PROJECT_ID) {
@@ -30,13 +30,16 @@ const compiledJavaScript = await Promise.all(
   ),
 );
 
-if (
-  compiledJavaScript.length === 0 ||
-  !compiledJavaScript.some((source) => source.includes(publicAssetBaseUrl))
-) {
-  throw new Error(
-    `Sites build is missing the public asset base URL: ${publicAssetBaseUrl}`,
-  );
+for (const [name, value] of [
+  ["VITE_API_BASE_URL", config.apiBaseUrl],
+  ["VITE_PUBLIC_ASSET_BASE_URL", config.publicAssetBaseUrl],
+]) {
+  if (
+    compiledJavaScript.length === 0 ||
+    !compiledJavaScript.some((source) => source.includes(value))
+  ) {
+    throw new Error(`Sites build is missing ${name}: ${value}`);
+  }
 }
 
 await mkdir(join(dist, "server"), { recursive: true });

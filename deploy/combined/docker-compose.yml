@@ -219,7 +219,6 @@ services:
     build:
       context: ${TIDE_TEACHER_REPO_PATH:?Set TIDE_TEACHER_REPO_PATH}/frontend
       args:
-        VITE_API_BASE_URL: https://${TIDE_TEACHER_HOST:?Set TIDE_TEACHER_HOST}
         VITE_PUBLIC_ASSET_BASE_URL: ${TIDE_TEACHER_PUBLIC_ASSET_BASE_URL:?Set an HTTPS public asset base URL}
     depends_on:
       teacher-api:

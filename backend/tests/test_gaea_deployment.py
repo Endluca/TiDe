@@ -117,11 +117,20 @@ def test_gaea_image_builds_both_frontends_and_both_backends() -> None:
         "COPY teacher/frontend/package.json teacher/frontend/pnpm-lock.yaml ./"
         in dockerfile
     )
-    assert "ARG VITE_API_BASE_URL=https://tide.51talk.com" in dockerfile
+    assert "ARG VITE_API_BASE_URL" not in dockerfile
+    assert "ENV VITE_API_BASE_URL" not in dockerfile
     assert "tide-camp-teacher.test.51talk.biz" not in dockerfile
     assert "RUN pnpm run build:nginx" in dockerfile
     assert "--from=teacher-frontend-build /build/teacher-frontend/dist" in dockerfile
     assert "/usr/share/nginx/teacher" in dockerfile
+
+    teacher_nginx = TEACHER_CONF.read_text(encoding="utf-8")
+    assert "location /api/" in teacher_nginx
+    assert "proxy_pass http://127.0.0.1:3000" in teacher_nginx
+    assert (
+        "sub_filter '__SITE_ORIGIN__' '$tide_forwarded_proto://$host';"
+        in teacher_nginx
+    )
 
     assert (
         "hub.51talk.biz/library/node:22-alpine AS teacher-backend-build"

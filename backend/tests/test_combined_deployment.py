@@ -142,9 +142,12 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
         ]
         == "false"
     )
+    assert "VITE_API_BASE_URL" not in services["teacher-web"]["build"]["args"]
     assert (
-        services["teacher-web"]["build"]["args"]["VITE_API_BASE_URL"]
-        == "https://${TIDE_TEACHER_HOST:?Set TIDE_TEACHER_HOST}"
+        services["teacher-web"]["build"]["args"][
+            "VITE_PUBLIC_ASSET_BASE_URL"
+        ]
+        == "${TIDE_TEACHER_PUBLIC_ASSET_BASE_URL:?Set an HTTPS public asset base URL}"
     )
     probe_environment_example = (
         DEPLOY / "contract-probe.env.example"

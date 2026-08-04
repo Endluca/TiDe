@@ -1,19 +1,15 @@
-import { readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { buildFrontend } from "./build-vite.mjs";
-import {
-  replaceSiteOrigin,
-  resolveNginxBuildConfig,
-} from "./nginx-build-config.mjs";
+import { resolveNginxBuildConfig } from "./nginx-build-config.mjs";
 
 const root = process.cwd();
 const dist = join(root, "dist");
 const config = resolveNginxBuildConfig();
 
-process.env.VITE_API_BASE_URL = config.apiBaseUrl;
 process.env.VITE_PUBLIC_ASSET_BASE_URL = config.publicAssetBaseUrl;
 
-await buildFrontend();
+await buildFrontend({ apiBaseUrl: config.apiBaseUrl });
 
 const compiledAssetEntries = await readdir(join(dist, "assets"), {
   withFileTypes: true,
@@ -23,13 +19,14 @@ const compiledJavaScript = await Promise.all(
     .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
     .map((entry) => readFile(join(dist, "assets", entry.name), "utf8")),
 );
-for (const [name, value] of [
-  ["VITE_API_BASE_URL", config.apiBaseUrl],
-  ["VITE_PUBLIC_ASSET_BASE_URL", config.publicAssetBaseUrl],
-]) {
-  if (!compiledJavaScript.some((source) => source.includes(value))) {
-    throw new Error(`Nginx build is missing ${name}: ${value}`);
-  }
+if (
+  !compiledJavaScript.some((source) =>
+    source.includes(config.publicAssetBaseUrl),
+  )
+) {
+  throw new Error(
+    `Nginx build is missing VITE_PUBLIC_ASSET_BASE_URL: ${config.publicAssetBaseUrl}`,
+  );
 }
 
 const localAssetEntries = await readdir(join(root, "public", "assets"), {
@@ -45,8 +42,9 @@ await rm(join(dist, "readiness"), { force: true, recursive: true });
 
 const indexPath = join(dist, "index.html");
 const indexHtml = await readFile(indexPath, "utf8");
-const renderedIndexHtml = replaceSiteOrigin(indexHtml, config.siteOrigin);
-if (renderedIndexHtml.includes("__SITE_ORIGIN__")) {
-  throw new Error("Nginx build still contains an unresolved site origin.");
+const siteOriginMarkers = indexHtml.match(/__SITE_ORIGIN__/g) || [];
+if (siteOriginMarkers.length !== 2) {
+  throw new Error(
+    `Nginx build must retain exactly two runtime site origin markers; found ${siteOriginMarkers.length}.`,
+  );
 }
-await writeFile(indexPath, renderedIndexHtml);
