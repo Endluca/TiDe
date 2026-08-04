@@ -5,6 +5,7 @@ import { CompanyAiGatewayClient } from './company-ai-gateway.client';
 
 const values: AppEnvironment = {
   NODE_ENV: 'test',
+  BIND_HOST: '0.0.0.0',
   PORT: 3000,
   TRUST_PROXY_HOPS: 0,
   LOG_LEVEL: 'silent',

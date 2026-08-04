@@ -24,6 +24,7 @@ describe('environment configuration', () => {
   it('normalizes defaults and comma-separated CORS origins', () => {
     const environment = validateEnvironment({ NODE_ENV: 'test' });
 
+    expect(environment.BIND_HOST).toBe('0.0.0.0');
     expect(environment.PORT).toBe(3000);
     expect(environment.TRUST_PROXY_HOPS).toBe(0);
     expect(environment.DATABASE_REQUIRED).toBe(false);
@@ -50,6 +51,21 @@ describe('environment configuration', () => {
       'https://a.example',
       'https://b.example',
     ]);
+  });
+
+  it('only accepts explicit wildcard or loopback bind hosts', () => {
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'test',
+        BIND_HOST: '127.0.0.1',
+      }).BIND_HOST,
+    ).toBe('127.0.0.1');
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        BIND_HOST: 'teacher.example.test',
+      }),
+    ).toThrow('BIND_HOST');
   });
 
   it('requires a gateway key only when AI is enabled', () => {

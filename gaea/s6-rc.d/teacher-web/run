@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -eu
+
+chmod 1777 /run
+mkdir -p \
+  /tmp/tide-nginx/client-body \
+  /tmp/tide-nginx/proxy \
+  /tmp/tide-nginx/fastcgi \
+  /tmp/tide-nginx/uwsgi \
+  /tmp/tide-nginx/scgi
+chown -R gaea:gaea /tmp/tide-nginx
+/opt/venv/bin/python /app/bin/render-real-ip-conf.py
+/app/bin/render-nginx-conf.sh /etc/nginx/nginx.conf.template /etc/nginx/nginx.conf
+exec nginx -g "daemon off;"

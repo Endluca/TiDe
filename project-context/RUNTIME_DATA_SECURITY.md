@@ -24,10 +24,13 @@ OpenAI Key 不是当前确定性任务触发所必需。默认
 模型相关变量均为可选。真实环境文件应复制为 `backend/.env.local`，或把其路径传给
 `scripts/setup.sh` 和 `scripts/start.sh`。
 
-Gaea 运行时使用 `gaea/operations/Dockerfile` 将运营前端编译进 Python 包，由 FastAPI
-同源提供页面和 API；`gaea/score-settlement/Dockerfile` 提供独立单实例积分结算模块。
-生产变量必须通过 Gaea 配置/密钥管理注入；完整清单见 `gaea/README.md`。两个模块都不
-包含 `teacher/`，也不自动执行 Alembic。
+Gaea 运行时使用唯一的 `gaea/Dockerfile` 构建运营端、教师端和积分 Worker，并由 s6 在
+同一个 Pod 中管理四个常驻进程。运营与教师域名分别绑定 `8010/8080`，教师 NestJS 的
+`3000` 不对外开放。整个 Pod 固定单副本；生产变量必须通过 Gaea 配置/密钥管理注入，
+完整清单见 `gaea/README.md`。共享镜像不代表共享数据库账号，也不自动执行 TiDe Alembic
+或教师端 migration；但同一 UID 的进程会继承容器级变量，所以这个合并形态只用于受控
+TEST，不提供生产级秘密隔离。部署必须使用 Recreate 或先缩到 0，不能仅凭 replicas=1
+推断发布窗口没有第二个 Worker。
 
 ## 数据边界
 

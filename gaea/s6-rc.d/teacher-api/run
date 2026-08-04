@@ -1,0 +1,13 @@
+#!/bin/sh
+
+set -eu
+cd /app/teacher
+mkdir -p /var/lib/tide/uploads /var/lib/tide/video-prefetch-runs
+chown gaea:gaea /var/lib/tide /var/lib/tide/uploads /var/lib/tide/video-prefetch-runs
+exec s6-setuidgid gaea env \
+  BIND_HOST=127.0.0.1 \
+  PORT=3000 \
+  FILE_UPLOAD_MAX_BYTES=10485760 \
+  LOCAL_FILE_STORAGE_DIR="${LOCAL_FILE_STORAGE_DIR:-/var/lib/tide/uploads}" \
+  NODE_ENV="${TIDE_TEACHER_NODE_ENV:-production}" \
+  node /app/teacher/dist/src/main.js

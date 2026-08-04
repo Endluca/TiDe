@@ -19,7 +19,14 @@
 **/coverage
 **/.runtime
 backend/app/static
-teacher
+teacher/.git
+teacher/outputs
+teacher/tmp
+teacher/backend/storage
+teacher/frontend/.openai
+teacher/frontend/public/assets/tasks/**/*.mp4
+teacher/frontend/public/assets/tasks/**/*.webm
+teacher/frontend/public/assets/tasks/**/*.mov
 output
 test-results
 playwright-report

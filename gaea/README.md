@@ -1,163 +1,272 @@
-# TiDe 运营端 — Gaea 部署配置
+# TiDe — Gaea 单项目部署配置
 
 ## 部署模式
 
-这是 Gaea 模式 C（多模块）配置，包含两个边界明确的 Python 运行单元：
+这是 Gaea 单模块、单镜像、单 Pod 的受控 TEST 部署。Gaea 直接读取根级
+`gaea/Dockerfile`，不再使用 `gaea.yml` 或子模块 Dockerfile。
 
-| 模块 | 常驻进程 | 部署约束 |
+镜像由 s6-overlay 管理四个常驻进程：
+
+| 进程 | 监听端口 | 职责 |
+|---|---:|---|
+| `operations` | `8010` | FastAPI 同源提供运营 React、`/api/*` 与 `/api/health` |
+| `teacher-web` | `8080` | Nginx 提供教师 React，并把 `/api/*` 代理到本 Pod 的 NestJS |
+| `teacher-api` | `3000` | NestJS 教师端 API；只在 Pod 内访问，不配置 Gaea Ingress |
+| `score-settlement` | 无 | 固定任务积分结算循环和 heartbeat |
+
+运营端与教师端仍是两套独立 HTTP 服务，只是共享镜像和 Pod。两个数据库运行角色、两套
+API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker 任一非零退出，s6 都会
+终止整个容器，让 Kubernetes 重建完整 Pod。
+
+但单容器不是安全隔离边界：`S6_KEEP_ENV=1` 会让进程继承整套运行变量，多个业务进程又以
+同一 UID `1001` 运行，因此其中一个进程被利用后可能读取另一个进程的数据库、JWT、OSS
+或邮件凭据。这个结构性取舍只为尽快完成办公室 TEST；需要生产级秘密隔离时必须重新拆分
+容器或 Pod，不能把“数据库角色不同”解释成“密钥彼此不可见”。
+
+## 不可变运行约束
+
+- Gaea 应用副本数必须固定为 `1`，关闭自动伸缩，并使用 `Recreate` 更新策略；如果平台
+  不能设置 `Recreate`，每次发布先把旧应用缩到 `0`，确认旧 Pod 消失后再启动新版本。
+  只设置 replicas=1 仍可能因 rolling update 的 `maxSurge` 短暂出现两个 Worker。
+- `3000` 已由统一镜像强制绑定 `127.0.0.1`，不得再配置 Ingress、SLB 或 Service 端口；
+  教师 API 只能经 `8080/api/*` 访问。
+- Alembic 和教师端 migration 都是发布前独立作业，不能放进 Pod 启动流程。
+- 单镜像不代表共用数据库账号：运营使用 `tit_growth_app`，教师端使用
+  `tit_teacher_crud` 和单独的只读来源账号；迁移分别使用 `tit_growth_migrator` 与
+  `tide_migrator`。
+- Gaea 高级设置必须允许 root PID 1 启动 `/init`；s6 随后把业务进程降权到 UID `1001`。
+  如果平台强制 `runAsNonRoot`，该镜像会在启动阶段失败。
+- `LOCAL_FILE_STORAGE_DIR=/var/lib/tide/uploads` 与
+  `VIDEO_PREFETCH_STATE_DIR=/var/lib/tide/video-prefetch-runs` 应共用 `/var/lib/tide` PVC，并
+  设置 `fsGroup=1001` 或允许启动脚本修正卷根目录权限。没有 PVC 时 Pod 重建会丢失上传
+  附件和预热状态，只能做不含真实上传的短期 TEST。
+- 单 Pod 同时运行 Python API、NestJS、Nginx 与后台进程，TEST 建议从 4 GiB 内存起步，
+  再按实际 RSS、连接数和延迟收缩；这不是容量验收结果。
+
+## 构建参数
+
+教师前端的 API Origin 和公共素材地址是 Vite 构建时事实：
+
+| 参数 | TEST 默认值 | 说明 |
 |---|---|---|
-| `operations` | FastAPI/Uvicorn | 内部 Node 22 镜像先构建 `frontend/`，再把 `dist` 复制到 `/app/app/static`；最终镜像只运行 Python，由 `StaticFiles` 同源提供页面和 API |
-| `score-settlement` | 固定任务积分结算循环 | 独立单副本；使用文件 heartbeat 健康检查，不监听 HTTP 端口 |
+| `VITE_API_BASE_URL` | `https://tide-camp-teacher.test.51talk.biz` | 教师 Web 与 API 的同源 HTTPS Origin |
+| `VITE_PUBLIC_ASSET_BASE_URL` | `https://tide-media.51talkjr.com` | 已发布教师素材的 HTTPS 基址 |
 
-`operations` 最终镜像不包含 Node.js、Nginx 或 s6，前后端不分离运行。结算 Worker 的独立是业务一致性边界，不是前后端分离。`teacher/` 是独立的教师端 NestJS + React 系统，不在本 Gaea 应用范围内。
+TEST 默认值固化在 Dockerfile，Gaea 无额外 build args 时可以直接构建。它不是生产安全
+门禁：预发布和生产必须用各自已评审 HTTPS 地址覆盖这两个参数并重建镜像，不能把 TEST
+Origin 晋级。Docker 构建会额外加载 NestJS 与原生 `sharp` 模块并执行 `nginx -t`，用来
+尽早暴露 Alpine ABI 或 Nginx 配置不兼容；仍需 Gaea 的真实冷构建作为最终证据。
 
-## 必备环境变量
+## Gaea 端口与域名
 
-Gaea 应用按生产模式失败关闭。下表中的必填变量必须在平台配置中显式设置；密钥只放 Gaea 的密钥管理，不得写入镜像、Git 或业务 payload。
+在唯一应用（建议继续使用现有 `tide-camp-api` 项目）中配置两个端口：
 
-### `operations` 模块
+| 容器端口 | 访问方式 | TEST 域名 | 用途 |
+|---:|---|---|---|
+| `8010` | Ingress / HTTP(S) | `https://tide-camp-ops.test.51talk.biz` | 运营端页面和 API |
+| `8080` | Ingress / HTTP(S) | `https://tide-camp-teacher.test.51talk.biz` | 教师端页面和同源 API |
 
-| 变量名 | 必填 | 建议值/默认值 | 说明 |
-|---|---|---|---|
-| `APP_ENV` | 是 | `production` | 启用生产安全校验并关闭 API 文档 |
-| `TIT_MIGRATION_MODE` | 是 | `false` | API 运行进程不得执行 Alembic |
-| `DATABASE_URL` | 是 | 无 | `tit_growth_app` 受限角色的 PostgreSQL URL；必须且只能带一个 `sslmode=verify-ca` 或 `verify-full` |
-| `TIT_ALLOWED_HOSTS` | 是 | 无 | Gaea 对外业务域名；多个值用英文逗号分隔 |
-| `TIT_HEALTHCHECK_HOST` | 是 | 无 | 健康检查 Host，必须包含在 `TIT_ALLOWED_HOSTS` 中 |
-| `TIT_ALLOWED_ORIGINS` | 否 | 空 | 前后端同源时保持为空；只有明确跨域时才填写完整 HTTPS Origin |
-| `TIT_SESSION_TTL_HOURS` | 否 | `8` | 运营登录会话有效期 |
-| `TIT_DB_POOL_SIZE` | 是 | `5` | 每个 API 进程的数据库连接池大小 |
-| `TIT_DB_MAX_OVERFLOW` | 是 | `2` | 每个 API 进程的临时溢出连接上限 |
-| `TIT_DB_POOL_TIMEOUT_SECONDS` | 是 | `5` | 获取数据库连接的超时秒数 |
-| `TIT_DB_POOL_RECYCLE_SECONDS` | 是 | `1800` | 数据库连接回收秒数 |
-| `TIT_DB_CONNECT_TIMEOUT_SECONDS` | 是 | `8` | 新建数据库连接超时秒数 |
-| `TIT_DB_LOCK_TIMEOUT_MS` | 是 | `5000` | 数据库锁等待上限 |
-| `TIT_DB_IDLE_TRANSACTION_TIMEOUT_MS` | 是 | `60000` | 空闲事务超时 |
-| `TIT_DB_STATEMENT_TIMEOUT_MS` | 是 | `30000` | API SQL 执行超时；生产不建议设为 `0` |
-| `TIT_DB_APPLICATION_NAME` | 否 | `tit-growth-api` | PostgreSQL 连接标识 |
-| `TIT_ARGON2_MAX_CONCURRENCY` | 是 | `2` | 密码哈希并发上限 |
-| `TIT_LOGIN_RATE_LIMIT_ATTEMPTS` | 是 | `10` | 登录限流窗口内尝试次数 |
-| `TIT_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | 是 | `60` | 登录限流窗口秒数 |
-| `TIT_LOGIN_RATE_LIMIT_MAX_KEYS` | 是 | `10000` | 登录限流键数量上限 |
-| `TIT_SLOW_REQUEST_MS` | 是 | `1000` | 慢 API 日志阈值 |
-| `TIT_API_WORKERS` | 是 | `2` | Uvicorn Worker 数；连接池预算要乘以此值核算 |
-| `TIT_API_LIMIT_CONCURRENCY` | 是 | `8` | 每个 Worker 的并发请求上限 |
-| `TIT_API_KEEPALIVE_SECONDS` | 是 | `5` | HTTP keep-alive 秒数 |
-| `TIT_TRUSTED_PROXY_IPS` | 是 | 无 | Gaea Ingress 的精确代理 IP/CIDR；禁止使用 `*` 或未经确认的整个内网网段 |
-| `AGENT_PROVIDER` | 否 | `deterministic` | 当前确定性任务规则不需要模型 |
-| `OPENAI_AGENT_MODEL` | 否 | `gpt-5.6-terra` | 仅非确定性 Provider 使用 |
-| `AGENT_REASONING_EFFORT` | 否 | `low` | 仅非确定性 Provider 使用 |
-| `AGENT_TIMEOUT_SECONDS` | 否 | `20` | 仅非确定性 Provider 使用 |
-| `OPENAI_API_KEY` | 否 | 无 | 仅启用 OpenAI Provider 时通过密钥管理注入 |
+Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两个域名都指向同一个端口：两端
+都有 `/api/*`，按端口分流才能避免路径冲突。`EXPOSE` 只描述镜像端口，不会替代平台上的
+两条域名配置；发布后必须从两个外部 HTTPS 域名分别做 smoke test。
 
-`TIT_FRONTEND_REQUIRED=true` 已固化在镜像中，确保缺失 `index.html` 或 `assets/` 时应用拒绝启动，不要在平台覆盖为 `false`。
+## 聚合健康检查
 
-### `score-settlement` 模块
+镜像的 `HEALTHCHECK` 每 30 秒依次验证：
 
-Worker 当前复用生产运行校验，因此仍需提供上表中的 `APP_ENV`、`TIT_MIGRATION_MODE`、`DATABASE_URL`、Host 配置及全部必填整数；其中 HTTP/API 专用值只用于通过同一失败关闭校验，不会启动 HTTP 服务。数据库连接预算必须覆盖为单实例 Worker 的独立值：
+1. `8010/api/health`：运营 API、运营静态页面启动边界和数据库；
+2. `8080/healthz`：教师 Nginx 与静态产物；
+3. `8080/health/ready`：经 Nginx 代理访问教师 API，并检查两条数据库读取链；
+4. `settle_shared_task_scores.py --healthcheck --max-heartbeat-age-seconds 90`：积分 Worker。
+
+因此 Pod 显示健康只表示四个进程和对应数据库就绪，不代表教师登录、九项任务、积分回写、
+外部素材、真实通知或完整业务验收已经完成。
+
+## 运营端运行变量
+
+以下变量由 Gaea 配置或密钥管理注入；密钥不得写进镜像、Git、业务 payload 或日志。
 
 | 变量名 | 必填 | 建议值/默认值 | 说明 |
 |---|---|---|---|
-| `APP_ENV` | 是 | `production` | 使用生产数据边界 |
-| `TIT_MIGRATION_MODE` | 是 | `false` | Worker 不执行迁移 |
-| `DATABASE_URL` | 是 | 无 | `tit_growth_app` 受限运行角色，与 API 共用逻辑库但不使用迁移角色 |
-| `TIT_DB_POOL_SIZE` | 是 | `1` | 单实例 Worker 连接池 |
-| `TIT_DB_MAX_OVERFLOW` | 是 | `0` | 不允许额外溢出连接 |
+| `APP_ENV` | 是 | `production` | 启用运营 API 的生产安全校验 |
+| `TIT_MIGRATION_MODE` | 是 | `false` | 常驻进程不得执行 Alembic |
+| `DATABASE_URL` | 是 | 无 | `tit_growth_app` 的 PostgreSQL URL |
+| `TIT_ALLOWED_HOSTS` | 是 | 运营域名 | 多值用英文逗号分隔 |
+| `TIT_HEALTHCHECK_HOST` | 是 | 运营域名 | 必须包含在 `TIT_ALLOWED_HOSTS` |
+| `TIT_ALLOWED_ORIGINS` | 否 | 空 | 运营前后端同源时保持为空 |
+| `TIT_SESSION_TTL_HOURS` | 否 | `8` | 运营登录会话小时数 |
+| `TIT_DB_POOL_SIZE` | 是 | `5` | 每个 Uvicorn Worker 的连接池 |
+| `TIT_DB_MAX_OVERFLOW` | 是 | `2` | 每个 Uvicorn Worker 的溢出连接 |
 | `TIT_DB_POOL_TIMEOUT_SECONDS` | 是 | `5` | 获取连接超时 |
 | `TIT_DB_POOL_RECYCLE_SECONDS` | 是 | `1800` | 连接回收秒数 |
-| `TIT_DB_STATEMENT_TIMEOUT_MS` | 是 | `60000` | 结算 SQL 执行超时 |
-| `TIT_DB_APPLICATION_NAME` | 否 | `tit-growth-score-worker` | PostgreSQL 连接标识 |
-| `TIT_SCORE_WORKER_HEARTBEAT` | 否 | `/tmp/tit-score-worker-heartbeat` | 已固化在 Worker 镜像；仅在同步修改健康检查时覆盖 |
+| `TIT_DB_CONNECT_TIMEOUT_SECONDS` | 是 | `8` | 建连超时 |
+| `TIT_DB_LOCK_TIMEOUT_MS` | 是 | `5000` | 锁等待上限 |
+| `TIT_DB_IDLE_TRANSACTION_TIMEOUT_MS` | 是 | `60000` | 空闲事务超时 |
+| `TIT_DB_STATEMENT_TIMEOUT_MS` | 是 | `30000` | 运营 SQL 超时 |
+| `TIT_DB_APPLICATION_NAME` | 否 | `tit-growth-api` | PostgreSQL 连接标识 |
+| `TIT_API_WORKERS` | 是 | `2` | Pod 内 Uvicorn Worker 数 |
+| `TIT_API_LIMIT_CONCURRENCY` | 是 | `8` | 每个 Worker 的并发上限 |
+| `TIT_API_KEEPALIVE_SECONDS` | 是 | `5` | HTTP keep-alive |
+| `TIT_TRUSTED_PROXY_IPS` | 是 | Gaea Ingress 精确地址 | 禁止 `*` 或未经确认的大网段 |
+| `TIT_ARGON2_MAX_CONCURRENCY` | 是 | `2` | 密码哈希并发上限 |
+| `TIT_LOGIN_RATE_LIMIT_ATTEMPTS` | 是 | `10` | 登录窗口内尝试数 |
+| `TIT_LOGIN_RATE_LIMIT_WINDOW_SECONDS` | 是 | `60` | 登录限流窗口 |
+| `TIT_LOGIN_RATE_LIMIT_MAX_KEYS` | 是 | `10000` | 登录限流键上限 |
+| `TIT_SLOW_REQUEST_MS` | 是 | `1000` | 慢请求日志阈值 |
+| `AGENT_PROVIDER` | 否 | `deterministic` | 当前任务规则不需要模型 |
+| `OPENAI_API_KEY` | 条件必填 | 无 | 仅启用 OpenAI Provider 时通过密钥管理注入 |
 
-平台副本数必须固定为 `1`。API Worker 数与 Gaea 横向副本数不影响这一要求。
+`TIT_FRONTEND_REQUIRED=true` 已固定在镜像中，禁止覆盖为 `false`。
 
-### 发布作业与一次性变量
+统一镜像还读取 Gaea 注入的 `MEMORY_SIZE`，只用于把 Nginx worker 数渲染到 2–16 的有界
+范围；未设置时按 8 个 worker 渲染，未知档位安全回退到 2。
 
-| 用途 | 变量 | 必填性与生命周期 |
-|---|---|---|
-| Alembic | `APP_ENV=production` | 迁移作业必填 |
-| Alembic | `TIT_MIGRATION_MODE=true` | 迁移作业必填；常驻模块必须为 `false` |
-| Alembic | `TIT_MIGRATION_EXPECTED_DATABASE` | 迁移作业必填 |
-| Alembic | `DATABASE_URL` | 使用且只能使用非超级用户 `tit_growth_migrator`；不得复用运行角色 |
-| 初始化运营账号 | `TIT_BOOTSTRAP_USERNAME` | 只注入一次性初始化命令，完成后移除 |
-| 初始化运营账号 | `TIT_BOOTSTRAP_PASSWORD` | 只通过密钥管理注入一次性初始化命令，完成后移除 |
+## 积分 Worker 进程级变量
 
-## 端口与健康检查
+单容器环境变量会被所有进程继承，因此 Worker 使用带前缀变量覆盖自己的连接池设置，避免
+把运营 API 的池大小直接复制给后台循环：
 
-| 端口 | 用途 |
-|---|---|
-| `8010` | `operations` 的运营 Web App、`/api/*` 和健康检查 |
+| 变量名 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `TIT_SCORE_DB_POOL_SIZE` | 否 | `1` | Worker 独立池大小 |
+| `TIT_SCORE_DB_MAX_OVERFLOW` | 否 | `0` | Worker 溢出连接 |
+| `TIT_SCORE_DB_STATEMENT_TIMEOUT_MS` | 否 | `60000` | Worker SQL 超时 |
+| `TIT_SCORE_DB_APPLICATION_NAME` | 否 | `tit-growth-score-worker` | Worker 连接标识 |
+| `TIT_SCORE_WORKER_HEARTBEAT` | 否 | `/tmp/tit-score-worker-heartbeat` | 已固化；覆盖时必须同步健康检查 |
 
-- 健康检查：`GET /api/health`
-- 间隔：10 秒
-- 超时：3 秒
-- 启动宽限：20 秒
+Worker 与运营 API 共用 `DATABASE_URL` 对应的受限运营运行角色，但不使用迁移角色。
+固定启动命令为
+`settle_shared_task_scores.py --watch --max-events 25 --interval-seconds 3`。
 
-生产健康检查会访问数据库，因此 `200` 表示 API 进程和数据库都可用，不代表教师端、外部日更、通知投递或生产切流已经完成。
+## 教师端运行变量
 
-`score-settlement` 不暴露端口。其镜像健康检查执行：
+| 变量名 | 必填 | TEST 建议值/默认值 | 说明 |
+|---|---|---|---|
+| `TIDE_TEACHER_NODE_ENV` | 否 | `test` | 仅办公室 TEST 可设 `test`；未设置时失败关闭地使用 `production` |
+| `TIDE_TEACHER_HOST` | 是 | 教师域名（不带 scheme） | 聚合健康检查的 Host，例如 `tide-camp-teacher.test.51talk.biz` |
+| `TIDE_TRUSTED_PROXY_CIDRS` | 否 | 复用 `TIT_TRUSTED_PROXY_IPS` | 教师入口不同时再覆盖；拒绝全网段和非法值 |
+| `TRUST_PROXY_HOPS` | 是 | `1` | 只信任本 Pod 的教师 Nginx 一跳 |
+| `CORS_ORIGINS` | 是 | 教师域名 | 教师页面与 API 同源 |
+| `DATABASE_REQUIRED` | 是 | `true` | 禁止无数据库假启动 |
+| `TIDE_DATABASE_URL` | 是 | 无 | `tit_teacher_crud` 连接；生产必须 `sslmode=verify-full` |
+| `SHIWEN_READ_DATABASE_URL` | 是 | 无 | 教师来源只读连接；生产不得复用写账号 |
+| `DATABASE_MAX_CONNECTIONS` | 是 | `5` | 每条教师数据库链各自的池上限；两条链合计最多 10 |
+| `DATABASE_CONNECTION_TIMEOUT_MS` | 是 | `3000` | 建连超时；需小于聚合探针超时 |
+| `DATABASE_STATEMENT_TIMEOUT_MS` | 是 | `10000` | 教师 SQL 超时 |
+| `SHIWEN_READ_MODE` | 是 | `DIRECT_TABLES` | 公司测试现有读取模式 |
+| `SHIWEN_ALLOW_TIDE_FIXTURE_FALLBACK` | 是 | `false` | 禁止用 fixture 冒充真实数据 |
+| `SHIWEN_TEACHER_IDENTITY_VIEW` | 条件必填 | 无 | `VIEWS` 模式时必填 |
+| `PUBLIC_APP_URL` | 是 | 教师 HTTPS Origin | 邮件与深链基址 |
+| `PUBLIC_API_URL` | 是 | 教师 HTTPS Origin | 文件与 API 公共基址 |
+| `DATA_HASH_SECRET` | 是 | 密钥管理注入 | 至少 32 字符 |
+| `AUTH_JWT_SECRET` | 是 | 密钥管理注入 | 至少 32 字符 |
+| `FILE_STORAGE_PROVIDER` | 是 | TEST 可 `LOCAL`；生产 `OSS` | 本地存储仅用于隔离测试 |
+| `LOCAL_FILE_STORAGE_DIR` | 否 | `/var/lib/tide/uploads` | LOCAL 模式需挂载 `/var/lib/tide` PVC |
+| `OSS_REGION` / `OSS_ENDPOINT` / `OSS_BUCKET` | 条件必填 | 无 | `FILE_STORAGE_PROVIDER=OSS` 时必填 |
+| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | 条件必填 | 密钥管理注入 | OSS 凭据 |
+| `MULTIPART_UPLOAD_MAX_CONCURRENCY` | 是 | `4` | 1–16；提高前先做 3×8 MiB 并发验收 |
+| `BACKGROUND_JOBS_ENABLED` | 是 | `true` | 教师后台任务；因此 Pod 只能单副本 |
+| `TASK_CATALOG_PUBLIC_WRITE` | 是 | `false` | 教师端不得改共享任务目录 |
+| `VIDEO_PREFETCH_STATE_DIR` | 否 | `/var/lib/tide/video-prefetch-runs` | 已固化；生产需 PVC |
+| `MAIL_DELIVERY_PROVIDER` | 否 | `UNAVAILABLE` | 启用公司邮件时还需 `MAIL_API_URL/MAIL_API_ACCESS_KEY` |
+| `AI_GATEWAY_ENABLED` | 否 | `false` | 启用时必须注入 `AI_GATEWAY_API_KEY` |
+
+统一镜像会把教师 `BIND_HOST` 固定为 `127.0.0.1`、`PORT` 固定为 `3000`，并把单文件
+`FILE_UPLOAD_MAX_BYTES` 固定为 10 MiB，以保持在 Nginx 26 MiB 请求上限内；这些值不要在
+Gaea 另行配置。教师 Nginx 只从 `TIDE_TRUSTED_PROXY_CIDRS`（未设时复用
+`TIT_TRUSTED_PROXY_IPS`）指定的入口解析 `X-Forwarded-For`。仍需平台确认 Ingress 会覆盖
+或追加而不是原样透传客户端伪造头。
+
+按上述建议值，教师两条池最多 10 连接；再加运营 `2 × (5 + 2)` 和 Worker 1 条，单 Pod
+最坏约 25 条连接。发布前必须按公共 PG 的连接额度核对，不能只看 Pod 是否运行。
+
+办公室公共 PG 若只能使用非严格 TLS，可以在 TEST 环境使用现有
+`COMPANY_TEST_DATABASE_ENABLED=true` 适配层，并注入 `TIDE_ADMIN_DB_HOST/PORT/NAME`、
+`TIDE_APP_DB_USER/PASSWORD`、`TIDE_ADMIN_DB_SSLMODE`。该适配会让教师写入与来源读取暂时复用
+一个测试账号，只能用于受控 TEST；预发布和生产必须恢复独立 URL 与独立角色。
+
+其余可选邮件、OSS、CDN、通知调度、照片 Worker、AI Gateway 与文件限制变量，以
+`teacher/backend/.env.example` 为完整字段表；启用某项能力时不得依赖代码默认值猜测密钥。
+
+## 构建与本地验证
+
+必须从仓库根目录构建：
 
 ```bash
-python scripts/settle_shared_task_scores.py --healthcheck --max-heartbeat-age-seconds 90
+docker build -f gaea/Dockerfile -t tide-camp:gaea .
 ```
 
-## 构建与本地镜像验证
-
-必须从仓库根目录构建，因为 Dockerfile 同时读取 `frontend/` 和 `backend/`：
-
-```bash
-docker build -f gaea/operations/Dockerfile -t tide-operations:gaea .
-docker build -f gaea/score-settlement/Dockerfile -t tide-score-settlement:gaea .
-```
-
-使用受保护的运行环境文件启动；示例文件不能包含真实密钥：
-
-```bash
-docker run --rm \
-  --env-file /安全路径/TiDe.runtime.production.env \
-  -p 127.0.0.1:8010:8010 \
-  tide-operations:gaea
-```
-
-验证同一进程同时提供页面和 API：
-
-```bash
-curl -fsS -H 'Host: <TIT_ALLOWED_HOSTS中的域名>' http://127.0.0.1:8010/ >/dev/null
-curl -fsS -H 'Host: <TIT_HEALTHCHECK_HOST>' http://127.0.0.1:8010/api/health
-```
-
-Worker 会消费并修改真实任务/积分事实，只能对隔离测试库做本地容器验证：
+使用隔离测试环境文件启动并暴露两个页面端口：
 
 ```bash
 docker run --rm -d \
-  --name tide-score-settlement-smoke \
-  --env-file /安全路径/TiDe.runtime.isolated-test.env \
-  -e TIT_DB_POOL_SIZE=1 \
-  -e TIT_DB_MAX_OVERFLOW=0 \
-  -e TIT_DB_STATEMENT_TIMEOUT_MS=60000 \
-  tide-score-settlement:gaea
-docker inspect --format '{{.State.Health.Status}}' tide-score-settlement-smoke
-docker stop tide-score-settlement-smoke
+  --name tide-camp-gaea-test \
+  --env-file /安全路径/TiDe.gaea.test.env \
+  -p 127.0.0.1:8010:8010 \
+  -p 127.0.0.1:8080:8080 \
+  tide-camp:gaea
 ```
 
-## 发布边界
+```bash
+curl -fsS -H 'Host: tide-camp-ops.test.51talk.biz' \
+  http://127.0.0.1:8010/api/health
+curl -fsS -H 'Host: tide-camp-teacher.test.51talk.biz' \
+  http://127.0.0.1:8080/healthz
+curl -fsS -H 'Host: tide-camp-teacher.test.51talk.biz' \
+  http://127.0.0.1:8080/health/ready
+docker exec tide-camp-gaea-test \
+  curl -fsS http://127.0.0.1:3000/health/ready
+docker inspect --format '{{.State.Health.Status}}' tide-camp-gaea-test
+docker stop tide-camp-gaea-test
+```
 
-- Alembic 仍是唯一 Schema 变更路径。使用独立的 `tit_growth_migrator` 凭据，在 API 发布前执行迁移；API 启动不得自动迁移。迁移作业需要 `APP_ENV=production`、`TIT_MIGRATION_MODE=true`、`TIT_MIGRATION_EXPECTED_DATABASE` 和迁移专用 `DATABASE_URL`，执行 `alembic upgrade head`。
-- 首次部署的运营账号通过一次性命令 `python scripts/bootstrap_operator.py` 创建。`TIT_BOOTSTRAP_USERNAME` 与 `TIT_BOOTSTRAP_PASSWORD` 只注入该次命令，不得长期留在应用环境中。
-- `score-settlement` 模块固定运行 `scripts/settle_shared_task_scores.py --watch --max-events 25 --interval-seconds 3`。它不能嵌入多 Worker FastAPI，也不能因前后端合并而省略；平台副本数必须固定为 1，健康检查不能改用 API 的 `/api/health`。
-- Gaea Ingress 应丢弃外部传入的伪造 `X-Forwarded-*`，只写入平台确认的代理信息；应用的 `TIT_TRUSTED_PROXY_IPS` 只允许精确可信来源。
-- 本配置只证明可构建并运行运营 Web/API 镜像，不代表外部数据日更、教师端生产接入、真实通知、监控、备份或生产切流已完成。
+本地容器验证会真实启动积分 Worker，只能连接隔离测试库。
 
-建议发布顺序：迁移作业 → 必要时初始化运营账号 → 启动 UI/API → 启动单实例积分结算 Worker → 分别验证页面、API、Worker 心跳和数据库读写。
+## 发布顺序
+
+1. 分别执行 TiDe Alembic 与教师端 migration；教师端至少到
+   `0025_fixed_task_semantic_alignment`，随后执行只读契约探针。
+2. 配齐统一应用的运营、教师和 Worker 环境变量，确认密钥不在版本化配置中。
+3. 在 Gaea 将统一应用副本固定为 `1`、关闭自动伸缩，设置 `Recreate`；若不支持，先缩容
+   到 `0`。同时确认平台允许 root `/init`，并配置 `8010` 运营域名和 `8080` 教师域名。
+4. 停止旧 `test-tide-camp-worker`，避免它与新镜像内的 Worker 同时常驻。
+5. 向现有 `tide-camp-api` 项目发布统一镜像，现场读回 replicas、自动伸缩、更新策略、两个
+   端口、两个域名、PVC 权限和健康状态。
+6. 从两个外部 HTTPS 域名验证运营登录、教师登录、G01–G09、状态更新、幂等结分、
+   积分/课程读取和工单往返。
+7. 业务验收完成后再下线旧 Worker 项目；不要用“Pod 运行中”代替端到端验收。
+
+回滚统一镜像时，应先停止统一 Pod，再恢复旧 API 与旧 Worker；禁止两个结算 Worker 重叠
+运行。迁移回滚继续遵循向前修复和一致性备份，不由容器启动脚本执行 destructive down。
+
+一次性发布变量仍保持原边界：运营迁移使用 `tit_growth_migrator`、
+`TIT_MIGRATION_MODE=true`、`TIT_MIGRATION_EXPECTED_DATABASE`；首次运营账号初始化只在一次性
+命令中注入 `TIT_BOOTSTRAP_USERNAME` 与 `TIT_BOOTSTRAP_PASSWORD`。教师 migration 使用
+`tide_migrator`，不得复用任何运行账号。
+
+## 当前证明边界
+
+单镜像构建、静态检查、测试和 Pod 健康都不代表生产可用。外部日更、真实通知回执、生产
+账号生命周期、监控、备份、恢复、灰度与业务方验收仍是独立门槛。
 
 ## 目录结构
 
 ```text
 gaea/
-├── gaea.yml                    # 声明 operations 与 score-settlement 两个模块
-├── operations/
-│   └── Dockerfile              # Node 构建 + Python UI/API 运行时
-├── score-settlement/
-│   └── Dockerfile              # 单实例积分结算与 heartbeat 健康检查
-└── README.md                    # 平台变量、验证方式与发布边界
+├── Dockerfile
+├── README.md
+├── bin/
+│   ├── healthcheck.sh
+│   ├── render-nginx-conf.sh
+│   └── render-real-ip-conf.py
+├── nginx/
+│   ├── nginx.conf
+│   ├── real-ip.conf
+│   └── teacher.conf
+└── s6-rc.d/
+    ├── operations/
+    ├── teacher-api/
+    ├── teacher-web/
+    ├── score-settlement/
+    └── user/contents.d/
 ```

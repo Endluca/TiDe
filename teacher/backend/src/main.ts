@@ -12,6 +12,7 @@ import { configureTrustProxy } from './platform/http/trust-proxy';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService<AppEnvironment, true>);
+  const bindHost = config.get('BIND_HOST', { infer: true });
   const port = config.get('PORT', { infer: true });
   const trustProxyHops = config.get('TRUST_PROXY_HOPS', { infer: true });
 
@@ -23,7 +24,7 @@ async function bootstrap(): Promise<void> {
   });
   app.enableShutdownHooks();
 
-  await app.listen(port, '0.0.0.0');
+  await app.listen(port, bindHost);
 }
 
 void bootstrap();

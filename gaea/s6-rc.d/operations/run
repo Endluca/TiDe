@@ -1,0 +1,7 @@
+#!/bin/sh
+
+set -eu
+cd /app/operations
+exec s6-setuidgid gaea env \
+  TIT_FRONTEND_REQUIRED=true \
+  /opt/venv/bin/python /app/operations/scripts/run_api.py

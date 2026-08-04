@@ -94,7 +94,7 @@ Tide_teachers_camp/
 ├── teacher/           # 教师端 NestJS API、React Web App 及其文档
 ├── contracts/         # 两端共享任务和课程数据契约
 ├── deploy/combined/   # 两端同机、不同域名的联合部署入口
-├── gaea/              # 运营 UI/API 合一与单实例结算 Worker 的 Gaea 配置
+├── gaea/              # 运营端、教师端与单实例结算 Worker 的单镜像 Gaea 配置
 ├── docs/              # 架构、数据、积分、认证和配置说明
 ├── project-context/   # 业务方与 AI 的项目背景
 └── scripts/           # 运营端一键安装和启动
@@ -114,22 +114,23 @@ Tide_teachers_camp/
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
 - 外部数据日更、教师端生产接入、真实通知回执、监控、备份和回滚仍待完成。
 
-## Gaea 部署骨架（运营 UI/API 合一）
+## Gaea 部署骨架（单项目、单镜像、双域名）
 
-[`gaea/operations/Dockerfile`](gaea/operations/Dockerfile) 使用公司内部 Node 22 镜像
-编译根目录运营前端，再把 `frontend/dist` 复制到 Python 包内的 `app/static`。最终镜像
-只运行 FastAPI/Uvicorn：FastAPI 在 8010 端口提供同源 `/api/*`，`StaticFiles` 托管
-`/assets/*`，不再运行独立前端容器或 Nginx：
+[`gaea/Dockerfile`](gaea/Dockerfile) 同时构建运营 React、教师 React、运营 FastAPI 和
+教师 NestJS，并用 s6-overlay 在一个 Pod 中管理运营 API、教师 API、教师 Nginx 与积分
+结算 Worker 四个进程。运营域名指向容器 `8010`，教师域名指向 `8080`；教师 NestJS
+监听 `3000`，只供同 Pod 的 Nginx 代理：
 
 ```bash
-docker build -f gaea/operations/Dockerfile -t tide-operations:gaea .
-docker build -f gaea/score-settlement/Dockerfile -t tide-score-settlement:gaea .
+docker build -f gaea/Dockerfile -t tide-camp:gaea .
 ```
 
-`gaea/gaea.yml` 同时声明 `operations` 与 `score-settlement` 两个模块。完整环境变量、
-健康检查和发布顺序见 [Gaea 部署说明](gaea/README.md)。前者只合并根目录运营端 React
-与 FastAPI；后者保持固定任务积分结算单实例。`teacher/` 教师端仍是独立系统，Alembic
-仍须作为发布前独立作业执行。
+该 Gaea 应用必须固定一个 Pod 副本，避免复制积分 Worker 和教师端内嵌后台调度器。完整
+环境变量、两个端口的域名配置、聚合健康检查和旧 Worker 切换顺序见
+[Gaea 部署说明](gaea/README.md)。逻辑服务与数据库角色仍然独立；TiDe Alembic 和教师端
+migration 仍须作为发布前独立作业执行。发布更新还必须使用 `Recreate`（或先缩到 0），
+因为 replicas=1 不能阻止 rolling update 的短暂双 Pod。该单容器形态只用于受控 TEST：
+同一 UID 的进程仍能接触整套容器密钥，不具备生产级秘密隔离。
 
 ## 现有分离式生产部署骨架
 
