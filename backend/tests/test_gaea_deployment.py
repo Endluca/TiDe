@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -25,6 +26,8 @@ TEACHER_COMPANY_TEST_MIGRATOR = (
     / "scripts"
     / "apply-company-test.sh"
 )
+TEACHER_BACKEND_DOCKERFILE = ROOT / "teacher" / "backend" / "Dockerfile"
+TEACHER_BUILD_TSCONFIG = ROOT / "teacher" / "backend" / "tsconfig.build.json"
 TEACHER_MAIN = ROOT / "teacher" / "backend" / "src" / "main.ts"
 ARCHITECTURE = ROOT / "docs" / "architecture.md"
 RUNTIME_SECURITY = ROOT / "project-context" / "RUNTIME_DATA_SECURITY.md"
@@ -134,6 +137,21 @@ def test_gaea_image_builds_both_frontends_and_both_backends() -> None:
 
     assert "hub.51talk.biz/library/python:3.12-alpine AS python-build" in dockerfile
     assert "--from=python-build /opt/venv /opt/venv" in dockerfile
+
+
+def test_teacher_backend_build_output_matches_runtime_entrypoints() -> None:
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    teacher_dockerfile = TEACHER_BACKEND_DOCKERFILE.read_text(encoding="utf-8")
+    teacher_run = (S6_DIR / "teacher-api" / "run").read_text(encoding="utf-8")
+    build_config = json.loads(TEACHER_BUILD_TSCONFIG.read_text(encoding="utf-8"))
+
+    # Docker stages only copy src/. Keep the compiler root explicit so clean
+    # image builds and full local checkouts emit the same runtime entrypoint.
+    assert build_config["compilerOptions"]["rootDir"] == "."
+    assert "COPY teacher/backend/src ./src" in dockerfile
+    assert "test -f dist/src/main.js" in dockerfile
+    assert "test -f dist/src/main.js" in teacher_dockerfile
+    assert "node /app/teacher/dist/src/main.js" in teacher_run
 
 
 def test_gaea_image_uses_internal_sources_and_s6_supervision() -> None:

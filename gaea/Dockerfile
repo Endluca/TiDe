@@ -60,6 +60,7 @@ RUN pnpm install --frozen-lockfile
 COPY teacher/backend/nest-cli.json teacher/backend/tsconfig.json teacher/backend/tsconfig.build.json ./
 COPY teacher/backend/src ./src
 RUN pnpm run build \
+    && test -f dist/src/main.js \
     && pnpm prune --prod
 
 # ========== Stage 4: install Python dependencies ==========
