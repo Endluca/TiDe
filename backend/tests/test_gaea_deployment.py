@@ -170,6 +170,40 @@ def test_gaea_image_uses_internal_sources_and_s6_supervision() -> None:
     assert "user gaea;" in NGINX_CONF.read_text(encoding="utf-8")
 
 
+def test_gaea_prepares_every_nginx_temp_path_before_build_check() -> None:
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    nginx_conf = NGINX_CONF.read_text(encoding="utf-8")
+    teacher_web_run = (S6_DIR / "teacher-web" / "run").read_text(
+        encoding="utf-8"
+    )
+    build_setup = dockerfile.split(
+        "RUN rm -f /etc/nginx/http.d/default.conf", 1
+    )[1].split("&& nginx -t", 1)[0]
+    build_mkdir = build_setup.split("&& mkdir -p", 1)[1].split(
+        "&& ln -sf", 1
+    )[0]
+    build_chown = build_setup.split("&& chown -R gaea:gaea", 1)[1]
+
+    temp_paths = (
+        "/tmp/tide-nginx/client-body",
+        "/tmp/tide-nginx/proxy",
+        "/tmp/tide-nginx/fastcgi",
+        "/tmp/tide-nginx/uwsgi",
+        "/tmp/tide-nginx/scgi",
+    )
+    configured_temp_paths = {
+        line.strip().split()[1].removesuffix(";")
+        for line in nginx_conf.splitlines()
+        if "_temp_path " in line
+    }
+    assert configured_temp_paths == set(temp_paths)
+    for temp_path in configured_temp_paths:
+        assert temp_path in build_mkdir
+        assert temp_path in teacher_web_run
+
+    assert "/tmp/tide-nginx" in build_chown
+
+
 def test_gaea_renders_bounded_nginx_workers_at_runtime() -> None:
     nginx_conf = NGINX_CONF.read_text(encoding="utf-8")
     renderer = RENDER_NGINX.read_text(encoding="utf-8")

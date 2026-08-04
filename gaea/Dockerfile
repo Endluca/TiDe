@@ -169,6 +169,11 @@ RUN rm -f /etc/nginx/http.d/default.conf /etc/nginx/conf.d/default.conf \
       /var/lib/nginx \
       /var/log/nginx \
       /run \
+      /tmp/tide-nginx/client-body \
+      /tmp/tide-nginx/proxy \
+      /tmp/tide-nginx/fastcgi \
+      /tmp/tide-nginx/uwsgi \
+      /tmp/tide-nginx/scgi \
     && ln -sf /dev/stdout /var/log/nginx/access.log \
     && chown -R gaea:gaea \
       /app \
@@ -177,6 +182,7 @@ RUN rm -f /etc/nginx/http.d/default.conf /etc/nginx/conf.d/default.conf \
       /var/lib/nginx \
       /var/log/nginx \
       /run \
+      /tmp/tide-nginx \
     && nginx -t
 
 EXPOSE 8010 8080
