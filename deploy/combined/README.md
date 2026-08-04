@@ -74,8 +74,11 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
    `tit_growth_app` 只获得查询和函数执行的必要权限。
 3. 教师端生产配置对双数据库、严格 SSL、HTTPS 公共地址和 OSS fail-closed；readiness
    同时检查两条数据库连接。
-4. 教师端 API 的后台调度器目前嵌在 HTTP 进程。本骨架因此只允许一个
-   `teacher-api` 副本；提供独立 Worker 入口和 Worker 心跳后才能拆分、横向扩容。
+4. 教师端 API 的后台调度器虽然仍嵌在 HTTP 进程，但所有全局任务都通过
+   `tide.job_leases` 竞争数据库租约；只有当前持租约副本执行，续租失败立即停止，其他副本
+   可接管。照片处理另按任务行租约跨副本分片并续租，因此 `teacher-api` 可以直接运行多个
+   副本，不要求为了扩容再拆独立 Worker；该能力要求教师端迁移至少包含 0022，联合部署仍
+   固定完整升级到 0025。
 
 切流前仍需关闭两项：
 
@@ -225,7 +228,9 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    无角色继承和无写权限。用迁移账号、运行账号、`SET ROLE` 或非 TLS 会话执行都会失败，
    因此通过结果才真实覆盖探针自身权限，而不是高权限账号代查。
 
-9. 先启动并观察积分 Worker，再启动运营 API、单副本教师 API 和两个 Web：
+9. 先启动并观察积分 Worker，再启动运营 API、一个或多个教师 API 副本和两个 Web。多个
+   `teacher-api` 副本必须连接同一逻辑 PostgreSQL，并在扩容前确认 0022 的
+   `tide.job_leases` 已落库、后台租约与照片任务行租约可正常续租和接管：
 
    ```bash
    docker compose -f deploy/combined/docker-compose.yml \

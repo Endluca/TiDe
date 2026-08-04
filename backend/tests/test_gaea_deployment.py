@@ -7,6 +7,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
+ROOT_README = ROOT / "README.md"
 GAEA_DIR = ROOT / "gaea"
 DOCKERFILE = GAEA_DIR / "Dockerfile"
 README = GAEA_DIR / "README.md"
@@ -16,7 +17,17 @@ TEACHER_CONF = GAEA_DIR / "nginx" / "teacher.conf"
 RENDER_NGINX = GAEA_DIR / "bin" / "render-nginx-conf.sh"
 RENDER_REAL_IP = GAEA_DIR / "bin" / "render-real-ip-conf.py"
 S6_DIR = GAEA_DIR / "s6-rc.d"
+TEACHER_COMPANY_TEST_MIGRATOR = (
+    ROOT
+    / "teacher"
+    / "backend"
+    / "database"
+    / "scripts"
+    / "apply-company-test.sh"
+)
 TEACHER_MAIN = ROOT / "teacher" / "backend" / "src" / "main.ts"
+ARCHITECTURE = ROOT / "docs" / "architecture.md"
+RUNTIME_SECURITY = ROOT / "project-context" / "RUNTIME_DATA_SECURITY.md"
 
 
 def test_gaea_uses_one_project_and_one_image() -> None:
@@ -25,6 +36,59 @@ def test_gaea_uses_one_project_and_one_image() -> None:
     assert not (GAEA_DIR / "operations" / "Dockerfile").exists()
     assert not (GAEA_DIR / "score-settlement" / "Dockerfile").exists()
     assert list(GAEA_DIR.glob("*/Dockerfile")) == []
+
+
+def test_company_test_migrator_reads_back_multi_replica_contract() -> None:
+    script = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
+    verification = script.split(
+        'verification="$("${APP_PSQL[@]}" -Atqc "', 1
+    )[1].split('if [[ "${verification}"', 1)[0]
+
+    for relation in (
+        "tide.job_leases",
+        "tide.job_leases_expiry_idx",
+        "tide.teacher_photo_runs_pending_claim_idx",
+        "tide.analytics_task_event_semantics_v2",
+        "tide.analytics_actor_task_journey_v2",
+        "tide.analytics_task_assignment_funnel_v2",
+        "tide.analytics_task_funnel_v2",
+        "tide.analytics_task_step_funnel_v2",
+        "tide.analytics_content_quality_v2",
+    ):
+        assert f"to_regclass('{relation}') is not null" in verification
+
+    for column in (
+        "processing_owner",
+        "lease_expires_at",
+        "attempt_count",
+        "next_attempt_at",
+    ):
+        assert f"'{column}'" in verification
+
+    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        assert (
+            "to_regclass('tide.job_leases'),\n"
+            f"        '{privilege}'"
+        ) in verification
+
+    for mapping in (
+        "('G01:v1', 'G01', 'PUBLISHED', 'ACTIVE')",
+        "('G02:v1', 'G04', 'PUBLISHED', 'ACTIVE')",
+        "('G03:v1', 'G02', 'PUBLISHED', 'ACTIVE')",
+        "('G04:v1', 'G03', 'PUBLISHED', 'ACTIVE')",
+        "('G05:v1', 'G00', 'RETIRED', 'RETIRED')",
+        "('G06:v1', 'G05', 'PUBLISHED', 'ACTIVE')",
+        "('G07:v1', 'G06', 'PUBLISHED', 'ACTIVE')",
+        "('G08:v1', 'G07', 'PUBLISHED', 'ACTIVE')",
+        "('G09:v1', 'G08', 'PUBLISHED', 'ACTIVE')",
+        "('G10:v1', 'G09', 'PUBLISHED', 'ACTIVE')",
+    ):
+        assert mapping in verification
+
+    expected = script.split('if [[ "${verification}" != "', 1)[1].split(
+        '" ]]; then', 1
+    )[0]
+    assert expected.endswith("|t")
 
 
 def test_gaea_image_builds_both_frontends_and_both_backends() -> None:
@@ -231,19 +295,31 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
         encoding="utf-8"
     )
     assert "--watch --max-events 25 --interval-seconds 3" in worker_run
+    assert "--heartbeat-path /tmp/tit-score-worker-heartbeat" in worker_run
+    assert "--heartbeat-path /tmp/tit-score-worker-heartbeat" in healthcheck
     assert "TIT_SCORE_WORKER_HEARTBEAT" in dockerfile
     assert "STOPSIGNAL SIGTERM" in dockerfile
 
 
-def test_gaea_readme_preserves_release_and_single_replica_boundaries() -> None:
+def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     readme = README.read_text(encoding="utf-8")
 
     assert "单模块" in readme
     assert "单镜像" in readme
     assert "四个常驻进程" in readme
     assert "8010" in readme and "8080" in readme and "3000" in readme
-    assert "副本数必须固定为 `1`" in readme
-    assert "Recreate" in readme
+    assert "设置为 `2` 或更高" in readme
+    assert "RollingUpdate" in readme
+    assert "不再要求 `Recreate`" in readme
+    assert "不再为 Worker 新建 Gaea 项目" in readme
+    assert "session advisory lock" in readme
+    assert "standby" in readme
+    assert "未持有积分 advisory lock" in readme
+    assert "ReadWriteMany (RWX)" in readme
+    assert "RWO 或每 Pod" in readme
+    assert "heartbeat" in readme and "禁止放入共享卷" in readme
+    assert "副本数必须固定为 `1`" not in readme
+    assert "先缩容到 `0`" not in readme
     assert "同一 UID" in readme
     assert "tit_growth_migrator" in readme
     assert "tide_migrator" in readme
@@ -252,6 +328,24 @@ def test_gaea_readme_preserves_release_and_single_replica_boundaries() -> None:
     assert "TIT_BOOTSTRAP_USERNAME" in readme
     assert "TIT_BOOTSTRAP_PASSWORD" in readme
     assert "不代表" in readme
+
+
+def test_current_deployment_docs_do_not_restore_single_replica_mode() -> None:
+    documents = {
+        path: path.read_text(encoding="utf-8")
+        for path in (ROOT_README, README, ARCHITECTURE, RUNTIME_SECURITY)
+    }
+
+    for path, document in documents.items():
+        assert "整个 Pod 固定单副本" not in document, path
+        assert "必须固定一个 Pod 副本" not in document, path
+        assert "必须固定单副本" not in document, path
+        assert "部署必须使用 Recreate" not in document, path
+
+    assert "`2` 个或更多副本" in documents[ROOT_README]
+    assert "ReadWriteMany (RWX)" in documents[ROOT_README]
+    assert "整套 Pod 可以水平复制" in documents[ARCHITECTURE]
+    assert "2 个或更多副本及 RollingUpdate" in documents[RUNTIME_SECURITY]
 
 
 def test_gaea_build_context_includes_teacher_but_excludes_secrets() -> None:

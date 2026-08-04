@@ -3,9 +3,11 @@
 set -eu
 cd /app/operations
 exec s6-setuidgid gaea env \
+  TIT_SCORE_WORKER_HEARTBEAT=/tmp/tit-score-worker-heartbeat \
   TIT_DB_POOL_SIZE="${TIT_SCORE_DB_POOL_SIZE:-1}" \
   TIT_DB_MAX_OVERFLOW="${TIT_SCORE_DB_MAX_OVERFLOW:-0}" \
   TIT_DB_STATEMENT_TIMEOUT_MS="${TIT_SCORE_DB_STATEMENT_TIMEOUT_MS:-60000}" \
   TIT_DB_APPLICATION_NAME="${TIT_SCORE_DB_APPLICATION_NAME:-tit-growth-score-worker}" \
   /opt/venv/bin/python /app/operations/scripts/settle_shared_task_scores.py \
-  --watch --max-events 25 --interval-seconds 3
+  --watch --max-events 25 --interval-seconds 3 \
+  --heartbeat-path /tmp/tit-score-worker-heartbeat

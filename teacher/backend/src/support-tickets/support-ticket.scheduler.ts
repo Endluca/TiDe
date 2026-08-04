@@ -3,7 +3,6 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
-  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppEnvironment } from '../platform/config/environment';
@@ -23,7 +22,7 @@ export class SupportTicketScheduler implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly config: ConfigService<AppEnvironment, true>,
     private readonly tickets: SupportTicketService,
-    @Optional() private readonly leases?: JobLeaseService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -51,21 +50,17 @@ export class SupportTicketScheduler implements OnModuleInit, OnModuleDestroy {
       return;
     this.running = true;
     try {
-      const work = () =>
+      const work = (activeLease: { assertActive(): void }) =>
         this.tickets.closeExpiredAndCleanup(
           this.config.get('SUPPORT_TICKET_CLEANUP_BATCH_SIZE', { infer: true }),
+          () => activeLease.assertActive(),
         );
-      if (this.leases) {
-        await this.leases.runExclusive(
-          'support-ticket-cleanup',
-          this.ownerId,
-          this.config.get('BACKGROUND_JOB_LEASE_MS', { infer: true }) ??
-            180_000,
-          work,
-        );
-      } else {
-        await work();
-      }
+      await this.leases.runExclusive(
+        'support-ticket-cleanup',
+        this.ownerId,
+        this.config.get('BACKGROUND_JOB_LEASE_MS', { infer: true }) ?? 180_000,
+        work,
+      );
     } catch (error) {
       this.logger.error({
         event: 'support_ticket_cleanup_failed',

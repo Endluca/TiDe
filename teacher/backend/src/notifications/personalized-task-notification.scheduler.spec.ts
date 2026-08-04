@@ -1,5 +1,9 @@
 import type { ConfigService } from '@nestjs/config';
 import type { AppEnvironment } from '../platform/config/environment';
+import type {
+  ActiveJobLease,
+  JobLeaseService,
+} from '../platform/database/job-lease.service';
 import type { PersonalizedTaskNotificationRepository } from './personalized-task-notification.repository';
 import { PersonalizedTaskNotificationScheduler } from './personalized-task-notification.scheduler';
 
@@ -11,6 +15,27 @@ function config(
   } as unknown as ConfigService<AppEnvironment, true>;
 }
 
+function leaseService(acquired = true): { service: JobLeaseService } {
+  const activeLease: ActiveJobLease = {
+    signal: new AbortController().signal,
+    assertActive: jest.fn(),
+  };
+  const runExclusive = jest.fn(
+    async (
+      _jobKey: string,
+      _ownerId: string,
+      _leaseMs: number,
+      work: (lease: ActiveJobLease) => Promise<unknown>,
+    ) =>
+      acquired
+        ? { acquired: true, result: await work(activeLease) }
+        : { acquired: false },
+  );
+  return {
+    service: { runExclusive } as unknown as JobLeaseService,
+  };
+}
+
 describe('PersonalizedTaskNotificationScheduler', () => {
   it('is disabled by default', async () => {
     const repository = { scanAndCreate: jest.fn() };
@@ -19,6 +44,7 @@ describe('PersonalizedTaskNotificationScheduler', () => {
         PERSONALIZED_TASK_NOTIFICATION_SCHEDULER_ENABLED: false,
       }),
       repository as unknown as PersonalizedTaskNotificationRepository,
+      leaseService().service,
     );
 
     await scheduler.onModuleInit();
@@ -35,6 +61,7 @@ describe('PersonalizedTaskNotificationScheduler', () => {
         PERSONALIZED_TASK_NOTIFICATION_ROLLOUT_AT: '2026-07-24T14:00:00+08:00',
       }),
       repository as unknown as PersonalizedTaskNotificationRepository,
+      leaseService().service,
     );
 
     await scheduler.onModuleInit();
@@ -58,6 +85,7 @@ describe('PersonalizedTaskNotificationScheduler', () => {
         PERSONALIZED_TASK_NOTIFICATION_ROLLOUT_AT: '2026-07-24T14:00:00+08:00',
       }),
       repository as unknown as PersonalizedTaskNotificationRepository,
+      leaseService().service,
     );
 
     const first = scheduler.runOnce({ throwOnError: true });
@@ -68,5 +96,43 @@ describe('PersonalizedTaskNotificationScheduler', () => {
     await expect(overlapping).resolves.toBeUndefined();
     finishScan?.({ scannedAssignments: 1, createdNotifications: 1 });
     await expect(first).resolves.toBeUndefined();
+  });
+
+  it('lets another pod take a later scan after a lease miss', async () => {
+    const repository = {
+      scanAndCreate: jest
+        .fn()
+        .mockResolvedValue({ scannedAssignments: 1, createdNotifications: 1 }),
+    };
+    const activeLease: ActiveJobLease = {
+      signal: new AbortController().signal,
+      assertActive: jest.fn(),
+    };
+    const runExclusive = jest
+      .fn()
+      .mockResolvedValueOnce({ acquired: false })
+      .mockImplementationOnce(
+        async (
+          _jobKey: string,
+          _ownerId: string,
+          _leaseMs: number,
+          work: (lease: ActiveJobLease) => Promise<unknown>,
+        ) => ({ acquired: true, result: await work(activeLease) }),
+      );
+    const leases = { runExclusive } as unknown as JobLeaseService;
+    const scheduler = new PersonalizedTaskNotificationScheduler(
+      config({
+        PERSONALIZED_TASK_NOTIFICATION_ROLLOUT_AT: '2026-07-24T14:00:00+08:00',
+        BACKGROUND_JOB_LEASE_MS: 180_000,
+      }),
+      repository as unknown as PersonalizedTaskNotificationRepository,
+      leases,
+    );
+
+    await scheduler.runOnce({ throwOnError: true });
+    await scheduler.runOnce({ throwOnError: true });
+
+    expect(runExclusive).toHaveBeenCalledTimes(2);
+    expect(repository.scanAndCreate).toHaveBeenCalledTimes(1);
   });
 });

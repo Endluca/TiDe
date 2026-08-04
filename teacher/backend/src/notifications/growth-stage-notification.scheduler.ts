@@ -3,7 +3,6 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
-  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppEnvironment } from '../platform/config/environment';
@@ -27,7 +26,7 @@ export class GrowthStageNotificationScheduler
   constructor(
     private readonly config: ConfigService<AppEnvironment, true>,
     private readonly repository: GrowthStageNotificationRepository,
-    @Optional() private readonly leases?: JobLeaseService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -62,16 +61,18 @@ export class GrowthStageNotificationScheduler
     this.running = true;
     const startedAt = Date.now();
     try {
-      const work = () => this.repository.scanAndCreate(new Date(), 200);
-      const lease = this.leases
-        ? await this.leases.runExclusive(
-            'growth-stage-notifications',
-            this.ownerId,
-            this.config.get('BACKGROUND_JOB_LEASE_MS', { infer: true }) ??
-              180_000,
-            work,
-          )
-        : { acquired: true, result: await work() };
+      const work = async (activeLease: { assertActive(): void }) => {
+        activeLease.assertActive();
+        const result = await this.repository.scanAndCreate(new Date(), 200);
+        activeLease.assertActive();
+        return result;
+      };
+      const lease = await this.leases.runExclusive(
+        'growth-stage-notifications',
+        this.ownerId,
+        this.config.get('BACKGROUND_JOB_LEASE_MS', { infer: true }) ?? 180_000,
+        work,
+      );
       if (!lease.acquired || !lease.result) return;
       const result = lease.result;
       this.logger.log({

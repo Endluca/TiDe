@@ -8,6 +8,25 @@ export interface JobLeaseResult<Result> {
   result?: Result;
 }
 
+export interface ActiveJobLease {
+  readonly signal: AbortSignal;
+  assertActive(): void;
+}
+
+export class JobLeaseLostError extends Error {
+  readonly code = 'BACKGROUND_JOB_LEASE_LOST';
+
+  constructor(
+    readonly jobKey: string,
+    readonly ownerId: string,
+    cause?: unknown,
+  ) {
+    super(`Background job lease lost: ${jobKey}`);
+    this.name = JobLeaseLostError.name;
+    this.cause = cause;
+  }
+}
+
 export function createJobOwner(component: string): string {
   return `${component}:${hostname()}:${process.pid}:${randomUUID()}`;
 }
@@ -20,23 +39,80 @@ export class JobLeaseService {
     jobKey: string,
     ownerId: string,
     leaseMs: number,
-    work: () => Promise<Result>,
+    work: (lease: ActiveJobLease) => Promise<Result>,
   ): Promise<JobLeaseResult<Result>> {
+    const acquisitionStartedAt = Date.now();
     if (!(await this.tryAcquire(jobKey, ownerId, leaseMs))) {
       return { acquired: false };
     }
 
+    const controller = new AbortController();
+    let renewal = Promise.resolve();
+    // Start from the request timestamp, not its response timestamp. This is
+    // deliberately conservative: a slow DB round trip can only shorten the
+    // local validity window, never let this process work past the DB lease.
+    let locallyValidUntil = acquisitionStartedAt + leaseMs;
+    const loseLease = (cause?: unknown): void => {
+      if (!controller.signal.aborted) {
+        controller.abort(new JobLeaseLostError(jobKey, ownerId, cause));
+      }
+    };
+    const lease: ActiveJobLease = {
+      signal: controller.signal,
+      assertActive: () => {
+        if (!controller.signal.aborted && Date.now() >= locallyValidUntil) {
+          loseLease(new Error('Background job lease deadline elapsed'));
+        }
+        if (!controller.signal.aborted) return;
+        const reason: unknown = controller.signal.reason;
+        throw reason instanceof Error
+          ? reason
+          : new JobLeaseLostError(jobKey, ownerId, reason);
+      },
+    };
     const renewTimer = setInterval(
-      () => void this.renew(jobKey, ownerId, leaseMs),
+      () => {
+        renewal = renewal.then(async () => {
+          if (controller.signal.aborted) return;
+          const renewalStartedAt = Date.now();
+          try {
+            if (await this.renew(jobKey, ownerId, leaseMs)) {
+              locallyValidUntil = renewalStartedAt + leaseMs;
+            } else {
+              loseLease();
+            }
+          } catch (error) {
+            loseLease(error);
+          }
+        });
+      },
       Math.max(10_000, Math.floor(leaseMs / 3)),
     );
     renewTimer.unref();
+    let outcome:
+      | { succeeded: true; result: Result }
+      | { succeeded: false; error: unknown };
     try {
-      return { acquired: true, result: await work() };
+      const result = await work(lease);
+      await renewal;
+      lease.assertActive();
+      outcome = { succeeded: true, result };
+    } catch (error) {
+      outcome = { succeeded: false, error };
     } finally {
       clearInterval(renewTimer);
-      await this.release(jobKey, ownerId);
+      await renewal;
+      try {
+        await this.release(jobKey, ownerId);
+      } catch (error) {
+        // Preserve the work or lease-loss error; expiry still provides takeover.
+        if (outcome!.succeeded) {
+          outcome = { succeeded: false, error };
+        }
+      }
     }
+    if (!outcome.succeeded) throw outcome.error;
+    return { acquired: true, result: outcome.result };
   }
 
   async tryAcquire(

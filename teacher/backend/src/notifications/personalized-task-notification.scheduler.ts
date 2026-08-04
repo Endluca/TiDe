@@ -3,7 +3,6 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
-  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppEnvironment } from '../platform/config/environment';
@@ -29,7 +28,7 @@ export class PersonalizedTaskNotificationScheduler
   constructor(
     private readonly config: ConfigService<AppEnvironment, true>,
     private readonly repository: PersonalizedTaskNotificationRepository,
-    @Optional() private readonly leases?: JobLeaseService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -71,21 +70,22 @@ export class PersonalizedTaskNotificationScheduler
       if (!configuredRolloutAt) {
         throw new Error('Personalized task notification rollout is missing');
       }
-      const work = () =>
-        this.repository.scanAndCreate(
+      const work = async (lease: { assertActive(): void }) => {
+        lease.assertActive();
+        const result = await this.repository.scanAndCreate(
           new Date(),
           new Date(configuredRolloutAt),
           200,
         );
-      const lease = this.leases
-        ? await this.leases.runExclusive(
-            'personalized-task-notifications',
-            this.ownerId,
-            this.config.get('BACKGROUND_JOB_LEASE_MS', { infer: true }) ??
-              180_000,
-            work,
-          )
-        : { acquired: true, result: await work() };
+        lease.assertActive();
+        return result;
+      };
+      const lease = await this.leases.runExclusive(
+        'personalized-task-notifications',
+        this.ownerId,
+        this.config.get('BACKGROUND_JOB_LEASE_MS', { infer: true }) ?? 180_000,
+        work,
+      );
       if (!lease.acquired || !lease.result) return;
       const result = lease.result;
       this.logger.log({

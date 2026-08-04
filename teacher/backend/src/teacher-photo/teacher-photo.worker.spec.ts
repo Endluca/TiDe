@@ -1,5 +1,6 @@
 import type { ConfigService } from '@nestjs/config';
 import type { AppEnvironment } from '../platform/config/environment';
+import { JobLeaseLostError } from '../platform/database/job-lease.service';
 import type { TeacherPhotoRunRecord } from './teacher-photo.models';
 import type { TeacherPhotoRepository } from './teacher-photo.repository';
 import type { TeacherPhotoService } from './teacher-photo.service';
@@ -75,6 +76,62 @@ describe('TeacherPhotoWorker', () => {
     await expect(overlapping).resolves.toBeUndefined();
     finishProcessing?.();
     await expect(first).resolves.toBeUndefined();
-    expect(photos.processPending).toHaveBeenCalledWith(pendingRun);
+    expect(photos.processPending).toHaveBeenCalledWith(
+      pendingRun,
+      expect.any(Function),
+    );
+  });
+
+  it('renews row leases and stops the batch when ownership is lost', async () => {
+    jest.useFakeTimers();
+    try {
+      let continueProcessing: (() => void) | undefined;
+      let processingStarted: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => {
+        processingStarted = resolve;
+      });
+      const repository = {
+        claimPending: jest.fn().mockResolvedValue([pendingRun]),
+        renewClaims: jest.fn().mockResolvedValue([]),
+      };
+      const photos = {
+        processPending: jest.fn(
+          async (
+            _run: TeacherPhotoRunRecord,
+            assertLeaseActive: () => void,
+          ) => {
+            processingStarted?.();
+            await new Promise<void>((resolve) => {
+              continueProcessing = resolve;
+            });
+            assertLeaseActive();
+          },
+        ),
+      };
+      const worker = new TeacherPhotoWorker(
+        config({
+          BACKGROUND_JOBS_ENABLED: true,
+          TEACHER_PHOTO_WORKER_POLL_INTERVAL_MS: 1_000,
+          TEACHER_PHOTO_WORKER_BATCH_SIZE: 2,
+          TEACHER_PHOTO_WORKER_LEASE_MS: 30_000,
+        }),
+        repository as unknown as TeacherPhotoRepository,
+        photos as unknown as TeacherPhotoService,
+      );
+
+      const running = worker.runOnce({ throwOnError: true });
+      await started;
+      await jest.advanceTimersByTimeAsync(10_000);
+      continueProcessing?.();
+
+      await expect(running).rejects.toBeInstanceOf(JobLeaseLostError);
+      expect(repository.renewClaims).toHaveBeenCalledWith(
+        expect.stringContaining(`:${process.pid}:`),
+        ['photo-run'],
+        30_000,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

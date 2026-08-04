@@ -87,6 +87,8 @@ LABEL maintainer="51talk SRE"
 
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 
+# The score heartbeat is deliberately Pod-local: standby workers must prove
+# their own process liveness instead of reading the elected leader's file.
 ENV TZ=Asia/Shanghai \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \

@@ -8,6 +8,8 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { AppEnvironment } from '../platform/config/environment';
+import { JobLeaseLostError } from '../platform/database/job-lease.service';
+import type { TeacherPhotoRunRecord } from './teacher-photo.models';
 import { TeacherPhotoRepository } from './teacher-photo.repository';
 import { TeacherPhotoService } from './teacher-photo.service';
 
@@ -63,7 +65,7 @@ export class TeacherPhotoWorker implements OnModuleInit, OnModuleDestroy {
       );
       if (pending.length === 0) return;
 
-      await Promise.all(pending.map((run) => this.photos.processPending(run)));
+      await this.processBatch(pending);
       this.logger.log({
         event: 'teacher_photo_worker_batch_finished',
         processedCount: pending.length,
@@ -88,6 +90,69 @@ export class TeacherPhotoWorker implements OnModuleInit, OnModuleDestroy {
       if (options.throwOnError) throw error;
     } finally {
       this.running = false;
+    }
+  }
+
+  private async processBatch(pending: TeacherPhotoRunRecord[]): Promise<void> {
+    const activePhotoRunIds = new Set(pending.map((run) => run.photoRunId));
+    let renewal = Promise.resolve();
+    let leaseError: JobLeaseLostError | null = null;
+    const assertClaimsActive = (): void => {
+      if (leaseError) throw leaseError;
+    };
+    const renewTimer = setInterval(
+      () => {
+        renewal = renewal.then(async () => {
+          if (leaseError || activePhotoRunIds.size === 0) return;
+          const renewingIds = [...activePhotoRunIds];
+          try {
+            const renewedIds = new Set(
+              await this.repository.renewClaims(
+                this.processingOwner,
+                renewingIds,
+                this.leaseMs,
+              ),
+            );
+            const lostIds = renewingIds.filter(
+              (photoRunId) =>
+                activePhotoRunIds.has(photoRunId) &&
+                !renewedIds.has(photoRunId),
+            );
+            if (lostIds.length > 0) {
+              leaseError = new JobLeaseLostError(
+                'teacher-photo-row-claims',
+                this.processingOwner,
+                { lostPhotoRunIds: lostIds },
+              );
+            }
+          } catch (error) {
+            leaseError = new JobLeaseLostError(
+              'teacher-photo-row-claims',
+              this.processingOwner,
+              error,
+            );
+          }
+        });
+      },
+      Math.max(10_000, Math.floor(this.leaseMs / 3)),
+    );
+    renewTimer.unref();
+    try {
+      await Promise.all(
+        pending.map(async (run) => {
+          try {
+            assertClaimsActive();
+            await this.photos.processPending(run, assertClaimsActive);
+          } finally {
+            activePhotoRunIds.delete(run.photoRunId);
+          }
+        }),
+      );
+      await renewal;
+      assertClaimsActive();
+    } finally {
+      clearInterval(renewTimer);
+      await renewal;
     }
   }
 }

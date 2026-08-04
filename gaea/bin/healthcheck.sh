@@ -36,4 +36,5 @@ PY
 cd /app/operations
 exec /opt/venv/bin/python scripts/settle_shared_task_scores.py \
   --healthcheck \
+  --heartbeat-path /tmp/tit-score-worker-heartbeat \
   --max-heartbeat-age-seconds 90

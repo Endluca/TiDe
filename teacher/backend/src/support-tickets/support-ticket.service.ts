@@ -12,6 +12,7 @@ import { extname } from 'node:path';
 import sharp from 'sharp';
 import type { AuthPrincipal } from '../auth/auth.models';
 import { FileStorageAdapter } from '../files/file-storage.adapter';
+import { JobLeaseLostError } from '../platform/database/job-lease.service';
 import type {
   CreateSupportTicketDto,
   ReplySupportTicketDto,
@@ -192,18 +193,31 @@ export class SupportTicketService {
     };
   }
 
-  async closeExpiredAndCleanup(limit = 20): Promise<void> {
+  async closeExpiredAndCleanup(
+    limit = 20,
+    assertLeaseActive: () => void = () => undefined,
+  ): Promise<void> {
+    assertLeaseActive();
     await this.repository.closeExpired(limit);
+    assertLeaseActive();
     const candidates = await this.repository.cleanupCandidates(limit);
+    assertLeaseActive();
     for (const ticket of candidates) {
-      await this.cleanupTicket(ticket.ticketId, ticket.messages);
+      assertLeaseActive();
+      await this.cleanupTicket(
+        ticket.ticketId,
+        ticket.messages,
+        assertLeaseActive,
+      );
     }
   }
 
   private async cleanupTicket(
     ticketId: string,
     knownMessages?: SupportTicketMessage[],
+    assertLeaseActive: () => void = () => undefined,
   ): Promise<void> {
+    assertLeaseActive();
     const candidate =
       knownMessages ??
       (await this.repository.cleanupCandidates(100)).find(
@@ -213,6 +227,7 @@ export class SupportTicketService {
     const images = candidate.flatMap((message) => message.images ?? []);
     try {
       for (const image of images) {
+        assertLeaseActive();
         if (image.deleted_at) continue;
         this.assertTicketObjectKey(ticketId, image.object_key);
         await this.storage.delete(
@@ -220,11 +235,13 @@ export class SupportTicketService {
           image.storage_provider ?? this.storage.activeProvider,
         );
       }
+      assertLeaseActive();
       await this.repository.markImagesDeleted(
         ticketId,
         images.map((image) => image.object_key),
       );
     } catch (error) {
+      if (error instanceof JobLeaseLostError) throw error;
       await this.repository.markCleanupFailed(ticketId);
       this.logger.error({
         event: 'support_ticket_image_cleanup_failed',

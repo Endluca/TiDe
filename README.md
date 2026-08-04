@@ -94,7 +94,7 @@ Tide_teachers_camp/
 ├── teacher/           # 教师端 NestJS API、React Web App 及其文档
 ├── contracts/         # 两端共享任务和课程数据契约
 ├── deploy/combined/   # 两端同机、不同域名的联合部署入口
-├── gaea/              # 运营端、教师端与单实例结算 Worker 的单镜像 Gaea 配置
+├── gaea/              # 运营端、教师端与数据库选主结算 Worker 的单镜像 Gaea 配置
 ├── docs/              # 架构、数据、积分、认证和配置说明
 ├── project-context/   # 业务方与 AI 的项目背景
 └── scripts/           # 运营端一键安装和启动
@@ -125,12 +125,17 @@ Tide_teachers_camp/
 docker build -f gaea/Dockerfile -t tide-camp:gaea .
 ```
 
-该 Gaea 应用必须固定一个 Pod 副本，避免复制积分 Worker 和教师端内嵌后台调度器。完整
-环境变量、两个端口的域名配置、聚合健康检查和旧 Worker 切换顺序见
-[Gaea 部署说明](gaea/README.md)。逻辑服务与数据库角色仍然独立；TiDe Alembic 和教师端
-migration 仍须作为发布前独立作业执行。发布更新还必须使用 `Recreate`（或先缩到 0），
-因为 replicas=1 不能阻止 rolling update 的短暂双 Pod。该单容器形态只用于受控 TEST：
-同一 UID 的进程仍能接触整套容器密钥，不具备生产级秘密隔离。
+同一 Gaea 项目和镜像支持整套 Pod 设置为 `2` 个或更多副本，并使用 `RollingUpdate`：每个
+Pod 都启动四个进程，积分结算候选进程通过 PostgreSQL session advisory lock 保持逻辑单活；
+未持锁的 standby 仍刷新本 Pod heartbeat 并保持健康。教师全局调度使用
+`tide.job_leases`，照片处理按数据库行租约认领，因此无需再拆出新的 Gaea Worker 项目。
+
+多副本的私有文件首选 OSS；`FILE_STORAGE_PROVIDER=LOCAL` 只允许所有 Pod 共享同一块
+`ReadWriteMany (RWX)` 卷。视频预热脚本的本地幂等账本若被执行，也必须使用跨执行节点可见
+的 RWX 状态目录；Worker heartbeat 必须留在各 Pod 的 `/tmp`，不能共享。完整环境变量、
+双域名、健康检查、连接预算和发布验收见 [Gaea 部署说明](gaea/README.md)。逻辑服务与数据库
+角色仍然独立；TiDe Alembic 和教师端 migration 仍须作为发布前独立作业执行。该单容器形态
+只用于受控 TEST：同一 UID 的进程仍能接触整套容器密钥，不具备生产级秘密隔离。
 
 ## 现有分离式生产部署骨架
 

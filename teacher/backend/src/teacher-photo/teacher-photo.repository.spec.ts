@@ -159,4 +159,38 @@ describe('TeacherPhotoRepository', () => {
     expect(claimSql).toContain('attempt_count = attempt_count + 1');
     expect(calls[0][1]).toEqual(['worker-001', 2, 120_000]);
   });
+
+  it('renews only unexpired row leases still owned by this pod', async () => {
+    const queryTide = jest.fn().mockResolvedValue({
+      rowCount: 1,
+      rows: [{ id: '00000000-0000-4000-8000-000000000001' }],
+    });
+    const database = { queryTide } as unknown as DatabaseService;
+    const repository = new TeacherPhotoRepository(database);
+
+    await expect(
+      repository.renewClaims(
+        'worker-001',
+        [
+          '00000000-0000-4000-8000-000000000001',
+          '00000000-0000-4000-8000-000000000002',
+        ],
+        120_000,
+      ),
+    ).resolves.toEqual(['00000000-0000-4000-8000-000000000001']);
+
+    const [sql, values] = queryTide.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('processing_owner = $1');
+    expect(sql).toContain('id = ANY($2::uuid[])');
+    expect(sql).toContain('lease_expires_at > now()');
+    expect(sql).toContain("status IN ('CHECKING', 'BEAUTIFYING')");
+    expect(values).toEqual([
+      'worker-001',
+      [
+        '00000000-0000-4000-8000-000000000001',
+        '00000000-0000-4000-8000-000000000002',
+      ],
+      120_000,
+    ]);
+  });
 });

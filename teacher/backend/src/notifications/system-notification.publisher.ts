@@ -3,12 +3,12 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
-  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { resolve } from 'node:path';
 import type { AppEnvironment } from '../platform/config/environment';
 import {
+  type ActiveJobLease,
   createJobOwner,
   JobLeaseService,
 } from '../platform/database/job-lease.service';
@@ -27,7 +27,7 @@ export class SystemNotificationPublisher
   constructor(
     private readonly config: ConfigService<AppEnvironment, true>,
     private readonly repository: SystemNotificationRepository,
-    @Optional() private readonly leases?: JobLeaseService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -57,15 +57,12 @@ export class SystemNotificationPublisher
     this.running = true;
     const startedAt = Date.now();
     try {
-      const lease = this.leases
-        ? await this.leases.runExclusive(
-            'system-notification-publisher',
-            this.ownerId,
-            this.config.get('BACKGROUND_JOB_LEASE_MS', { infer: true }) ??
-              180_000,
-            () => this.publishOnce(),
-          )
-        : { acquired: true, result: await this.publishOnce() };
+      const lease = await this.leases.runExclusive(
+        'system-notification-publisher',
+        this.ownerId,
+        this.config.get('BACKGROUND_JOB_LEASE_MS', { infer: true }) ?? 180_000,
+        (activeLease) => this.publishOnce(activeLease),
+      );
       if (!lease.acquired || !lease.result) return;
       const result = lease.result;
       this.logger.log({
@@ -87,10 +84,11 @@ export class SystemNotificationPublisher
     }
   }
 
-  private async publishOnce(): Promise<{
+  private async publishOnce(lease: ActiveJobLease): Promise<{
     configuredPublications: number;
     publishedBatches: number;
   }> {
+    lease.assertActive();
     const configuredPath = this.config.get('SYSTEM_NOTIFICATION_CONFIG_PATH', {
       infer: true,
     });
@@ -98,11 +96,15 @@ export class SystemNotificationPublisher
       resolve(process.cwd(), configuredPath),
     );
     for (const publication of configuration.publications) {
+      lease.assertActive();
       await this.repository.syncPublication(publication);
     }
+    lease.assertActive();
     const published = await this.repository.publishDue(
       this.config.get('SYSTEM_NOTIFICATION_BATCH_SIZE', { infer: true }),
+      () => lease.assertActive(),
     );
+    lease.assertActive();
     return {
       configuredPublications: configuration.publications.length,
       publishedBatches: published,

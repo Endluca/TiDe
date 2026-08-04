@@ -110,17 +110,23 @@ export class SystemNotificationRepository {
     });
   }
 
-  async publishDue(limit: number): Promise<number> {
+  async publishDue(
+    limit: number,
+    assertLeaseActive: () => void = () => undefined,
+  ): Promise<number> {
     let published = 0;
     for (let index = 0; index < limit; index += 1) {
+      assertLeaseActive();
       const publicationId = await this.nextDuePublicationId();
       if (!publicationId) break;
+      assertLeaseActive();
       try {
         const didPublish = await this.publishOne(publicationId);
         if (didPublish) published += 1;
       } catch (error) {
         await this.recordFailure(publicationId, error);
       }
+      assertLeaseActive();
     }
     return published;
   }

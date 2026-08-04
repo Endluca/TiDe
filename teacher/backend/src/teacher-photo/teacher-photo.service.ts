@@ -15,6 +15,7 @@ import type { AuthPrincipal } from '../auth/auth.models';
 import { FileStorageAdapter } from '../files/file-storage.adapter';
 import { AiGatewayService } from '../integrations/ai/ai-gateway.service';
 import type { AppEnvironment } from '../platform/config/environment';
+import { JobLeaseLostError } from '../platform/database/job-lease.service';
 import {
   CREAM_BRIGHT_04_PRESET,
   CreamBright04Processor,
@@ -183,7 +184,10 @@ export class TeacherPhotoService {
     return this.latest(principal, taskInstanceId);
   }
 
-  async processPending(run: TeacherPhotoRunRecord): Promise<void> {
+  async processPending(
+    run: TeacherPhotoRunRecord,
+    assertLeaseActive: () => void = () => undefined,
+  ): Promise<void> {
     if (!run.processingOwner) {
       this.logger.warn({
         event: 'teacher_photo_processing_skipped_without_lease',
@@ -196,10 +200,12 @@ export class TeacherPhotoService {
       run.status === 'BEAUTIFYING' ? 'BEAUTIFYING' : 'CHECKING';
     let finalFileId = run.finalFileId ?? undefined;
     try {
+      assertLeaseActive();
       const content = await this.storage.read(
         run.originalObjectKey,
         run.originalStorageProvider,
       );
+      assertLeaseActive();
 
       if (run.status === 'CHECKING') {
         const review = await this.review(run.photoRunId, {
@@ -207,6 +213,7 @@ export class TeacherPhotoService {
           filename: run.originalFilename,
           mimeType: run.originalMimeType,
         });
+        assertLeaseActive();
         const reviewSaved = await this.repository.review({
           photoRunId: run.photoRunId,
           processingOwner: run.processingOwner,
@@ -229,7 +236,9 @@ export class TeacherPhotoService {
         stage = 'BEAUTIFYING';
       }
 
+      assertLeaseActive();
       const processed = await this.processor.process(content);
+      assertLeaseActive();
       finalFileId ??= randomUUID();
       const finalObjectKey =
         run.finalObjectKey ??
@@ -255,11 +264,13 @@ export class TeacherPhotoService {
         sourceMetrics: processed.metrics,
       });
       if (finalReserved === false) return;
+      assertLeaseActive();
       await this.storage.write(
         finalObjectKey,
         processed.content,
         finalStorageProvider,
       );
+      assertLeaseActive();
       const completed = await this.repository.completeFinal(
         run.photoRunId,
         finalFileId,
@@ -274,6 +285,15 @@ export class TeacherPhotoService {
         durationMs: Date.now() - startedAt,
       });
     } catch (error) {
+      if (error instanceof JobLeaseLostError) {
+        this.logger.warn({
+          event: 'teacher_photo_processing_stopped_after_lease_loss',
+          photoRunId: run.photoRunId,
+          stage,
+          durationMs: Date.now() - startedAt,
+        });
+        return;
+      }
       const attemptCount = Math.max(1, run.attemptCount ?? 1);
       const baseDelayMs = Math.min(30_000, 2_000 * 2 ** (attemptCount - 1));
       const retryDelayMs = Math.round(

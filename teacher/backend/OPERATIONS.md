@@ -68,7 +68,7 @@ pnpm provision:internal-test
 - 个性化任务提醒：`PERSONALIZED_TASK_NOTIFICATION_SCHEDULER_ENABLED` 默认关闭；启用时必须设置带时区的 `PERSONALIZED_TASK_NOTIFICATION_ROLLOUT_AT`，并可用 `PERSONALIZED_TASK_NOTIFICATION_POLL_INTERVAL_MS` 调整默认 5 分钟扫描间隔。首次 rollout 必须晚于历史任务，防止补发；调度器只读 assignment，只写 `tide.system_notifications`。
 - 新阶段提醒：`GROWTH_STAGE_NOTIFICATION_SCHEDULER_ENABLED` 默认关闭，轮询间隔由 `GROWTH_STAGE_NOTIFICATION_POLL_INTERVAL_MS` 控制。首次启用只记录每位老师当前最高开放阶段，不补发历史提醒；之后最高开放阶段提升时才写入一条 `tide.system_notifications`。
 - 工单清理：`SUPPORT_TICKET_CLEANUP_POLL_INTERVAL_MS / SUPPORT_TICKET_CLEANUP_BATCH_SIZE` 控制已进入截止时间的 48 小时关单和失败图片清理重试。该任务不轮询运营回复、不生成系统通知。
-- 后台任务总开关：`BACKGROUND_JOBS_ENABLED` 默认开启，统一控制图片审核 Worker、通知任务和工单到期清理。当前单后端实例保持为 `true`；未来扩为多个 API 实例时，API 实例设为 `false`，只保留一个独立 Worker 实例设为 `true`，避免通知或清理重复执行。图片 Worker 的扫描间隔和单批数量由 `TEACHER_PHOTO_WORKER_POLL_INTERVAL_MS / TEACHER_PHOTO_WORKER_BATCH_SIZE` 控制。
+- 后台任务总开关：`BACKGROUND_JOBS_ENABLED` 默认开启，统一控制图片审核 Worker、通知任务和工单到期清理。多 API Pod 可全部保持 `true`：系统通知发布、个性化任务提醒、成长阶段提醒和工单清理由 `tide.job_leases` 分任务单活，未取得租约的副本跳过本轮；图片 Worker 使用 `teacher_photo_runs` 行租约和 `FOR UPDATE SKIP LOCKED` 在副本间分片处理，并为长耗时 AI／OSS 处理续租。该模式要求数据库至少已应用 `0022_performance_job_leases`，不得在缺少租约表时降级成无锁执行。`BACKGROUND_JOB_LEASE_MS` 控制全局调度租约，图片扫描间隔、批量和行租约分别由 `TEACHER_PHOTO_WORKER_POLL_INTERVAL_MS / TEACHER_PHOTO_WORKER_BATCH_SIZE / TEACHER_PHOTO_WORKER_LEASE_MS` 控制。
 - AI：`AI_GATEWAY_*`。默认关闭；启用时必须配置密钥。真实密钥只进入公司密钥系统或后端环境变量。
 
 生产环境采用 fail-closed 校验，以下条件任一不满足，进程直接拒绝启动：
@@ -81,7 +81,7 @@ pnpm provision:internal-test
 - `FILE_STORAGE_PROVIDER=OSS` 且 OSS 必填配置完整；
 - `DATA_HASH_SECRET` 与 `AUTH_JWT_SECRET` 均为至少 32 个字符的运行时密钥。
 
-生产环境不得使用示例连接串、开发回退密钥、临时世文 CRUD 账号或本地公开目录。`DATABASE_MAX_CONNECTIONS` 会分别作用于 TIDE 和世文两个连接池；单实例的理论连接上限约为该值的两倍，联合部署时必须按数据库总连接预算设置，不能把默认值直接乘以实例数。
+生产环境不得使用示例连接串、开发回退密钥、临时世文 CRUD 账号或本地公开目录。`DATABASE_MAX_CONNECTIONS` 会分别作用于 TIDE 和世文两个连接池；单实例的理论连接上限约为该值的两倍，多副本上限约为 `2 × DATABASE_MAX_CONNECTIONS × Pod 数`，必须按数据库总连接预算反推每 Pod 配额。任务租约只执行短 SQL 领取和续租，不长期占用专用连接，但仍计入瞬时池压力。
 
 ### Docker 运行
 
@@ -105,7 +105,7 @@ healthy 不只代表 Node 进程存在：迁移账本必须是完整生产清单
 保持默认值，除非用真实文件大小、并发和 RSS 压测证明可以调整。容量用尽返回可重试的
 `429 MULTIPART_UPLOAD_CAPACITY_EXHAUSTED` 和 `Retry-After`，不排队持有请求体。
 
-当前后台任务嵌在同一 NestJS 进程中。只运行一个 API 实例时可设置 `BACKGROUND_JOBS_ENABLED=true`；扩为多个 API 实例前，必须将 API 实例设为 `false` 并提供唯一的后台任务实例，不能让所有副本同时扫描。
+后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出或租约过期后接管；照片队列按行租约并行分片，结果回写继续校验 owner 和未过期租约。所有副本必须连接同一个已应用 `0022_performance_job_leases` 及后续迁移的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后由其他副本读取失败。
 
 ## 4. 迁移与发布前检查
 

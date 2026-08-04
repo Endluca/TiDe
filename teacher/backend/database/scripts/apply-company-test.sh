@@ -406,12 +406,84 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     has_column_privilege(current_user, 'tide.system_notifications', 'read_at', 'UPDATE'),
     has_column_privilege(current_user, 'tide.system_notifications', 'title', 'UPDATE'),
     has_table_privilege(current_user, 'tide.system_notifications', 'DELETE'),
-    has_table_privilege(current_user, 'public.score_entries', 'INSERT')
+    has_table_privilege(current_user, 'public.score_entries', 'INSERT'),
+    (
+      to_regclass('tide.job_leases') is not null
+      and to_regclass('tide.job_leases_expiry_idx') is not null
+      and to_regclass('tide.teacher_photo_runs_pending_claim_idx') is not null
+      and (
+        select count(*) = 4
+        from information_schema.columns
+        where table_schema = 'tide'
+          and table_name = 'teacher_photo_runs'
+          and column_name in (
+            'processing_owner',
+            'lease_expires_at',
+            'attempt_count',
+            'next_attempt_at'
+          )
+      )
+      and has_table_privilege(
+        current_user,
+        to_regclass('tide.job_leases'),
+        'SELECT'
+      )
+      and has_table_privilege(
+        current_user,
+        to_regclass('tide.job_leases'),
+        'INSERT'
+      )
+      and has_table_privilege(
+        current_user,
+        to_regclass('tide.job_leases'),
+        'UPDATE'
+      )
+      and has_table_privilege(
+        current_user,
+        to_regclass('tide.job_leases'),
+        'DELETE'
+      )
+      and (
+        select count(*) = 10
+        from (
+          values
+            ('G01:v1', 'G01', 'PUBLISHED', 'ACTIVE'),
+            ('G02:v1', 'G04', 'PUBLISHED', 'ACTIVE'),
+            ('G03:v1', 'G02', 'PUBLISHED', 'ACTIVE'),
+            ('G04:v1', 'G03', 'PUBLISHED', 'ACTIVE'),
+            ('G05:v1', 'G00', 'RETIRED', 'RETIRED'),
+            ('G06:v1', 'G05', 'PUBLISHED', 'ACTIVE'),
+            ('G07:v1', 'G06', 'PUBLISHED', 'ACTIVE'),
+            ('G08:v1', 'G07', 'PUBLISHED', 'ACTIVE'),
+            ('G09:v1', 'G08', 'PUBLISHED', 'ACTIVE'),
+            ('G10:v1', 'G09', 'PUBLISHED', 'ACTIVE')
+        ) expected(
+          row_id,
+          task_code,
+          template_status,
+          execution_status
+        )
+        join public.task_templates template
+          on template.row_id = expected.row_id
+         and template.template_id = expected.task_code
+         and template.status = expected.template_status
+        join tide.task_execution_versions execution
+          on execution.shared_template_row_id = expected.row_id
+         and execution.task_code = expected.task_code
+         and execution.status = expected.execution_status
+      )
+      and to_regclass('tide.analytics_task_event_semantics_v2') is not null
+      and to_regclass('tide.analytics_actor_task_journey_v2') is not null
+      and to_regclass('tide.analytics_task_assignment_funnel_v2') is not null
+      and to_regclass('tide.analytics_task_funnel_v2') is not null
+      and to_regclass('tide.analytics_task_step_funnel_v2') is not null
+      and to_regclass('tide.analytics_content_quality_v2') is not null
+    )
   )
 ")"
-if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|f|f|f|f|10|f|14|f|t|t|f|f|f" ]]; then
+if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|f|f|f|f|10|f|14|f|t|t|f|f|f|t" ]]; then
   echo "应用账号验收失败：${verification}" >&2
   exit 1
 fi
 
-echo "公司测试库初始化完成：tide Schema、产品分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、数据库题库、通知状态、共享事实说明字段清理、首课画面处理和应用账号权限均已验证。"
+echo "公司测试库初始化完成：tide Schema、多副本任务租约、0025 固定任务语义与分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、数据库题库、通知状态、共享事实说明字段清理、首课画面处理和应用账号权限均已验证。"

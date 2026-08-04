@@ -2,8 +2,8 @@
 
 ## 部署模式
 
-这是 Gaea 单模块、单镜像、单 Pod 的受控 TEST 部署。Gaea 直接读取根级
-`gaea/Dockerfile`，不再使用 `gaea.yml` 或子模块 Dockerfile。
+这是 Gaea 单模块、单项目、单镜像的受控 TEST 部署；同一整套 Pod 可以水平复制。Gaea
+直接读取根级 `gaea/Dockerfile`，不再使用 `gaea.yml` 或子模块 Dockerfile。
 
 镜像由 s6-overlay 管理四个常驻进程：
 
@@ -12,7 +12,7 @@
 | `operations` | `8010` | FastAPI 同源提供运营 React、`/api/*` 与 `/api/health` |
 | `teacher-web` | `8080` | Nginx 提供教师 React，并把 `/api/*` 代理到本 Pod 的 NestJS |
 | `teacher-api` | `3000` | NestJS 教师端 API；只在 Pod 内访问，不配置 Gaea Ingress |
-| `score-settlement` | 无 | 固定任务积分结算循环和 heartbeat |
+| `score-settlement` | 无 | 固定任务积分结算候选进程、数据库选主和本 Pod heartbeat |
 
 运营端与教师端仍是两套独立 HTTP 服务，只是共享镜像和 Pod。两个数据库运行角色、两套
 API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker 任一非零退出，s6 都会
@@ -23,11 +23,27 @@ API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker �
 或邮件凭据。这个结构性取舍只为尽快完成办公室 TEST；需要生产级秘密隔离时必须重新拆分
 容器或 Pod，不能把“数据库角色不同”解释成“密钥彼此不可见”。
 
+## 多副本执行模型
+
+每个 Pod 都启动相同的四个进程，不再为 Worker 新建 Gaea 项目，也不按副本注入不同配置：
+
+- FastAPI、教师 Nginx 和 NestJS 都可以横向承接 HTTP 请求；登录会话、任务、积分和上传元数据
+  的事实源在 PostgreSQL，不依赖某一 Pod 内存；
+- 每个 `score-settlement` 候选进程使用独立 PostgreSQL 会话竞争同一 session advisory lock。
+  同一数据库同时只有持锁者结算，其他 Pod 是 standby；连接断开时锁自动释放，standby 在下一
+  轮轮询接管；
+- 教师端全局通知、工单清理等调度器通过 `tide.job_leases` 竞争有期限租约；照片处理使用数据库
+  行级认领与处理租约。`BACKGROUND_JOBS_ENABLED=true` 可以在所有副本保持一致；
+- RollingUpdate 期间旧、新 Pod 可以短暂并存。数据库选主、租约、行锁、幂等键与唯一约束负责
+  保持业务逻辑单活或安全并行，因此不再要求 `Recreate`，也不需要发布前缩容到 0。
+
+这里的“单活”只指某项后台逻辑的当前执行权，不等于 Pod 单副本。积分选主连接必须直连
+PostgreSQL 或使用 session pooling；transaction pooling 不能承载 session advisory lock。
+
 ## 不可变运行约束
 
-- Gaea 应用副本数必须固定为 `1`，关闭自动伸缩，并使用 `Recreate` 更新策略；如果平台
-  不能设置 `Recreate`，每次发布先把旧应用缩到 `0`，确认旧 Pod 消失后再启动新版本。
-  只设置 replicas=1 仍可能因 rolling update 的 `maxSurge` 短暂出现两个 Worker。
+- Gaea 应用建议从 `2` 个副本开始，可以设置为 `2` 或更高，并使用 `RollingUpdate`。自动伸缩
+  也必须保留至少 2 个副本，并先按“每 Pod 数据库连接上限 × 最大副本数”核对公共 PG 配额。
 - `3000` 已由统一镜像强制绑定 `127.0.0.1`，不得再配置 Ingress、SLB 或 Service 端口；
   教师 API 只能经 `8080/api/*` 访问。
 - Alembic 和教师端 migration 都是发布前独立作业，不能放进 Pod 启动流程。
@@ -36,12 +52,28 @@ API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker �
   `tide_migrator`。
 - Gaea 高级设置必须允许 root PID 1 启动 `/init`；s6 随后把业务进程降权到 UID `1001`。
   如果平台强制 `runAsNonRoot`，该镜像会在启动阶段失败。
-- `LOCAL_FILE_STORAGE_DIR=/var/lib/tide/uploads` 与
-  `VIDEO_PREFETCH_STATE_DIR=/var/lib/tide/video-prefetch-runs` 应共用 `/var/lib/tide` PVC，并
-  设置 `fsGroup=1001` 或允许启动脚本修正卷根目录权限。没有 PVC 时 Pod 重建会丢失上传
-  附件和预热状态，只能做不含真实上传的短期 TEST。
+- 多副本不得使用各 Pod 独立的本地上传目录。私有文件优先使用 OSS；确需
+  `FILE_STORAGE_PROVIDER=LOCAL` 时，所有 Pod 必须把同一块 `ReadWriteMany (RWX)` 共享卷挂到
+  `/var/lib/tide`，并设置 `fsGroup=1001` 或预先授予 UID/GID 1001 写权限。RWO 或每 Pod
+  独立 PVC 都不满足跨副本读取、删除和重试语义。
 - 单 Pod 同时运行 Python API、NestJS、Nginx 与后台进程，TEST 建议从 4 GiB 内存起步，
-  再按实际 RSS、连接数和延迟收缩；这不是容量验收结果。
+  再按每个 Pod 的实际 RSS、连接数和延迟收缩；这不是容量验收结果。
+
+副本数、RollingUpdate 参数和 PVC access mode 都是 Gaea/Kubernetes 的运行状态，Dockerfile
+不能替平台设置或证明它们。每次发布必须从 Gaea 现场读回，不能只凭本仓库文档判定已生效。
+
+## 多副本存储边界
+
+| 状态 | 多副本要求 | 原因 |
+|---|---|---|
+| 私有上传 `/var/lib/tide/uploads` | 首选 OSS；LOCAL 只允许所有 Pod 共享同一 RWX 卷 | 上传、下载、工单清理可能落到不同 Pod |
+| 视频预热账本 `/var/lib/tide/video-prefetch-runs` | 执行预热脚本时必须使用同一 RWX 卷 | 幂等记录和文件锁必须跨执行节点可见；OSS 对象存储不替代该账本 |
+| Worker heartbeat `/tmp/tit-score-worker-heartbeat` | 必须保持 Pod 本地，禁止放入共享卷 | 健康检查要证明本 Pod 的候选进程存活，不能借用 leader 的 heartbeat |
+| Nginx 临时目录 `/tmp/tide-nginx` | Pod 本地临时空间 | 不承载业务事实 |
+
+当前四个常驻进程不会自动执行视频预热脚本；预热是受控发布动作。若从一次性 Job 或运维
+终端执行，仍必须复用同一个持久化 RWX 状态目录。发布前至少用两个实际 Pod 做交叉验收：
+Pod A 上传、Pod B 下载，Pod B 删除、Pod A 读回失败；视频预热的相同幂等键只能创建一次。
 
 ## 构建参数
 
@@ -77,10 +109,12 @@ Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两
 1. `8010/api/health`：运营 API、运营静态页面启动边界和数据库；
 2. `8080/healthz`：教师 Nginx 与静态产物；
 3. `8080/health/ready`：经 Nginx 代理访问教师 API，并检查两条数据库读取链；
-4. `settle_shared_task_scores.py --healthcheck --max-heartbeat-age-seconds 90`：积分 Worker。
+4. 本 Pod 的 `/tmp/tit-score-worker-heartbeat`：积分候选进程持续刷新；leader 与 standby
+   使用相同的进程存活判定。
 
-因此 Pod 显示健康只表示四个进程和对应数据库就绪，不代表教师登录、九项任务、积分回写、
-外部素材、真实通知或完整业务验收已经完成。
+未持有积分 advisory lock 或教师后台租约是正常 standby 状态，不得导致本 Pod 不健康。
+因此 Pod 显示健康只表示四个进程和对应数据库就绪，不表示该 Pod 当前持有后台执行权，也
+不代表教师登录、九项任务、积分回写、外部素材、真实通知或完整业务验收已经完成。
 
 ## 运营端运行变量
 
@@ -132,11 +166,12 @@ Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两
 | `TIT_SCORE_DB_MAX_OVERFLOW` | 否 | `0` | Worker 溢出连接 |
 | `TIT_SCORE_DB_STATEMENT_TIMEOUT_MS` | 否 | `60000` | Worker SQL 超时 |
 | `TIT_SCORE_DB_APPLICATION_NAME` | 否 | `tit-growth-score-worker` | Worker 连接标识 |
-| `TIT_SCORE_WORKER_HEARTBEAT` | 否 | `/tmp/tit-score-worker-heartbeat` | 已固化；覆盖时必须同步健康检查 |
+| `TIT_SCORE_WORKER_HEARTBEAT` | 否 | `/tmp/tit-score-worker-heartbeat` | 镜像已固化为 Pod 本地路径，Gaea 不要覆盖或挂载到共享卷 |
 
 Worker 与运营 API 共用 `DATABASE_URL` 对应的受限运营运行角色，但不使用迁移角色。
-固定启动命令为
-`settle_shared_task_scores.py --watch --max-events 25 --interval-seconds 3`。
+每个 Pod 都运行
+`settle_shared_task_scores.py --watch --max-events 25 --interval-seconds 3`，由 PostgreSQL
+session advisory lock 选出当前 leader；standby 不执行结算，但继续刷新本 Pod heartbeat。
 
 ## 教师端运行变量
 
@@ -160,14 +195,15 @@ Worker 与运营 API 共用 `DATABASE_URL` 对应的受限运营运行角色，�
 | `PUBLIC_API_URL` | 是 | 教师 HTTPS Origin | 文件与 API 公共基址 |
 | `DATA_HASH_SECRET` | 是 | 密钥管理注入 | 至少 32 字符 |
 | `AUTH_JWT_SECRET` | 是 | 密钥管理注入 | 至少 32 字符 |
-| `FILE_STORAGE_PROVIDER` | 是 | TEST 可 `LOCAL`；生产 `OSS` | 本地存储仅用于隔离测试 |
-| `LOCAL_FILE_STORAGE_DIR` | 否 | `/var/lib/tide/uploads` | LOCAL 模式需挂载 `/var/lib/tide` PVC |
+| `FILE_STORAGE_PROVIDER` | 是 | `OSS` | 多副本首选 OSS；LOCAL 仅在所有 Pod 共享同一 RWX 卷时允许 |
+| `LOCAL_FILE_STORAGE_DIR` | 否 | `/var/lib/tide/uploads` | LOCAL 模式必须挂载同一 `ReadWriteMany` 共享卷 |
 | `OSS_REGION` / `OSS_ENDPOINT` / `OSS_BUCKET` | 条件必填 | 无 | `FILE_STORAGE_PROVIDER=OSS` 时必填 |
 | `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | 条件必填 | 密钥管理注入 | OSS 凭据 |
 | `MULTIPART_UPLOAD_MAX_CONCURRENCY` | 是 | `4` | 1–16；提高前先做 3×8 MiB 并发验收 |
-| `BACKGROUND_JOBS_ENABLED` | 是 | `true` | 教师后台任务；因此 Pod 只能单副本 |
+| `BACKGROUND_JOBS_ENABLED` | 是 | `true` | 所有副本保持一致；全局调度由 `tide.job_leases` 单活，照片由行级租约认领 |
+| `BACKGROUND_JOB_LEASE_MS` | 否 | `180000` | 教师全局后台任务租约；故障接管上限受该值影响 |
 | `TASK_CATALOG_PUBLIC_WRITE` | 是 | `false` | 教师端不得改共享任务目录 |
-| `VIDEO_PREFETCH_STATE_DIR` | 否 | `/var/lib/tide/video-prefetch-runs` | 已固化；生产需 PVC |
+| `VIDEO_PREFETCH_STATE_DIR` | 否 | `/var/lib/tide/video-prefetch-runs` | 执行预热发布脚本时必须指向所有执行节点共用的 RWX 状态目录 |
 | `MAIL_DELIVERY_PROVIDER` | 否 | `UNAVAILABLE` | 启用公司邮件时还需 `MAIL_API_URL/MAIL_API_ACCESS_KEY` |
 | `AI_GATEWAY_ENABLED` | 否 | `false` | 启用时必须注入 `AI_GATEWAY_API_KEY` |
 
@@ -177,8 +213,9 @@ Gaea 另行配置。教师 Nginx 只从 `TIDE_TRUSTED_PROXY_CIDRS`（未设时�
 `TIT_TRUSTED_PROXY_IPS`）指定的入口解析 `X-Forwarded-For`。仍需平台确认 Ingress 会覆盖
 或追加而不是原样透传客户端伪造头。
 
-按上述建议值，教师两条池最多 10 连接；再加运营 `2 × (5 + 2)` 和 Worker 1 条，单 Pod
-最坏约 25 条连接。发布前必须按公共 PG 的连接额度核对，不能只看 Pod 是否运行。
+按上述建议值，教师两条池最多 10 连接；再加运营 `2 × (5 + 2)` 和积分 Worker 复用的
+选主／结分连接 1 条，单 Pod 最坏约 25 条连接。`N` 个副本按 `N × 25` 预留并给迁移、
+人工诊断留余量；自动伸缩上限必须受公共 PG 连接额度约束，不能只看 Pod 是否运行。
 
 办公室公共 PG 若只能使用非严格 TLS，可以在 TEST 环境使用现有
 `COMPANY_TEST_DATABASE_ENABLED=true` 适配层，并注入 `TIDE_ADMIN_DB_HOST/PORT/NAME`、
@@ -220,24 +257,32 @@ docker inspect --format '{{.State.Health.Status}}' tide-camp-gaea-test
 docker stop tide-camp-gaea-test
 ```
 
-本地容器验证会真实启动积分 Worker，只能连接隔离测试库。
+本地容器验证会真实启动积分 Worker，只能连接隔离测试库。多副本验收还需同时启动至少两个
+容器，确认只有一个 `score-settlement` leader，standby heartbeat 仍健康；LOCAL 文件模式
+必须让两个容器挂载同一个共享测试目录并完成跨容器上传、下载和删除，不得用两个独立目录
+冒充 RWX。
 
 ## 发布顺序
 
 1. 分别执行 TiDe Alembic 与教师端 migration；教师端至少到
-   `0025_fixed_task_semantic_alignment`，随后执行只读契约探针。
+   `0025_fixed_task_semantic_alignment`，并确认其中的 `0022_performance_job_leases` 已落库，
+   随后执行只读契约探针。
 2. 配齐统一应用的运营、教师和 Worker 环境变量，确认密钥不在版本化配置中。
-3. 在 Gaea 将统一应用副本固定为 `1`、关闭自动伸缩，设置 `Recreate`；若不支持，先缩容
-   到 `0`。同时确认平台允许 root `/init`，并配置 `8010` 运营域名和 `8080` 教师域名。
+3. 在 Gaea 将统一应用设置为至少 `2` 个副本并使用 `RollingUpdate`；若启用自动伸缩，设置
+   `minReplicas >= 2`，并按最大副本数核对数据库连接预算。同时确认平台允许 root `/init`，
+   配置 `8010` 运营域名、`8080` 教师域名，以及 OSS 或同一块 RWX 共享卷。
 4. 停止旧 `test-tide-camp-worker`，避免它与新镜像内的 Worker 同时常驻。
-5. 向现有 `tide-camp-api` 项目发布统一镜像，现场读回 replicas、自动伸缩、更新策略、两个
-   端口、两个域名、PVC 权限和健康状态。
+5. 向现有 `tide-camp-api` 项目发布统一镜像，现场读回 replicas、自动伸缩、RollingUpdate、
+   两个端口、两个域名、共享存储权限和每个 Pod 的健康状态；确认一个积分 leader、其余
+   standby，并验证 leader 终止后有且仅有一个 standby 接管。
 6. 从两个外部 HTTPS 域名验证运营登录、教师登录、G01–G09、状态更新、幂等结分、
-   积分/课程读取和工单往返。
+   积分/课程读取、工单往返，以及跨 Pod 文件读写。
 7. 业务验收完成后再下线旧 Worker 项目；不要用“Pod 运行中”代替端到端验收。
 
-回滚统一镜像时，应先停止统一 Pod，再恢复旧 API 与旧 Worker；禁止两个结算 Worker 重叠
-运行。迁移回滚继续遵循向前修复和一致性备份，不由容器启动脚本执行 destructive down。
+统一镜像可通过 `RollingUpdate` 回滚到上一个版本；旧、新版本短暂并存时仍由同一数据库锁
+保证积分逻辑单活。旧的独立 `test-tide-camp-worker` 必须保持关闭，不能与统一项目使用不
+兼容的旧版结算协议。迁移回滚继续遵循向前修复和一致性备份，不由容器启动脚本执行
+destructive down。
 
 一次性发布变量仍保持原边界：运营迁移使用 `tit_growth_migrator`、
 `TIT_MIGRATION_MODE=true`、`TIT_MIGRATION_EXPECTED_DATABASE`；首次运营账号初始化只在一次性

@@ -406,6 +406,27 @@ export class TeacherPhotoRepository {
     });
   }
 
+  async renewClaims(
+    processingOwner: string,
+    photoRunIds: string[],
+    leaseMs: number,
+  ): Promise<string[]> {
+    if (photoRunIds.length === 0) return [];
+    const result = await this.database.queryTide<{ id: string }>(
+      `
+        UPDATE tide.teacher_photo_runs
+        SET lease_expires_at = now() + ($3 * interval '1 millisecond')
+        WHERE processing_owner = $1
+          AND id = ANY($2::uuid[])
+          AND lease_expires_at > now()
+          AND status IN ('CHECKING', 'BEAUTIFYING')
+        RETURNING id
+      `,
+      [processingOwner, photoRunIds, leaseMs],
+    );
+    return result.rows.map((row) => row.id);
+  }
+
   markAttemptFailed(input: {
     photoRunId: string;
     processingOwner: string;

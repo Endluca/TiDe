@@ -26,11 +26,16 @@ OpenAI Key 不是当前确定性任务触发所必需。默认
 
 Gaea 运行时使用唯一的 `gaea/Dockerfile` 构建运营端、教师端和积分 Worker，并由 s6 在
 同一个 Pod 中管理四个常驻进程。运营与教师域名分别绑定 `8010/8080`，教师 NestJS 的
-`3000` 不对外开放。整个 Pod 固定单副本；生产变量必须通过 Gaea 配置/密钥管理注入，
-完整清单见 `gaea/README.md`。共享镜像不代表共享数据库账号，也不自动执行 TiDe Alembic
-或教师端 migration；但同一 UID 的进程会继承容器级变量，所以这个合并形态只用于受控
-TEST，不提供生产级秘密隔离。部署必须使用 Recreate 或先缩到 0，不能仅凭 replicas=1
-推断发布窗口没有第二个 Worker。
+`3000` 不对外开放。同一项目和镜像支持整套 Pod 使用 2 个或更多副本及 RollingUpdate：
+积分候选进程通过 PostgreSQL session advisory lock 保持逻辑单活，未持锁 standby 仍刷新
+本 Pod heartbeat；教师全局调度使用 `tide.job_leases`，照片处理按数据库行租约认领。
+生产变量必须通过 Gaea 配置/密钥管理注入，完整清单见 `gaea/README.md`。共享镜像不代表
+共享数据库账号，也不自动执行 TiDe Alembic 或教师端 migration；但同一 UID 的进程会继承
+容器级变量，所以这个合并形态只用于受控 TEST，不提供生产级秘密隔离。
+
+多副本私有文件优先使用 OSS；LOCAL 模式必须让所有 Pod 把同一块 ReadWriteMany 共享卷挂载
+到 `/var/lib/tide`，RWO 或每 Pod 独立目录都不满足跨副本读取和清理。视频预热账本若从发布
+Job 执行也必须使用共享 RWX 状态目录；积分 heartbeat 则必须留在本 Pod `/tmp`，不得共享。
 
 ## 数据边界
 
