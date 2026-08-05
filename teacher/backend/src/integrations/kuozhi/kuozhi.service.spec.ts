@@ -157,19 +157,22 @@ describe('KuozhiService', () => {
     });
   });
 
-  it('loads all formal G06 courses and creates new-window launch URLs', async () => {
+  it('loads all formal G06 courses as iframe-only launch URLs', async () => {
     const response = await serviceFor().createLaunch('G06', 'TEACHER-001');
 
     expect(response).toMatchObject({
       provider: 'KUOZHI',
       dataMode: 'REAL',
-      mappingVersion: 2,
+      mappingVersion: 3,
       integrationStatus: 'ACTIVE',
     });
     expect(response.courses.map((course) => course.courseId)).toEqual([
       '520',
       '398',
     ]);
+    expect(
+      response.courses.every((course) => course.embedMode === 'IFRAME'),
+    ).toBe(true);
     const launch = new URL(response.courses[0].launchUrl);
     expect(launch.searchParams.get('id')).toBe('TEACHER-001');
     expect(launch.searchParams.get('to')).toBe(

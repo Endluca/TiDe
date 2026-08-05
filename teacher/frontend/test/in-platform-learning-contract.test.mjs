@@ -22,16 +22,23 @@ test("question content never sends teachers to an external exam or form", async 
   assert.deepEqual(externalInstructions, []);
 });
 
-test("the active catalog has no pending quiz step and includes TTP and SET video slots", async () => {
+test("the active catalog no longer publishes local learning steps for Kuozhi tasks", async () => {
   const catalog = await readFile(
     new URL("backend/scripts/sync-current-task-catalog.ts", repoRoot),
     "utf8",
   );
+  const videoManifest = JSON.parse(
+    await readFile(
+      new URL("backend/config/public-videos-v2.json", repoRoot),
+      "utf8",
+    ),
+  );
 
   assert.equal(catalog.includes("pendingQuizStep("), false);
-  assert.match(catalog, /g06-ttp-orientation-video/);
-  assert.match(catalog, /g10-set-fundamentals-video/);
-  assert.match(catalog, /mock-set-fundamentals-2026-07-v1/);
+  assert.equal(catalog.includes("g06-ttp-orientation-video"), false);
+  assert.equal(catalog.includes("g10-set-fundamentals-video"), false);
+  assert.equal(catalog.includes("mock-set-fundamentals-2026-07-v1"), false);
+  assert.deepEqual(videoManifest.videos, []);
 });
 
 test("a video plus checklist task requires the video before completion", async () => {

@@ -112,7 +112,6 @@
   background: linear-gradient(135deg, #f8fbff, #edf4ff);
 }
 
-.kuozhi-open-external,
 .kuozhi-progress-heading button {
   display: inline-flex;
   align-items: center;
@@ -128,11 +127,6 @@
   font-weight: 750;
   text-decoration: none;
   cursor: pointer;
-}
-
-.kuozhi-open-secondary {
-  color: #075fec;
-  background: #fff;
 }
 
 .kuozhi-embed-shell {
@@ -233,7 +227,6 @@
   .kuozhi-course-toolbar,
   .kuozhi-progress-heading,
   .kuozhi-launch-card { align-items: stretch; flex-direction: column; }
-  .kuozhi-open-external,
   .kuozhi-progress-heading button { width: 100%; }
   .kuozhi-embed-shell,
   .kuozhi-embed-shell iframe { min-height: 70vh; }

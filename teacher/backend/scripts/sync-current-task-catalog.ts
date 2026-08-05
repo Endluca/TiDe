@@ -63,68 +63,6 @@ const allStepsRule = (
   teacherFailureCopy: copy,
 });
 
-const videoStep = (input: {
-  key: string;
-  title: string;
-  titleZh: string;
-  assetUrl: string;
-  durationSeconds: number;
-  mediaVersion: string;
-  mock?: boolean;
-}): CatalogStep => ({
-  key: input.key,
-  type: 'VIDEO',
-  title: input.title,
-  config: {
-    titleZh: input.titleZh,
-    assetUrl: input.assetUrl,
-    durationSeconds: input.durationSeconds,
-    mediaVersion: input.mediaVersion,
-    chapterId: input.key,
-    mock: input.mock ?? true,
-  },
-});
-
-const documentStep = (input: {
-  key: string;
-  title: string;
-  configVersion: string;
-  sourceTitle: string;
-  sourceUpdatedAt: string;
-}): CatalogStep => ({
-  key: input.key,
-  type: 'DOCUMENT',
-  title: input.title,
-  config: {
-    version: input.configVersion,
-    role: 'REQUIRED_READING',
-    sourceTitle: input.sourceTitle,
-    sourceUpdatedAt: input.sourceUpdatedAt,
-  },
-});
-
-const publishedQuizStep = (input: {
-  key: string;
-  title: string;
-  configVersion: string;
-  quizBankKey: string;
-  questionSetVersion: string;
-  expectedQuestionCount: number;
-  mock?: boolean;
-}): CatalogStep => ({
-  key: input.key,
-  type: 'QUIZ',
-  title: input.title,
-  config: {
-    version: input.configVersion,
-    role: 'KNOWLEDGE_CHECK',
-    quizBankKey: input.quizBankKey,
-    questionSetVersion: input.questionSetVersion,
-    expectedQuestionCount: input.expectedQuestionCount,
-    mock: input.mock ?? true,
-  },
-});
-
 const aiReviewRule = (input: {
   key: string;
   stepKey: string;
@@ -311,9 +249,9 @@ export const currentTaskCatalog: CatalogTask[] = [
     code: 'G02',
     title: 'Platform Policies',
     why: 'Learn the essential classroom and account-safety rules.',
-    whatToDo: 'Read the in-platform policy guide and complete its quiz.',
+    whatToDo: 'Complete the configured course and assessment in Kuozhi.',
     completionStandard:
-      'The policy guide is confirmed and the quiz requirements pass.',
+      'All required Kuozhi videos and assessment requirements pass.',
     benefit: 'You can apply the core platform policies in class.',
     priority: 'P1',
     score: 2,
@@ -323,24 +261,8 @@ export const currentTaskCatalog: CatalogTask[] = [
     contentStatus: 'READY',
     allowRetry: true,
     kind: 'FIXED_GROWTH',
-    steps: [
-      documentStep({
-        key: 'g03-platform-policies-document',
-        title: 'Read the Platform Policies guide',
-        configVersion: 'g03-platform-policies-document-2026-07',
-        sourceTitle: 'Overseas NT Policies',
-        sourceUpdatedAt: '2026-07',
-      }),
-      publishedQuizStep({
-        key: 'g03-knowledge-check',
-        title: 'Complete the Platform Policies knowledge check',
-        configVersion: 'g03-quiz-2026-07-23',
-        quizBankKey: 'platform-policies',
-        questionSetVersion: 'course-499-2026-07',
-        expectedQuestionCount: 5,
-      }),
-    ],
-    rules: [allStepsRule('请先完成平台规则文档阅读并通过知识检查。')],
+    steps: [],
+    rules: [],
   },
   pending(
     {
@@ -365,10 +287,8 @@ export const currentTaskCatalog: CatalogTask[] = [
     code: 'G05',
     title: 'TTP Orientation',
     why: 'Understand TTP and its key business scenarios.',
-    whatToDo:
-      'Watch the in-platform TTP video and confirm every item in the learning checklist.',
-    completionStandard:
-      'The TTP video is watched in full and every published checklist item is confirmed.',
+    whatToDo: 'Complete the configured TTP course in Kuozhi.',
+    completionStandard: 'All required Kuozhi video requirements pass.',
     benefit: 'You understand the key TTP workflow and commitments.',
     priority: 'P1',
     score: 3,
@@ -378,70 +298,16 @@ export const currentTaskCatalog: CatalogTask[] = [
     contentStatus: 'READY',
     allowRetry: false,
     kind: 'FIXED_GROWTH',
-    steps: [
-      videoStep({
-        key: 'g06-ttp-orientation-video',
-        title: 'Teacher Tie-up Program',
-        titleZh: 'TTP 入门培训',
-        assetUrl: '/videos/g06-ttp-orientation/v2/01.mp4',
-        durationSeconds: 314,
-        mediaVersion: 'g06-ttp-orientation-v2-01',
-      }),
-      {
-        key: 'g06-learning-checklist',
-        type: 'CHECKLIST',
-        title: 'Complete the TTP learning checklist',
-        config: {
-          version: 'g06-checklist-2026-07-23',
-          role: 'LEARNING_CHECKLIST',
-          referenceVideo: {
-            title: 'TTP Orientation',
-            titleZh: 'TTP 入门培训',
-            assetUrl: '/videos/g06-ttp-orientation/v2/01.mp4',
-            durationSeconds: 314,
-            mediaVersion: 'g06-ttp-orientation-v2-01',
-          },
-          items: [
-            {
-              key: 'item-1',
-              label:
-                'How TTP connects fixed students, open slots, and scheduling commitments.',
-              labelZh: 'TTP 与固定学员、开放时段和排期承诺的关系',
-            },
-            {
-              key: 'item-2',
-              label: 'When to use Shift Management and Auto Open Slot.',
-              labelZh: 'Shift Management 与 Auto Open Slot 的使用场景',
-            },
-            {
-              key: 'item-3',
-              label: 'The commitment period and maturity date for open slots.',
-              labelZh: '开放时段的承诺周期与成熟日',
-            },
-            {
-              key: 'item-4',
-              label:
-                'How to fulfill booked slots and handle scheduling changes.',
-              labelZh: '已预约时段的履约要求和排期变化处理',
-            },
-            {
-              key: 'item-5',
-              label:
-                'Keep MyPage availability up to date and know where to get support.',
-              labelZh: '持续维护 MyPage 可授课时段并了解支持入口',
-            },
-          ],
-        },
-      },
-    ],
-    rules: [allStepsRule('请先完整观看 TTP 视频，并确认全部学习清单。')],
+    steps: [],
+    rules: [],
   },
   {
     code: 'G06',
     title: 'ME Culture & PARSNIP',
     why: 'Learn cross-cultural classroom guidance.',
-    whatToDo: 'Complete the configured videos and quiz.',
-    completionStandard: 'All configured videos and quiz requirements pass.',
+    whatToDo: 'Complete the configured courses and assessments in Kuozhi.',
+    completionStandard:
+      'All required Kuozhi videos and assessment requirements pass.',
     benefit: 'You can apply the culture guidance appropriately.',
     priority: 'P1',
     score: 4,
@@ -451,72 +317,16 @@ export const currentTaskCatalog: CatalogTask[] = [
     contentStatus: 'READY',
     allowRetry: true,
     kind: 'FIXED_GROWTH',
-    steps: [
-      videoStep({
-        key: 'g07-me-culture-video',
-        title: 'ME Culture Training',
-        titleZh: 'ME 文化培训',
-        assetUrl: '/videos/g07-me-culture/v2/01.mp4',
-        durationSeconds: 255,
-        mediaVersion: 'g07-me-culture-v2-01',
-      }),
-      videoStep({
-        key: 'g07-parsnip-thailand-1',
-        title: 'Global PARSNIP · Thailand Part 1',
-        titleZh: 'Global PARSNIP · 泰国（一）',
-        assetUrl: '/videos/g07-me-culture/v2/02.mp4',
-        durationSeconds: 404,
-        mediaVersion: 'g07-me-culture-v2-02',
-      }),
-      videoStep({
-        key: 'g07-parsnip-thailand-2',
-        title: 'Global PARSNIP · Thailand Part 2',
-        titleZh: 'Global PARSNIP · 泰国（二）',
-        assetUrl: '/videos/g07-me-culture/v2/03.mp4',
-        durationSeconds: 291,
-        mediaVersion: 'g07-me-culture-v2-03',
-      }),
-      videoStep({
-        key: 'g07-parsnip-saudi-1',
-        title: 'Global PARSNIP · Saudi Arabia Part 1',
-        titleZh: 'Global PARSNIP · 沙特阿拉伯（一）',
-        assetUrl: '/videos/g07-me-culture/v2/04.mp4',
-        durationSeconds: 547,
-        mediaVersion: 'g07-me-culture-v2-04',
-      }),
-      videoStep({
-        key: 'g07-parsnip-saudi-2',
-        title: 'Global PARSNIP · Saudi Arabia Part 2',
-        titleZh: 'Global PARSNIP · 沙特阿拉伯（二）',
-        assetUrl: '/videos/g07-me-culture/v2/05.mp4',
-        durationSeconds: 129,
-        mediaVersion: 'g07-me-culture-v2-05',
-      }),
-      videoStep({
-        key: 'g07-parsnip-malaysia',
-        title: 'Global PARSNIP · Malaysia',
-        titleZh: 'Global PARSNIP · 马来西亚',
-        assetUrl: '/videos/g07-me-culture/v2/06.mp4',
-        durationSeconds: 596,
-        mediaVersion: 'g07-me-culture-v2-06',
-      }),
-      publishedQuizStep({
-        key: 'g07-knowledge-check',
-        title: 'Complete the ME Culture and PARSNIP knowledge check',
-        configVersion: 'g07-quiz-2026-07-23',
-        quizBankKey: 'me-culture',
-        questionSetVersion: 'courses-520-398-2026-07',
-        expectedQuestionCount: 30,
-      }),
-    ],
-    rules: [allStepsRule('请先按顺序完整观看全部视频并完成知识检查。')],
+    steps: [],
+    rules: [],
   },
   {
     code: 'G07',
     title: 'Reliability Training',
     why: 'Strengthen dependable attendance habits.',
-    whatToDo: 'Complete the configured training and quiz.',
-    completionStandard: 'All configured training and quiz requirements pass.',
+    whatToDo: 'Complete the configured Reliability course in Kuozhi.',
+    completionStandard:
+      'All published Kuozhi requirements pass; automatic completion stays disabled until the assessment mapping is available.',
     benefit: 'You have a clear reliability routine.',
     priority: 'P1',
     score: 3,
@@ -526,40 +336,16 @@ export const currentTaskCatalog: CatalogTask[] = [
     contentStatus: 'READY',
     allowRetry: true,
     kind: 'FIXED_GROWTH',
-    steps: [
-      videoStep({
-        key: 'g08-attendance-policy',
-        title: 'Attendance Policy Primer',
-        titleZh: '出勤政策入门',
-        assetUrl: '/videos/g08-reliability-training/v2/01.mp4',
-        durationSeconds: 357,
-        mediaVersion: 'g08-reliability-training-v2-01',
-      }),
-      videoStep({
-        key: 'g08-reliability-guide',
-        title: 'Attendance Reliability Guide',
-        titleZh: '出勤可靠性指南',
-        assetUrl: '/videos/g08-reliability-training/v2/02.mp4',
-        durationSeconds: 314,
-        mediaVersion: 'g08-reliability-training-v2-02',
-      }),
-      publishedQuizStep({
-        key: 'g08-knowledge-check',
-        title: 'Complete the Reliability knowledge check',
-        configVersion: 'g08-quiz-mock-2026-07-24',
-        quizBankKey: 'reliability-training',
-        questionSetVersion: 'mock-course-595-2026-07-v1',
-        expectedQuestionCount: 5,
-      }),
-    ],
-    rules: [allStepsRule('请先按顺序完整观看全部视频并完成知识检查。')],
+    steps: [],
+    rules: [],
   },
   {
     code: 'G08',
     title: 'Cocos Course Training',
     why: 'Learn the core Cocos teaching flow.',
-    whatToDo: 'Complete the configured in-platform videos and quiz.',
-    completionStandard: 'All configured videos and quiz requirements pass.',
+    whatToDo: 'Complete the configured Cocos course and assessment in Kuozhi.',
+    completionStandard:
+      'All required Kuozhi videos and assessment requirements pass.',
     benefit: 'You can prepare for a Cocos class.',
     priority: 'P1',
     score: 5,
@@ -569,111 +355,28 @@ export const currentTaskCatalog: CatalogTask[] = [
     contentStatus: 'READY',
     allowRetry: true,
     kind: 'FIXED_GROWTH',
-    steps: [
-      videoStep({
-        key: 'g09-cocos-overview',
-        title: 'Course Overview',
-        titleZh: '课程概览',
-        assetUrl: '/videos/g09-cocos-training/v2/01.mp4',
-        durationSeconds: 626,
-        mediaVersion: 'g09-cocos-training-v2-01',
-      }),
-      videoStep({
-        key: 'g09-cocos-alphabet',
-        title: 'Alphabet',
-        titleZh: '字母',
-        assetUrl: '/videos/g09-cocos-training/v2/02.mp4',
-        durationSeconds: 670,
-        mediaVersion: 'g09-cocos-training-v2-02',
-      }),
-      videoStep({
-        key: 'g09-cocos-dialogue',
-        title: 'Dialogue',
-        titleZh: '对话',
-        assetUrl: '/videos/g09-cocos-training/v2/03.mp4',
-        durationSeconds: 1129,
-        mediaVersion: 'g09-cocos-training-v2-03',
-      }),
-      videoStep({
-        key: 'g09-cocos-phonics',
-        title: 'Phonics',
-        titleZh: '自然拼读',
-        assetUrl: '/videos/g09-cocos-training/v2/04.mp4',
-        durationSeconds: 687,
-        mediaVersion: 'g09-cocos-training-v2-04',
-      }),
-      videoStep({
-        key: 'g09-cocos-reading',
-        title: 'Reading',
-        titleZh: '阅读',
-        assetUrl: '/videos/g09-cocos-training/v2/05.mp4',
-        durationSeconds: 780,
-        mediaVersion: 'g09-cocos-training-v2-05',
-      }),
-      videoStep({
-        key: 'g09-cocos-word-sentence',
-        title: 'Word & Sentence',
-        titleZh: '单词与句子',
-        assetUrl: '/videos/g09-cocos-training/v2/06.mp4',
-        durationSeconds: 772,
-        mediaVersion: 'g09-cocos-training-v2-06',
-      }),
-      videoStep({
-        key: 'g09-cocos-review-carnival',
-        title: 'Review Carnival',
-        titleZh: '复习嘉年华',
-        assetUrl: '/videos/g09-cocos-training/v2/07.mp4',
-        durationSeconds: 1004,
-        mediaVersion: 'g09-cocos-training-v2-07',
-      }),
-      publishedQuizStep({
-        key: 'g09-knowledge-check',
-        title: 'Complete the Cocos knowledge check',
-        configVersion: 'g09-quiz-2026-07-23',
-        quizBankKey: 'cocos-training',
-        questionSetVersion: 'course-630-2026-07',
-        expectedQuestionCount: 5,
-      }),
-    ],
-    rules: [allStepsRule('请先按顺序完整观看全部视频并完成知识检查。')],
+    steps: [],
+    rules: [],
   },
-  {
-    code: 'G09',
-    title: 'SET Teaching Fundamentals',
-    why: 'Learn the fundamentals of SET teaching.',
-    whatToDo:
-      'Watch the in-platform Mock video slot and complete the five-question Mock check.',
-    completionStandard:
-      'The Mock video is watched in full and the five-question check reaches 80%.',
-    benefit: 'You understand the SET teaching foundation.',
-    priority: 'P1',
-    score: 5,
-    stage: 'ADVANCE',
-    sequence: 9,
-    estimatedMinutes: 10,
-    contentStatus: 'READY',
-    allowRetry: true,
-    kind: 'FIXED_GROWTH',
-    steps: [
-      videoStep({
-        key: 'g10-set-fundamentals-video',
-        title: 'SET Teaching Fundamentals · Mock media slot',
-        titleZh: 'SET 教学基础 · Mock 视频槽',
-        assetUrl: '/videos/g03-platform-policies/v2/01.mp4',
-        durationSeconds: 163,
-        mediaVersion: 'g10-set-fundamentals-mock-v2',
-      }),
-      publishedQuizStep({
-        key: 'g10-knowledge-check',
-        title: 'Complete the SET Teaching Fundamentals Mock check',
-        configVersion: 'g10-quiz-mock-2026-07-24',
-        quizBankKey: 'set-fundamentals',
-        questionSetVersion: 'mock-set-fundamentals-2026-07-v1',
-        expectedQuestionCount: 5,
-      }),
-    ],
-    rules: [allStepsRule('请先完整观看站内 Mock 视频并完成 5 道练习。')],
-  },
+  pending(
+    {
+      code: 'G09',
+      title: 'SET Teaching Fundamentals',
+      why: 'Learn the fundamentals of SET teaching.',
+      whatToDo: 'Complete the SET course and assessment in Kuozhi.',
+      completionStandard:
+        'All required Kuozhi videos and assessment requirements pass.',
+      benefit: 'You understand the SET teaching foundation.',
+      priority: 'P1',
+      score: 5,
+      stage: 'ADVANCE',
+      sequence: 9,
+      estimatedMinutes: 25,
+      allowRetry: true,
+      kind: 'FIXED_GROWTH',
+    },
+    'KUOZHI_G09_COURSE_MAPPING_PENDING',
+  ),
   {
     code: 'NT-Q03',
     externalCode: 'classroom-quality-reminder',

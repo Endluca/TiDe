@@ -71,7 +71,6 @@ const taskMappingFields = {
   launchEnabled: z.boolean(),
   completionEnabled: z.boolean(),
   noHeader: z.boolean().default(true),
-  embedMode: z.enum(['IFRAME', 'NEW_WINDOW']).default('NEW_WINDOW'),
   courses: z.array(courseSchema).min(1),
 };
 
@@ -86,7 +85,7 @@ const sampleProfileSchema = z
 
 const configurationSchema = z
   .object({
-    version: z.literal(2),
+    version: z.literal(3),
     tasks: z.record(z.string().regex(/^G0[1-9]$/u), taskMappingSchema),
     sampleProfile: sampleProfileSchema,
   })

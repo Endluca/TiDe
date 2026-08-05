@@ -54,7 +54,6 @@ export class KuozhiService {
         launchEnabled: sample.launchEnabled,
         completionEnabled: sample.completionEnabled,
         noHeader: sample.noHeader,
-        embedMode: sample.embedMode,
         courses: sample.courses,
       };
       return {
@@ -119,7 +118,7 @@ export class KuozhiService {
         return {
           courseId: course.courseId,
           title: course.title ?? null,
-          embedMode: resolved.mapping.embedMode,
+          embedMode: 'IFRAME',
           launchUrl: createKuozhiTicketUrl({
             loginUrl,
             appKey,

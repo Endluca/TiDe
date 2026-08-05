@@ -18,7 +18,7 @@ export interface KuozhiResolvedMapping {
 export interface KuozhiLaunchCourse {
   courseId: string;
   title: string | null;
-  embedMode: 'IFRAME' | 'NEW_WINDOW';
+  embedMode: 'IFRAME';
   launchUrl: string;
 }
 

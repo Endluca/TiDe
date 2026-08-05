@@ -28,8 +28,7 @@ import { stageDescriptions } from "../live-catalog";
 import { getLearningTaskContent } from "../data/tasks/learning-task-content";
 import { useI18n } from "../i18n";
 import { publicAsset } from "../public-assets";
-import VideoQuizTask, { ChapterVideoLearning } from "../features/task-content/VideoQuizTask";
-import VideoOnlyTask from "../features/task-content/VideoOnlyTask";
+import { ChapterVideoLearning } from "../features/task-content/VideoQuizTask";
 import KuozhiCourseTask from "../features/task-content/KuozhiCourseTask";
 import EnvironmentPhotoTask from "../features/task-content/EnvironmentPhotoTask";
 import ExternalStatusTask from "../features/task-content/ExternalStatusTask";
@@ -61,7 +60,7 @@ function LockedPreview({ task }) {
   const { language } = useI18n();
   const c = (en, zh) => language === "zh" ? zh : en;
   const releaseDay = stageDescriptions.find((stage) => stage.range === (task.sourceStage || task.stage))?.releaseDay;
-  const isStatusOnly = ["external_status", "content_pending"].includes(task.method);
+  const isStatusOnly = ["external_status", "external_course", "content_pending"].includes(task.method);
   const isChecklist = task.method === "learning_checklist";
   const configuredLearningContent = getLearningTaskContent(task);
   const learningContent = isStatusOnly
@@ -951,12 +950,6 @@ export default function TaskFlow({ task, onUpdate, onHelp }) {
   if (task.locked) return <LockedPreview task={task} />;
   if (task.method === "external_course") {
     return <KuozhiCourseTask task={task} />;
-  }
-  if (["learning_quiz", "document_quiz"].includes(task.method) && !task.locked) {
-    return <VideoQuizTask task={task} onUpdate={onUpdate} />;
-  }
-  if (task.method === "video_learning") {
-    return <VideoOnlyTask task={task} onUpdate={onUpdate} />;
   }
   if (task.method === "environment_photo") {
     return <EnvironmentPhotoTask task={task} onUpdate={onUpdate} />;

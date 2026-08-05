@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ArrowClockwise,
-  ArrowSquareOut,
   CheckCircle,
   Clock,
   GraduationCap,
@@ -201,7 +200,6 @@ export default function KuozhiCourseTask({ task }) {
 
       <div className="kuozhi-course-grid">
         {(launch?.courses ?? []).map((course) => {
-          const embedded = course.embedMode === 'IFRAME';
           const courseTitle = course.title
             || c(`Course ${course.courseId}`, `课程 ${course.courseId}`);
           return (
@@ -211,29 +209,16 @@ export default function KuozhiCourseTask({ task }) {
                   <strong>{courseTitle}</strong>
                   <small>{c(`Course ID ${course.courseId}`, `课程 ID ${course.courseId}`)}</small>
                 </div>
-                <a
-                  className={`kuozhi-open-external ${embedded ? 'kuozhi-open-secondary' : 'kuozhi-open-primary'}`}
-                  href={course.launchUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <ArrowSquareOut size={18} weight="bold" />
-                  {embedded
-                    ? c('Open in new window', '在新窗口打开')
-                    : c('Open course', '打开课程')}
-                </a>
               </article>
-              {embedded && (
-                <div className="kuozhi-embed-shell">
-                  <iframe
-                    src={course.launchUrl}
-                    title={c(`${courseTitle} embedded course`, `${courseTitle} 内嵌课程`)}
-                    allow="fullscreen"
-                    allowFullScreen
-                    referrerPolicy="strict-origin-when-cross-origin"
-                  />
-                </div>
-              )}
+              <div className="kuozhi-embed-shell">
+                <iframe
+                  src={course.launchUrl}
+                  title={c(`${courseTitle} embedded course`, `${courseTitle} 内嵌课程`)}
+                  allow="fullscreen"
+                  allowFullScreen
+                  referrerPolicy="strict-origin-when-cross-origin"
+                />
+              </div>
             </section>
           );
         })}

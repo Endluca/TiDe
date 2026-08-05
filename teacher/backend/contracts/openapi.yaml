@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TIDE Teacher API Contract
-  version: 0.12.0
+  version: 0.13.0
   description: >-
     教师端公共合同。包含教师端任务、文件和 My TIDE 安全读取；
     各模块实现状态见 contracts/README。任务、G01 状态和外部消息直接使用共享 PostgreSQL 契约表；
@@ -1159,7 +1159,7 @@ components:
             properties:
               courseId: { type: string, pattern: '^\d+$' }
               title: { type: [string, 'null'] }
-              embedMode: { type: string, enum: [IFRAME, NEW_WINDOW] }
+              embedMode: { type: string, const: IFRAME }
               launchUrl: { type: string, format: uri }
     KuozhiProgressResponse:
       type: object

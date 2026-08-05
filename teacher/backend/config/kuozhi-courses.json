@@ -1,12 +1,11 @@
 {
-  "version": 2,
+  "version": 3,
   "tasks": {
     "G01": {
       "integrationStatus": "MAPPING_ONLY",
       "launchEnabled": false,
       "completionEnabled": false,
       "noHeader": true,
-      "embedMode": "NEW_WINDOW",
       "courses": [
         {
           "courseId": "407",
@@ -35,7 +34,6 @@
       "launchEnabled": true,
       "completionEnabled": true,
       "noHeader": true,
-      "embedMode": "NEW_WINDOW",
       "courses": [
         {
           "courseId": "499",
@@ -71,7 +69,6 @@
       "launchEnabled": true,
       "completionEnabled": true,
       "noHeader": true,
-      "embedMode": "NEW_WINDOW",
       "courses": [
         {
           "courseId": "513",
@@ -93,7 +90,6 @@
       "launchEnabled": true,
       "completionEnabled": true,
       "noHeader": true,
-      "embedMode": "NEW_WINDOW",
       "courses": [
         {
           "courseId": "520",
@@ -145,7 +141,6 @@
       "launchEnabled": true,
       "completionEnabled": false,
       "noHeader": true,
-      "embedMode": "NEW_WINDOW",
       "courses": [
         {
           "courseId": "595",
@@ -162,7 +157,6 @@
       "launchEnabled": true,
       "completionEnabled": true,
       "noHeader": true,
-      "embedMode": "NEW_WINDOW",
       "courses": [
         {
           "courseId": "630",
@@ -187,7 +181,6 @@
     "launchEnabled": true,
     "completionEnabled": true,
     "noHeader": true,
-    "embedMode": "IFRAME",
     "courses": [
       {
         "courseId": "131",

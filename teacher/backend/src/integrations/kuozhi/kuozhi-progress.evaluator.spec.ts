@@ -2,7 +2,7 @@ import type { KuozhiResolvedMapping } from './kuozhi.models';
 import { evaluateKuozhiProgress } from './kuozhi-progress.evaluator';
 
 const resolved: KuozhiResolvedMapping = {
-  mappingVersion: 2,
+  mappingVersion: 3,
   taskCode: 'G06',
   dataMode: 'SAMPLE_DRY_RUN',
   queryTeacherId: '360107609',
@@ -11,7 +11,6 @@ const resolved: KuozhiResolvedMapping = {
     launchEnabled: true,
     completionEnabled: true,
     noHeader: true,
-    embedMode: 'NEW_WINDOW',
     courses: [
       {
         courseId: '131',

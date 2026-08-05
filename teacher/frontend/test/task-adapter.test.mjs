@@ -211,6 +211,48 @@ test("keeps G05 on Kuozhi when an older reference-video config is still present"
   assert.equal(task.method, "external_course");
 });
 
+test("routes G09 to Kuozhi when its official course mapping is ready", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "G09",
+    capabilities: ["VIDEO", "QUIZ"],
+    steps: [
+      { stepKey: "legacy-video", type: "VIDEO", title: "Legacy video", config: {} },
+      { stepKey: "legacy-quiz", type: "QUIZ", title: "Legacy quiz", config: { questions: [] } },
+    ],
+  }));
+
+  assert.equal(task.method, "external_course");
+});
+
+test("keeps G09 pending while Kuozhi has not published a course id", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "G09",
+    capabilities: [],
+    steps: [],
+    execution: {
+      contentStatus: "PENDING",
+      contentVersion: "2026-08-05",
+      pendingReason: "KUOZHI_G09_COURSE_MAPPING_PENDING",
+    },
+  }));
+
+  assert.equal(task.method, "content_pending");
+});
+
+test("does not fall back to a local player for an unmapped video or quiz task", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "P-FUTURE-TRAINING",
+    kind: "PERSONALIZED_IMPROVEMENT",
+    capabilities: ["VIDEO", "QUIZ"],
+    steps: [
+      { stepKey: "video", type: "VIDEO", title: "Video", config: {} },
+      { stepKey: "quiz", type: "QUIZ", title: "Quiz", config: { questions: [] } },
+    ],
+  }));
+
+  assert.equal(task.method, "content_pending");
+});
+
 test("maps the backend ASSIGNED state to an available task", () => {
   const task = adaptTaskContext(context({ status: "ASSIGNED", stateVersion: 1 }));
   assert.equal(task.status, "available");

@@ -68,14 +68,6 @@ const quizDefinitions: Record<string, QuizDefinition> = {
     passScore: 80,
     expectedQuestionCount: 30,
   },
-  'reliability-training': {
-    title: '[Mock] G07 Reliability knowledge check',
-    version: 'mock-course-595-2026-07-v1',
-    status: 'PUBLISHED',
-    passScore: 80,
-    expectedQuestionCount: 5,
-    mock: true,
-  },
   'free-trial-training': {
     title: 'Free Trial candidate source bank',
     version: 'candidate-courses-324-510-2026-07',
@@ -89,14 +81,6 @@ const quizDefinitions: Record<string, QuizDefinition> = {
     status: 'PUBLISHED',
     passScore: 80,
     expectedQuestionCount: 5,
-  },
-  'set-fundamentals': {
-    title: '[Mock] G09 SET Teaching Fundamentals check',
-    version: 'mock-set-fundamentals-2026-07-v1',
-    status: 'PUBLISHED',
-    passScore: 80,
-    expectedQuestionCount: 5,
-    mock: true,
   },
 };
 

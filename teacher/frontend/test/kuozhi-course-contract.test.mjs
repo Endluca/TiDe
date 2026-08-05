@@ -22,12 +22,12 @@ test('Kuozhi launch and progress stay behind the authenticated backend', async (
   assert.match(api, /kuozhi-progress\/refresh/);
   assert.match(api, /Idempotency-Key/);
   assert.equal(component.includes('KUOZHI_SECRET_KEY'), false);
-  assert.match(component, /target="_blank"/);
-  assert.match(component, /Open course/);
-  assert.match(component, /course\.embedMode === 'IFRAME'/);
   assert.match(component, /<iframe/);
   assert.match(component, /allowFullScreen/);
-  assert.match(component, /Open in new window/);
+  assert.equal(component.includes('target="_blank"'), false);
+  assert.equal(component.includes('Open course'), false);
+  assert.equal(component.includes('Open in new window'), false);
+  assert.equal(component.includes('course.embedMode'), false);
   assert.match(component, /SAMPLE_DRY_RUN/);
   assert.match(component, /launchResponse\.dataMode === 'REAL'/);
   assert.match(component, /不会修改当前老师的任务状态/);
