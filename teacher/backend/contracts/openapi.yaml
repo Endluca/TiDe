@@ -1208,7 +1208,7 @@ components:
     KuozhiProgressTask:
       type: object
       additionalProperties: false
-      required: [courseTaskId, title, type, required, sourceStatus, percent, score, normalizedScorePercent, passScorePercent, testTimes, completed]
+      required: [courseTaskId, title, type, required, sourceStatus, percent, score, testTimes, completed]
       properties:
         courseTaskId: { type: string, pattern: '^\d+$' }
         title: { type: string }
@@ -1217,8 +1217,6 @@ components:
         sourceStatus: { type: string, enum: [AVAILABLE, MISSING, INVALID] }
         percent: { type: [number, 'null'], minimum: 0, maximum: 100 }
         score: { type: [number, 'null'] }
-        normalizedScorePercent: { type: [number, 'null'], minimum: 0 }
-        passScorePercent: { type: [number, 'null'], minimum: 0, maximum: 100 }
         testTimes: { type: [number, 'null'], minimum: 0 }
         completed: { type: boolean }
     TaskContent:
@@ -1295,7 +1293,7 @@ components:
               percent: { type: integer, minimum: 0, maximum: 100 }
     StepType:
       type: string
-      enum: [VIDEO, DOCUMENT, QUIZ, CHECKLIST, UPLOAD, DEVICE_CHECK, EXTERNAL_TRAINING, CUSTOM]
+      enum: [VIDEO, DOCUMENT, CHECKLIST, UPLOAD, DEVICE_CHECK, EXTERNAL_TRAINING, CUSTOM]
     TaskStatus:
       type: string
       enum: [ASSIGNED, VIEWED, IN_PROGRESS, SUBMITTED, UNDER_REVIEW, COMPLETED, FAILED, EXPIRED, WAIVED, CANCELLED]
@@ -1327,7 +1325,7 @@ components:
       required: [stepKey, outputType, value]
       properties:
         stepKey: { type: string }
-        outputType: { type: string, enum: [QUIZ, CHECKLIST, FILE, DEVICE_CHECK, EXTERNAL_PROOF, CUSTOM] }
+        outputType: { type: string, enum: [CHECKLIST, FILE, DEVICE_CHECK, EXTERNAL_PROOF, CUSTOM] }
         value: { type: object, additionalProperties: true }
     RetryTaskRequest:
       type: object
@@ -1842,11 +1840,6 @@ components:
         - VIDEO_SEEK_BLOCKED
         - VIDEO_STALLED
         - VIDEO_FAILED
-        - QUIZ_UNLOCKED
-        - QUIZ_STARTED
-        - QUIZ_SUBMITTED
-        - QUIZ_PASSED
-        - QUIZ_FAILED
         - DOCUMENT_READING_STARTED
         - DOCUMENT_MODULE_EXPANDED
         - DOCUMENT_COMPLETED

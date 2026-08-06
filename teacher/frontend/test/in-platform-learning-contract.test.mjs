@@ -4,22 +4,14 @@ import test from "node:test";
 
 const repoRoot = new URL("../../", import.meta.url);
 
-test("question content never sends teachers to an external exam or form", async () => {
-  const source = JSON.parse(
-    await readFile(
-      new URL("backend/reference/task-quiz-banks.json", repoRoot),
-      "utf8",
-    ),
-  );
-  const externalInstructions = Object.entries(source.taskQuizBanks)
-    .flatMap(([bankKey, questions]) => questions.map((question) => ({
-      bankKey,
-      questionId: question.id,
-      text: `${question.question || ""} ${question.questionZh || ""}`,
-    })))
-    .filter(({ text }) => /https?:\/\/|forms\.gle/i.test(text));
+test("the active runtime contains no local quiz step or question bank", async () => {
+  const [catalog, models] = await Promise.all([
+    readFile(new URL("backend/scripts/sync-current-task-catalog.ts", repoRoot), "utf8"),
+    readFile(new URL("backend/src/tasks/task.models.ts", repoRoot), "utf8"),
+  ]);
 
-  assert.deepEqual(externalInstructions, []);
+  assert.doesNotMatch(catalog, /type: 'QUIZ'|quizBankKey|TESOL_QUIZ/);
+  assert.doesNotMatch(models, /\| 'QUIZ'/);
 });
 
 test("the active catalog no longer publishes local learning steps for Kuozhi tasks", async () => {

@@ -1,7 +1,4 @@
-import type {
-  KuozhiCourseMapping,
-  KuozhiPassScoreSource,
-} from './kuozhi-course.config';
+import type { KuozhiCourseMapping } from './kuozhi-course.config';
 
 export type KuozhiSyncStatus =
   'NOT_SYNCED' | 'AVAILABLE' | 'PARTIAL' | 'NO_DATA';
@@ -37,8 +34,6 @@ export interface KuozhiProgressTask {
   sourceStatus: 'AVAILABLE' | 'MISSING' | 'INVALID';
   percent: number | null;
   score: number | null;
-  normalizedScorePercent: number | null;
-  passScorePercent: number | null;
   testTimes: number | null;
   completed: boolean;
 }
@@ -80,16 +75,4 @@ export interface KuozhiProgressResponse extends KuozhiProgressCore {
     stateVersion: number;
     stateUpdated: boolean;
   };
-}
-
-export interface KuozhiPassScoreReference {
-  key: string;
-  source: Extract<KuozhiPassScoreSource, { kind: 'QUIZ_BANK' }>;
-}
-
-export function kuozhiPassScoreKey(
-  bankKey: string,
-  questionSetVersion: string,
-): string {
-  return `${bankKey}\u0000${questionSetVersion}`;
 }

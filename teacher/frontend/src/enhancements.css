@@ -85,7 +85,7 @@
 .flow-note svg { flex: 0 0 auto; color: var(--brand-blue); }
 .flow-note span { display: grid; gap: 2px; }
 
-/* Native video and quiz */
+/* Native video */
 .native-learning-flow { display: grid; gap: 17px; }
 .learning-state-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .learning-state { display: inline-flex; min-height: 27px; align-items: center; padding: 0 10px; border-radius: 999px; color: #0f7142; background: #e7f6ed; font-size: 11px; font-weight: 800; }
@@ -131,71 +131,6 @@
 .video-duration { grid-column: 3; grid-row: 1; padding: 5px 8px; border-radius: 7px; background: rgba(0,0,0,.48); font-size: 11px; font-weight: 800; }
 .video-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 6px; background: rgba(255,255,255,.2); }
 .video-progress i { display: block; height: 100%; background: #ffeb3c; }
-.native-quiz-shell { overflow: hidden; border: 1px solid #d8e3ee; border-radius: 14px; background: #fff; }
-.native-quiz-shell > header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; padding: 17px 19px; gap: 12px; border-bottom: 1px solid #e3e8ee; background: #f8fbff; }
-.native-quiz-shell > header > span { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 10px; color: var(--brand-blue); background: #e5f2ff; }
-.native-quiz-shell h3 { margin: 0; font-size: 16px; }
-.native-quiz-shell header p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
-.native-quiz-shell.is-locked { color: #6f7780; background: #f5f6f7; }
-.quiz-locked-copy { margin: 0; padding: 24px 20px; color: #68737e; text-align: center; }
-.single-question-flow { padding: 20px; }
-.single-question-flow .quiz-question { margin: 16px 0 20px; padding: 0; border: 0; }
-.single-question-flow .quiz-question legend { display: block; width: auto; margin-bottom: 8px; font-size: 18px; font-weight: 800; line-height: 1.45; }
-.question-type-hint { margin: 0 0 10px; color: #6b7580; font-size: 11px; }
-.single-question-flow .option-list { display: grid; gap: 8px; }
-.single-question-flow .option-list label { display: grid; grid-template-columns: 22px 1fr; min-height: 48px; align-items: center; padding: 10px 13px; gap: 10px; border: 1px solid #dbe2e8; border-radius: 10px; cursor: pointer; font-size: 13px; }
-.single-question-flow .option-list label.option-selected { border-color: var(--brand-blue); background: #f0f7ff; }
-.single-question-flow .option-list input { position: absolute; opacity: 0; }
-.single-question-flow .radio-mark { display: grid; width: 20px; height: 20px; place-items: center; border: 2px solid #a9b4bf; border-radius: 50%; color: #fff; }
-.single-question-flow input[type="checkbox"] + .radio-mark { border-radius: 5px; }
-.single-question-flow .option-selected .radio-mark { border-color: var(--brand-blue); background: var(--brand-blue); box-shadow: inset 0 0 0 4px #fff; }
-.single-question-flow input[type="checkbox"] + .radio-mark:has(svg) { box-shadow: none; }
-.question-navigation { display: flex; justify-content: space-between; gap: 12px; }
-.quiz-result-review { padding: 22px; }
-.quiz-result-review > h3 { margin: 12px 0 6px; }
-.quiz-result-review > p { color: var(--muted); }
-.quiz-result-retry-toki {
-  display: grid;
-  grid-template-columns: 104px minmax(0, 1fr);
-  min-height: 112px;
-  align-items: center;
-  margin: 16px 0 18px;
-  padding: 4px 18px 4px 4px;
-  gap: 9px;
-  overflow: hidden;
-  border: 1px solid #f0d38b;
-  border-radius: 16px;
-  color: #614a05;
-  background: linear-gradient(105deg, #fffaf0, #fff4c9);
-}
-.quiz-result-retry-toki .toki {
-  width: 104px;
-  height: 104px;
-  object-fit: contain;
-}
-.quiz-result-retry-toki span,
-.quiz-result-retry-toki strong,
-.quiz-result-retry-toki small { display: block; }
-.quiz-result-retry-toki strong { margin-bottom: 4px; font-size: 15px; }
-.quiz-result-retry-toki small { color: #796627; font-size: 11px; line-height: 1.45; }
-.answer-review-list { display: grid; margin: 18px 0; gap: 9px; }
-.answer-review-list article { position: relative; padding: 13px 100px 13px 14px; border: 1px solid #e0e5ea; border-radius: 10px; }
-.answer-review-list article > span { position: absolute; top: 12px; right: 12px; color: #8a5a00; font-size: 10px; font-weight: 800; }
-.answer-review-list article p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
-
-@media (max-width: 560px) {
-  .quiz-result-retry-toki {
-    grid-template-columns: 86px minmax(0, 1fr);
-    min-height: 94px;
-    padding-right: 12px;
-  }
-
-  .quiz-result-retry-toki .toki {
-    width: 86px;
-    height: 86px;
-  }
-}
-
 /* Checklist, upload and verification */
 .native-checklist-flow { display: grid; gap: 15px; }
 .checklist-reference-video { display: grid; gap: 12px; }
@@ -2542,10 +2477,6 @@ button.matrix-cell:hover {
   }
   .video-shade { grid-template-columns: auto 1fr; padding: 28px 13px 13px; }
   .video-duration { position: absolute; top: 11px; right: 11px; }
-  .single-question-flow { padding: 15px; }
-  .question-navigation { position: static; }
-  .answer-review-list article { padding-right: 14px; }
-  .answer-review-list article > span { position: static; display: block; margin-top: 7px; }
   .guide-summary-grid { grid-template-columns: 1fr; }
   .camera-actions { align-items: stretch; flex-direction: column; }
   .camera-help { grid-template-columns: auto 1fr; }
@@ -2625,7 +2556,6 @@ body {
 .icon-disc.pale,
 .outlined-icon,
 .metric-icon,
-.native-quiz-shell > header > span,
 .course-section-list button > span {
   color: var(--brand-blue);
   background: #fff7bd;
@@ -2866,7 +2796,6 @@ body {
 .task-facts,
 .task-execution-card,
 .help-links,
-.native-quiz-shell,
 .course-section-list button,
 .camera-permission-card {
   border-color: #e5dfd2;
@@ -2886,7 +2815,6 @@ body {
 
 .task-toki,
 .flow-note,
-.native-quiz-shell > header,
 .camera-permission-card > header {
   border-color: #eadfae;
   background: #fffaf0;
@@ -2894,12 +2822,6 @@ body {
 
 .flow-note {
   color: #5f5849;
-}
-
-.single-question-flow .option-list label.option-selected,
-.quiz-panel label.selected {
-  border-color: #d8c31c;
-  background: #fffbe1;
 }
 
 .step-indicator > div.active:not(:last-child)::after {

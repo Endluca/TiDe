@@ -19,6 +19,7 @@ test("loads the floating AI helper styles before the lazy support dialog", () =>
 
   assert.match(mainSource, /import "\.\/ai-help-fab\.css";/);
   assert.match(helperStyles, /\.ai-help-fab > button > img/);
+  assert.match(helperStyles, /transform: translate\(8%, 2px\);/);
 });
 
 test("keeps the desktop AI helper below the top navigation", () => {

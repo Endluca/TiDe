@@ -59,7 +59,7 @@ FROM tide.analytics_task_step_funnel_v2
 WHERE NULLIF(:'task_code', '') IS NULL OR task_code = :'task_code'
 ORDER BY task_code, template_version, step_key;
 
--- 5. 视频、小测、上传和摄像头质量。
+-- 5. 视频、上传和摄像头质量。
 SELECT *
 FROM tide.analytics_content_quality_v2
 WHERE NULLIF(:'task_code', '') IS NULL OR task_code = :'task_code'

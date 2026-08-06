@@ -101,6 +101,11 @@ import {
   stageIndexFromPathSearch,
 } from "./growth-tip";
 import {
+  clockwiseOrbitSlot,
+  nextClockwiseStageIndex,
+  normalizeStageIndex,
+} from "./growth-map-rotation";
+import {
   AI_HELP_DESKTOP_SIZE,
   AI_HELP_MOBILE_BREAKPOINT,
   AI_HELP_MOBILE_SIZE,
@@ -270,9 +275,6 @@ const statusLabels = {
 const workspaceMeta = {
   profile_credentials: ["Profile and TESOL completion", "档案与 TESOL 完成", "Complete all five conditions in one place.", "在一个页面内完成全部五项条件。"],
   learning_checklist: ["Completion checklist", "完成步骤", "Tick every item, then confirm to record this task as complete.", "勾选全部步骤，再点击“完成任务”。"],
-  learning_quiz: ["Learning and practice", "课程与练习", "Complete the learning, then pass the exercise to record this task as complete.", "先完整看完课程视频，再通过课后练习，即可完成任务。"],
-  document_quiz: ["Policy reading and practice", "规则阅读与练习", "Read the policy guide, then pass the exercise to complete this task.", "阅读平台规则文档，再通过课后练习，即可完成任务。"],
-  video_learning: ["Video training", "视频培训", "Watch the complete training video to finish this task.", "完整看完培训视频即可完成任务。"],
   external_status: ["Review status", "审核状态", "Check the latest available result.", "查看最新审核结果。"],
   readiness_photo: ["Pre-class environment check", "课前环境确认", "Take one photo in your real teaching position and review the four lesson-preparation checks.", "在真实授课位置拍一张照片，并逐项查看首课准备的 4 项画面检测结果。"],
   upload_review: ["Submit for review", "上传材料", "Follow the steps below to submit your material for review.", "按照下方要求提交材料并查看审核结果。"],
@@ -778,7 +780,7 @@ function taskAction(language, task) {
     return copy(language, "View status", "查看审核进度");
   if (task.status === "started") return copy(language, "Continue", "继续");
   if (task.status === "retry_required") {
-    if (["learning_quiz", "document_quiz", "device_readiness", "readiness_photo"].includes(task.method)) return copy(language, "Retry", "重试");
+    if (["device_readiness", "readiness_photo"].includes(task.method)) return copy(language, "Retry", "重试");
     if (task.method === "upload_review") return copy(language, "Update files", "补充材料");
     if (task.method === "environment_photo") return copy(language, "Update preparation", "更新准备内容");
     return copy(language, "Update", "重新完成");
@@ -1368,20 +1370,55 @@ function GrowthPathPage({
   const mobileRafRef = useRef(0);
   const hasAnimatedRef = useRef(false);
   const previousActiveIndexRef = useRef(activeIndex);
+  const selectedIndexRef = useRef(restoredSelectedIndex);
+  const requestedIndexRef = useRef(restoredSelectedIndex);
+  const previousAnimatedIndexRef = useRef(restoredSelectedIndex);
+  const carouselAnimatingRef = useRef(false);
+  const carouselContinuationFrameRef = useRef(0);
+
+  const advanceClockwise = useCallback(() => {
+    if (carouselAnimatingRef.current) return;
+    const current = selectedIndexRef.current;
+    if (current === requestedIndexRef.current) return;
+    const next = nextClockwiseStageIndex(current, stageDescriptions.length);
+    carouselAnimatingRef.current = true;
+    selectedIndexRef.current = next;
+    setSelectedIndex(next);
+  }, []);
+
+  const selectStageClockwise = useCallback((targetIndex) => {
+    const target = normalizeStageIndex(targetIndex, stageDescriptions.length);
+    requestedIndexRef.current = target;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      carouselAnimatingRef.current = false;
+      selectedIndexRef.current = target;
+      previousAnimatedIndexRef.current = target;
+      setSelectedIndex(target);
+      return;
+    }
+    advanceClockwise();
+  }, [advanceClockwise]);
 
   const selectPrevious = () =>
-    setSelectedIndex((current) => (current + stageDescriptions.length - 1) % stageDescriptions.length);
+    selectStageClockwise(selectedIndexRef.current - 1);
   const selectNext = () =>
-    setSelectedIndex((current) => (current + 1) % stageDescriptions.length);
+    selectStageClockwise(selectedIndexRef.current + 1);
 
   useEffect(() => {
     document.body.classList.add("tasks-hub-active");
-    return () => document.body.classList.remove("tasks-hub-active");
+    return () => {
+      document.body.classList.remove("tasks-hub-active");
+      cancelAnimationFrame(carouselContinuationFrameRef.current);
+    };
   }, []);
 
   useEffect(() => {
     if (previousActiveIndexRef.current === activeIndex) return;
     previousActiveIndexRef.current = activeIndex;
+    requestedIndexRef.current = activeIndex;
+    selectedIndexRef.current = activeIndex;
+    previousAnimatedIndexRef.current = activeIndex;
+    carouselAnimatingRef.current = false;
     setSelectedIndex(activeIndex);
     setMobileSelectedIndex(activeIndex);
   }, [activeIndex]);
@@ -1411,33 +1448,113 @@ function GrowthPathPage({
     () => {
       if (!carouselSize.width || !carouselSize.height) return;
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const previousIndex = previousAnimatedIndexRef.current;
+      const isClockwiseStep = selectedIndex === nextClockwiseStageIndex(
+        previousIndex,
+        stageDescriptions.length,
+      );
+      const shouldAnimate = hasAnimatedRef.current && isClockwiseStep && !reduced;
+      const orbitPoint = (angle) => {
+        const radians = (angle * Math.PI) / 180;
+        return {
+          x: carouselSize.width * (0.1466667 + 0.3266667 * Math.cos(radians)),
+          y: carouselSize.height * 0.2886751 * Math.sin(radians),
+        };
+      };
+      const appearances = [
+        { scale: 1, opacity: 1, zIndex: 3 },
+        { scale: 0.55, opacity: 0.78, zIndex: 2 },
+        { scale: 0.55, opacity: 0.66, zIndex: 1 },
+      ];
+      const slotAngles = [180, 300, 420];
+      const timeline = shouldAnimate
+        ? gsap.timeline({
+            defaults: { overwrite: "auto" },
+            onComplete: () => {
+              carouselAnimatingRef.current = false;
+              advanceClockwise();
+            },
+          })
+        : null;
+
       desktopStageRefs.current.forEach((node, index) => {
         if (!node) return;
-        const relative = (index - selectedIndex + stageDescriptions.length) % stageDescriptions.length;
-        const position =
-          relative === 0
-            ? { x: -carouselSize.width * 0.18, y: 0, scale: 1, opacity: 1, zIndex: 3 }
-            : relative === 1
-              ? { x: carouselSize.width * 0.31, y: -carouselSize.height * 0.25, scale: 0.55, opacity: 0.78, zIndex: 2 }
-              : { x: carouselSize.width * 0.31, y: carouselSize.height * 0.25, scale: 0.55, opacity: 0.66, zIndex: 1 };
-        gsap.to(node, {
+        const relative = clockwiseOrbitSlot(
+          index,
+          selectedIndex,
+          stageDescriptions.length,
+        );
+        const targetPoint = orbitPoint(slotAngles[relative]);
+        const targetAppearance = appearances[relative];
+        const target = {
           xPercent: -50,
           yPercent: -50,
-          x: position.x,
-          y: position.y,
-          scale: position.scale,
+          x: targetPoint.x,
+          y: targetPoint.y,
+          scale: targetAppearance.scale,
           opacity: 1,
-          "--stage-dim-opacity": position.opacity,
-          zIndex: position.zIndex,
-          duration: reduced || !hasAnimatedRef.current ? 0 : 0.72,
-          ease: "power3.inOut",
-          overwrite: "auto",
+          "--stage-dim-opacity": targetAppearance.opacity,
+          zIndex: targetAppearance.zIndex,
           force3D: true,
-        });
+        };
+
+        if (!timeline) {
+          gsap.set(node, { ...target, overwrite: true });
+          return;
+        }
+
+        const previousRelative = clockwiseOrbitSlot(
+          index,
+          previousIndex,
+          stageDescriptions.length,
+        );
+        const previousAppearance = appearances[previousRelative];
+        const midPoint = orbitPoint(slotAngles[previousRelative] + 60);
+        timeline.to(node, {
+          keyframes: [
+            {
+              xPercent: -50,
+              yPercent: -50,
+              x: midPoint.x,
+              y: midPoint.y,
+              scale: (previousAppearance.scale + targetAppearance.scale) / 2,
+              opacity: 1,
+              "--stage-dim-opacity": (previousAppearance.opacity + targetAppearance.opacity) / 2,
+              zIndex: Math.max(previousAppearance.zIndex, targetAppearance.zIndex),
+              duration: 0.34,
+              ease: "sine.in",
+            },
+            {
+              ...target,
+              duration: 0.38,
+              ease: "sine.out",
+            },
+          ],
+        }, 0);
       });
+      previousAnimatedIndexRef.current = selectedIndex;
       hasAnimatedRef.current = true;
+
+      if (!timeline) {
+        carouselAnimatingRef.current = false;
+        if (selectedIndexRef.current !== requestedIndexRef.current) {
+          cancelAnimationFrame(carouselContinuationFrameRef.current);
+          carouselContinuationFrameRef.current = requestAnimationFrame(() => {
+            carouselContinuationFrameRef.current = 0;
+            advanceClockwise();
+          });
+        }
+      }
     },
-    { dependencies: [selectedIndex, carouselSize.width, carouselSize.height], scope: carouselRef },
+    {
+      dependencies: [
+        advanceClockwise,
+        selectedIndex,
+        carouselSize.width,
+        carouselSize.height,
+      ],
+      scope: carouselRef,
+    },
   );
 
   useGSAP(
@@ -1609,8 +1726,15 @@ function GrowthPathPage({
         aria-label={copy(language, "Growth path module carousel", "成长阶段轮播")}
         onKeyDown={handleKeyDown}
       >
-        <div className="map-route-line map-route-line-next" aria-hidden="true" />
-        <div className="map-route-line map-route-line-later" aria-hidden="true" />
+        <svg
+          className="map-route-network"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <ellipse className="map-route-underlay" cx="64.667" cy="50" rx="32.667" ry="28.868" />
+          <ellipse className="map-route-dashes" cx="64.667" cy="50" rx="32.667" ry="28.868" pathLength="100" />
+        </svg>
         {stageDescriptions.map((stage, index) => (
           <StageMap
             key={stage.id}
@@ -1620,7 +1744,7 @@ function GrowthPathPage({
             selected={selectedIndex === index}
             focusId={primaryRaw?.id}
             stageRef={(node) => { desktopStageRefs.current[index] = node; }}
-            onSelect={() => setSelectedIndex(index)}
+            onSelect={() => selectStageClockwise(index)}
           />
         ))}
         <div className="map-carousel-controls">
@@ -1633,7 +1757,7 @@ function GrowthPathPage({
                 key={stage.id}
                 type="button"
                 className={selectedIndex === index ? "active" : ""}
-                onClick={() => setSelectedIndex(index)}
+                onClick={() => selectStageClockwise(index)}
                 aria-label={`${copy(language, "Module", "成长阶段")} ${stage.number}`}
                 aria-current={selectedIndex === index ? "true" : undefined}
               />
@@ -1642,7 +1766,7 @@ function GrowthPathPage({
           <button type="button" onClick={selectNext} aria-label={copy(language, "Next module", "下一阶段")}>
             <ArrowRight size={20} weight="bold" />
           </button>
-          <span>{copy(language, "Click a map, arrow or dot to switch", "点击地图、箭头或圆点切换成长阶段")}</span>
+          <span>{copy(language, "Choose any stage; the islands always move clockwise", "选择任意阶段，海岛始终顺时针转动")}</span>
         </div>
       </section>
 
@@ -1785,7 +1909,7 @@ function TaskDetailPage({
   const task = localizeTask(raw, language);
   const isProfileCredentials = raw.id === "profile-credentials";
   const isLessonPreparation = raw.id === "lesson-preparation";
-  const isKuozhiTask = raw.method === "external_course";
+  const isKuozhiTask = ["external_course", "profile_credentials"].includes(raw.method);
   const profileHasAction = isProfileCredentials && raw.externalStatusItems?.some((item) => item.status === "action_required");
   const approvedExternalItems = raw.externalStatusItems?.filter((item) => item.status === "approved").length || 0;
   const externalItemCount = raw.externalStatusItems?.length || 0;
@@ -1941,11 +2065,12 @@ function TaskDetailPage({
           </section>
           {isKuozhiTask ? (
             <KuozhiProgressCard
+              canRefresh={kuozhiProgressState?.canRefresh}
               className="kuozhi-progress-card--sidebar"
               loading={!kuozhiProgressState || kuozhiProgressState.loading}
               onRefresh={kuozhiProgressState?.onRefresh}
               progress={kuozhiProgressState?.progress}
-              progressError={kuozhiProgressState?.progressError}
+              progressError={kuozhiProgressState?.launchError || kuozhiProgressState?.progressError}
               refreshing={kuozhiProgressState?.refreshing}
             />
           ) : (
@@ -1953,7 +2078,6 @@ function TaskDetailPage({
               <h3>{copy(language, "Task progress", "任务进度")}</h3>
               <dl>
                 <div><dt>{copy(language, "Current result", "当前状态")}</dt><dd>{statusLabel(language, displayStatus(raw))}</dd></div>
-                {["learning_quiz", "document_quiz"].includes(raw.method) && <div><dt>{copy(language, "Attempt", "已尝试次数")}</dt><dd>{raw.attemptNo || 0}</dd></div>}
                 <div><dt>{copy(language, "Allowed action", "下一步")}</dt><dd>{taskAction(language, raw)}</dd></div>
               </dl>
             </section>

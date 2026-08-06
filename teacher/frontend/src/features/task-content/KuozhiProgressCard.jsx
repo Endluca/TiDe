@@ -18,16 +18,16 @@ function taskStatusCopy(task, c) {
       : c(`${task.percent ?? 0}% watched`, `已观看 ${task.percent ?? 0}%`);
   }
   if (task.completed) return c('Passed', '已通过');
-  if (typeof task.normalizedScorePercent === 'number') {
-    return c(
-      `${task.normalizedScorePercent}% · needs ${task.passScorePercent}%`,
-      `${task.normalizedScorePercent}% · 通过线 ${task.passScorePercent}%`,
-    );
-  }
-  return c('Not completed', '尚未完成');
+  return c(`${task.percent ?? 0}% progress`, `进度 ${task.percent ?? 0}%`);
 }
 
-function progressSummary(progress, c) {
+function progressSummary(progress, c, loading, progressError) {
+  if (progressError) {
+    return c('Progress is temporarily unavailable', '进度暂时无法加载');
+  }
+  if (loading && !progress) {
+    return c('Loading progress', '正在加载进度');
+  }
   if (!progress || progress.syncStatus === 'NOT_SYNCED') {
     return c('Not synced yet', '尚未同步');
   }
@@ -51,7 +51,17 @@ function safePercent(value) {
   return Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : null;
 }
 
+function displayScore(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Number.isInteger(numeric)
+    ? String(numeric)
+    : numeric.toFixed(2).replace(/\.?0+$/, '');
+}
+
 export default function KuozhiProgressCard({
+  canRefresh = false,
   className = '',
   loading = false,
   onRefresh,
@@ -63,9 +73,10 @@ export default function KuozhiProgressCard({
   const c = (en, zh) => (language === 'zh' ? zh : en);
   const courses = progress?.courses ?? [];
   const courseTasks = courses.flatMap((course) => course.tasks ?? []);
-  const completedTasks = courseTasks.filter((task) => task.completed).length;
-  const completionPercent = courseTasks.length
-    ? Math.round((completedTasks / courseTasks.length) * 100)
+  const requiredCourseTasks = courseTasks.filter((task) => task.required);
+  const completedTasks = requiredCourseTasks.filter((task) => task.completed).length;
+  const completionPercent = requiredCourseTasks.length
+    ? Math.round((completedTasks / requiredCourseTasks.length) * 100)
     : 0;
 
   return (
@@ -73,12 +84,12 @@ export default function KuozhiProgressCard({
       <header className="kuozhi-progress-card-header">
         <div>
           <span>{c('Learning progress', '学习进度')}</span>
-          <strong>{progressSummary(progress, c)}</strong>
+          <strong>{progressSummary(progress, c, loading, progressError)}</strong>
         </div>
         <button
           type="button"
           onClick={() => void onRefresh?.()}
-          disabled={refreshing || !progress}
+          disabled={loading || refreshing || !canRefresh}
           aria-label={refreshing ? c('Syncing progress', '正在同步学习进度') : c('Refresh progress', '刷新学习进度')}
           title={refreshing ? c('Syncing…', '同步中…') : c('Refresh progress', '刷新学习进度')}
         >
@@ -90,7 +101,7 @@ export default function KuozhiProgressCard({
 
       <div className="kuozhi-progress-overview">
         <div>
-          <strong>{courseTasks.length ? `${completedTasks}/${courseTasks.length}` : '—'}</strong>
+          <strong>{requiredCourseTasks.length ? `${completedTasks}/${requiredCourseTasks.length}` : '—'}</strong>
           <small>{c('required items complete', '项必修内容已完成')}</small>
         </div>
         <div className="kuozhi-progress-track" aria-hidden="true">
@@ -112,18 +123,23 @@ export default function KuozhiProgressCard({
         </div>
       )}
 
-      {!loading && courses.length === 0 && (
+      {!loading && !progressError && courses.length === 0 && (
         <div className="kuozhi-progress-empty">
           <Clock size={18} weight="fill" />
           {c('Waiting for the first sync', '等待首次同步')}
         </div>
       )}
 
-      <div className="kuozhi-progress-course-list">
+      <div
+        className="kuozhi-progress-course-list"
+        aria-label={c('Course progress details', '课程进度明细')}
+        tabIndex={courses.length > 0 ? 0 : undefined}
+      >
         {courses.map((course, index) => {
           const percent = safePercent(course.percent);
           const tasks = course.tasks ?? [];
-          const completed = tasks.filter((task) => task.completed).length;
+          const requiredTasks = tasks.filter((task) => task.required);
+          const completed = requiredTasks.filter((task) => task.completed).length;
           return (
             <details
               className="kuozhi-progress-course-item"
@@ -133,7 +149,7 @@ export default function KuozhiProgressCard({
               <summary>
                 <div>
                   <strong>{course.title}</strong>
-                  <small>{c(`${completed}/${tasks.length} complete`, `已完成 ${completed}/${tasks.length}`)}</small>
+                  <small>{c(`${completed}/${requiredTasks.length} complete`, `已完成 ${completed}/${requiredTasks.length}`)}</small>
                   <span className="kuozhi-course-progress-track" aria-hidden="true">
                     <i style={{ width: `${percent ?? 0}%` }} />
                   </span>
@@ -142,17 +158,30 @@ export default function KuozhiProgressCard({
                 <CaretDown size={16} weight="bold" />
               </summary>
               <div className="kuozhi-progress-task-list">
-                {tasks.map((courseTask) => (
-                  <div className="kuozhi-progress-task-row" key={courseTask.courseTaskId}>
-                    {courseTask.completed
-                      ? <CheckCircle size={18} weight="fill" />
-                      : <Clock size={18} weight="fill" />}
-                    <div>
-                      <strong>{courseTask.title}</strong>
-                      <small>{taskStatusCopy(courseTask, c)}</small>
+                {tasks.map((courseTask) => {
+                  const score = courseTask.type === 'TESTPAPER'
+                    ? displayScore(courseTask.score)
+                    : null;
+                  return (
+                    <div
+                      className={`kuozhi-progress-task-row${score === null ? '' : ' has-score'}`}
+                      key={courseTask.courseTaskId}
+                    >
+                      {courseTask.completed
+                        ? <CheckCircle size={18} weight="fill" />
+                        : <Clock size={18} weight="fill" />}
+                      <div>
+                        <strong>{courseTask.title}</strong>
+                        <small>{taskStatusCopy(courseTask, c)}</small>
+                      </div>
+                      {score !== null && (
+                        <span className="kuozhi-task-score">
+                          {c(`Score ${score}`, `得分 ${score}`)}
+                        </span>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </details>
           );

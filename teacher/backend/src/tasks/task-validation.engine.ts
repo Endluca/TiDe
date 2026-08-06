@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import { AllStepsCompleteRuleHandler } from './all-steps-complete-rule.handler';
 import { AiImageReviewRuleHandler } from './ai-image-review-rule.handler';
 import { G01ExternalStatusRuleHandler } from './g01-external-status-rule.handler';
+import { KuozhiCourseCompleteRuleHandler } from './kuozhi-course-complete-rule.handler';
 import type { StepOutputDto } from './dto/submit-task.dto';
 import type { TaskRuleHandler } from './task-rule.handler';
 import type {
@@ -19,11 +20,13 @@ export class TaskValidationEngine {
     allStepsComplete: AllStepsCompleteRuleHandler,
     aiImageReview: AiImageReviewRuleHandler,
     g01ExternalStatus: G01ExternalStatusRuleHandler,
+    kuozhiCourseComplete: KuozhiCourseCompleteRuleHandler,
   ) {
     this.handlers = new Map<string, TaskRuleHandler>([
       [allStepsComplete.ruleType, allStepsComplete],
       [aiImageReview.ruleType, aiImageReview],
       [g01ExternalStatus.ruleType, g01ExternalStatus],
+      [kuozhiCourseComplete.ruleType, kuozhiCourseComplete],
     ]);
   }
 

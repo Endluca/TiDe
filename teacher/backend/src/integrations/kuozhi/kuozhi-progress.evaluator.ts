@@ -3,11 +3,10 @@ import type {
   KuozhiCourseDetail,
   KuozhiCourseDetailTask,
 } from './kuozhi-detail.client';
-import {
-  kuozhiPassScoreKey,
-  type KuozhiProgressCore,
-  type KuozhiProgressTask,
-  type KuozhiResolvedMapping,
+import type {
+  KuozhiProgressCore,
+  KuozhiProgressTask,
+  KuozhiResolvedMapping,
 } from './kuozhi.models';
 
 function finiteNumber(value: unknown): number | null {
@@ -27,25 +26,9 @@ function normalizedTasks(
   return new Map(entries.filter(([id]) => /^\d+$/u.test(id)));
 }
 
-function passScore(
-  task: Extract<KuozhiCourseTask, { type: 'TESTPAPER' }>,
-  publishedPassScores: ReadonlyMap<string, number>,
-): number | null {
-  if (task.passScore.kind === 'FIXED') return task.passScore.percent;
-  return (
-    publishedPassScores.get(
-      kuozhiPassScoreKey(
-        task.passScore.bankKey,
-        task.passScore.questionSetVersion,
-      ),
-    ) ?? null
-  );
-}
-
 function evaluateTask(
   configured: KuozhiCourseTask,
   source: KuozhiCourseDetailTask | undefined,
-  publishedPassScores: ReadonlyMap<string, number>,
 ): KuozhiProgressTask {
   const title = configured.title ?? `Task ${configured.courseTaskId}`;
   if (!source) {
@@ -57,8 +40,6 @@ function evaluateTask(
       sourceStatus: 'MISSING',
       percent: null,
       score: null,
-      normalizedScorePercent: null,
-      passScorePercent: null,
       testTimes: null,
       completed: false,
     };
@@ -75,31 +56,13 @@ function evaluateTask(
       sourceStatus: valid ? 'AVAILABLE' : 'INVALID',
       percent: valid ? percent : null,
       score: null,
-      normalizedScorePercent: null,
-      passScorePercent: null,
       testTimes: null,
       completed: valid && percent >= configured.completionPercent,
     };
   }
 
   const score = finiteNumber(source.score);
-  const threshold = passScore(configured, publishedPassScores);
-  const normalizedScorePercent =
-    score === null
-      ? null
-      : configured.scoreMode === 'PERCENT'
-        ? score
-        : (score / configured.fullScore!) * 100;
-  const valid =
-    percent !== null &&
-    percent >= 0 &&
-    percent <= 100 &&
-    score !== null &&
-    normalizedScorePercent !== null &&
-    normalizedScorePercent >= 0 &&
-    threshold !== null &&
-    threshold >= 0 &&
-    threshold <= 100;
+  const valid = percent !== null && percent >= 0 && percent <= 100;
 
   return {
     courseTaskId: configured.courseTaskId,
@@ -107,20 +70,16 @@ function evaluateTask(
     type: configured.type,
     required: configured.required,
     sourceStatus: valid ? 'AVAILABLE' : 'INVALID',
-    percent:
-      percent !== null && percent >= 0 && percent <= 100 ? percent : null,
+    percent: valid ? percent : null,
     score,
-    normalizedScorePercent: valid ? normalizedScorePercent : null,
-    passScorePercent: threshold,
     testTimes: finiteNumber(source.test_times),
-    completed: valid && normalizedScorePercent >= threshold,
+    completed: valid && percent === 100,
   };
 }
 
 export function evaluateKuozhiProgress(
   resolved: KuozhiResolvedMapping,
   details: readonly KuozhiCourseDetail[],
-  publishedPassScores: ReadonlyMap<string, number>,
   refreshedAt: string,
 ): KuozhiProgressCore {
   const courses = resolved.mapping.courses.map((configured, index) => {
@@ -131,11 +90,7 @@ export function evaluateKuozhiProgress(
       sourceAvailable ? detail.task_list : null,
     );
     const tasks = configured.tasks.map((task) =>
-      evaluateTask(
-        task,
-        sourceTasks.get(task.courseTaskId),
-        publishedPassScores,
-      ),
+      evaluateTask(task, sourceTasks.get(task.courseTaskId)),
     );
     const requiredTasks = tasks.filter((task) => task.required);
     const coursePercent = sourceAvailable ? finiteNumber(detail.percent) : null;

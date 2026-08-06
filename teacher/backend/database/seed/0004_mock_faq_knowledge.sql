@@ -42,7 +42,7 @@ INSERT INTO tide.knowledge_chunks (
         '50000000-0000-4000-8000-000000000001',
         'g01-external-review',
         3,
-        '[Mock] G01 怎么完成？Self-intro 和 TESOL 读取世文状态；还需要在本系统完成 61 题并达到通过线、确认 Essay 已完成、提交完成证明。五项全部满足后才能完成 G01。',
+        '[Mock] G01 怎么完成？Self-intro 和 TESOL 读取世文状态；还需要在本页内嵌阔知课程完成考试、确认 Essay 已完成、提交完成证明。五项全部满足后才能完成 G01。',
         '{"answerable":true,"mock":true,"keywords":["G01","Self-intro","TESOL","审核状态"]}'::jsonb
     )
 ON CONFLICT (document_id, chunk_key) DO UPDATE SET

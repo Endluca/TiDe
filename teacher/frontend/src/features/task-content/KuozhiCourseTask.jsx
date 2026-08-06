@@ -88,32 +88,28 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
     const controller = new AbortController();
     let active = true;
     setLoading(true);
+    setLaunch(null);
+    setProgress(null);
     setLaunchError('');
     setProgressError('');
     setActiveCourseId(null);
     setVisitedCourseIds(new Set());
 
     const load = async () => {
+      let launchResponse;
       try {
-        const launchResponse = await getKuozhiLaunch(
-          task.backendId,
-          controller.signal,
-        );
-        await task.execution?.start?.();
-        const latestProgress = await getKuozhiProgress(
+        launchResponse = await getKuozhiLaunch(
           task.backendId,
           controller.signal,
         );
         if (!active) return;
         setLaunch(launchResponse);
-        setProgress(latestProgress);
         const firstCourseId = initialCourseId(
           launchResponse.courses ?? [],
-          latestProgress,
+          null,
         );
         setActiveCourseId(firstCourseId);
         setVisitedCourseIds(new Set(firstCourseId ? [firstCourseId] : []));
-        await refreshProgress(controller.signal, latestProgress);
       } catch (caught) {
         if (!active || caught?.name === 'AbortError') return;
         setLaunchError(
@@ -123,12 +119,54 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
             c('The course could not be opened. Please try again.', '课程暂时无法打开，请重试。'),
           ),
         );
+        return;
+      }
+
+      await task.execution?.start?.().catch(() => undefined);
+
+      let latestProgress = null;
+      try {
+        latestProgress = await getKuozhiProgress(
+          task.backendId,
+          controller.signal,
+        );
+        if (!active) return;
+        setProgress(latestProgress);
+        const firstCourseId = initialCourseId(
+          launchResponse.courses ?? [],
+          latestProgress,
+        );
+        setActiveCourseId(firstCourseId);
+        setVisitedCourseIds((current) => {
+          const next = new Set(current);
+          if (firstCourseId) next.add(firstCourseId);
+          return next;
+        });
+      } catch (caught) {
+        if (!active || caught?.name === 'AbortError') return;
+        setProgressError(
+          localizeApiError(
+            caught,
+            language,
+            c('Progress could not be loaded. Please try again.', '学习进度加载失败，请重试。'),
+          ),
+        );
+      }
+
+      if (active) {
+        await refreshProgress(controller.signal, latestProgress);
+      }
+    };
+
+    const finishLoad = async () => {
+      try {
+        await load();
       } finally {
         if (active) setLoading(false);
       }
     };
 
-    void load();
+    void finishLoad();
     return () => {
       active = false;
       controller.abort();
@@ -139,13 +177,15 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
 
   useEffect(() => {
     onProgressStateChange?.({
+      canRefresh: (launch?.courses?.length ?? 0) > 0,
+      launchError,
       loading,
       onRefresh: refreshProgress,
       progress,
       progressError,
       refreshing,
     });
-  }, [loading, onProgressStateChange, progress, progressError, refreshProgress, refreshing]);
+  }, [launch, launchError, loading, onProgressStateChange, progress, progressError, refreshProgress, refreshing]);
 
   useEffect(() => () => {
     onProgressStateChange?.(null);
@@ -253,11 +293,12 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
       </div>
 
       <KuozhiProgressCard
+        canRefresh={courses.length > 0}
         className="kuozhi-progress-card--mobile"
         loading={loading}
         onRefresh={refreshProgress}
         progress={progress}
-        progressError={progressError}
+        progressError={launchError || progressError}
         refreshing={refreshing}
       />
     </div>

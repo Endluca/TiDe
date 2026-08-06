@@ -161,11 +161,6 @@ if [[ "${teacher_photo_full_strength_enabled}" != "t" ]]; then
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0015_teacher_photo_filter_strength.up.sql"
 fi
 
-quiz_banks_exists="$("${PSQL[@]}" -Atqc "select to_regclass('tide.task_quiz_banks') is not null")"
-if [[ "${quiz_banks_exists}" != "t" ]]; then
-  "${PSQL[@]}" -f "${DB_DIR}/migrations/0016_database_quiz_banks.up.sql"
-fi
-
 assignment_teacher_response_column_count="$("${PSQL[@]}" -Atqc "
   select count(*)
   from information_schema.columns
@@ -276,12 +271,17 @@ if [[ "${support_ticket_security_hardened}" != "t" ]]; then
 fi
 
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
-"${PSQL[@]}" -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+kuozhi_course_syncs_exists="$("${PSQL[@]}" -Atqc "
+  select to_regclass('tide.kuozhi_course_syncs') is not null
+")"
+if [[ "${kuozhi_course_syncs_exists}" != "t" ]]; then
+  "${PSQL[@]}" -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+fi
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
-pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0026、共享表本地契约、题库和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0027、共享表本地契约和当前 Seeds 已检查并执行。"

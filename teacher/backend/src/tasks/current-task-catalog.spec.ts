@@ -109,7 +109,7 @@ describe('current task catalog locale fields', () => {
     );
 
     expect(stepKeysByTask).toMatchObject({
-      G01: ['g01-tesol-quiz', 'g01-essay-confirmation', 'g01-completion-proof'],
+      G01: ['g01-essay-confirmation', 'g01-completion-proof'],
       G02: [],
       G03: [],
       G04: ['g02-courseware-confirmation', 'g02-environment-photo'],

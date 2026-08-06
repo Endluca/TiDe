@@ -28,3 +28,4 @@
 \ir migrations/0024_support_ticket_cas_and_function_owner.up.sql
 \ir migrations/0025_fixed_task_semantic_alignment.up.sql
 \ir migrations/0026_kuozhi_course_syncs.up.sql
+\ir migrations/0027_remove_local_quiz_runtime.up.sql

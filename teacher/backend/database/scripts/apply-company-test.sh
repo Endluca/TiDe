@@ -139,6 +139,7 @@ migration_files=(
   "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
   "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
   "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+  "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
 )
 
 if [[ "${tide_schema_exists}" == "t" ]]; then
@@ -205,13 +206,6 @@ teacher_photo_full_strength_ready="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 if [[ "${teacher_photo_full_strength_ready}" != "t" ]]; then
   "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0015_teacher_photo_filter_strength.up.sql"
-fi
-
-quiz_banks_ready="$("${ADMIN_PSQL[@]}" -Atqc "
-  select to_regclass('tide.task_quiz_banks') is not null
-")"
-if [[ "${quiz_banks_ready}" != "t" ]]; then
-  "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0016_database_quiz_banks.up.sql"
 fi
 
 assignment_teacher_response_column_count="$("${ADMIN_PSQL[@]}" -Atqc "
@@ -312,20 +306,48 @@ fi
 
 "${ADMIN_PSQL[@]}" --quiet \
   -f "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
+
+kuozhi_course_syncs_exists="$("${ADMIN_PSQL[@]}" -Atqc "
+  select to_regclass('tide.kuozhi_course_syncs') is not null
+")"
+if [[ "${kuozhi_course_syncs_exists}" != "t" ]]; then
+  "${ADMIN_PSQL[@]}" --quiet \
+    -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+else
+  kuozhi_course_syncs_complete="$("${ADMIN_PSQL[@]}" -Atqc "
+    select
+      (
+        select count(*) = 11
+        from information_schema.columns
+        where table_schema = 'tide'
+          and table_name = 'kuozhi_course_syncs'
+          and column_name in (
+            'id', 'account_id', 'task_assignment_id', 'idempotency_key',
+            'command_id', 'request_hash', 'mapping_version', 'sync_status',
+            'completion_decision', 'response_body', 'created_at'
+          )
+      )
+      and exists (
+        select 1
+        from pg_constraint
+        where conrelid = 'tide.kuozhi_course_syncs'::regclass
+          and conname = 'kuozhi_course_syncs_real_mode_check'
+      )
+      and to_regclass('tide.kuozhi_course_syncs_assignment_time_idx') is not null
+  ")"
+  if [[ "${kuozhi_course_syncs_complete}" != "t" ]]; then
+    echo "现有 tide.kuozhi_course_syncs 结构不完整，迁移已停止。" >&2
+    exit 1
+  fi
+fi
+
 "${ADMIN_PSQL[@]}" --quiet \
-  -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+  -f "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
 
 template_snapshot_before="$("${ADMIN_PSQL[@]}" -Atqc "
   select md5(string_agg(row_to_json(template)::text, '' order by row_id))
   from public.task_templates template
 ")"
-
-TIDE_DB_HOST="${TIDE_ADMIN_DB_HOST}" \
-TIDE_DB_PORT="${TIDE_ADMIN_DB_PORT}" \
-TIDE_DB_USER="${TIDE_ADMIN_DB_USER}" \
-TIDE_DB_PASSWORD="${TIDE_ADMIN_DB_PASSWORD}" \
-TIDE_DB_NAME="${TIDE_ADMIN_DB_NAME}" \
-pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts
 
 TIDE_DB_HOST="${TIDE_ADMIN_DB_HOST}" \
 TIDE_DB_PORT="${TIDE_ADMIN_DB_PORT}" \
@@ -385,7 +407,7 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     to_regclass('tide.analytics_task_funnel_v1') is not null,
     to_regclass('public.teacher_support_tickets') is not null,
     to_regclass('tide.teacher_photo_runs') is not null,
-    to_regclass('tide.task_quiz_banks') is not null,
+    to_regclass('tide.task_quiz_banks') is null,
     to_regclass('tide.kuozhi_course_syncs') is not null,
     has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'SELECT'),
     has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'INSERT'),
@@ -406,8 +428,6 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     has_table_privilege(current_user, 'public.lesson_facts', 'SELECT'),
     has_table_privilege(current_user, 'public.lesson_dimension_scores', 'SELECT'),
     has_table_privilege(current_user, 'public.config_versions', 'SELECT'),
-    (select count(*) from tide.task_quiz_banks),
-    has_table_privilege(current_user, 'tide.task_quiz_banks', 'INSERT'),
     (select count(*) from tide.task_execution_versions where status = 'ACTIVE'),
     has_column_privilege(current_user, 'public.task_assignments', 'teacher_id', 'INSERT'),
     has_column_privilege(current_user, 'public.task_assignments', 'status', 'UPDATE'),
@@ -489,9 +509,9 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     )
   )
 ")"
-if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|t|t|t|f|f|f|f|10|f|14|f|t|t|f|f|f|t" ]]; then
+if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|t|t|t|f|f|f|f|14|f|t|t|f|f|f|t" ]]; then
   echo "应用账号验收失败：${verification}" >&2
   exit 1
 fi
 
-echo "公司测试库初始化完成：tide Schema、多副本任务租约、0026 阔知课程同步、固定任务语义与分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、数据库题库、通知状态、共享事实说明字段清理、首课画面处理和应用账号权限均已验证。"
+echo "公司测试库初始化完成：tide Schema、多副本任务租约、0027 本地考试清理、阔知课程同步、固定任务语义与分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、通知状态、共享事实说明字段清理、首课画面处理和应用账号权限均已验证。"

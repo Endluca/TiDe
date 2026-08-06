@@ -129,7 +129,8 @@
   height: calc(var(--ai-help-size) + 4px);
   object-fit: contain;
   pointer-events: none;
-  transform: translateY(2px);
+  /* The source PNG has extra transparent space on its right and bottom. */
+  transform: translate(8%, 2px);
 }
 
 .ai-help-fab-badge {

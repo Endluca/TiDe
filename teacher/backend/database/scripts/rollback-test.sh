@@ -64,9 +64,9 @@ run_sql "${DB_DIR}/migrations/0023_teacher_support_operator_atomicity.up.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
 run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+run_sql "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
-TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts >/dev/null
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
 run_sql "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
@@ -76,7 +76,7 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     to_regclass('tide.task_execution_versions') is not null,
     to_regclass('tide.app_events') is not null,
     to_regclass('tide.teacher_photo_runs') is not null,
-    to_regclass('tide.task_quiz_banks') is not null,
+    to_regclass('tide.task_quiz_banks') is null,
     to_regclass('tide.kuozhi_course_syncs') is not null,
     (
       select count(*) = 0
@@ -101,6 +101,7 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   exit 1
 }
 
+run_sql "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.down.sql"
 run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.down.sql"
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.down.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.down.sql"
@@ -135,4 +136,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0026 并逐级回滚验证通过。"
+echo "空库升级至 0027 并逐级回滚验证通过。"

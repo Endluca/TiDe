@@ -18,7 +18,7 @@
 | 顺序 | 任务 ID | 模板 | 教师可见触发事实 | 完成方式 |
 | --- | --- | --- | --- | --- |
 | 1 | `classroom-quality-reminder` | `NT-Q03` assignment + 关联提醒 | 未开摄像头、CPU 占用过高或网络延迟过高 | **课中质量问题**：查看异常明细并完成配置的检查 |
-| 2 | `attendance-reliability-refresher` | `P-REL-ATTENDANCE` | 普通缺席、迟到、早退或假早退 | **出席问题**：规则培训 + Quiz |
+| 2 | `attendance-reliability-refresher` | `P-REL-ATTENDANCE` | 普通缺席、迟到、早退或假早退 | **出席问题**：阔知规则培训与考试 |
 | 3 | `lesson-memo-rules-learning` | `P-REL-MEMO` | 缺席原因明细为 `Unfilled Lesson Memo` | **出席（未填写 Lesson Memo）问题**：Lesson Memo 规范学习 |
 | 4 | `feedback-self-study` | `P-FB-NEGATIVE / P-FB-COMPLAINT` + `LESSON_PACING_AND_FLOW` | 课堂节奏、未讲完教材或过早讲完 | **掌握课堂节奏** |
 | 5 | `feedback-interaction-engagement` | 同上 + `INTERACTION_AND_ENGAGEMENT` | 只朗读／缺少互动 | **让学员更多开口** |
@@ -50,7 +50,7 @@
 | 同一天多节可处理的设备／网络／音频异常 | 合并成 1 条提醒，不重复生成 |
 | 已存在未完成的 Reliability 复训，又出现新的真实缺勤／迟到 | 追加触发课程，不重复生成复训卡 |
 
-缺勤、迟到、早退属于已经确认的出勤结果时，可以触发后续学习和 Quiz，但不把已经发生的事件包装成“可逆提醒”。
+缺勤、迟到、早退属于已经确认的出勤结果时，可以触发后续阔知学习和考试，但不把已经发生的事件包装成“可逆提醒”。
 
 ## 3. 教师可见证据字段
 
@@ -66,7 +66,7 @@
 
 ## 4. 完成与关闭
 
-- Reliability：完成两章学习并达到嘉荷配置的通过线；题量、题目、通过线和重试规则从版本化配置读取。
+- Reliability：在阔知完成配置的培训和考试，全部必修任务 `percent=100`；TIDE 不保存题目、答案或作答。
 - Lesson Memo：完成嘉荷配置的规则与时效学习。
 - 教学反馈：完成与教师可见反馈主题匹配的版本化学习章节。
 - 设备与连接检查：完成配置的检查并记录是否通过；未通过时保持可继续处理的状态。
@@ -79,7 +79,7 @@
 | --- | --- | --- |
 | AC-01 | 当前老师没有个性化 assignment | Tasks 和 My TIDE 不使用前端模板伪造任务入口 |
 | AC-02 | 任务触发中心为老师创建一条已发布模板的 assignment | 教师端展示同一任务实例、教师安全原因和必要关联课程 |
-| AC-03 | 打开 Reliability 复训 | 在同一任务详情中展示已合并的迟到与真实缺勤课程，并进入统一培训 + Quiz 流程 |
+| AC-03 | 打开 Reliability 复训 | 在同一任务详情中展示已合并的迟到与真实缺勤课程，并进入统一阔知培训与考试流程 |
 | AC-04 | 打开 Lesson Memo 实例 | 只进入 Memo 规则学习，不错误分配完整 Reliability 复训 |
 | AC-05 | 已有未完成的同类任务又出现新证据 | 按配置追加或合并证据，不创建重复卡片 |
 | AC-06 | 打开已确认的反馈改善实例 | 只展示教师可见分类、必要关联课程和匹配学习，不展示学员身份、投诉原文或内部风险标签 |
@@ -93,7 +93,7 @@
 - 将现有 13 类前端模板迁移为共享 `task_templates` 中的版本化已发布模板；
 - 任务触发中心使用真实课程级数据直接在共享 `task_assignments` 创建、去重、合并、撤回或再次触发实例；不恢复任务 HTTP 下发／回传副本；
 - 教师端任务查询、详情、进度和状态更新支持当前教师的 `PERSONALIZED_IMPROVEMENT` assignment；
-- Reliability 正式题目、题量、答案和通过线；
-- Lesson Memo、重复反馈和投诉改善的站内正式内容配置；
+- Reliability 正式阔知课程、视频与考试任务 ID；
+- Lesson Memo、重复反馈和投诉改善的正式内容配置；涉及考试时必须使用阔知；
 - 视频受控存储地址与素材版本；
 - 真实触发样本的正向、边界和不创建用例联调。

@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
   ArrowClockwise,
   ArrowLeft,
-  ArrowRight,
   BookOpen,
   Camera,
   Check,
@@ -14,9 +13,7 @@ import {
   Info,
   Lightbulb,
   Lock,
-  Pause,
   PaperPlaneTilt,
-  Play,
   SealCheck,
   ShieldCheck,
   Sparkle,
@@ -28,7 +25,7 @@ import { stageDescriptions } from "../live-catalog";
 import { getLearningTaskContent } from "../data/tasks/learning-task-content";
 import { useI18n } from "../i18n";
 import { publicAsset } from "../public-assets";
-import { ChapterVideoLearning } from "../features/task-content/VideoQuizTask";
+import { ChapterVideoLearning } from "../features/task-content/VideoLearningTask";
 import KuozhiCourseTask from "../features/task-content/KuozhiCourseTask";
 import EnvironmentPhotoTask from "../features/task-content/EnvironmentPhotoTask";
 import ExternalStatusTask from "../features/task-content/ExternalStatusTask";
@@ -75,11 +72,6 @@ function LockedPreview({ task }) {
     ? task.courseModules
     : (task.steps || []).map((step, index) => ({ title: `${c("Step", "步骤")} ${index + 1}`, titleZh: `步骤 ${index + 1}`, content: step, contentZh: step }));
   const resources = task.method === "external_status" ? task.resources || [] : [];
-  const questionCount = isStatusOnly
-    ? 0
-    : task.expectedQuestionCount
-      || task.quizQuestions?.length
-      || 0;
   const hasVideoPreview = Boolean(learningContent.videoSrc || chapters.length > 0);
   const previewTask = {
     ...task,
@@ -104,7 +96,7 @@ function LockedPreview({ task }) {
             ? c("You can review the available information and completion standard now. The latest result appears after this task is released.", "当前可查看已有信息和完成标准；任务开放后显示最新结果。")
             : isChecklist
               ? c("All checklist content is visible now. Confirmation actions open after this stage is released.", "现在可以查看完整清单；阶段开放后才能勾选确认并完成任务。")
-              : c("All course content is visible now. Playback progress, answers and submission stay locked until release.", "课程内容现在全部可见；开放前仅播放进度、答题和提交操作保持锁定。")}</p>
+              : c("All configured content is visible now. Progress and submission stay locked until release.", "当前可查看全部已配置内容；开放前进度和提交操作保持锁定。")}</p>
           <div className="preview-standard"><SealCheck size={18} /><span><strong>{c("Completion standard", "完成标准")}</strong>{task.standard}</span></div>
         </div>
       </div>
@@ -125,7 +117,7 @@ function LockedPreview({ task }) {
             />
             <div className="preview-only-note">
               <Lock size={16} weight="fill" />
-              <span><strong>{c("Preview only", "仅供预览")}</strong>{c("Playback does not count toward formal progress. The practice and submission open after this stage is released.", "观看不会计入正式进度；阶段解锁后才可进入练习并提交完成。")}</span>
+              <span><strong>{c("Preview only", "仅供预览")}</strong>{c("Playback does not count toward formal progress. Submission opens after this stage is released.", "观看不会计入正式进度；阶段解锁后才可提交完成。")}</span>
             </div>
           </section>
         )}
@@ -159,13 +151,6 @@ function LockedPreview({ task }) {
           </section>
         )}
 
-        {(questionCount > 0 || task.method === "learning_quiz") && (
-          <section className="preview-practice-card">
-            <div><strong>{c("Course practice", "课程练习")}</strong><p>{questionCount > 0 ? c(`${questionCount} questions · ${learningContent.passScore}% to pass`, `${questionCount} 道题 · 正确率达到 ${learningContent.passScore}% 通过`) : c("Complete the course practice after learning.", "完成课程学习后进入配套练习。")}</p></div>
-            <span><Lock size={15} weight="fill" />{c("Answers open after release", "开放后可作答")}</span>
-          </section>
-        )}
-
         {resources.length > 0 && (
           <section className="preview-content-section">
             <header><span>{c("COURSE LINKS", "课程入口")}</span><strong>{resources.length} {c("links", "个")}</strong></header>
@@ -180,203 +165,6 @@ function LockedPreview({ task }) {
           </section>
         )}
       </div>
-    </div>
-  );
-}
-
-const sameAnswer = (answer, correct) => {
-  if (Array.isArray(correct)) {
-    return Array.isArray(answer)
-      && answer.length === correct.length
-      && [...answer].sort().every((value, index) => value === [...correct].sort()[index]);
-  }
-  return answer === correct;
-};
-
-function LearningQuizFlow({ task, onUpdate }) {
-  const { language } = useI18n();
-  const c = (en, zh) => language === "zh" ? zh : en;
-  const questions = task.quizQuestions || [];
-  const [videoProgress, setVideoProgress] = useState(task.videoProgress || 0);
-  const [playing, setPlaying] = useState(false);
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState(task.quizAnswers || {});
-  const [result, setResult] = useState(task.quizResult || null);
-
-  if (task.locked) return <LockedPreview task={task} />;
-  if (task.status === "completed" && !result) return <CompletedState task={task} />;
-
-  const advanceVideo = () => {
-    const next = Math.min(100, videoProgress + 25);
-    setVideoProgress(next);
-    setPlaying(next < 100);
-    onUpdate(task.id, "started", {
-      videoProgress: next,
-      learningState: next === 100 ? "TO_TEST" : "TO_LEARN",
-      progress: next === 100 ? 50 : Math.round(next / 2),
-    });
-  };
-
-  const selectAnswer = (question, optionIndex) => {
-    if (question.type === "multiple") {
-      const selected = answers[question.id] || [];
-      const next = selected.includes(optionIndex)
-        ? selected.filter((value) => value !== optionIndex)
-        : [...selected, optionIndex];
-      setAnswers((current) => ({ ...current, [question.id]: next }));
-      return;
-    }
-    setAnswers((current) => ({ ...current, [question.id]: optionIndex }));
-  };
-
-  const answeredCount = questions.filter((question) => {
-    const answer = answers[question.id];
-    return Array.isArray(answer) ? answer.length > 0 : answer !== undefined;
-  }).length;
-
-  const submitQuiz = () => {
-    const correct = questions.filter((question) => sameAnswer(answers[question.id], question.correct)).length;
-    const score = Math.round((correct / questions.length) * 100);
-    const passed = score >= 80;
-    const nextResult = { score, passed, correct };
-    setResult(nextResult);
-    onUpdate(task.id, passed ? "completed" : "retry_required", {
-      quizResult: nextResult,
-      quizAnswers: answers,
-      attemptNo: (task.attemptNo || 0) + 1,
-      learningState: passed ? "FINISHED" : "UNFINISHED",
-      progress: passed ? 100 : 50,
-    });
-  };
-
-  const retry = () => {
-    setAnswers({});
-    setResult(null);
-    setQuestionIndex(0);
-    onUpdate(task.id, "started", { quizResult: null, quizAnswers: null, learningState: "TO_TEST", progress: 50 });
-  };
-
-  const currentQuestion = questions[questionIndex];
-  const correctAnswerText = (question) => {
-    const indexes = Array.isArray(question.correct) ? question.correct : [question.correct];
-    return indexes.map((index) => question.options[index]).join(c(" and ", "、"));
-  };
-  const selectedAnswerText = (question) => {
-    const selected = answers[question.id];
-    const indexes = Array.isArray(selected) ? selected : [selected];
-    return indexes
-      .map((index) => question.options[index])
-      .filter(Boolean)
-      .join(c(" and ", "、")) || c("No answer", "未作答");
-  };
-  const isQuizOpen = videoProgress === 100;
-  const stateLabel = result
-    ? result.passed ? c("Finished", "已完成") : c("Review and retry", "待复习重试")
-    : isQuizOpen ? c("Ready for check", "待练习") : c("Learning", "学习中");
-
-  return (
-    <div className="native-learning-flow">
-      <div className="learning-state-row">
-        <span className="eyebrow">{c("IN-PLATFORM LEARNING", "站内学习")}</span>
-        <span className={`learning-state ${result && !result.passed ? "attention" : ""}`}>{stateLabel}</span>
-      </div>
-
-      <section className="mock-video-player" aria-label={c("Learning video", "学习视频")}>
-        <img src={publicAsset("/assets/illustrations/training-video-teacher.png")} alt={c("Teacher presenting the lesson", "教师讲解课程")} />
-        <div className="video-shade">
-          <span className="video-duration">{videoProgress}%</span>
-          <button type="button" onClick={() => { setPlaying((value) => !value); if (!playing) advanceVideo(); }} aria-label={playing ? c("Pause", "暂停") : c("Play", "播放")}>
-            {playing ? <Pause size={25} weight="fill" /> : <Play size={25} weight="fill" />}
-          </button>
-          <div>
-            <strong>{task.name}</strong>
-            <small>{c("1× only · Seeking opens after the first complete view", "首次观看需完整播放：不能倍速或拖动；看完后可自由回看")}</small>
-          </div>
-        </div>
-        <div className="video-progress" aria-label={c(`${videoProgress}% watched`, `已观看 ${videoProgress}%`)}><i style={{ width: `${videoProgress}%` }} /></div>
-      </section>
-      {videoProgress < 100 && (
-        <button className="primary-button wide-button" type="button" onClick={advanceVideo}>
-          <Play size={18} weight="fill" />{c("Continue video", "继续观看")}
-        </button>
-      )}
-
-      <section className={`native-quiz-shell ${isQuizOpen ? "" : "is-locked"}`} aria-disabled={!isQuizOpen}>
-        <header>
-          <span><ShieldCheck size={24} weight="duotone" /></span>
-          <div><h3>{c("Knowledge check", "课后练习")}</h3><p>{c("One question at a time · 80% to pass", "每次展示一题 · 正确率达到 80% 即可通过")}</p></div>
-          {!isQuizOpen && <Lock size={20} weight="fill" />}
-        </header>
-        {!isQuizOpen ? (
-          <p className="quiz-locked-copy">{c("Finish the first complete video view to open the check.", "完整看完视频后即可开始练习。")}</p>
-        ) : result ? (
-          <div className={`quiz-result-review ${result.passed ? "is-passed" : ""}`} role="status">
-            <span className="result-icon">{result.passed ? <CheckCircle size={25} weight="fill" /> : <Lightbulb size={25} weight="fill" />}</span>
-            <h3>{result.passed
-              ? c("You passed. Review your answers below.", "你已通过，可以在下方查看答题结果。")
-              : c("Review the incorrect answers, then try again.", "这次还未通过，先核对错题，再试一次。")}</h3>
-            <p>{c(`Score ${result.score}% · ${result.correct} of ${questions.length} correct`, `得分 ${result.score}% · 答对 ${result.correct} / ${questions.length}`)}</p>
-            {!result.passed && (
-              <div className="quiz-result-retry-toki">
-                <Toki
-                  mood="thumb"
-                  motion="encourage"
-                  alt={c("Toki encourages you to try again", "Toki 鼓励你再试一次")}
-                />
-                <span>
-                  <strong>{c("Almost there!", "差一点就通过了！")}</strong>
-                  <small>{c("The questions to review are ready below.", "需要复习的错题已经整理在下方。")}</small>
-                </span>
-              </div>
-            )}
-            <div className="answer-review-list">
-              {questions.map((question, index) => (
-                <article key={question.id}>
-                  <strong>{index + 1}. {question.question}</strong>
-                  <span>{sameAnswer(answers[question.id], question.correct) ? c("Correct", "回答正确") : c("Review needed", "回答有误")}</span>
-                  <p><strong>{c("Your answer: ", "你的答案：")}</strong>{selectedAnswerText(question)}</p>
-                  <p><strong>{c("Correct answer: ", "正确答案：")}</strong>{correctAnswerText(question)}</p>
-                </article>
-              ))}
-            </div>
-            {result.passed
-              ? <CompletedState task={task} />
-              : <button className="primary-button" type="button" onClick={retry}><ArrowClockwise size={18} />{c("Retry check", "再试一次")}</button>}
-          </div>
-        ) : (
-          <div className="single-question-flow">
-            <div className="quiz-progress"><span>{c(`Question ${questionIndex + 1} of ${questions.length}`, `第 ${questionIndex + 1} / ${questions.length} 题`)}</span><span>{c(`${answeredCount} answered`, `已作答 ${answeredCount} 题`)}</span></div>
-            <fieldset className="quiz-question">
-              <legend>{currentQuestion.question}</legend>
-              {currentQuestion.type === "multiple" && <p className="question-type-hint">{c("Select all that apply", "多选题：请选择所有正确选项")}</p>}
-              <div className="option-list">
-                {currentQuestion.options.map((option, optionIndex) => {
-                  const value = answers[currentQuestion.id];
-                  const selected = Array.isArray(value) ? value.includes(optionIndex) : value === optionIndex;
-                  return (
-                    <label key={option} className={selected ? "option-selected" : ""}>
-                      <input
-                        type={currentQuestion.type === "multiple" ? "checkbox" : "radio"}
-                        name={currentQuestion.id}
-                        checked={selected}
-                        onChange={() => selectAnswer(currentQuestion, optionIndex)}
-                      />
-                      <span className="radio-mark">{currentQuestion.type === "multiple" && selected && <Check size={14} weight="bold" />}</span>
-                      {option}
-                    </label>
-                  );
-                })}
-              </div>
-            </fieldset>
-            <div className="question-navigation">
-              <button className="secondary-button" type="button" disabled={questionIndex === 0} onClick={() => setQuestionIndex((value) => value - 1)}><ArrowLeft size={17} />{c("Previous", "上一题")}</button>
-              {questionIndex < questions.length - 1
-                ? <button className="primary-button" type="button" onClick={() => setQuestionIndex((value) => value + 1)}>{c("Next", "下一题")}<ArrowRight size={17} /></button>
-                : <button className="primary-button" type="button" disabled={answeredCount !== questions.length} onClick={submitQuiz}>{c("Submit answers", "提交练习")}</button>}
-            </div>
-          </div>
-        )}
-      </section>
     </div>
   );
 }
@@ -403,7 +191,7 @@ function ChecklistFlow({ task, onUpdate }) {
   }
   if (task.status === "completed" && reviewing) {
     return (
-      <div className="native-learning-flow video-quiz-task completed-video-review">
+      <div className="native-learning-flow video-learning-task completed-video-review">
         <div className="learning-state-row">
           <span className="eyebrow">{c("VIDEO REVIEW", "视频回看")}</span>
           <span className="learning-state">{c("Task complete", "任务已完成")}</span>
@@ -972,7 +760,12 @@ export default function TaskFlow({ task, onUpdate, onHelp, onKuozhiProgressState
     return <ExternalStatusTask task={task} onHelp={onHelp} onUpdate={onUpdate} />;
   }
   if (task.method === "profile_credentials") {
-    return <ProfileCredentialsTask task={task} />;
+    return (
+      <ProfileCredentialsTask
+        task={task}
+        onProgressStateChange={onKuozhiProgressStateChange}
+      />
+    );
   }
   const Flow = flowComponents[task.method];
   if (!Flow) return null;

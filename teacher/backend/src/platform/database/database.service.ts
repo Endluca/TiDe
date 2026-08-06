@@ -51,6 +51,7 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0024_support_ticket_cas_and_function_owner',
   '0025_fixed_task_semantic_alignment',
   '0026_kuozhi_course_syncs',
+  '0027_remove_local_quiz_runtime',
 ] as const;
 
 @Injectable()
@@ -267,7 +268,7 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0026_kuozhi_course_syncs'
+        ) = '0027_remove_local_quiz_runtime'
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
         AND to_regclass('tide.teacher_photo_runs') IS NOT NULL

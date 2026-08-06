@@ -41,6 +41,7 @@ describe('KuozhiService', () => {
           integrationStatus: mapping.integrationStatus,
           launchEnabled: mapping.launchEnabled,
           completionEnabled: mapping.completionEnabled,
+          autoCompleteAssignment: mapping.autoCompleteAssignment,
           courses: mapping.courses.map((course) => ({
             courseId: course.courseId,
             tasks: course.tasks.map((task) => ({
@@ -55,9 +56,10 @@ describe('KuozhiService', () => {
 
     expect(compact).toEqual({
       G01: {
-        integrationStatus: 'MAPPING_ONLY',
-        launchEnabled: false,
-        completionEnabled: false,
+        integrationStatus: 'ACTIVE',
+        launchEnabled: true,
+        completionEnabled: true,
+        autoCompleteAssignment: false,
         courses: [
           {
             courseId: '407',
@@ -69,6 +71,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '499',
@@ -83,6 +86,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '513',
@@ -94,6 +98,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '520',
@@ -123,6 +128,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'PARTIAL',
         launchEnabled: true,
         completionEnabled: false,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '595',
@@ -137,6 +143,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '630',
@@ -162,7 +169,7 @@ describe('KuozhiService', () => {
     expect(response).toMatchObject({
       provider: 'KUOZHI',
       dataMode: 'REAL',
-      mappingVersion: 4,
+      mappingVersion: 5,
       integrationStatus: 'ACTIVE',
     });
     expect(response.courses.map((course) => course.courseId)).toEqual([
@@ -177,5 +184,15 @@ describe('KuozhiService', () => {
     expect(launch.searchParams.get('to')).toBe(
       'https://edu.51talk.com/course/520?noheader=1',
     );
+  });
+
+  it('opens G01 course 407 as an embedded Kuozhi course', async () => {
+    const response = await serviceFor().createLaunch('G01', 'TEACHER-001');
+
+    expect(response).toMatchObject({
+      integrationStatus: 'ACTIVE',
+      mappingVersion: 5,
+      courses: [{ courseId: '407', embedMode: 'IFRAME' }],
+    });
   });
 });

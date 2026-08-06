@@ -1,10 +1,11 @@
 {
-  "version": 4,
+  "version": 5,
   "tasks": {
     "G01": {
-      "integrationStatus": "MAPPING_ONLY",
-      "launchEnabled": false,
-      "completionEnabled": false,
+      "integrationStatus": "ACTIVE",
+      "launchEnabled": true,
+      "completionEnabled": true,
+      "autoCompleteAssignment": false,
       "noHeader": true,
       "courses": [
         {
@@ -16,14 +17,7 @@
               "testpaperId": "305",
               "title": "Profile and credentials assessment",
               "type": "TESTPAPER",
-              "required": true,
-              "scoreMode": "RAW_POINTS",
-              "fullScore": 31,
-              "passScore": {
-                "kind": "QUIZ_BANK",
-                "bankKey": "profile-credentials",
-                "questionSetVersion": "course-407-2026-07-v2"
-              }
+              "required": true
             }
           ]
         }
@@ -51,14 +45,7 @@
               "testpaperId": "415",
               "title": "Platform Policy assessment",
               "type": "TESTPAPER",
-              "required": true,
-              "scoreMode": "RAW_POINTS",
-              "fullScore": 5,
-              "passScore": {
-                "kind": "QUIZ_BANK",
-                "bankKey": "platform-policies",
-                "questionSetVersion": "course-499-2026-07"
-              }
+              "required": true
             }
           ]
         }
@@ -107,14 +94,7 @@
               "testpaperId": "449",
               "title": "ME Culture and PARSNIP assessment",
               "type": "TESTPAPER",
-              "required": true,
-              "scoreMode": "RAW_POINTS",
-              "fullScore": 5,
-              "passScore": {
-                "kind": "QUIZ_BANK",
-                "bankKey": "me-culture",
-                "questionSetVersion": "courses-520-398-2026-07"
-              }
+              "required": true
             }
           ]
         },
@@ -127,11 +107,11 @@
             { "courseTaskId": "1950", "title": "Module 3 video", "type": "VIDEO", "required": true, "completionPercent": 100 },
             { "courseTaskId": "1951", "title": "Module 4 video", "type": "VIDEO", "required": true, "completionPercent": 100 },
             { "courseTaskId": "1952", "title": "Module 5 video", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "1953", "testpaperId": "239", "title": "Module 1 assessment", "type": "TESTPAPER", "required": true, "scoreMode": "RAW_POINTS", "fullScore": 5, "passScore": { "kind": "QUIZ_BANK", "bankKey": "me-culture", "questionSetVersion": "courses-520-398-2026-07" } },
-            { "courseTaskId": "1954", "testpaperId": "240", "title": "Module 2 assessment", "type": "TESTPAPER", "required": true, "scoreMode": "RAW_POINTS", "fullScore": 5, "passScore": { "kind": "QUIZ_BANK", "bankKey": "me-culture", "questionSetVersion": "courses-520-398-2026-07" } },
-            { "courseTaskId": "1955", "testpaperId": "241", "title": "Module 3 assessment", "type": "TESTPAPER", "required": true, "scoreMode": "RAW_POINTS", "fullScore": 5, "passScore": { "kind": "QUIZ_BANK", "bankKey": "me-culture", "questionSetVersion": "courses-520-398-2026-07" } },
-            { "courseTaskId": "1956", "testpaperId": "242", "title": "Module 4 assessment", "type": "TESTPAPER", "required": true, "scoreMode": "RAW_POINTS", "fullScore": 5, "passScore": { "kind": "QUIZ_BANK", "bankKey": "me-culture", "questionSetVersion": "courses-520-398-2026-07" } },
-            { "courseTaskId": "1957", "testpaperId": "243", "title": "Module 5 assessment", "type": "TESTPAPER", "required": true, "scoreMode": "RAW_POINTS", "fullScore": 5, "passScore": { "kind": "QUIZ_BANK", "bankKey": "me-culture", "questionSetVersion": "courses-520-398-2026-07" } }
+            { "courseTaskId": "1953", "testpaperId": "239", "title": "Module 1 assessment", "type": "TESTPAPER", "required": true },
+            { "courseTaskId": "1954", "testpaperId": "240", "title": "Module 2 assessment", "type": "TESTPAPER", "required": true },
+            { "courseTaskId": "1955", "testpaperId": "241", "title": "Module 3 assessment", "type": "TESTPAPER", "required": true },
+            { "courseTaskId": "1956", "testpaperId": "242", "title": "Module 4 assessment", "type": "TESTPAPER", "required": true },
+            { "courseTaskId": "1957", "testpaperId": "243", "title": "Module 5 assessment", "type": "TESTPAPER", "required": true }
           ]
         }
       ]
@@ -169,7 +149,7 @@
             { "courseTaskId": "3480", "title": "COCOS video 5", "type": "VIDEO", "required": true, "completionPercent": 100 },
             { "courseTaskId": "3479", "title": "COCOS video 6", "type": "VIDEO", "required": true, "completionPercent": 100 },
             { "courseTaskId": "3490", "title": "COCOS video 7", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "3477", "testpaperId": "562", "title": "COCOS assessment", "type": "TESTPAPER", "required": true, "scoreMode": "RAW_POINTS", "fullScore": 5, "passScore": { "kind": "QUIZ_BANK", "bankKey": "cocos-training", "questionSetVersion": "course-630-2026-07" } }
+            { "courseTaskId": "3477", "testpaperId": "562", "title": "COCOS assessment", "type": "TESTPAPER", "required": true }
           ]
         }
       ]

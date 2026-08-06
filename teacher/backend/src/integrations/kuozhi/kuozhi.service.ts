@@ -8,13 +8,10 @@ import type { AppEnvironment } from '../../platform/config/environment';
 import {
   loadKuozhiCourseConfiguration,
   type KuozhiCourseConfiguration,
-  type KuozhiCourseMapping,
 } from './kuozhi-course.config';
 import { KuozhiDetailClient } from './kuozhi-detail.client';
 import {
-  kuozhiPassScoreKey,
   type KuozhiLaunchResponse,
-  type KuozhiPassScoreReference,
   type KuozhiProgressCore,
   type KuozhiResolvedMapping,
 } from './kuozhi.models';
@@ -102,31 +99,8 @@ export class KuozhiService {
     };
   }
 
-  passScoreReferences(
-    mapping: KuozhiCourseMapping,
-  ): KuozhiPassScoreReference[] {
-    const references = mapping.courses.flatMap((course) =>
-      course.tasks.flatMap((task) => {
-        if (task.type !== 'TESTPAPER' || task.passScore.kind !== 'QUIZ_BANK') {
-          return [];
-        }
-        return [
-          {
-            key: kuozhiPassScoreKey(
-              task.passScore.bankKey,
-              task.passScore.questionSetVersion,
-            ),
-            source: task.passScore,
-          },
-        ];
-      }),
-    );
-    return [...new Map(references.map((item) => [item.key, item])).values()];
-  }
-
   async fetchProgress(
     resolved: KuozhiResolvedMapping,
-    publishedPassScores: ReadonlyMap<string, number>,
   ): Promise<KuozhiProgressCore> {
     const details = await Promise.all(
       resolved.mapping.courses.map((course) =>
@@ -136,12 +110,7 @@ export class KuozhiService {
         ),
       ),
     );
-    return evaluateKuozhiProgress(
-      resolved,
-      details,
-      publishedPassScores,
-      new Date().toISOString(),
-    );
+    return evaluateKuozhiProgress(resolved, details, new Date().toISOString());
   }
 
   emptyProgress(resolved: KuozhiResolvedMapping): KuozhiProgressCore {
@@ -166,11 +135,6 @@ export class KuozhiService {
           sourceStatus: 'MISSING',
           percent: null,
           score: null,
-          normalizedScorePercent: null,
-          passScorePercent:
-            task.type === 'TESTPAPER' && task.passScore.kind === 'FIXED'
-              ? task.passScore.percent
-              : null,
           testTimes: null,
           completed: false,
         })),

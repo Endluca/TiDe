@@ -4,7 +4,6 @@ import { Client } from 'pg';
 type StepType =
   | 'VIDEO'
   | 'DOCUMENT'
-  | 'QUIZ'
   | 'CHECKLIST'
   | 'UPLOAD'
   | 'DEVICE_CHECK'
@@ -117,9 +116,9 @@ export const currentTaskCatalog: CatalogTask[] = [
     title: 'Profile & Credentials Completion',
     why: 'Complete the required profile statuses and TESOL learning evidence.',
     whatToDo:
-      'Confirm Self-intro and TESOL, pass all 61 questions, complete the Essay and submit the completion proof.',
+      'Confirm Self-intro and TESOL, pass the assessment in Kuozhi, complete the Essay and submit the completion proof.',
     completionStandard:
-      'Self-intro and TESOL are complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.',
+      'Self-intro and TESOL are complete, the Kuozhi assessment reaches 100% progress, the Essay is complete and the completion proof is submitted.',
     benefit: 'Your profile and required TESOL learning evidence are complete.',
     priority: 'P1',
     score: 3,
@@ -130,19 +129,6 @@ export const currentTaskCatalog: CatalogTask[] = [
     allowRetry: true,
     kind: 'FIXED_GROWTH',
     steps: [
-      {
-        key: 'g01-tesol-quiz',
-        type: 'QUIZ',
-        title: 'Complete the 61-question TESOL check',
-        config: {
-          version: 'g01-tesol-quiz-2026-07-23',
-          role: 'TESOL_QUIZ',
-          quizBankKey: 'profile-credentials',
-          questionSetVersion: 'course-407-2026-07-v2',
-          expectedQuestionCount: 61,
-          mock: true,
-        },
-      },
       {
         key: 'g01-essay-confirmation',
         type: 'CHECKLIST',
@@ -173,7 +159,14 @@ export const currentTaskCatalog: CatalogTask[] = [
       },
     ],
     rules: [
-      allStepsRule('请完成 61 题测验、Essay，并提交完成证明。'),
+      allStepsRule('请确认 Essay，并提交完成证明。'),
+      {
+        key: 'g01-kuozhi-course',
+        type: 'KUOZHI_COURSE_COMPLETE',
+        version: '2026-08-06-percent-v1',
+        config: { mappingVersion: 5 },
+        teacherFailureCopy: '请先在阔知完成课程考试，并刷新学习进度。',
+      },
       {
         key: 'g01-external-status',
         type: 'G01_EXTERNAL_STATUS',
@@ -727,7 +720,7 @@ async function syncTask(
         estimatedMinutes: task.estimatedMinutes,
         allowRetry: task.allowRetry,
         contentStatus: task.contentStatus,
-        contentVersion: '2026-07-30',
+        contentVersion: '2026-08-06',
         pendingReason: task.pendingReason ?? null,
       },
     ],

@@ -32,6 +32,7 @@
 | `0024_support_ticket_cas_and_function_owner` | 拒绝 NULL expected row version 和 NULL message，并把全部工单 SECURITY DEFINER 函数固定给非登录最小权限 owner；该安全迁移 forward-only |
 | `0025_fixed_task_semantic_alignment` | 按运营端稳定 `row_id` 将旧 G01–G10 执行语义原位对齐到当前 G01–G09，旧 G05 归档为 retired G00；保留 execution ID、共享模板关联和过程数据；新增通过稳定 assignment/template 解析当前编码的 analytics v2，raw code 仅作审计；该业务身份迁移 forward-only |
 | `0026_kuozhi_course_syncs` | 保存阔知正式课程刷新快照、双重幂等回执和完成判定；达标时与共享 assignment 状态更新同事务提交，数据库只接受 `dataMode = REAL` |
+| `0027_remove_local_quiz_runtime` | 删除站内题库、作答与考试步骤；所有考试统一以阔知 `percent=100` 判定 |
 
 `0008` 在删除前会阻断任何未映射的过程数据或非 Mock 个性化任务，不会静默丢弃真实数据。
 
@@ -43,14 +44,13 @@
 | `fixtures/0002_score_entry_contract.sql` | 仅本地升级共享积分流水测试契约，补齐课程结分字段；不得用于公司或生产库 |
 | `fixtures/0003_course_score_snapshot_contract.sql` | 仅为本地当前视图 Mock 补齐世文源字段；公司库已由世文持有，不得用于公司或生产库 |
 | `seed/0002_mock_shiwen_views.sql` | 教师资料、积分总览和逐课积分当前视图 Mock |
-| `scripts/import-task-quiz-banks.ts` | 校验后端题库源并将全部题库按版本导入 `tide.task_quiz_banks` |
 | `scripts/sync-current-task-catalog.ts` | 当前 G01–G09 与已确认个性化任务的唯一执行配置同步脚本；按稳定共享模板行更新，不重建 execution |
 | `seed/0004_mock_faq_knowledge.sql` | 已确认规则的 FAQ Mock 知识 |
 | `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
-| `scripts/apply.sh` | 本地幂等升级至 0026，导入题库，并应用当前 Seed/本地权限 |
+| `scripts/apply.sh` | 本地幂等升级至 0027，并应用当前 Seed/本地权限 |
 | `scripts/apply-company-test.sh` | 初始化公司测试库的 `tide` Schema、G01–G09 与 5 个已发布个性化任务码族执行配置和受限应用账号；不写 Mock Seed 或共享模板 |
-| `scripts/apply-production.sh` | 仅执行生产结构迁移；先校验运营 rev38 权威目录，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0026 |
-| `scripts/test-production-migrator.sh` | 在两个临时 PostgreSQL 数据库显式构造 rev38 共享目录，验证 fresh、managed upgrade、0022–0026、execution ID 原位保留、checksum、工单函数 owner 和生产连接保护 |
+| `scripts/apply-production.sh` | 仅执行生产结构迁移；先校验运营 rev38 权威目录，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0027 |
+| `scripts/test-production-migrator.sh` | 在两个临时 PostgreSQL 数据库显式构造 rev38 共享目录，验证 fresh、managed upgrade、0022–0027、execution ID 原位保留、checksum、工单函数 owner 和生产连接保护 |
 | `scripts/verify.sh` | 验证共享表、过程关联、角色权限、乐观锁、审计/Outbox 和消息回写 |
 | `scripts/rollback-test.sh` | 在临时库验证空库升级和逐级回滚 |
 | `scripts/grant-tit-teacher-crud.sql` | 由共享表 Owner/DBA 执行的最小权限脚本 |
@@ -67,7 +67,7 @@ bash database/scripts/rollback-test.sh
 ```
 
 `.env` 不进入 Git。`apply.sh` 仅接受数据库名 `tide_dev`，且必须显式设置
-`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0026`，但仍是本地
+`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0027`，但仍是本地
 Mock 入口，不能用于公司或生产库。
 
 ## 生产迁移
@@ -97,9 +97,9 @@ Mock 入口，不能用于公司或生产库。
 - `tide_migrator` 可登录但不是 superuser，且没有建库、建角色、复制或绕过 RLS；
 - `current_database()` 精确等于 `TIDE_MIGRATION_EXPECTED_DATABASE`。
 
-生产迁移清单明确包含 `0022–0026`，并永久排除历史
+生产迁移清单明确包含 `0022–0027`，并永久排除历史
 `0017/0018`，因为这两项会修改世文持有的 `public.task_assignments`。迁移器不创建
-角色、不设置角色密码、不导入 Mock、不执行题库／FAQ／任务内容 Seed。DBA 必须事先
+角色、不设置角色密码、不导入 Mock、不执行 FAQ／任务内容 Seed。DBA 必须事先
 创建 `tit_teacher_crud`、`tit_growth_app`、`tide_migrator` 与
 `tide_support_ticket_owner`，教师端权限继续单独审核
 `scripts/grant-tit-teacher-crud.sql`。`tide_support_ticket_owner` 必须
@@ -155,7 +155,7 @@ bash database/scripts/test-production-migrator.sh
 
 - 公司测试库配置放在本地 `database/.env.company-test`，该文件不进入 Git，权限必须为 `600`。
 - 目标库必须已经存在世文维护的 `public` 共享表；教师端初始化只创建 `tide` Schema。
-- `apply-company-test.sh` 会补齐 `0001–0026`，导入数据库题库，并以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入教师端执行配置；运行前同样要求运营 rev38 权威目录已就绪。
+- `apply-company-test.sh` 会补齐 `0001–0027`，并以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入教师端执行配置；运行前同样要求运营 rev38 权威目录已就绪。
 - 日常应用账号固定为 `tit_teacher_crud`，只读教师身份资料和 `teacher_scorecard_current / teacher_lesson_score_current`，只获得契约允许的共享任务权限和 `tide` Schema 业务表权限；不读取原始积分、课程事实或评分配置表。
 - 内部测试后端的 `TIDE_DATABASE_URL` 和 `SHIWEN_READ_DATABASE_URL` 均由该配置生成并指向同一公司测试库；运行时不再使用本地 PostgreSQL 或本地数据回退。
 - 本地 `apply.sh` 会写 Mock Seed，不得用于公司测试库。

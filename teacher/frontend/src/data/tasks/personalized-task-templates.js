@@ -7,58 +7,6 @@ const improvementSignal = {
   stage: "Personalized",
 };
 
-const reliabilityLearningContent = {
-  videoChapters: [
-    {
-      id: "course-595-policy-refresher",
-      title: "What to Do When a Class May Be Affected",
-      titleZh: "课程可能受影响时怎么做",
-      videoSrc: "/assets/tasks/reliability-training/01-attendance-policy-primer.mp4",
-    },
-    {
-      id: "course-595-guide-refresher",
-      title: "A Simple Pre-Class Routine",
-      titleZh: "简单的课前准备方法",
-      videoSrc: "/assets/tasks/reliability-training/02-attendance-reliability-guide.mp4",
-    },
-  ],
-  quizQuestions: [
-    {
-      id: "attendance-refresher-q1",
-      type: "single",
-      question: "What should you do first when a schedule risk may affect your class?",
-      questionZh: "排课风险可能影响上课时，首先应该怎么做？",
-      options: ["Use the support process as early as possible", "Wait until the class ends", "Ignore the schedule"],
-      optionsZh: ["尽早按照支持流程处理", "等课程结束后再处理", "忽略排课信息"],
-      correct: 0,
-      explanation: "Early action gives the team time to protect the class.",
-      explanationZh: "尽早处理，才能为课程保障留出时间。",
-    },
-    {
-      id: "attendance-refresher-q2",
-      type: "single",
-      question: "Which preparation habit best supports reliable attendance?",
-      questionZh: "哪种准备习惯最有助于稳定出勤？",
-      options: ["Check the schedule, device and backup plan before class", "Open the tools after class starts", "Rely on a last-minute reminder"],
-      optionsZh: ["课前确认排课、设备和备用方案", "开课后再打开工具", "只依赖临时提醒"],
-      correct: 0,
-      explanation: "A repeatable pre-class routine reduces avoidable risks.",
-      explanationZh: "稳定的课前检查习惯能够降低可避免的风险。",
-    },
-    {
-      id: "attendance-refresher-q3",
-      type: "single",
-      question: "When is this learning task complete?",
-      questionZh: "这项学习什么时候算完成？",
-      options: ["After opening the task", "After completing the learning and scoring at least 80%", "After contacting support"],
-      optionsZh: ["打开任务后", "完成学习且练习达到 80 分", "联系支持团队后"],
-      correct: 1,
-      explanation: "Completion requires both learning progress and a passing result.",
-      explanationZh: "完成课程学习并通过练习后，任务才会结束。",
-    },
-  ],
-};
-
 export const personalizedTaskTemplates = [
   {
     ...improvementSignal,
@@ -159,11 +107,11 @@ export const personalizedTaskTemplates = [
     recurrenceRule: "CREATE_A_NEW_TASK_ONLY_AFTER_COMPLETION_AND_A_NEW_CONFIRMED_EXCEPTION",
     reason: "Two recent classes need your attention: you joined one class 4 minutes 46 seconds late and missed another. We combined them into one short refresher.",
     value: "Build a simple pre-class routine and know what to do when something may affect your class.",
-    result: "Watch two short chapters and pass the quick check.",
-    standard: "Watch both chapters and score 80% or higher on the quick check.",
-    steps: ["Review the two affected classes", "Watch the two short readiness chapters", "Pass the quick check"],
+    result: "Complete the assigned Kuozhi refresher and assessment.",
+    standard: "Every required Kuozhi course task reaches 100% progress.",
+    steps: ["Review the two affected classes", "Complete the assigned Kuozhi refresher", "Complete the Kuozhi assessment"],
     cautions: ["Late and missed classes use the same short refresher", "A Lesson Memo issue uses a separate how-to lesson", "If another class is recorded while this task is open, we add it here instead of creating a duplicate task"],
-    material: "Class readiness refresher + quick check",
+    material: "Kuozhi class-readiness refresher and assessment",
     sourceFacts: [
       "teacher_id: T-MARIA-001",
       "appoint_id: APT-260721-01706 · teacher_late_seconds: 286",
@@ -172,10 +120,9 @@ export const personalizedTaskTemplates = [
     signalFacts: [
       { label: "Joined late", labelZh: "迟到的课程", value: "Jul 21, 17:00 · Class ID APT-260721-01706 · 4m 46s late", valueZh: "7 月 21 日 17:00 · 课程编号 APT-260721-01706 · 迟到 4 分 46 秒" },
       { label: "Missed class", labelZh: "缺勤的课程", value: "Jul 20, 16:30 · Class ID APT-260720-01654 · missed class", valueZh: "7 月 20 日 16:30 · 课程编号 APT-260720-01654 · 记录为缺勤" },
-      { label: "Your next step", labelZh: "建议下一步", value: "Complete the short class-readiness lesson and quick check", valueZh: "完成简短的课前准备学习和小测" },
+      { label: "Your next step", labelZh: "建议下一步", value: "Complete the assigned Kuozhi class-readiness course", valueZh: "完成指定的阔知课前准备课程" },
     ],
-    ...reliabilityLearningContent,
-    recoveryPath: "Review both chapters and retry the knowledge check if your score is below 80%.",
+    recoveryPath: "Return to the assigned Kuozhi course and complete every required task.",
   },
   {
     ...improvementSignal,
@@ -207,7 +154,6 @@ export const personalizedTaskTemplates = [
     steps: ["Review the related class", "Learn what to include in the Lesson Memo", "Check when the Lesson Memo should be submitted"],
     cautions: ["This task is about the Lesson Memo, not a missed class", "Use the latest published guidance for your next Lesson Memo"],
     material: "Lesson Memo how-to",
-    videoSrc: "/assets/tasks/free-trial-training/04-lesson-memo-and-level-assessment.mp4",
     sourceFacts: [
       "teacher_id: T-MARIA-001",
       "appoint_id: APT-260721-02031 · attendance_reason: lesson_memo_not_completed",
@@ -389,7 +335,6 @@ export const personalizedTaskTemplates = [
       "L0–L1 cases remain outside the teacher task page",
     ],
     material: `${topic.name} · matched learning content`,
-    videoSrc: "/assets/tasks/free-trial-training/05-ft-lesson-best-practices.mp4",
     signalFacts: [
       {
         label: "Classes we reviewed",
@@ -410,7 +355,7 @@ export const personalizedTaskTemplates = [
         valueZh: topic.feedbackLabelZh,
       },
     ],
-    recoveryPath: "Complete the matched in-platform practice. If the content does not load, use the training support entry.",
+    recoveryPath: "Complete the matched published learning content. If it does not load, use the training support entry.",
   })),
   {
     ...improvementSignal,

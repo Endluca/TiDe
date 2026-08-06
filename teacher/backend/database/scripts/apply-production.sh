@@ -4,7 +4,7 @@ set -euo pipefail
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL:-}"
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0026_kuozhi_course_syncs}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0027_remove_local_quiz_runtime}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 
 if [[ -z "${DATABASE_URL}" ]]; then
@@ -70,6 +70,7 @@ PRODUCTION_MIGRATIONS=(
   0024_support_ticket_cas_and_function_owner
   0025_fixed_task_semantic_alignment
   0026_kuozhi_course_syncs
+  0027_remove_local_quiz_runtime
 )
 
 target_found=false
@@ -85,7 +86,7 @@ if [[ "${target_found}" != "true" ]]; then
   echo "未知生产迁移目标：${TARGET_MIGRATION}" >&2
   exit 1
 fi
-if [[ "${TARGET_MIGRATION}" != "0026_kuozhi_course_syncs" \
+if [[ "${TARGET_MIGRATION}" != "0027_remove_local_quiz_runtime" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
   echo "生产运行不允许停在旧版本；TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1

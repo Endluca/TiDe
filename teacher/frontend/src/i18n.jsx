@@ -176,8 +176,6 @@ const messages = {
     "status.expired": "Ended",
     "status.preview": "Preview",
     "status.sync_pending": "Waiting for review result",
-    "method.learning_quiz": "Learn + knowledge check",
-    "method.video_learning": "In-platform video",
     "method.external_status": "External status",
     "method.readiness_photo": "Camera photo + readiness check",
     "method.learning_checklist": "Learn + checklist",
@@ -366,8 +364,6 @@ const messages = {
     "status.expired": "已结束",
     "status.preview": "可以先看",
     "status.sync_pending": "等待审核结果",
-    "method.learning_quiz": "学习 + 课后练习",
-    "method.video_learning": "站内视频培训",
     "method.external_status": "外部状态",
     "method.readiness_photo": "现场拍照 + 课前准备检测",
     "method.learning_checklist": "学习 + 清单",
@@ -395,11 +391,11 @@ const taskZh = {
     priority: "建议先做",
     reason: "完成教师档案状态与 TESOL 学习证明，为首课做好准备。",
     value: "一次看清并完成档案与资质的五项要求。",
-    result: "查看 Self-intro 与 TESOL 状态，在本页完成 61 题、Essay 确认和完成证明提交。",
-    standard: "两项来源状态通过，且站内 61 题、Essay 确认和完成证明三项全部完成。",
-    steps: ["查看 Self-intro 与 TESOL 状态", "在本页完成 61 题 TESOL 测验", "确认 Essay 已完成", "在本页提交完成证明"],
-    cautions: ["61 题全部在本页作答，不跳转外部考试", "题目更新后会自动使用最新版本"],
-    material: "两项状态与三项站内操作",
+    result: "查看 Self-intro 与 TESOL 状态，在本页通过阔知完成考试，并完成 Essay 确认和证明提交。",
+    standard: "两项来源状态通过，阔知考试完成，且 Essay 确认和完成证明均已提交。",
+    steps: ["查看 Self-intro 与 TESOL 状态", "在本页内嵌阔知课程完成考试", "确认 Essay 已完成", "在本页提交完成证明"],
+    cautions: ["考试只在本页内嵌阔知课程完成", "不提供阔知外跳按钮"],
+    material: "两项来源状态、一项阔知考试与两项站内操作",
   },
   "device-network": {
     name: "设备与网络检测",
@@ -544,7 +540,7 @@ const taskZh = {
     reason: "SET 教学基础只通过阔知课程完成。",
     value: "为准备和完成 SET 课堂建立清楚的基础。",
     result: "阔知发布正式课程映射后，在本页完成视频和考试。",
-    standard: "等待阔知课程、视频和 Quiz ID 发布。",
+    standard: "等待阔知课程、视频和考试任务 ID 发布。",
     steps: [],
     cautions: ["当前无需操作", "不会使用临时视频或题目兜底"],
     material: "阔知 SET 课程待发布",
@@ -790,7 +786,7 @@ const taskSignalZh = {
   },
   "set-fundamentals": {
     scoreReason: "阔知正式课程映射仍待发布。",
-    recoveryPath: "当前无需操作；课程、视频和 Quiz ID 发布后再完成。",
+    recoveryPath: "当前无需操作；课程、视频和考试任务 ID 发布后再完成。",
   },
   "classroom-environment-coaching": {
     scoreReason: "这是一项改善入口，完成个性化任务本身不直接加分。",
@@ -893,43 +889,6 @@ const stageZh = {
 
 export function localizeStage(stage, language) {
   return language === "zh" ? { ...stage, ...stageZh[stage.id] } : stage;
-}
-
-const quizZh = {
-  "platform-policies": [
-    ["如果你可能迟到，应该怎么做？", ["尽早联系支持团队", "等课程结束再处理", "请学员改期"]],
-    ["课堂环境应在什么时候准备好？", ["首课结束后", "首课开始前", "第 30 天结束时"]],
-    ["哪些做法能够保护教师账号？", ["妥善保管登录信息", "使用独立密码", "与其他老师共享账号"]],
-    ["课堂工具出现故障时，先按照排障指南处理是合适的。", ["正确", "错误"]],
-    ["本任务达到多少分算完成？", ["60%", "70%", "80% 或以上"]],
-  ],
-  "me-culture": [
-    ["什么样的课堂示例更适合学员？", ["尊重且符合年龄", "无论如何都要出人意料", "包含私人信息"]],
-    ["敏感课堂话题应以什么为准？", ["个人好奇心", "培训指引", "社交媒体趋势"]],
-    ["如果不确定某个示例是否合适，应该怎么做？", ["快速使用", "让学员决定", "选择中性示例并查看指引"]],
-    ["文化指引的目标是什么？", ["创造友好的课堂", "评判教师", "增加手续"]],
-    ["最终课堂示例应来自哪里？", ["已确认的培训内容", "匿名帖子", "仅凭记忆"]],
-  ],
-  "reliability-training": [
-    ["什么做法有助于稳定开课？", ["提前进入课堂", "开课后再打开工具", "等待提醒"]],
-    ["遇到排期问题时，最合适的做法是什么？", ["隐藏问题", "尽早按照支持流程处理", "等待几天"]],
-    ["为什么要在课前准备？", ["保护课堂时间", "增加压力", "完全避免支持"]],
-    ["每节课前应该检查哪些内容？", ["排课、设备和课程材料", "只看课程名称", "开课后再准备"]],
-    ["什么能够建立可靠的教学节奏？", ["小而可重复的习惯", "临时变化", "跳过检测"]],
-  ],
-};
-
-export function localizeQuestions(taskId, questions, language) {
-  if (language !== "zh") return questions;
-  return questions.map((question, index) => {
-    const fallback = quizZh[taskId]?.[index];
-    return {
-      ...question,
-      question: question.questionZh || fallback?.[0] || question.question,
-      options: question.optionsZh || fallback?.[1] || question.options,
-      explanation: "",
-    };
-  });
 }
 
 const I18nContext = createContext({ language: "en", t: (key) => key });

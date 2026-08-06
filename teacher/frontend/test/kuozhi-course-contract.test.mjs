@@ -47,11 +47,24 @@ test('Kuozhi launch and progress stay behind the authenticated backend', async (
   assert.match(component, /hidden=\{!isActive\}/);
   assert.match(component, /kuozhi-embed-shell--hide-navigation/);
   assert.match(component, /onProgressStateChange/);
+  assert.match(component, /launchError,/);
+  assert.match(component, /canRefresh:/);
+  assert.match(component, /setLaunch\(launchResponse\)[\s\S]*getKuozhiProgress/);
+  assert.match(component, /progressError=\{launchError \|\| progressError\}/);
   assert.match(component, /kuozhi-progress-card--mobile/);
   assert.equal(component.includes('kuozhi-progress-panel'), false);
   assert.match(progressCard, /kuozhi-progress-course-item/);
   assert.match(progressCard, /defaultOpen=\{courses\.length === 1/);
+  assert.match(progressCard, /const requiredCourseTasks = courseTasks\.filter/);
+  assert.match(progressCard, /const requiredTasks = tasks\.filter/);
+  assert.match(progressCard, /if \(progressError\)/);
+  assert.match(progressCard, /!progressError && courses\.length === 0/);
+  assert.match(progressCard, /courseTask\.type === 'TESTPAPER'/);
+  assert.match(progressCard, /kuozhi-task-score/);
+  assert.match(progressCard, /courseTask\.score/);
   assert.match(app, /kuozhi-progress-card--sidebar/);
+  assert.match(app, /canRefresh=\{kuozhiProgressState\?\.canRefresh\}/);
+  assert.match(app, /kuozhiProgressState\?\.launchError \|\| kuozhiProgressState\?\.progressError/);
   assert.equal(app.includes('Help Center'), false);
   assert.equal(component.includes('/complete'), false);
 });
@@ -67,4 +80,6 @@ test('Kuozhi iframe navigation is cropped without touching cross-origin content'
 
   assert.match(styles, /--kuozhi-navigation-height:\s*72px/);
   assert.match(styles, /translateY\(calc\(-1 \* var\(--kuozhi-navigation-height\)\)\)/);
+  assert.match(styles, /\.kuozhi-progress-course-list[\s\S]*overflow-y:\s*scroll/);
+  assert.match(styles, /scrollbar-gutter:\s*stable/);
 });

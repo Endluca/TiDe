@@ -124,19 +124,13 @@ export class TaskService {
       'KUOZHI_PROGRESS_REFRESH',
       input,
     );
-    const references = this.kuozhi!.passScoreReferences(resolved.mapping);
-    const passScores =
-      references.length > 0
-        ? await this.requiredKuozhiProgress().loadPublishedPassScores(
-            references,
-          )
-        : new Map<string, number>();
-    const progress = await this.kuozhi!.fetchProgress(resolved, passScores);
+    const progress = await this.kuozhi!.fetchProgress(resolved);
 
     try {
       return await this.requiredKuozhiProgress().persistRefresh({
         ...command,
         expectedStateVersion: input.expectedStateVersion,
+        autoCompleteAssignment: resolved.mapping.autoCompleteAssignment,
         progress,
       });
     } catch (error) {

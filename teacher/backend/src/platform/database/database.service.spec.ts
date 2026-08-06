@@ -224,7 +224,7 @@ describe('DatabaseService', () => {
       shiwenRead: 'not_configured',
     });
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('0026_kuozhi_course_syncs'),
+      expect.stringContaining('0027_remove_local_quiz_runtime'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.schema_migrations'),

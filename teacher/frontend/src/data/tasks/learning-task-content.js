@@ -16,6 +16,5 @@ export function getLearningTaskContent(task) {
     })) || null,
     mock: Boolean(task.videoMock),
     poster: publicAsset(task.videoPoster) || defaultLearningTaskContent.poster,
-    passScore: task.passScore,
   };
 }
