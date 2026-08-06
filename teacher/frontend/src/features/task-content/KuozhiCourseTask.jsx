@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ArrowClockwise,
   CheckCircle,
   Clock,
   SpinnerGap,
@@ -13,58 +12,8 @@ import {
 } from '../../api/kuozhi-api';
 import { localizeApiError } from '../../api-error-copy';
 import { useI18n } from '../../i18n';
+import KuozhiProgressCard from './KuozhiProgressCard';
 import './kuozhi-course-task.css';
-
-function taskStatusCopy(task, c) {
-  if (task.sourceStatus === 'MISSING') return c('Waiting for data', '等待同步');
-  if (task.sourceStatus === 'INVALID') return c('Data unavailable', '数据异常');
-  if (task.type === 'VIDEO') {
-    return task.completed
-      ? c('Watched', '已完播')
-      : c(`${task.percent ?? 0}% watched`, `已观看 ${task.percent ?? 0}%`);
-  }
-  if (task.completed) {
-    return c('Passed', '已通过');
-  }
-  if (task.normalizedScorePercent !== null) {
-    return c(
-      `${task.normalizedScorePercent}% · needs ${task.passScorePercent}%`,
-      `${task.normalizedScorePercent}% · 通过线 ${task.passScorePercent}%`,
-    );
-  }
-  return c('Not completed', '尚未完成');
-}
-
-function progressSummary(progress, c) {
-  if (!progress || progress.syncStatus === 'NOT_SYNCED') {
-    return c('Progress has not been synced yet.', '尚未同步学习进度。');
-  }
-  if (progress.syncStatus === 'NO_DATA') {
-    return c(
-      'No course data is available yet. Try again later.',
-      '暂未同步到课程数据，请稍后重试。',
-    );
-  }
-  if (progress.syncStatus === 'PARTIAL') {
-    return c(
-      'Some required course data is still missing.',
-      '部分必修课程数据仍未同步完整。',
-    );
-  }
-  if (progress.completion.completed) {
-    return c('All required learning is complete.', '全部必修学习内容已完成。');
-  }
-  if (!progress.completion.enabled) {
-    return c(
-      'Progress is visible; automatic task completion is not enabled yet.',
-      '学习进度可查看，当前任务暂未开放自动完成。',
-    );
-  }
-  return c(
-    'Complete all required videos and assessments, then refresh.',
-    '请完成全部必修视频和考试后刷新进度。',
-  );
-}
 
 function initialCourseId(courses, progress) {
   if (!courses.length) return null;
@@ -89,7 +38,7 @@ function courseStatusCopy(course, progress, c) {
   return c('In progress', '进行中');
 }
 
-export default function KuozhiCourseTask({ task }) {
+export default function KuozhiCourseTask({ task, onProgressStateChange }) {
   const { language } = useI18n();
   const [launch, setLaunch] = useState(null);
   const [progress, setProgress] = useState(null);
@@ -187,6 +136,20 @@ export default function KuozhiCourseTask({ task }) {
     // Initial loading belongs to the task instance. Manual refresh is separate.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.backendId]);
+
+  useEffect(() => {
+    onProgressStateChange?.({
+      loading,
+      onRefresh: refreshProgress,
+      progress,
+      progressError,
+      refreshing,
+    });
+  }, [loading, onProgressStateChange, progress, progressError, refreshProgress, refreshing]);
+
+  useEffect(() => () => {
+    onProgressStateChange?.(null);
+  }, [onProgressStateChange]);
 
   const courses = launch?.courses ?? [];
   const hasMultipleCourses = courses.length > 1;
@@ -289,59 +252,14 @@ export default function KuozhiCourseTask({ task }) {
         )}
       </div>
 
-      <section className="kuozhi-progress-panel">
-        <div className="kuozhi-progress-heading">
-          <div>
-            <strong>{c('Learning progress', '学习进度')}</strong>
-            <p>{progressSummary(progress, c)}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => void refreshProgress()}
-            disabled={refreshing || !progress}
-          >
-            {refreshing
-              ? <SpinnerGap size={18} className="kuozhi-spin" />
-              : <ArrowClockwise size={18} />}
-            {refreshing ? c('Syncing…', '同步中…') : c('Refresh progress', '刷新学习进度')}
-          </button>
-        </div>
-
-        {progressError && (
-          <div className="kuozhi-progress-error" role="alert">{progressError}</div>
-        )}
-
-        <div className="kuozhi-progress-courses">
-          {(progress?.courses ?? []).map((course) => (
-            <div className="kuozhi-progress-course" key={course.courseId}>
-              <div className="kuozhi-progress-course-title">
-                <strong>{course.title}</strong>
-                <span>{course.percent === null ? '—' : `${course.percent}%`}</span>
-              </div>
-              <div className="kuozhi-progress-tasks">
-                {course.tasks.map((courseTask) => (
-                  <div className="kuozhi-progress-task" key={courseTask.courseTaskId}>
-                    {courseTask.completed
-                      ? <CheckCircle size={21} weight="fill" />
-                      : <Clock size={21} weight="fill" />}
-                    <div>
-                      <strong>{courseTask.title}</strong>
-                      <small>{taskStatusCopy(courseTask, c)}</small>
-                    </div>
-                    <span>{courseTask.type === 'VIDEO' ? c('Video', '视频') : c('Assessment', '考试')}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {progress?.refreshedAt && (
-          <small className="kuozhi-refreshed-at">
-            {c('Last synced', '最近同步')}：{new Date(progress.refreshedAt).toLocaleString()}
-          </small>
-        )}
-      </section>
+      <KuozhiProgressCard
+        className="kuozhi-progress-card--mobile"
+        loading={loading}
+        onRefresh={refreshProgress}
+        progress={progress}
+        progressError={progressError}
+        refreshing={refreshing}
+      />
     </div>
   );
 }

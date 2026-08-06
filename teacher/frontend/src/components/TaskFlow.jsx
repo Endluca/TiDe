@@ -946,10 +946,15 @@ const flowComponents = {
   guidance_acknowledgement: GuidanceAcknowledgementFlow,
 };
 
-export default function TaskFlow({ task, onUpdate, onHelp }) {
+export default function TaskFlow({ task, onUpdate, onHelp, onKuozhiProgressStateChange }) {
   if (task.locked) return <LockedPreview task={task} />;
   if (task.method === "external_course") {
-    return <KuozhiCourseTask task={task} />;
+    return (
+      <KuozhiCourseTask
+        task={task}
+        onProgressStateChange={onKuozhiProgressStateChange}
+      />
+    );
   }
   if (task.method === "environment_photo") {
     return <EnvironmentPhotoTask task={task} onUpdate={onUpdate} />;

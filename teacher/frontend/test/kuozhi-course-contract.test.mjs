@@ -16,6 +16,17 @@ test('Kuozhi launch and progress stay behind the authenticated backend', async (
     ),
     'utf8',
   );
+  const progressCard = await readFile(
+    new URL(
+      'frontend/src/features/task-content/KuozhiProgressCard.jsx',
+      repoRoot,
+    ),
+    'utf8',
+  );
+  const app = await readFile(
+    new URL('frontend/src/App.jsx', repoRoot),
+    'utf8',
+  );
 
   assert.match(api, /\/api\/v1\/tasks\/\$\{taskInstanceId\}\/kuozhi-launch/);
   assert.match(api, /\/api\/v1\/tasks\/\$\{taskInstanceId\}\/kuozhi-progress/);
@@ -35,6 +46,13 @@ test('Kuozhi launch and progress stay behind the authenticated backend', async (
   assert.match(component, /visitedCourseIds/);
   assert.match(component, /hidden=\{!isActive\}/);
   assert.match(component, /kuozhi-embed-shell--hide-navigation/);
+  assert.match(component, /onProgressStateChange/);
+  assert.match(component, /kuozhi-progress-card--mobile/);
+  assert.equal(component.includes('kuozhi-progress-panel'), false);
+  assert.match(progressCard, /kuozhi-progress-course-item/);
+  assert.match(progressCard, /defaultOpen=\{courses\.length === 1/);
+  assert.match(app, /kuozhi-progress-card--sidebar/);
+  assert.equal(app.includes('Help Center'), false);
   assert.equal(component.includes('/complete'), false);
 });
 

@@ -131,7 +131,13 @@ function hydratedTask(task, context, status, steps) {
   return next;
 }
 
-export default function IntegratedTaskFlow({ task, onRefresh, onTaskSubmitted, onHelp }) {
+export default function IntegratedTaskFlow({
+  task,
+  onRefresh,
+  onTaskSubmitted,
+  onHelp,
+  onKuozhiProgressStateChange,
+}) {
   const { language } = useI18n();
   const context = task.backendContext;
   const [stateVersion, setStateVersion] = useState(context?.stateVersion || task.stateVersion);
@@ -543,7 +549,12 @@ export default function IntegratedTaskFlow({ task, onRefresh, onTaskSubmitted, o
 
   return (
     <>
-      <TaskFlow task={presentationTask} onUpdate={legacyUpdate} onHelp={onHelp} />
+      <TaskFlow
+        task={presentationTask}
+        onUpdate={legacyUpdate}
+        onHelp={onHelp}
+        onKuozhiProgressStateChange={onKuozhiProgressStateChange}
+      />
       {error && !["learning_quiz", "document_quiz"].includes(presentationTask.method) && (
         <div className="auth-form-error" role="alert">
           <WarningCircle size={18} weight="fill" />{error}

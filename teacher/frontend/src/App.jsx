@@ -64,6 +64,7 @@ import {
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { Toki as MotionToki } from "./components/UI";
+import KuozhiProgressCard from "./features/task-content/KuozhiProgressCard";
 import { logoutTeacher, requestPasswordReset } from "./api/auth-api";
 import { restoreSession } from "./api/api-client";
 import {
@@ -1688,6 +1689,10 @@ function TaskDetailPage({
   const latestTaskStatusRef = useRef(raw?.status);
   const attemptedTaskIdRef = useRef(null);
   const [missingTaskLoading, setMissingTaskLoading] = useState(!raw);
+  const [kuozhiProgressState, setKuozhiProgressState] = useState(null);
+  useEffect(() => {
+    setKuozhiProgressState(null);
+  }, [raw?.backendId, raw?.method]);
   useEffect(() => {
     latestTaskStatusRef.current = raw?.status;
   }, [raw?.status]);
@@ -1780,6 +1785,7 @@ function TaskDetailPage({
   const task = localizeTask(raw, language);
   const isProfileCredentials = raw.id === "profile-credentials";
   const isLessonPreparation = raw.id === "lesson-preparation";
+  const isKuozhiTask = raw.method === "external_course";
   const profileHasAction = isProfileCredentials && raw.externalStatusItems?.some((item) => item.status === "action_required");
   const approvedExternalItems = raw.externalStatusItems?.filter((item) => item.status === "approved").length || 0;
   const externalItemCount = raw.externalStatusItems?.length || 0;
@@ -1895,6 +1901,7 @@ function TaskDetailPage({
                 onRefresh={onRefresh}
                 onTaskSubmitted={onTaskSubmitted}
                 onHelp={onHelp}
+                onKuozhiProgressStateChange={isKuozhiTask ? setKuozhiProgressState : undefined}
               />
             </Suspense>
           </section>
@@ -1932,14 +1939,25 @@ function TaskDetailPage({
               </span>
             </div>
           </section>
-          <section className="task-execution-card">
-            <h3>{copy(language, "Task progress", "任务进度")}</h3>
-            <dl>
-              <div><dt>{copy(language, "Current result", "当前状态")}</dt><dd>{statusLabel(language, displayStatus(raw))}</dd></div>
-              {["learning_quiz", "document_quiz"].includes(raw.method) && <div><dt>{copy(language, "Attempt", "已尝试次数")}</dt><dd>{raw.attemptNo || 0}</dd></div>}
-              <div><dt>{copy(language, "Allowed action", "下一步")}</dt><dd>{taskAction(language, raw)}</dd></div>
-            </dl>
-          </section>
+          {isKuozhiTask ? (
+            <KuozhiProgressCard
+              className="kuozhi-progress-card--sidebar"
+              loading={!kuozhiProgressState || kuozhiProgressState.loading}
+              onRefresh={kuozhiProgressState?.onRefresh}
+              progress={kuozhiProgressState?.progress}
+              progressError={kuozhiProgressState?.progressError}
+              refreshing={kuozhiProgressState?.refreshing}
+            />
+          ) : (
+            <section className="task-execution-card">
+              <h3>{copy(language, "Task progress", "任务进度")}</h3>
+              <dl>
+                <div><dt>{copy(language, "Current result", "当前状态")}</dt><dd>{statusLabel(language, displayStatus(raw))}</dd></div>
+                {["learning_quiz", "document_quiz"].includes(raw.method) && <div><dt>{copy(language, "Attempt", "已尝试次数")}</dt><dd>{raw.attemptNo || 0}</dd></div>}
+                <div><dt>{copy(language, "Allowed action", "下一步")}</dt><dd>{taskAction(language, raw)}</dd></div>
+              </dl>
+            </section>
+          )}
           <section className="task-toki">
             <Toki
               mood={mood}
@@ -1978,13 +1996,6 @@ function TaskDetailPage({
                       )}
             </strong>
           </section>
-          <section className="help-links">
-            <button type="button" onClick={onHelp}>
-              <Question size={24} />
-              {copy(language, "Help Center", "帮助中心")}
-              <ArrowRight size={18} />
-            </button>
-          </section>
         </aside>}
       </div>
       {!isLessonPreparation && <section className="mobile-task-toki">
@@ -2019,11 +2030,6 @@ function TaskDetailPage({
                 )}
         </span>
       </section>}
-      <button className="mobile-help-link" type="button" onClick={onHelp}>
-        <Question size={20} />
-        {copy(language, "Help Center", "帮助中心")}
-        <ArrowRight size={18} />
-      </button>
     </main>
   );
 }
