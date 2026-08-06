@@ -3,7 +3,6 @@ import {
   ArrowClockwise,
   CheckCircle,
   Clock,
-  GraduationCap,
   SpinnerGap,
   WarningCircle,
 } from '@phosphor-icons/react';
@@ -67,6 +66,29 @@ function progressSummary(progress, c) {
   );
 }
 
+function initialCourseId(courses, progress) {
+  if (!courses.length) return null;
+  const progressByCourse = new Map(
+    (progress?.courses ?? []).map((course) => [course.courseId, course]),
+  );
+  return (
+    courses.find((course) => !progressByCourse.get(course.courseId)?.completed)
+    ?? courses[0]
+  ).courseId;
+}
+
+function courseStatusCopy(course, progress, c) {
+  const courseProgress = progress?.courses?.find(
+    (item) => item.courseId === course.courseId,
+  );
+  if (!courseProgress || !courseProgress.sourceAvailable) {
+    return c('Waiting to sync', '等待同步');
+  }
+  if (courseProgress.completed) return c('Completed', '已完成');
+  if (courseProgress.percent !== null) return `${courseProgress.percent}%`;
+  return c('In progress', '进行中');
+}
+
 export default function KuozhiCourseTask({ task }) {
   const { language } = useI18n();
   const [launch, setLaunch] = useState(null);
@@ -75,6 +97,8 @@ export default function KuozhiCourseTask({ task }) {
   const [refreshing, setRefreshing] = useState(false);
   const [launchError, setLaunchError] = useState('');
   const [progressError, setProgressError] = useState('');
+  const [activeCourseId, setActiveCourseId] = useState(null);
+  const [visitedCourseIds, setVisitedCourseIds] = useState(() => new Set());
   const c = useCallback((en, zh) => (language === 'zh' ? zh : en), [language]);
 
   const refreshProgress = useCallback(async (signal, currentProgress = progress) => {
@@ -117,6 +141,8 @@ export default function KuozhiCourseTask({ task }) {
     setLoading(true);
     setLaunchError('');
     setProgressError('');
+    setActiveCourseId(null);
+    setVisitedCourseIds(new Set());
 
     const load = async () => {
       try {
@@ -124,9 +150,7 @@ export default function KuozhiCourseTask({ task }) {
           task.backendId,
           controller.signal,
         );
-        if (launchResponse.dataMode === 'REAL') {
-          await task.execution?.start?.();
-        }
+        await task.execution?.start?.();
         const latestProgress = await getKuozhiProgress(
           task.backendId,
           controller.signal,
@@ -134,6 +158,12 @@ export default function KuozhiCourseTask({ task }) {
         if (!active) return;
         setLaunch(launchResponse);
         setProgress(latestProgress);
+        const firstCourseId = initialCourseId(
+          launchResponse.courses ?? [],
+          latestProgress,
+        );
+        setActiveCourseId(firstCourseId);
+        setVisitedCourseIds(new Set(firstCourseId ? [firstCourseId] : []));
         await refreshProgress(controller.signal, latestProgress);
       } catch (caught) {
         if (!active || caught?.name === 'AbortError') return;
@@ -158,39 +188,26 @@ export default function KuozhiCourseTask({ task }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.backendId]);
 
+  const courses = launch?.courses ?? [];
+  const hasMultipleCourses = courses.length > 1;
+  const selectedCourseId = courses.some(
+    (course) => course.courseId === activeCourseId,
+  )
+    ? activeCourseId
+    : courses[0]?.courseId ?? null;
+
+  const selectCourse = (courseId) => {
+    setActiveCourseId(courseId);
+    setVisitedCourseIds((current) => {
+      if (current.has(courseId)) return current;
+      const next = new Set(current);
+      next.add(courseId);
+      return next;
+    });
+  };
+
   return (
     <div className="kuozhi-course-flow">
-      <div className="kuozhi-course-toolbar">
-        <div>
-          <span className="kuozhi-course-icon">
-            <GraduationCap size={22} weight="fill" />
-          </span>
-          <div>
-            <strong>{c('Training courses', '培训课程')}</strong>
-            <small>
-              {loading
-                ? c('Preparing secure access…', '正在准备安全访问…')
-                : c(`${launch?.courses?.length ?? 0} course(s)`, `${launch?.courses?.length ?? 0} 门课程`)}
-            </small>
-          </div>
-        </div>
-        {launch?.dataMode === 'SAMPLE_DRY_RUN' && (
-          <span className="kuozhi-sample-badge">{c('Sample dry run', '示例联调')}</span>
-        )}
-      </div>
-
-      {launch?.dataMode === 'SAMPLE_DRY_RUN' && (
-        <div className="kuozhi-sample-note" role="note">
-          <WarningCircle size={20} weight="fill" />
-          <span>
-            {c(
-              'This is sample course data for integration testing. It will not change the current teacher task status.',
-              '当前展示的是示例课程数据，只用于联调，不会修改当前老师的任务状态。',
-            )}
-          </span>
-        </div>
-      )}
-
       {launchError && (
         <div className="kuozhi-course-error" role="alert">
           <WarningCircle size={26} weight="fill" />
@@ -198,19 +215,61 @@ export default function KuozhiCourseTask({ task }) {
         </div>
       )}
 
+      {hasMultipleCourses && (
+        <div
+          className="kuozhi-course-tabs"
+          role="tablist"
+          aria-label={c('Training courses', '培训课程')}
+        >
+          {courses.map((course, index) => {
+            const isActive = course.courseId === selectedCourseId;
+            const title = course.title || c(`Course ${index + 1}`, `课程 ${index + 1}`);
+            const completed = progress?.courses?.find(
+              (item) => item.courseId === course.courseId,
+            )?.completed;
+            return (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                aria-controls={`kuozhi-course-panel-${course.courseId}`}
+                id={`kuozhi-course-tab-${course.courseId}`}
+                className={isActive ? 'is-active' : ''}
+                key={course.courseId}
+                onClick={() => selectCourse(course.courseId)}
+              >
+                {completed
+                  ? <CheckCircle size={19} weight="fill" />
+                  : <Clock size={19} weight="fill" />}
+                <span>
+                  <strong>{title}</strong>
+                  <small>{courseStatusCopy(course, progress, c)}</small>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="kuozhi-course-grid">
-        {(launch?.courses ?? []).map((course) => {
+        {courses.map((course, index) => {
           const courseTitle = course.title
-            || c(`Course ${course.courseId}`, `课程 ${course.courseId}`);
+            || c(`Course ${index + 1}`, `课程 ${index + 1}`);
+          const isActive = course.courseId === selectedCourseId;
+          const shouldMount = isActive || visitedCourseIds.has(course.courseId);
+          if (!shouldMount) return null;
           return (
-            <section className="kuozhi-course-entry" key={course.courseId}>
-              <article className="kuozhi-launch-card">
-                <div>
-                  <strong>{courseTitle}</strong>
-                  <small>{c(`Course ID ${course.courseId}`, `课程 ID ${course.courseId}`)}</small>
-                </div>
-              </article>
-              <div className="kuozhi-embed-shell">
+            <section
+              className="kuozhi-course-entry"
+              id={`kuozhi-course-panel-${course.courseId}`}
+              role={hasMultipleCourses ? 'tabpanel' : undefined}
+              aria-labelledby={hasMultipleCourses
+                ? `kuozhi-course-tab-${course.courseId}`
+                : undefined}
+              hidden={!isActive}
+              key={course.courseId}
+            >
+              <div className="kuozhi-embed-shell kuozhi-embed-shell--hide-navigation">
                 <iframe
                   src={course.launchUrl}
                   title={c(`${courseTitle} embedded course`, `${courseTitle} 内嵌课程`)}

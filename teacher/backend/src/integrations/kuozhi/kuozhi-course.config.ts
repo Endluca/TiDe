@@ -76,18 +76,10 @@ const taskMappingFields = {
 
 const taskMappingSchema = z.object(taskMappingFields).strict();
 
-const sampleProfileSchema = z
-  .object({
-    taskCode: z.string().regex(/^G0[1-9]$/u),
-    ...taskMappingFields,
-  })
-  .strict();
-
 const configurationSchema = z
   .object({
-    version: z.literal(3),
+    version: z.literal(4),
     tasks: z.record(z.string().regex(/^G0[1-9]$/u), taskMappingSchema),
-    sampleProfile: sampleProfileSchema,
   })
   .strict();
 

@@ -28,8 +28,25 @@ test('Kuozhi launch and progress stay behind the authenticated backend', async (
   assert.equal(component.includes('Open course'), false);
   assert.equal(component.includes('Open in new window'), false);
   assert.equal(component.includes('course.embedMode'), false);
-  assert.match(component, /SAMPLE_DRY_RUN/);
-  assert.match(component, /launchResponse\.dataMode === 'REAL'/);
-  assert.match(component, /不会修改当前老师的任务状态/);
+  assert.equal(component.includes('Course ID'), false);
+  assert.equal(component.includes('course(s)'), false);
+  assert.match(component, /hasMultipleCourses &&/);
+  assert.match(component, /role="tablist"/);
+  assert.match(component, /visitedCourseIds/);
+  assert.match(component, /hidden=\{!isActive\}/);
+  assert.match(component, /kuozhi-embed-shell--hide-navigation/);
   assert.equal(component.includes('/complete'), false);
+});
+
+test('Kuozhi iframe navigation is cropped without touching cross-origin content', async () => {
+  const styles = await readFile(
+    new URL(
+      'frontend/src/features/task-content/kuozhi-course-task.css',
+      repoRoot,
+    ),
+    'utf8',
+  );
+
+  assert.match(styles, /--kuozhi-navigation-height:\s*72px/);
+  assert.match(styles, /translateY\(calc\(-1 \* var\(--kuozhi-navigation-height\)\)\)/);
 });

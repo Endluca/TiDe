@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "tasks": {
     "G01": {
       "integrationStatus": "MAPPING_ONLY",
@@ -174,22 +174,5 @@
         }
       ]
     }
-  },
-  "sampleProfile": {
-    "taskCode": "G06",
-    "integrationStatus": "ACTIVE",
-    "launchEnabled": true,
-    "completionEnabled": true,
-    "noHeader": true,
-    "courses": [
-      {
-        "courseId": "131",
-        "title": "PSO Training OVS (sample)",
-        "tasks": [
-          { "courseTaskId": "229", "title": "ACP video", "type": "VIDEO", "required": true, "completionPercent": 100 },
-          { "courseTaskId": "231", "title": "Sample assessment", "type": "TESTPAPER", "required": true, "scoreMode": "RAW_POINTS", "fullScore": 5, "passScore": { "kind": "FIXED", "percent": 80 } }
-        ]
-      }
-    ]
   }
 }

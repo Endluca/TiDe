@@ -42,7 +42,6 @@ const values: AppEnvironment = {
   KUOZHI_DETAIL_URL: 'http://edu.51talk.me/api/me/TeacherCourseDetail',
   KUOZHI_DETAIL_TIMEOUT_MS: 8_000,
   KUOZHI_DETAIL_RETRY_COUNT: 1,
-  KUOZHI_SAMPLE_MODE: false,
   FILE_STORAGE_PROVIDER: 'LOCAL',
   LOCAL_FILE_STORAGE_DIR: './storage/private',
   OSS_TIMEOUT_MS: 30_000,

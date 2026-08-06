@@ -97,13 +97,9 @@ export class TaskService {
       principal,
       taskInstanceId,
     );
-    const latest =
-      resolved.dataMode === 'REAL' && this.kuozhiProgress
-        ? await this.kuozhiProgress.getLatest(
-            principal.accountId,
-            taskInstanceId,
-          )
-        : null;
+    const latest = this.kuozhiProgress
+      ? await this.kuozhiProgress.getLatest(principal.accountId, taskInstanceId)
+      : null;
     return {
       ...(latest ?? this.kuozhi!.emptyProgress(resolved)),
       assignment: {
@@ -120,10 +116,7 @@ export class TaskService {
     idempotencyKey: string | undefined,
     input: RefreshKuozhiProgressDto,
   ): Promise<KuozhiProgressResponse> {
-    const { task, resolved } = await this.kuozhiContext(
-      principal,
-      taskInstanceId,
-    );
+    const { resolved } = await this.kuozhiContext(principal, taskInstanceId);
     const command = this.commandInput(
       principal,
       taskInstanceId,
@@ -139,17 +132,6 @@ export class TaskService {
           )
         : new Map<string, number>();
     const progress = await this.kuozhi!.fetchProgress(resolved, passScores);
-
-    if (resolved.dataMode === 'SAMPLE_DRY_RUN') {
-      return {
-        ...progress,
-        assignment: {
-          status: task.status,
-          stateVersion: task.stateVersion,
-          stateUpdated: false,
-        },
-      };
-    }
 
     try {
       return await this.requiredKuozhiProgress().persistRefresh({

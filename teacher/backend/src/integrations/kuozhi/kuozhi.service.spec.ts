@@ -14,7 +14,6 @@ function serviceFor(overrides: Partial<AppEnvironment> = {}) {
       process.cwd(),
       'config/kuozhi-courses.json',
     ),
-    KUOZHI_SAMPLE_MODE: false,
     ...overrides,
   };
   const config = {
@@ -163,7 +162,7 @@ describe('KuozhiService', () => {
     expect(response).toMatchObject({
       provider: 'KUOZHI',
       dataMode: 'REAL',
-      mappingVersion: 3,
+      mappingVersion: 4,
       integrationStatus: 'ACTIVE',
     });
     expect(response.courses.map((course) => course.courseId)).toEqual([
@@ -177,24 +176,6 @@ describe('KuozhiService', () => {
     expect(launch.searchParams.get('id')).toBe('TEACHER-001');
     expect(launch.searchParams.get('to')).toBe(
       'https://edu.51talk.com/course/520?noheader=1',
-    );
-  });
-
-  it('overrides only G06 with the isolated sample profile', async () => {
-    const service = serviceFor({
-      KUOZHI_SAMPLE_MODE: true,
-      KUOZHI_SAMPLE_TEACHER_ID: '360107609',
-    });
-    const response = await service.createLaunch('G06', 'REAL-TEACHER');
-    const launch = new URL(response.courses[0].launchUrl);
-
-    expect(response.dataMode).toBe('SAMPLE_DRY_RUN');
-    expect(response.courses).toHaveLength(1);
-    expect(response.courses[0].courseId).toBe('131');
-    expect(response.courses[0].embedMode).toBe('IFRAME');
-    expect(launch.searchParams.get('id')).toBe('REAL-TEACHER');
-    expect(launch.searchParams.get('to')).toBe(
-      'https://edu.51talk.com/course/131?noheader=1',
     );
   });
 });

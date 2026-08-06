@@ -229,7 +229,7 @@ export interface TaskContext {
 
 export interface KuozhiLaunchResponse {
   provider: 'KUOZHI';
-  dataMode: 'REAL' | 'SAMPLE_DRY_RUN';
+  dataMode: 'REAL';
   integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
   mappingVersion: number;
   courses: Array<{
@@ -242,7 +242,7 @@ export interface KuozhiLaunchResponse {
 
 export interface KuozhiProgressResponse {
   provider: 'KUOZHI';
-  dataMode: 'REAL' | 'SAMPLE_DRY_RUN';
+  dataMode: 'REAL';
   integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
   mappingVersion: number;
   syncStatus: 'NOT_SYNCED' | 'AVAILABLE' | 'PARTIAL' | 'NO_DATA';

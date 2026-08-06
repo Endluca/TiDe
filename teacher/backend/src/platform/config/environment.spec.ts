@@ -53,7 +53,6 @@ describe('environment configuration', () => {
     expect(environment.KUOZHI_DETAIL_HOST_IP).toBeUndefined();
     expect(environment.KUOZHI_DETAIL_TIMEOUT_MS).toBe(8_000);
     expect(environment.KUOZHI_DETAIL_RETRY_COUNT).toBe(1);
-    expect(environment.KUOZHI_SAMPLE_MODE).toBe(false);
     expect(parseCorsOrigins('https://a.example, https://b.example')).toEqual([
       'https://a.example',
       'https://b.example',
@@ -107,20 +106,6 @@ describe('environment configuration', () => {
     expect(environment.KUOZHI_COURSE_CONFIG_PATH).toBe(
       './config/kuozhi-courses.json',
     );
-  });
-
-  it('requires a teacher id only when Kuozhi sample mode is enabled', () => {
-    expect(() =>
-      validateEnvironment({ NODE_ENV: 'test', KUOZHI_SAMPLE_MODE: 'true' }),
-    ).toThrow('KUOZHI_SAMPLE_TEACHER_ID');
-
-    expect(
-      validateEnvironment({
-        NODE_ENV: 'test',
-        KUOZHI_SAMPLE_MODE: 'true',
-        KUOZHI_SAMPLE_TEACHER_ID: '360107609',
-      }).KUOZHI_SAMPLE_MODE,
-    ).toBe(true);
   });
 
   it('accepts only an IPv4 override for the Kuozhi detail host', () => {

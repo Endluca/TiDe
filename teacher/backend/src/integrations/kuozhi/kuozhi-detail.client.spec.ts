@@ -8,14 +8,16 @@ describe('KuozhiDetailClient', () => {
   afterEach(() => jest.restoreAllMocks());
 
   it('sends the required media type and query parameters', async () => {
-    const fetchMock = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({ id: '131', title: 'Sample', task_list: null }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-      );
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: '513',
+          title: 'Teacher Tie-Up Program',
+          task_list: null,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
     const values: Partial<AppEnvironment> = {
       KUOZHI_DETAIL_URL: 'http://edu.51talk.me/api/me/TeacherCourseDetail',
       KUOZHI_DETAIL_TIMEOUT_MS: 8_000,
@@ -25,14 +27,14 @@ describe('KuozhiDetailClient', () => {
       get: (key: keyof AppEnvironment) => values[key],
     } as ConfigService<AppEnvironment, true>);
 
-    await expect(client.getCourseDetail('360107609', '131')).resolves.toEqual(
-      expect.objectContaining({ id: '131' }),
+    await expect(client.getCourseDetail('TEACHER-001', '513')).resolves.toEqual(
+      expect.objectContaining({ id: '513' }),
     );
     const [url, options] = fetchMock.mock.calls[0];
     const requestUrl =
       typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
-    expect(requestUrl).toContain('course_id=131');
-    expect(requestUrl).toContain('t_id=360107609');
+    expect(requestUrl).toContain('course_id=513');
+    expect(requestUrl).toContain('t_id=TEACHER-001');
     expect(options?.headers).toEqual({
       Accept: 'application/vnd.edusoho.v2+json',
     });
@@ -48,7 +50,11 @@ describe('KuozhiDetailClient', () => {
       requestAccept = request.headers.accept ?? '';
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(
-        JSON.stringify({ id: '131', title: 'Sample', task_list: null }),
+        JSON.stringify({
+          id: '513',
+          title: 'Teacher Tie-Up Program',
+          task_list: null,
+        }),
       );
     });
     await new Promise<void>((resolve) =>
@@ -66,12 +72,12 @@ describe('KuozhiDetailClient', () => {
     } as ConfigService<AppEnvironment, true>);
 
     try {
-      await expect(client.getCourseDetail('360107609', '131')).resolves.toEqual(
-        expect.objectContaining({ id: '131' }),
-      );
+      await expect(
+        client.getCourseDetail('TEACHER-001', '513'),
+      ).resolves.toEqual(expect.objectContaining({ id: '513' }));
       expect(requestHost).toBe(`edu.51talk.me:${address.port}`);
-      expect(requestUrl).toContain('course_id=131');
-      expect(requestUrl).toContain('t_id=360107609');
+      expect(requestUrl).toContain('course_id=513');
+      expect(requestUrl).toContain('t_id=TEACHER-001');
       expect(requestAccept).toBe('application/vnd.edusoho.v2+json');
     } finally {
       await new Promise<void>((resolve, reject) =>

@@ -2,10 +2,10 @@ import type { KuozhiResolvedMapping } from './kuozhi.models';
 import { evaluateKuozhiProgress } from './kuozhi-progress.evaluator';
 
 const resolved: KuozhiResolvedMapping = {
-  mappingVersion: 3,
+  mappingVersion: 4,
   taskCode: 'G06',
-  dataMode: 'SAMPLE_DRY_RUN',
-  queryTeacherId: '360107609',
+  dataMode: 'REAL',
+  queryTeacherId: 'TEACHER-001',
   mapping: {
     integrationStatus: 'ACTIVE',
     launchEnabled: true,
@@ -13,17 +13,17 @@ const resolved: KuozhiResolvedMapping = {
     noHeader: true,
     courses: [
       {
-        courseId: '131',
-        title: 'Sample',
+        courseId: '520',
+        title: 'ME Culture and PARSNIP',
         tasks: [
           {
-            courseTaskId: '229',
+            courseTaskId: '2791',
             type: 'VIDEO',
             required: true,
             completionPercent: 100,
           },
           {
-            courseTaskId: '231',
+            courseTaskId: '2792',
             type: 'TESTPAPER',
             required: true,
             scoreMode: 'RAW_POINTS',
@@ -42,13 +42,18 @@ describe('evaluateKuozhiProgress', () => {
       resolved,
       [
         {
-          id: '131',
-          title: 'PSO Training OVS',
+          id: '520',
+          title: 'ME Culture and PARSNIP',
           percent: '100',
           task_list: {
-            '229': { id: '229', title: 'Video', type: 'video', percent: 100 },
-            '231': {
-              id: '231',
+            '2791': {
+              id: '2791',
+              title: 'Video',
+              type: 'video',
+              percent: 100,
+            },
+            '2792': {
+              id: '2792',
               title: 'Exam',
               type: 'testpaper',
               percent: 100,
@@ -81,11 +86,11 @@ describe('evaluateKuozhiProgress', () => {
       resolved,
       [
         {
-          id: '131',
-          title: 'PSO Training OVS',
+          id: '520',
+          title: 'ME Culture and PARSNIP',
           percent: '50',
           task_list: {
-            '229': { id: '229', type: 'video', percent: 100 },
+            '2791': { id: '2791', type: 'video', percent: 100 },
           },
         },
       ],

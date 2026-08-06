@@ -31,7 +31,7 @@
 | `0023_teacher_support_operator_atomicity` | 运营回复与 `WAITING_TEACHER`、回复时间、48 小时窗口在同一行锁事务内提交 |
 | `0024_support_ticket_cas_and_function_owner` | 拒绝 NULL expected row version 和 NULL message，并把全部工单 SECURITY DEFINER 函数固定给非登录最小权限 owner；该安全迁移 forward-only |
 | `0025_fixed_task_semantic_alignment` | 按运营端稳定 `row_id` 将旧 G01–G10 执行语义原位对齐到当前 G01–G09，旧 G05 归档为 retired G00；保留 execution ID、共享模板关联和过程数据；新增通过稳定 assignment/template 解析当前编码的 analytics v2，raw code 仅作审计；该业务身份迁移 forward-only |
-| `0026_kuozhi_course_syncs` | 保存阔知课程刷新快照、双重幂等回执和完成判定；正式达标时与共享 assignment 状态更新同事务提交，示例模式不写入 |
+| `0026_kuozhi_course_syncs` | 保存阔知正式课程刷新快照、双重幂等回执和完成判定；达标时与共享 assignment 状态更新同事务提交，数据库只接受 `dataMode = REAL` |
 
 `0008` 在删除前会阻断任何未映射的过程数据或非 Mock 个性化任务，不会静默丢弃真实数据。
 

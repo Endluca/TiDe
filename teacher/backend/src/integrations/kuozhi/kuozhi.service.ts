@@ -36,35 +36,6 @@ export class KuozhiService {
     teacherId: string,
   ): Promise<KuozhiResolvedMapping> {
     const configuration = await this.configuration();
-    const sampleMode = this.config.get('KUOZHI_SAMPLE_MODE', { infer: true });
-    if (sampleMode && configuration.sampleProfile.taskCode === taskCode) {
-      const queryTeacherId = this.config.get('KUOZHI_SAMPLE_TEACHER_ID', {
-        infer: true,
-      });
-      if (!queryTeacherId) {
-        throw new ServiceUnavailableException({
-          code: 'KUOZHI_SAMPLE_NOT_CONFIGURED',
-          message: '阔知示例账号尚未配置',
-          retryable: false,
-        });
-      }
-      const sample = configuration.sampleProfile;
-      const mapping: KuozhiCourseMapping = {
-        integrationStatus: sample.integrationStatus,
-        launchEnabled: sample.launchEnabled,
-        completionEnabled: sample.completionEnabled,
-        noHeader: sample.noHeader,
-        courses: sample.courses,
-      };
-      return {
-        mappingVersion: configuration.version,
-        taskCode,
-        dataMode: 'SAMPLE_DRY_RUN',
-        queryTeacherId,
-        mapping,
-      };
-    }
-
     const mapping = configuration.tasks[taskCode];
     if (!mapping) {
       throw new NotFoundException({
@@ -123,9 +94,6 @@ export class KuozhiService {
             loginUrl,
             appKey,
             secretKey,
-            // Sample mode may use a separate teacher only for read-only
-            // progress data. A login ticket must always represent the
-            // authenticated TIDE teacher.
             teacherId,
             targetUrl: target.toString(),
           }),

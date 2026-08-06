@@ -3,14 +3,13 @@ import type {
   KuozhiPassScoreSource,
 } from './kuozhi-course.config';
 
-export type KuozhiDataMode = 'REAL' | 'SAMPLE_DRY_RUN';
 export type KuozhiSyncStatus =
   'NOT_SYNCED' | 'AVAILABLE' | 'PARTIAL' | 'NO_DATA';
 
 export interface KuozhiResolvedMapping {
   mappingVersion: number;
   taskCode: string;
-  dataMode: KuozhiDataMode;
+  dataMode: 'REAL';
   queryTeacherId: string;
   mapping: KuozhiCourseMapping;
 }
@@ -24,7 +23,7 @@ export interface KuozhiLaunchCourse {
 
 export interface KuozhiLaunchResponse {
   provider: 'KUOZHI';
-  dataMode: KuozhiDataMode;
+  dataMode: 'REAL';
   integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
   mappingVersion: number;
   courses: KuozhiLaunchCourse[];
@@ -55,7 +54,7 @@ export interface KuozhiProgressCourse {
 
 export interface KuozhiProgressCore {
   provider: 'KUOZHI';
-  dataMode: KuozhiDataMode;
+  dataMode: 'REAL';
   integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
   mappingVersion: number;
   syncStatus: KuozhiSyncStatus;

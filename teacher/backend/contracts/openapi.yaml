@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TIDE Teacher API Contract
-  version: 0.13.0
+  version: 0.14.0
   description: >-
     教师端公共合同。包含教师端任务、文件和 My TIDE 安全读取；
     各模块实现状态见 contracts/README。任务、G01 状态和外部消息直接使用共享 PostgreSQL 契约表；
@@ -267,8 +267,7 @@ paths:
       tags: [Tasks]
       summary: 查询阔知并幂等刷新当前任务进度
       description: >-
-        teacher_id 和 course_id 均由后端认证绑定与版本化映射取得。示例模式只返回
-        SAMPLE_DRY_RUN 数据，不保存快照，也不更新当前老师的任务状态。
+        teacher_id 和 course_id 均由后端认证绑定与版本化映射取得；只查询并保存正式课程数据。
       operationId: refreshKuozhiCourseProgress
       security: [{ bearerAuth: [] }]
       parameters:
@@ -1146,7 +1145,7 @@ components:
       required: [provider, dataMode, integrationStatus, mappingVersion, courses]
       properties:
         provider: { type: string, const: KUOZHI }
-        dataMode: { type: string, enum: [REAL, SAMPLE_DRY_RUN] }
+        dataMode: { type: string, const: REAL }
         integrationStatus: { type: string, enum: [ACTIVE, PARTIAL, MAPPING_ONLY] }
         mappingVersion: { type: integer, minimum: 1 }
         courses:
@@ -1167,7 +1166,7 @@ components:
       required: [provider, dataMode, integrationStatus, mappingVersion, syncStatus, refreshedAt, courses, completion, assignment]
       properties:
         provider: { type: string, const: KUOZHI }
-        dataMode: { type: string, enum: [REAL, SAMPLE_DRY_RUN] }
+        dataMode: { type: string, const: REAL }
         integrationStatus: { type: string, enum: [ACTIVE, PARTIAL, MAPPING_ONLY] }
         mappingVersion: { type: integer, minimum: 1 }
         syncStatus: { type: string, enum: [NOT_SYNCED, AVAILABLE, PARTIAL, NO_DATA] }
