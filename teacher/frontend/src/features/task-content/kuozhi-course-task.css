@@ -56,6 +56,22 @@
   scrollbar-width: thin;
 }
 
+.kuozhi-course-switcher {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.kuozhi-course-swipe-hint {
+  display: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  color: #607087;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .kuozhi-course-tabs button {
   display: flex;
   flex: 1 0 210px;
@@ -455,7 +471,18 @@
 @media (max-width: 720px) {
   .kuozhi-course-flow { padding: 0 14px 18px; }
   .kuozhi-progress-card--mobile { display: grid; }
-  .kuozhi-course-tabs button { flex-basis: min(78vw, 260px); }
+  .kuozhi-course-swipe-hint { display: inline-flex; }
+  .kuozhi-course-tabs {
+    overscroll-behavior-inline: contain;
+    scroll-padding-inline: 6px;
+    scroll-snap-type: inline mandatory;
+    scrollbar-width: none;
+  }
+  .kuozhi-course-tabs::-webkit-scrollbar { display: none; }
+  .kuozhi-course-tabs button {
+    flex-basis: min(76vw, 250px);
+    scroll-snap-align: start;
+  }
   .kuozhi-progress-course-list {
     max-height: none;
     overflow: visible;
@@ -470,6 +497,9 @@
   .kuozhi-embed-shell iframe {
     height: calc(70vh + var(--kuozhi-navigation-height));
     min-height: calc(70vh + var(--kuozhi-navigation-height));
+  }
+  .kuozhi-embed-shell--hide-navigation iframe {
+    transform: none;
   }
 }
 

@@ -1,6 +1,6 @@
 export const AI_HELP_MOBILE_BREAKPOINT = 720;
 export const AI_HELP_DESKTOP_SIZE = 84;
-export const AI_HELP_MOBILE_SIZE = 62;
+export const AI_HELP_MOBILE_SIZE = 50;
 
 const finiteOr = (value, fallback) =>
   Number.isFinite(value) ? value : fallback;

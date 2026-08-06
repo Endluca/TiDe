@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  ArrowsLeftRight,
   CheckCircle,
   Clock,
   SpinnerGap,
@@ -219,38 +220,44 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
       )}
 
       {hasMultipleCourses && (
-        <div
-          className="kuozhi-course-tabs"
-          role="tablist"
-          aria-label={c('Training courses', '培训课程')}
-        >
-          {courses.map((course, index) => {
-            const isActive = course.courseId === selectedCourseId;
-            const title = course.title || c(`Course ${index + 1}`, `课程 ${index + 1}`);
-            const completed = progress?.courses?.find(
-              (item) => item.courseId === course.courseId,
-            )?.completed;
-            return (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                aria-controls={`kuozhi-course-panel-${course.courseId}`}
-                id={`kuozhi-course-tab-${course.courseId}`}
-                className={isActive ? 'is-active' : ''}
-                key={course.courseId}
-                onClick={() => selectCourse(course.courseId)}
-              >
-                {completed
-                  ? <CheckCircle size={19} weight="fill" />
-                  : <Clock size={19} weight="fill" />}
-                <span>
-                  <strong>{title}</strong>
-                  <small>{courseStatusCopy(course, progress, c)}</small>
-                </span>
-              </button>
-            );
-          })}
+        <div className="kuozhi-course-switcher">
+          <small className="kuozhi-course-swipe-hint">
+            <ArrowsLeftRight size={15} weight="bold" />
+            {c('Swipe to switch courses', '左右滑动切换课程')}
+          </small>
+          <div
+            className="kuozhi-course-tabs"
+            role="tablist"
+            aria-label={c('Training courses', '培训课程')}
+          >
+            {courses.map((course, index) => {
+              const isActive = course.courseId === selectedCourseId;
+              const title = course.title || c(`Course ${index + 1}`, `课程 ${index + 1}`);
+              const completed = progress?.courses?.find(
+                (item) => item.courseId === course.courseId,
+              )?.completed;
+              return (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  aria-controls={`kuozhi-course-panel-${course.courseId}`}
+                  id={`kuozhi-course-tab-${course.courseId}`}
+                  className={isActive ? 'is-active' : ''}
+                  key={course.courseId}
+                  onClick={() => selectCourse(course.courseId)}
+                >
+                  {completed
+                    ? <CheckCircle size={19} weight="fill" />
+                    : <Clock size={19} weight="fill" />}
+                  <span>
+                    <strong>{title}</strong>
+                    <small>{courseStatusCopy(course, progress, c)}</small>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

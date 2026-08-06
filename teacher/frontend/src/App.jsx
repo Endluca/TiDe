@@ -406,8 +406,9 @@ function FloatingAiHelpButton({ language, onOpen, routeKey }) {
     const syncPosition = () => {
       const layout = measureAiHelpLayout();
       const stored = readAiHelpPositions()[layout.mode];
-      const candidate =
-        modeRef.current === layout.mode ? positionRef.current : stored;
+      const candidate = layout.mode === "mobile"
+        ? null
+        : modeRef.current === layout.mode ? positionRef.current : stored;
       const nextPosition = clampAiHelpPosition(
         candidate || defaultAiHelpPosition(
           layout.bounds,
@@ -476,6 +477,7 @@ function FloatingAiHelpButton({ language, onOpen, routeKey }) {
         }}
         onDragStart={(event) => event.preventDefault()}
         onPointerDown={(event) => {
+          if (window.innerWidth <= AI_HELP_MOBILE_BREAKPOINT) return;
           if (event.button !== 0) return;
           const rect = event.currentTarget.getBoundingClientRect();
           const move = (pointerEvent) => {
@@ -1946,7 +1948,14 @@ function TaskDetailPage({
     : workspaceMeta[raw.method] || ["Task actions", "任务操作", "Complete the action below to update your task progress.", "完成下方操作后，任务进度会自动更新。"];
   const [workspaceTitleEn, workspaceTitleZh, workspaceHintEn, workspaceHintZh] = workspaceCopy;
   return (
-    <main className={`ref-page task-screen ${isLessonPreparation ? "lesson-preparation-screen" : ""}`.trim()}>
+    <main
+      className={[
+        "ref-page",
+        "task-screen",
+        isLessonPreparation ? "lesson-preparation-screen" : "",
+        raw.method === "external_course" ? "kuozhi-task-screen" : "",
+      ].filter(Boolean).join(" ")}
+    >
       <div className="task-route-actions">
         <Link className="task-home-button" to="/path">
           <ArrowLeft size={17} />

@@ -1,38 +1,50 @@
-# AI 客服悬浮图标视觉校验
+# 手机端布局视觉校验
 
-- Source visual truth: `/var/folders/f6/55s7pcrs7170gzgzt2f30j200000gn/T/codex-clipboard-0a1931c1-d49a-40ac-8e68-710b31c6b93b.png`
-- Implementation screenshot: `/tmp/ai-helper-centered-desktop.png`
-- Combined comparison: `/tmp/ai-helper-before-after.png`
-- Viewport: 1280 × 720 CSS px; desktop helper size 84 × 84 CSS px
-- Pixels and density: source 117 × 126 px; implementation focused crop 125 × 145 px; device scale factor 1; no density resampling
-- State: default, animation completed, AI Support label visible
+- Source visual truth:
+  - `/var/folders/f6/55s7pcrs7170gzgzt2f30j200000gn/T/codex-clipboard-4d2d7b42-8609-4dea-92e1-bf730da18252.png`
+  - `/var/folders/f6/55s7pcrs7170gzgzt2f30j200000gn/T/codex-clipboard-000e68de-8a55-4627-9668-a7ae5908e752.png`
+  - `/var/folders/f6/55s7pcrs7170gzgzt2f30j200000gn/T/codex-clipboard-2d38a983-6f43-41be-8215-57f905bba796.png`
+  - `/var/folders/f6/55s7pcrs7170gzgzt2f30j200000gn/T/codex-clipboard-ea68c084-d8ef-47dd-8423-87c00f077869.png`
+- Implementation screenshots:
+  - `.codex-qa/mobile-toki-score-after.png`
+  - `.codex-qa/mobile-personalized-after.png`
+  - `.codex-qa/mobile-course-switch-after.png`
+- Viewport: 390 × 844 CSS px, device scale factor 1.
+- Source pixels: 357 × 292, 379 × 454, 363 × 159, 137 × 504.
+- Implementation pixels: each 390 × 844; no density resampling.
+- State: authenticated local preview, Chinese interface, mobile breakpoint.
 
 ## Full-view comparison evidence
 
-The combined comparison shows the same supplied robot asset, circular button, yellow badge, and label. The robot face is moved slightly right while the component footprint and surrounding UI remain unchanged.
+The source and implementation images were opened together in one comparison pass. The final page keeps the existing visual system while reducing Toki-card dead space, separating four-digit scores from the unit, making multi-course navigation explicitly swipeable, and introducing a two-column personalized-task grid.
 
 ## Focused region comparison evidence
 
-The component itself is the focused region, so no additional crop is required. The focused implementation screenshot confirms the face is visually centered without clipping the headset or placing the right eye under the badge.
+- Toki card: the illustration is 124 × 146 CSS px, moved upward beside the action content; the button now follows the action block instead of being pinned to the card bottom.
+- Score rows: an 88 px score slot uses a 66 px tabular-number column, an 18 px unit column, and a 4 px gap. `1044 分` renders without overlap.
+- Course switcher: the second card remains partially visible, the hint says “左右滑动切换课程”, scroll snapping works, and the mobile scrollbar is hidden.
+- Personalized tasks: the current local account has one personalized task, which correctly spans the row. The two-item layout is covered by the responsive contract (`repeat(2, minmax(0, 1fr))`) and its regression test; a live two-record state was not available in this account.
 
 ## Findings
 
-- Typography: unchanged; label family, weight, size, and line height remain consistent.
-- Spacing/layout: the source PNG's asymmetric transparent padding made the artwork read left-heavy. `translate(8%, 2px)` corrects the visual center while preserving button geometry.
-- Colors/tokens: unchanged.
-- Image quality: the original PNG is reused without scaling or compression changes beyond the existing component sizing; no halo or crop regression is visible.
-- Copy/content: unchanged.
-- P0/P1/P2 findings: none.
-- P3 follow-up: none required for the requested centering adjustment.
+- Fonts and typography: existing families, weights and hierarchy are preserved; score digits use tabular numerals for stable alignment.
+- Spacing and layout rhythm: the large gap below Toki content is removed; task cards and course tabs keep the existing mobile radii and spacing.
+- Colors and visual tokens: unchanged; brand blue, yellow and state colors remain consistent.
+- Image quality and asset fidelity: the existing Toki asset is reused at a larger size without replacement, clipping or visible blur.
+- Copy and content: existing task copy is unchanged; only the mobile course-swipe hint was added.
+- P0/P1/P2 findings: none after the second pass.
+- P3 follow-up: visually recheck the two-personalized-task state when an account with two live assignments is available.
 
 ## Comparison history
 
-No P0/P1/P2 issue was found, so no blocking QA iteration was required. The first implementation check showed the badge overlapping too much of the artwork after a stronger centering offset; the offset was reduced before the final comparison.
+1. First pass found the Toki illustration too small and the score unit colliding with four-digit values.
+2. Toki was enlarged and raised; the score slot was widened and split into fixed number/unit columns.
+3. Post-fix evidence shows the illustration adjacent to the content and `125 分` / `1044 分` separated and aligned.
 
-## Browser checks
+## Verification
 
-- Desktop 84 px and compact 62 px states rendered.
-- Browser console warnings/errors checked: none.
-- Button remains present and accessible as `AI Support`.
+- Primary interactions tested: page navigation and horizontal course-tab scrolling.
+- Responsive overflow: no page-level horizontal overflow at 390 px.
+- Automated checks: 173 tests passed; production build passed; `git diff --check` passed.
 
 final result: passed
