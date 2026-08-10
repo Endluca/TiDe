@@ -22,7 +22,7 @@ if [[ "${env_file_mode}" != "600" ]]; then
   exit 1
 fi
 
-while IFS='=' read -r key value; do
+while IFS='=' read -r key value || [[ -n "${key}" ]]; do
   value="${value%$'\r'}"
   case "${key}" in
     TIDE_ADMIN_DB_HOST|TIDE_ADMIN_DB_PORT|TIDE_ADMIN_DB_USER|TIDE_ADMIN_DB_NAME|TIDE_ADMIN_DB_PASSWORD|TIDE_APP_DB_USER|TIDE_APP_DB_PASSWORD|TIDE_ADMIN_DB_SSLMODE)
@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260807_49_unused_columns"
+EXPECTED_PUBLIC_HEAD="20260810_50_g04_sections"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -193,10 +193,12 @@ CANONICAL_TIDE_MIGRATIONS=(
   0028_retire_task_business_change_view
   0029_remove_unused_tide_objects
   0030_remove_unused_columns_and_orphan_function
+  0031_g04_independent_sections
+  0032_first_login_onboarding
 )
 
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('tide.schema_migrations') is not null")" != "t" ]]; then
-  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public 46 -> teacher 0028 -> public 49 -> teacher 0030 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
+  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public 46 -> teacher 0028 -> public 50 -> teacher 0032 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
   exit 1
 fi
 
@@ -208,10 +210,10 @@ actual_tide_migration_ids="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 tide_ledger_shape_ready="$("${ADMIN_PSQL[@]}" -Atqc "
   select
-    count(*) = 28
+    count(*) = 30
     and min(migration_order) = 1
-    and max(migration_order) = 28
-    and count(distinct migration_order) = 28
+    and max(migration_order) = 30
+    and count(distinct migration_order) = 30
     and bool_and(filename = migration_id || '.up.sql')
   from tide.schema_migrations
 ")"
@@ -223,7 +225,7 @@ if [[ "${actual_tide_migration_ids}" != "${expected_tide_migration_ids}" \
       '未记账'
     )
   ")"
-  echo "公司测试库 Tide 账本不是精确 canonical 0030（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
+  echo "公司测试库 Tide 账本不是精确 canonical 0032（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
   exit 1
 fi
 
@@ -282,6 +284,14 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
     and to_regclass('tide.job_leases') is not null
     and to_regclass('tide.job_leases_expiry_idx') is not null
     and to_regclass('tide.kuozhi_course_syncs') is not null
+    and to_regclass('tide.account_onboarding_states') is not null
+    and exists (
+      select 1
+      from pg_constraint
+      where conrelid = 'tide.account_onboarding_states'::regclass
+        and conname = 'account_onboarding_states_idempotency_key_check'
+        and contype = 'c'
+    )
     and to_regclass('public.teacher_support_tickets') is not null
     and to_regclass('public.config_versions') is not null
     and to_regclass('public.score_entries') is not null
@@ -342,9 +352,31 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
         and column_name = 'visibility'
     )
     and to_regprocedure('tide.enforce_outbox_target()') is null
+    and exists (
+      select 1
+      from tide.task_execution_versions execution
+      where execution.shared_template_row_id = 'G02:v1'
+        and execution.task_code = 'G04'
+        and execution.status = 'ACTIVE'
+        and execution.execution_contract_version = 'task-contract-v3'
+        and execution.config->>'contentVersion' = '2026-08-05-g04-three-part'
+        and jsonb_array_length(
+          execution.config->'independentModules'->'stepKeys'
+        ) = 3
+        and (
+          select count(*)
+          from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+        ) = 3
+        and (
+          select count(*)
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+        ) = 2
+    )
 ")"
 if [[ "${canonical_schema_ready}" != "t" ]]; then
-  echo "公司测试库虽已记账到 canonical 0030，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
+  echo "公司测试库虽已记账到 canonical 0032，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
   exit 1
 fi
 
@@ -371,7 +403,6 @@ if [[ "${required_current_catalog_ready}" != "t" ]]; then
   echo "公司测试库缺少精确的 14 条当前已发布任务模板。请先执行运营端显式配置 Seed；初始化未写入 execution。" >&2
   exit 1
 fi
-
 template_snapshot_before="$("${ADMIN_PSQL[@]}" -Atqc "
   select md5(string_agg(row_to_json(template)::text, '' order by row_id))
   from public.task_templates template
@@ -543,6 +574,47 @@ verification="$("${APP_PSQL[@]}" -Atqc "
         to_regclass('tide.job_leases'),
         'DELETE'
       )
+      and to_regclass('tide.account_onboarding_states') is not null
+      and has_table_privilege(
+        current_user,
+        'tide.account_onboarding_states',
+        'SELECT'
+      )
+      and has_table_privilege(
+        current_user,
+        'tide.account_onboarding_states',
+        'INSERT'
+      )
+      and not has_table_privilege(
+        current_user,
+        'tide.account_onboarding_states',
+        'UPDATE'
+      )
+      and not has_table_privilege(
+        current_user,
+        'tide.account_onboarding_states',
+        'DELETE'
+      )
+      and has_table_privilege(
+        current_user,
+        'tide.schema_migrations',
+        'SELECT'
+      )
+      and not has_table_privilege(
+        current_user,
+        'tide.schema_migrations',
+        'INSERT'
+      )
+      and not has_table_privilege(
+        current_user,
+        'tide.schema_migrations',
+        'UPDATE'
+      )
+      and not has_table_privilege(
+        current_user,
+        'tide.schema_migrations',
+        'DELETE'
+      )
       and has_table_privilege(current_user, 'public.teachers', 'SELECT')
       and not has_table_privilege(current_user, 'public.teachers', 'INSERT')
       and not has_table_privilege(current_user, 'public.teachers', 'UPDATE')
@@ -607,4 +679,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：public rev49 与 canonical Tide 0030 账本/checksum/实存结构只读门禁、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public rev50 与 canonical Tide 0032 账本/checksum/实存结构只读门禁、G04 三模块、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"

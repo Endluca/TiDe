@@ -108,17 +108,16 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码与交接测试库迁移 head 均为 public `20260807_49_unused_columns` 与 teacher
-  `0030_remove_unused_columns_and_orphan_function`。`tit_growth_test_v2` 已于 2026-08-10
-  受控重建，Tide 为精确 28 条 canonical 账本，本地 Quiz 运行时与 0028–0030 退役对象均已
-  清理；重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`，仅保留 DBA 回滚连接。
-  当前结构中
+- 当前代码与交接测试库迁移 head 均为 public `20260810_50_g04_sections` 与 teacher
+  `0032_first_login_onboarding`。`tit_growth_test_v2` 已于 2026-08-10 受控升级，Tide 为精确
+  30 条 canonical 账本，G04 三模块与首次登录引导已落库；重建前旧库封存为
+  `tit_growth_test_v2_pre0030_20260810`，仅保留 DBA 回滚连接。当前结构中
   `teacher_source_wide` 为 CSV 教师 61 列加 2 个可空 G01 状态字段，
   `lesson_source_wide` 严格对应 CSV 课程 23 列（无“是否复约”）；两表均不增加
   更新时间、版本、哈希或同步批次字段。旧教师快照、旧课程事实、旧逐课三行积分表及其
   唯一分析视图已按所有权顺序无 `CASCADE` 删除；rev48 进一步删除 4 张无用 public 表、
-  合并投诉规则来源表并原位瘦身两张积分账户表；rev49 删除两个可从投诉原始行恢复的学习字段和未独立维护的会话活跃时间；teacher 0029 删除 6 张空置无消费者表和
-  5 个被当前实现替代的分析视图，0030 继续删除固定为私有的文件可见性列与无消费者的孤儿函数。旧库 `tit_growth_test` 未原地改造。
+  合并投诉规则来源表并原位瘦身两张积分账户表；rev49 删除两个可从投诉原始行恢复的学习字段和未独立维护的会话活跃时间；rev50 更新 G04 三模块文案；teacher 0029 删除 6 张空置无消费者表和
+  5 个被当前实现替代的分析视图，0030 继续删除固定为私有的文件可见性列与无消费者的孤儿函数，0031/0032 分别完成 G04 三模块与账号引导事实。旧库 `tit_growth_test` 未原地改造。
 - 两张源表提交真实变化时，Trigger 只记录字段差异 Outbox；独立 SourceWide Worker
   默认每 3 秒轮询，按变化字段定位受影响教师，在另一个事务内幂等更新逐课结果、积分、
   任务触发和资格。失败事件保留重试，不在源表事务里执行复杂计算。
@@ -215,11 +214,12 @@ docker compose -f docker-compose.production.yml up -d api score-settlement sourc
 [联合部署说明](deploy/combined/README.md) 和
 [联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
 独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
-联合部署门禁要求按 `public 46 → teacher 0028 → public 49 → teacher 0030` 分阶段迁移，教师端生产账本完整到
-`0030_remove_unused_columns_and_orphan_function`，并同时通过固定提交源码中的精确
-`G01–G09` 标题/分值预检和目标数据库契约探针。教师端未到 0030、目录缺项或语义错误
-都会失败关闭；在 public 47 及之后的空库直接回放 teacher 历史链同样会失败关闭。即使门禁通过，
-也不能把“已有 Compose”解释为已完成生产切流。
+联合部署门禁要求按 `public 46 → teacher 0028 → public 50 → teacher 0032` 分阶段迁移，最终到达
+public `20260810_50_g04_sections` 和教师端 `0032_first_login_onboarding`，并同时通过
+固定提交源码中的精确 `G01–G09` 标题/分值预检和目标数据库契约探针。
+教师端未到 0032、目录缺项或语义错误都会失败关闭；在 public 47 及之后的空库直接
+回放 teacher 历史链同样会失败关闭。即使门禁通过，也不能把“已有 Compose”解释为
+已完成生产切流。
 
 ## 开发验证
 

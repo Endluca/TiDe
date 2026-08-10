@@ -17,6 +17,10 @@ import type {
   G01ReviewResponse,
   NotificationListResponse,
 } from '../src/tide/tide.models';
+import type {
+  OnboardingGuideStateResponse,
+  OnboardingStateResponse,
+} from '../src/onboarding/onboarding.models';
 import {
   MailDeliveryAdapter,
   type PasswordResetEmailMessage,
@@ -81,6 +85,7 @@ runDatabaseIntegration('shared database backend flow (e2e)', () => {
   it('uses one shared assignment through tasks, files, G01, messages and events', async () => {
     const server = app.getHttpServer() as Server;
     const tokens = await registerAndLogin(server);
+    await verifyFirstLoginOnboarding(server, tokens.accessToken, database);
     await assignPersonalizedEnvironmentTask(database);
 
     const taskListResponse = await request(server)
@@ -655,6 +660,146 @@ runDatabaseIntegration('shared database backend flow (e2e)', () => {
       .expect(200);
     return login.body as AuthTokenPair;
   }
+
+  async function verifyFirstLoginOnboarding(
+    server: Server,
+    accessToken: string,
+    connection: Pool,
+  ): Promise<void> {
+    await request(server)
+      .get('/api/v1/me/onboarding')
+      .expect(401)
+      .expect((response) =>
+        expect(response.body).toMatchObject({ code: 'AUTH_REQUIRED' }),
+      );
+
+    await request(server)
+      .get('/api/v1/me/onboarding')
+      .set('authorization', `Bearer ${accessToken}`)
+      .expect(200)
+      .expect((response) => {
+        const state = response.body as OnboardingStateResponse;
+        expect(state).toMatchObject({
+          guideCode: 'FIRST_LOGIN',
+          guideVersion: 1,
+          required: true,
+          status: null,
+          acknowledgedAt: null,
+        });
+        expect(state.guides.map((guide) => guide.guideCode)).toEqual([
+          'FIRST_LOGIN',
+          'MY_TIDE_OVERVIEW',
+          'SCORE_DETAILS',
+          'TASK_PATH',
+          'TASK_RESULT',
+          'MESSAGES_TICKETS',
+          'HELP_ROUTES',
+          'PERSONALIZED_TASK_FIRST',
+        ]);
+      });
+
+    await request(server)
+      .post('/api/v1/me/onboarding/acknowledge')
+      .set('authorization', `Bearer ${accessToken}`)
+      .set('idempotency-key', 'onboarding-version-002')
+      .send({
+        guideCode: 'FIRST_LOGIN',
+        guideVersion: 2,
+        outcome: 'COMPLETED',
+      })
+      .expect(422)
+      .expect((response) =>
+        expect(response.body).toMatchObject({
+          code: 'ONBOARDING_VERSION_UNSUPPORTED',
+        }),
+      );
+
+    const requests = [
+      {
+        key: 'onboarding-completed-001',
+        outcome: 'COMPLETED' as const,
+      },
+      { key: 'onboarding-skipped-001', outcome: 'SKIPPED' as const },
+    ];
+    const acknowledgements = await Promise.all(
+      requests.map(({ key, outcome }) =>
+        request(server)
+          .post('/api/v1/me/onboarding/acknowledge')
+          .set('authorization', `Bearer ${accessToken}`)
+          .set('idempotency-key', key)
+          .send({ guideCode: 'FIRST_LOGIN', guideVersion: 1, outcome })
+          .expect(200),
+      ),
+    );
+    const states = acknowledgements.map(
+      (response) => response.body as OnboardingGuideStateResponse,
+    );
+    expect(states[0]).toMatchObject({
+      guideCode: 'FIRST_LOGIN',
+      guideVersion: 1,
+      required: false,
+    });
+    expect(states[0].status).toMatch(/^(COMPLETED|SKIPPED)$/);
+    expect(states[1]).toEqual(states[0]);
+
+    const winner = requests.find(
+      (candidate) => candidate.outcome === states[0].status,
+    )!;
+    await request(server)
+      .post('/api/v1/me/onboarding/acknowledge')
+      .set('authorization', `Bearer ${accessToken}`)
+      .set('idempotency-key', winner.key)
+      .send({
+        guideCode: 'FIRST_LOGIN',
+        guideVersion: 1,
+        outcome: winner.outcome,
+      })
+      .expect(200)
+      .expect(states[0]);
+    await request(server)
+      .post('/api/v1/me/onboarding/acknowledge')
+      .set('authorization', `Bearer ${accessToken}`)
+      .set('idempotency-key', winner.key)
+      .send({
+        guideCode: 'FIRST_LOGIN',
+        guideVersion: 1,
+        outcome: winner.outcome === 'COMPLETED' ? 'SKIPPED' : 'COMPLETED',
+      })
+      .expect(409)
+      .expect((response) =>
+        expect(response.body).toMatchObject({
+          code: 'IDEMPOTENCY_KEY_REUSED',
+        }),
+      );
+
+    const stored = await connection.query<{ count: string }>(
+      `
+        SELECT count(*)::text AS count
+        FROM tide.account_onboarding_states state
+        JOIN tide.user_accounts account ON account.id = state.account_id
+        WHERE account.normalized_email = $1
+          AND state.guide_code = 'FIRST_LOGIN'
+          AND state.guide_version = 1
+      `,
+      [TEST_EMAIL],
+    );
+    expect(stored.rows[0].count).toBe('1');
+
+    const nextLogin = await request(server)
+      .post('/api/v1/auth/login')
+      .send({ email: TEST_EMAIL, password: 'integration-password' })
+      .expect(200);
+    const nextTokens = nextLogin.body as AuthTokenPair;
+    await request(server)
+      .get('/api/v1/me/onboarding')
+      .set('authorization', `Bearer ${nextTokens.accessToken}`)
+      .expect(200)
+      .expect((response) => {
+        const state = response.body as OnboardingStateResponse;
+        expect(state).toMatchObject(states[0]);
+        expect(state.guides[0]).toEqual(states[0]);
+      });
+  }
 });
 
 async function expectG01NotComplete(
@@ -911,6 +1056,10 @@ async function cleanup(database: Pool): Promise<void> {
       );
     }
     if (accountId) {
+      await database.query(
+        `DELETE FROM tide.account_onboarding_states WHERE account_id = $1`,
+        [accountId],
+      );
       const files = await database.query<{ file_id: string }>(
         `SELECT file_id FROM tide.file_upload_intents WHERE account_id = $1`,
         [accountId],

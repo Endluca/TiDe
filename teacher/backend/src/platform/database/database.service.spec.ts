@@ -224,6 +224,12 @@ describe('DatabaseService', () => {
       shiwenRead: 'not_configured',
     });
     expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('0032_first_login_onboarding'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('0031_g04_independent_sections'),
+    );
+    expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0030_remove_unused_columns_and_orphan_function'),
     );
     expect(query).toHaveBeenCalledWith(
@@ -245,6 +251,15 @@ describe('DatabaseService', () => {
         "'tide.analytics_task_business_change_v1'\n        ) IS NULL",
       ),
     );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('tide.account_onboarding_states'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('g02-device-2026-08-05-browser-preflight-v1'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('requiredStepKeys'),
+    );
     for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
       expect(query).toHaveBeenCalledWith(
         expect.stringContaining(
@@ -263,6 +278,13 @@ describe('DatabaseService', () => {
         "to_regprocedure('tide.enforce_outbox_target()') IS NULL",
       ),
     );
+    for (const privilege of ['SELECT', 'INSERT']) {
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining(
+          `to_regclass('tide.account_onboarding_states'),\n          '${privilege}'`,
+        ),
+      );
+    }
     expect(query).not.toHaveBeenCalledWith(
       expect.stringContaining("'SELECT,INSERT,UPDATE"),
     );

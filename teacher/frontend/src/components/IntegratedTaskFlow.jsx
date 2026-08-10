@@ -134,6 +134,7 @@ export default function IntegratedTaskFlow({
     stateVersionRef.current = nextVersion;
     statusRef.current = nextStatus;
     setPresentationPatch({});
+    setError("");
   }, [context, task.backendStatus, task.stateVersion]);
 
   const updateTaskState = useCallback((response) => {
@@ -489,7 +490,7 @@ export default function IntegratedTaskFlow({
         onHelp={onHelp}
         onKuozhiProgressStateChange={onKuozhiProgressStateChange}
       />
-      {error && (
+      {error && presentationTask.taskCode !== "G04" && (
         <div className="auth-form-error" role="alert">
           <WarningCircle size={18} weight="fill" />{error}
         </div>

@@ -240,6 +240,17 @@ teacher_support_tickets_ready="$("${PSQL[@]}" -Atqc "
 performance_job_leases_ready="$("${PSQL[@]}" -Atqc "
   select to_regclass('tide.job_leases') is not null
 ")"
+account_onboarding_states_ready="$("${PSQL[@]}" -Atqc "
+  select
+    to_regclass('tide.account_onboarding_states') is not null
+    and exists (
+      select 1
+      from pg_constraint
+      where conrelid = 'tide.account_onboarding_states'::regclass
+        and conname = 'account_onboarding_states_idempotency_key_check'
+        and contype = 'c'
+    )
+")"
 operator_reply_atomicity_ready="$("${PSQL[@]}" -Atqc "
   select position(
     'teacher_reply_deadline_at = reply_at + interval ''48 hours''' in
@@ -379,6 +390,7 @@ assert_equals "${system_notification_publication_ready}" "t" "系统通知发布
 assert_equals "${growth_stage_notification_state_ready}" "t" "成长阶段通知观察状态表缺失"
 assert_equals "${teacher_support_tickets_ready}" "t" "教师工单共享表或原子追加方法缺失"
 assert_equals "${performance_job_leases_ready}" "t" "后台任务租约结构缺失"
+assert_equals "${account_onboarding_states_ready}" "t" "首次登录引导状态表或幂等键约束缺失"
 assert_equals "${operator_reply_atomicity_ready}" "t" "运营回复未原子维护状态和 48 小时窗口"
 assert_equals "${support_ticket_security_hardened}" "t" "工单 CAS 或 SECURITY DEFINER owner 未加固"
 assert_equals "${notification_event_dedupe_ready}" "t" "外部消息事件幂等索引缺失"
@@ -408,6 +420,10 @@ assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_cr
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_cpl_tesol', 'SELECT')")" "t" "教师角色缺少 TESOL 状态读取权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_self_introduce', 'SELECT')")" "t" "教师角色缺少 Self-intro 状态读取权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'real_name', 'SELECT')")" "f" "教师角色不应读取 G01 无关的宽表字段"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'SELECT')")" "t" "教师角色缺少引导状态读取权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'INSERT')")" "t" "教师角色缺少引导状态幂等写入权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'UPDATE')")" "f" "教师角色不应改写引导终态事实"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'DELETE')")" "f" "教师角色不应删除引导终态事实"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.notifications', 'read_at', 'UPDATE')")" "t" "教师角色缺少消息已读权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.notifications', 'clicked_at', 'UPDATE')")" "t" "教师角色缺少消息点击权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.notification_events', 'INSERT')")" "t" "教师角色缺少消息事件写入权限"
@@ -435,6 +451,41 @@ assert_equals "$("${PSQL[@]}" -Atqc "select rolcanlogin from pg_roles where roln
 assert_equals "$("${PSQL[@]}" -Atqc "select pg_get_constraintdef(oid) like '%VIEW%' from pg_constraint where conrelid = 'tide.task_command_receipts'::regclass and conname = 'task_command_receipts_type_check'")" "t" "VIEW 幂等命令约束未生效"
 assert_equals "$("${PSQL[@]}" -Atqc "select position('A-Z0-9' in pg_get_constraintdef(oid)) > 0 from pg_constraint where conrelid = 'tide.task_execution_versions'::regclass and conname = 'task_execution_versions_code_check'")" "t" "个性化任务执行代码约束未生效"
 assert_equals "$("${PSQL[@]}" -Atqc "select payload->>'title' from public.task_templates where template_id = 'G04' and status = 'PUBLISHED' order by template_version desc limit 1")" "Lesson Preparation&Device Network Check" "G04 未按运营 rev38 目录配置为备课与设备网络检查"
+assert_equals "$("${PSQL[@]}" -Atqc "
+  select
+    execution.config->>'contentVersion' = '2026-08-05-g04-three-part'
+    and (
+      select count(*) = 3
+      from tide.task_step_definitions definition
+      where definition.execution_version_id = execution.id
+    )
+    and exists (
+      select 1
+      from tide.task_step_definitions definition
+      where definition.execution_version_id = execution.id
+        and definition.step_key = 'g02-device-check'
+        and definition.position = 1
+        and definition.config->>'version' = 'g02-device-2026-08-05-browser-preflight-v1'
+    )
+    and exists (
+      select 1
+      from tide.task_step_definitions definition
+      where definition.execution_version_id = execution.id
+        and definition.step_key = 'g02-courseware-confirmation'
+        and definition.position = 2
+        and definition.config->>'version' = 'g02-courseware-2026-08-05-guidance-v1'
+    )
+    and exists (
+      select 1
+      from tide.task_validation_rules rule
+      where rule.execution_version_id = execution.id
+        and rule.rule_key = 'all-steps-complete'
+        and rule.rule_version = '2026-08-05-g04-three-part-v1'
+        and rule.config = '{\"requiredStepKeys\":[\"g02-device-check\",\"g02-environment-photo\",\"g02-courseware-confirmation\"]}'::jsonb
+    )
+  from tide.task_execution_versions execution
+  where execution.shared_template_row_id = 'G02:v1'
+")" "t" "G04 未配置为当前三个独立模块或规则版本异常"
 
 "${PSQL[@]}" >/dev/null <<'SQL'
 BEGIN;

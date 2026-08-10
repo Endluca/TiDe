@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TIDE Teacher API Contract
-  version: 0.14.0
+  version: 0.15.0
   description: >-
     教师端公共合同。包含教师端任务、文件和 My TIDE 安全读取；
     各模块实现状态见 contracts/README。任务、G01 状态和外部消息直接使用共享 PostgreSQL 契约表；
@@ -180,6 +180,48 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TeacherProfile' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/me/onboarding:
+    get:
+      tags: [MyTIDE]
+      summary: 获取当前账号的多模块引导状态
+      description: >-
+        顶层字段保持 FIRST_LOGIN v1 兼容；guides 按产品注册顺序全量返回 8 个模块。
+        无确认事实时 required 为 true；完成、跳过和存量账号回填事实均不可回退。
+      operationId: getOnboardingState
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 顶层 FIRST_LOGIN 兼容状态及全量模块状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OnboardingState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/me/onboarding/acknowledge:
+    post:
+      tags: [MyTIDE]
+      summary: 完成或跳过当前账号的指定引导模块
+      description: >-
+        只写当前认证 accountId。相同 Idempotency-Key 和请求可安全重放；
+        同一键用于不同请求返回 IDEMPOTENCY_KEY_REUSED。首次确认后状态不可变。
+      operationId: acknowledgeOnboarding
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AcknowledgeOnboardingRequest' }
+      responses:
+        '200':
+          description: 已确认或返回既有不可变状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OnboardingGuideState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /api/v1/me/g01-review:
     get:
       tags: [MyTIDE, Tasks]
@@ -997,6 +1039,58 @@ components:
         totalCampDays: { type: integer, minimum: 1 }
         graduationState: { type: [string, 'null'] }
         freshness: { $ref: '#/components/schemas/SourceFreshness' }
+    OnboardingGuideCode:
+      type: string
+      enum:
+        - FIRST_LOGIN
+        - MY_TIDE_OVERVIEW
+        - SCORE_DETAILS
+        - TASK_PATH
+        - TASK_RESULT
+        - MESSAGES_TICKETS
+        - HELP_ROUTES
+        - PERSONALIZED_TASK_FIRST
+    OnboardingGuideState:
+      type: object
+      additionalProperties: false
+      required: [guideCode, guideVersion, required, status, acknowledgedAt]
+      properties:
+        guideCode: { $ref: '#/components/schemas/OnboardingGuideCode' }
+        guideVersion: { type: integer, const: 1 }
+        required: { type: boolean }
+        status:
+          type: [string, 'null']
+          enum: [COMPLETED, SKIPPED, MIGRATED_EXISTING, null]
+          description: MIGRATED_EXISTING 只用于 FIRST_LOGIN 存量账号回填。
+        acknowledgedAt: { type: [string, 'null'], format: date-time }
+    OnboardingState:
+      type: object
+      additionalProperties: false
+      required: [guideCode, guideVersion, required, status, acknowledgedAt, guides]
+      properties:
+        guideCode: { type: string, const: FIRST_LOGIN }
+        guideVersion: { type: integer, const: 1 }
+        required: { type: boolean }
+        status:
+          type: [string, 'null']
+          enum: [COMPLETED, SKIPPED, MIGRATED_EXISTING, null]
+        acknowledgedAt: { type: [string, 'null'], format: date-time }
+        guides:
+          type: array
+          minItems: 8
+          maxItems: 8
+          description: >-
+            固定按 FIRST_LOGIN、MY_TIDE_OVERVIEW、SCORE_DETAILS、TASK_PATH、
+            TASK_RESULT、MESSAGES_TICKETS、HELP_ROUTES、PERSONALIZED_TASK_FIRST 返回。
+          items: { $ref: '#/components/schemas/OnboardingGuideState' }
+    AcknowledgeOnboardingRequest:
+      type: object
+      additionalProperties: false
+      required: [guideCode, guideVersion, outcome]
+      properties:
+        guideCode: { $ref: '#/components/schemas/OnboardingGuideCode' }
+        guideVersion: { type: integer }
+        outcome: { type: string, enum: [COMPLETED, SKIPPED] }
     ExternalReviewStatus:
       type: string
       enum: [WAITING, IN_REVIEW, APPROVED, NEEDS_CHANGES, UNAVAILABLE]
@@ -1721,6 +1815,11 @@ components:
         - NAVIGATION_CLICKED
         - LANGUAGE_CHANGED
         - PAGE_EXITED
+        - ONBOARDING_SHOWN
+        - ONBOARDING_STEP_VIEWED
+        - ONBOARDING_COMPLETED
+        - ONBOARDING_SKIPPED
+        - ONBOARDING_REPLAYED
         - TASK_CARD_IMPRESSION
         - TASK_CARD_CLICKED
         - TASK_OPENED_FROM_MESSAGE

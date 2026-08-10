@@ -83,6 +83,35 @@ describe('AppEventService', () => {
     );
   });
 
+  it('accepts authenticated onboarding events and their flat guide properties', async () => {
+    const { service, saveClient } = fixture();
+
+    const names = [
+      'ONBOARDING_SHOWN',
+      'ONBOARDING_STEP_VIEWED',
+      'ONBOARDING_COMPLETED',
+      'ONBOARDING_SKIPPED',
+      'ONBOARDING_REPLAYED',
+    ];
+    for (const [index, eventName] of names.entries()) {
+      await expect(
+        service.save(
+          principal,
+          input({
+            eventName,
+            eventId: `onboarding-event-${index + 1}`,
+            properties: {
+              guideCode: 'FIRST_LOGIN',
+              guideVersion: 1,
+              onboardingStep: 2,
+            },
+          }),
+        ),
+      ).resolves.toMatchObject({ accepted: true });
+    }
+    expect(saveClient).toHaveBeenCalledTimes(names.length);
+  });
+
   it('rejects unknown, backend-only and task-less task events', async () => {
     const { service } = fixture();
 

@@ -19,6 +19,7 @@ import { TaskModule } from './tasks/task.module';
 import { AppEventModule } from './app-events/app-event.module';
 import { SystemNotificationModule } from './notifications/system-notification.module';
 import { SupportTicketModule } from './support-tickets/support-ticket.module';
+import { OnboardingModule } from './onboarding/onboarding.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { SupportTicketModule } from './support-tickets/support-ticket.module';
     AppEventModule,
     SystemNotificationModule,
     SupportTicketModule,
+    OnboardingModule,
   ],
   controllers: [HealthController],
   providers: [

@@ -1,6 +1,22 @@
 import { apiRequest, newCommandKey } from "./api-client";
 
 export const getTeacherProfile = (signal) => apiRequest("/api/v1/me/profile", { signal });
+export const probeTeacherConnection = () => apiRequest("/api/v1/me/profile", {
+  cache: "no-store",
+});
+export const getOnboardingStatus = (signal) => apiRequest("/api/v1/me/onboarding", {
+  signal,
+  cache: "no-store",
+});
+export function acknowledgeOnboarding({ guideCode, guideVersion, outcome }, idempotencyKey) {
+  return apiRequest("/api/v1/me/onboarding/acknowledge", {
+    method: "POST",
+    headers: {
+      "Idempotency-Key": idempotencyKey || newCommandKey("onboarding-acknowledge"),
+    },
+    body: { guideCode, guideVersion, outcome },
+  });
+}
 export const getG01Review = (signal) => apiRequest("/api/v1/me/g01-review", { signal });
 export const getTideSummary = (signal) =>
   apiRequest("/api/v1/me/tide-summary", { signal, cache: "no-store" });

@@ -55,6 +55,8 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0028_retire_task_business_change_view',
   '0029_remove_unused_tide_objects',
   '0030_remove_unused_columns_and_orphan_function',
+  '0031_g04_independent_sections',
+  '0032_first_login_onboarding',
 ] as const;
 
 @Injectable()
@@ -196,6 +198,11 @@ export class DatabaseService implements OnModuleDestroy {
             (SELECT count(*) FROM tide.user_accounts WHERE false) = 0
             AND (
               SELECT count(*)
+              FROM tide.account_onboarding_states
+              WHERE false
+            ) = 0
+            AND (
+              SELECT count(*)
               FROM tide.task_execution_versions
               WHERE false
             ) = 0
@@ -271,8 +278,9 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0030_remove_unused_columns_and_orphan_function'
+        ) = '0032_first_login_onboarding'
         AND to_regclass('tide.user_accounts') IS NOT NULL
+        AND to_regclass('tide.account_onboarding_states') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
         AND to_regclass('tide.job_leases') IS NOT NULL
         AND to_regclass('tide.kuozhi_course_syncs') IS NOT NULL
@@ -327,6 +335,85 @@ export class DatabaseService implements OnModuleDestroy {
             AND execution.task_code = template.template_id
             AND execution.status = 'ACTIVE'
         ) = 9
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_execution_versions AS execution
+          WHERE execution.shared_template_row_id = 'G02:v1'
+            AND execution.task_code = 'G04'
+            AND execution.status = 'ACTIVE'
+            AND execution.execution_contract_version = 'task-contract-v3'
+            AND execution.config =
+              '{"estimatedMinutes":15,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-05-g04-three-part","pendingReason":null,"independentModules":{"stepKeys":["g02-device-check","g02-environment-photo","g02-courseware-confirmation"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
+        )
+        AND (
+          SELECT count(*)
+          FROM tide.task_step_definitions AS definition
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = definition.execution_version_id
+          WHERE execution.shared_template_row_id = 'G02:v1'
+        ) = 3
+        AND (
+          SELECT count(*)
+          FROM tide.task_step_definitions AS definition
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = definition.execution_version_id
+          WHERE execution.shared_template_row_id = 'G02:v1'
+            AND (
+              (
+                definition.step_key = 'g02-device-check'
+                AND definition.position = 1
+                AND definition.step_type = 'DEVICE_CHECK'
+                AND definition.config->>'version' =
+                  'g02-device-2026-08-05-browser-preflight-v1'
+              )
+              OR (
+                definition.step_key = 'g02-courseware-confirmation'
+                AND definition.position = 2
+                AND definition.step_type = 'CHECKLIST'
+                AND definition.config->>'version' =
+                  'g02-courseware-2026-08-05-guidance-v1'
+              )
+              OR (
+                definition.step_key = 'g02-environment-photo'
+                AND definition.position = 3
+                AND definition.step_type = 'UPLOAD'
+              )
+            )
+        ) = 3
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'G02:v1'
+            AND rule.rule_key = 'all-steps-complete'
+            AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+            AND rule.rule_version = '2026-08-05-g04-three-part-v1'
+            AND rule.position = 1
+            AND rule.config =
+              '{"requiredStepKeys":["g02-device-check","g02-environment-photo","g02-courseware-confirmation"]}'::jsonb
+        )
+        AND (
+          SELECT count(*)
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'G02:v1'
+        ) = 2
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'G02:v1'
+            AND rule.rule_key = 'g02-environment-ai-review'
+            AND rule.rule_type = 'AI_IMAGE_REVIEW'
+            AND rule.position = 2
+            AND rule.config->>'criteriaVersion' =
+              'lesson-preparation-camera-view-2026-08-v7-background-veto'
+            AND rule.config->'criteriaKeys' =
+              '["camera_angle","lighting","background","dressing"]'::jsonb
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM tide.task_execution_versions AS execution
@@ -469,6 +556,26 @@ export class DatabaseService implements OnModuleDestroy {
         AND has_table_privilege(
           current_user,
           to_regclass('tide.job_leases'),
+          'DELETE'
+        )
+        AND has_table_privilege(
+          current_user,
+          to_regclass('tide.account_onboarding_states'),
+          'SELECT'
+        )
+        AND has_table_privilege(
+          current_user,
+          to_regclass('tide.account_onboarding_states'),
+          'INSERT'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('tide.account_onboarding_states'),
+          'UPDATE'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('tide.account_onboarding_states'),
           'DELETE'
         )
         AND has_table_privilege(

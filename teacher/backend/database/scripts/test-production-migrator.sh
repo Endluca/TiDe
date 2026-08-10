@@ -114,7 +114,7 @@ SELECT
 SQL
 )"
 if [[ "${public_head_first_status}" == "0" \
-      || "${public_head_first_output}" != *"public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030"* \
+      || "${public_head_first_output}" != *"public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0032"* \
       || "${public_head_first_state}" != "t|t" ]]; then
   echo "public head 49 先行时 teacher fresh 迁移未失败关闭：${public_head_first_state}" >&2
   echo "${public_head_first_output}" >&2
@@ -215,11 +215,16 @@ SELECT
           AND table_name = 'file_objects'
           AND column_name = 'visibility'
     ) AND to_regprocedure('tide.enforce_outbox_target()') IS NULL,
+    to_regclass('tide.account_onboarding_states') IS NOT NULL,
+    NOT EXISTS (SELECT 1 FROM tide.account_onboarding_states),
+    count(*) FILTER (
+        WHERE migration_id = '0032_first_login_onboarding'
+    ) = 1,
     count(*)
 FROM tide.schema_migrations;
 SQL
 )"
-if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|28" ]]; then
+if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|30" ]]; then
   echo "生产 fresh 迁移状态异常：${fresh_state}" >&2
   exit 1
 fi
@@ -241,12 +246,12 @@ SELECT
         FROM tide.schema_migrations
         ORDER BY migration_order DESC
         LIMIT 1
-    ) = '0030_remove_unused_columns_and_orphan_function',
-    (SELECT count(*) FROM tide.schema_migrations) = 28;
+    ) = '0032_first_login_onboarding',
+    (SELECT count(*) FROM tide.schema_migrations) = 30;
 SQL
 )"
 if [[ "${post_public_drop_state}" != "t|t|t|t" ]]; then
-  echo "teacher 0030 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
+  echo "teacher 0032 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
   exit 1
 fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
@@ -350,6 +355,77 @@ fi
 
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+INSERT INTO tide.user_accounts (
+    id,
+    email,
+    normalized_email,
+    password_hash,
+    status,
+    email_verified_at
+)
+VALUES
+(
+    '27000000-0000-4000-8000-000000000001',
+    'migrated-login@example.invalid',
+    'migrated-login@example.invalid',
+    'migration-test-hash',
+    'ACTIVE',
+    '2026-07-01 00:00:00+00'
+),
+(
+    '27000000-0000-4000-8000-000000000002',
+    'never-logged-in@example.invalid',
+    'never-logged-in@example.invalid',
+    'migration-test-hash',
+    'ACTIVE',
+    '2026-07-01 00:00:00+00'
+),
+(
+    '27000000-0000-4000-8000-000000000003',
+    'other-success-event@example.invalid',
+    'other-success-event@example.invalid',
+    'migration-test-hash',
+    'ACTIVE',
+    '2026-07-01 00:00:00+00'
+);
+
+INSERT INTO tide.auth_security_events (
+    id,
+    account_id,
+    event_type,
+    outcome,
+    created_at
+)
+VALUES
+(
+    '27000000-0000-4000-8000-000000000101',
+    '27000000-0000-4000-8000-000000000001',
+    'LOGIN',
+    'SUCCESS',
+    '2026-07-10 01:02:03+00'
+),
+(
+    '27000000-0000-4000-8000-000000000102',
+    '27000000-0000-4000-8000-000000000001',
+    'LOGIN',
+    'SUCCESS',
+    '2026-07-11 01:02:03+00'
+),
+(
+    '27000000-0000-4000-8000-000000000201',
+    '27000000-0000-4000-8000-000000000002',
+    'LOGIN',
+    'FAILURE',
+    '2026-07-12 01:02:03+00'
+),
+(
+    '27000000-0000-4000-8000-000000000301',
+    '27000000-0000-4000-8000-000000000003',
+    'PASSWORD_RESET',
+    'SUCCESS',
+    '2026-07-13 01:02:03+00'
+);
+
 INSERT INTO tide.task_execution_versions (
     id,
     shared_template_row_id,
@@ -363,7 +439,11 @@ SELECT
     catalog.row_id,
     catalog.previous_task_code,
     'v1',
-    jsonb_build_object('migration_test', true),
+    CASE
+        WHEN catalog.row_id = 'G02:v1' THEN
+            '{"estimatedMinutes":15,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-30","pendingReason":null}'::jsonb
+        ELSE jsonb_build_object('migration_test', true)
+    END,
     'ACTIVE'
 FROM (
     VALUES
@@ -440,14 +520,72 @@ INSERT INTO tide.task_step_definitions (
     title,
     config
 )
-VALUES (
+VALUES
+(
+    '25abcdef-0000-4000-8000-000000000101',
+    '25abcdef-0000-4000-8000-000000000002',
+    'g02-courseware-confirmation',
+    1,
+    'CHECKLIST',
+    'Confirm courseware preparation',
+    '{"version":"g02-courseware-2026-07-28","role":"COURSEWARE_CONFIRMATION","items":[{"key":"courseware-prepared","label":"I have reviewed all the slides and finished preparing for this lesson.","labelZh":"我已浏览全部课件，并完成本节课备课。"}]}'::jsonb
+),
+(
     '25abcdef-0000-4000-8000-000000000102',
     '25abcdef-0000-4000-8000-000000000002',
     'g02-device-check',
-    1,
+    2,
     'DEVICE_CHECK',
-    '[Verify] Preserve legacy step key',
-    '{"migration_test":true}'::jsonb
+    'Check camera, microphone and network',
+    '{"version":"g02-device-2026-07-22","role":"DEVICE_CHECK","items":["camera","microphone","network"]}'::jsonb
+),
+(
+    '25abcdef-0000-4000-8000-000000000103',
+    '25abcdef-0000-4000-8000-000000000002',
+    'g02-environment-photo',
+    3,
+    'UPLOAD',
+    'Take a teaching-environment photo',
+    '{"version":"g02-photo-2026-07-22","role":"ENVIRONMENT_PHOTO","accept":["image/jpeg"],"captureOnly":true,"maxFiles":1}'::jsonb
+);
+
+INSERT INTO tide.task_validation_rules (
+    id,
+    execution_version_id,
+    rule_key,
+    rule_type,
+    rule_version,
+    position,
+    config,
+    teacher_failure_copy
+)
+VALUES
+(
+    '25abcdef-0000-4000-8000-000000000111',
+    '25abcdef-0000-4000-8000-000000000002',
+    'all-steps-complete',
+    'ALL_STEPS_COMPLETE',
+    '2026-07-22',
+    1,
+    '{}'::jsonb,
+    '请先完成备课确认、设备网络检查和授课环境照片检查。'
+),
+(
+    '25abcdef-0000-4000-8000-000000000112',
+    '25abcdef-0000-4000-8000-000000000002',
+    'g02-environment-ai-review',
+    'AI_IMAGE_REVIEW',
+    '2026-07-27-strict',
+    2,
+    jsonb_build_object(
+        'stepKey', 'g02-environment-photo',
+        'criteriaVersion', 'g02-environment-2026-07-v2-strict',
+        'criteriaKeys', jsonb_build_array('lighting', 'framing', 'posture', 'headset', 'appearance', 'background', 'clarity'),
+        'allowedMimeTypes', jsonb_build_array('image/jpeg', 'image/png', 'image/webp'),
+        'systemPrompt', 'Reviewed legacy prompt.',
+        'userText', 'Reviewed legacy photo criteria.'
+    ),
+    '已保留你完成的内容，请根据提示更新这份材料。'
 );
 
 INSERT INTO tide.task_step_progress (
@@ -627,6 +765,83 @@ SQL
 )"
 if [[ "${retired_business_change_view_state}" != "t|t" ]]; then
   echo "0028 未退役旧业务变化视图：${retired_business_change_view_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+INSERT INTO tide.task_step_definitions (
+    id, execution_version_id, step_key, position, step_type, title, config
+)
+VALUES (
+    '25abcdef-0000-4000-8000-000000000199',
+    '25abcdef-0000-4000-8000-000000000002',
+    'g02-unreviewed-step',
+    4,
+    'CUSTOM',
+    '[Verify] Unknown step must fail closed',
+    '{}'::jsonb
+);
+SQL
+
+set +e
+g04_guard_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0031_g04_independent_sections.up.sql" 2>&1
+)"
+g04_guard_status=$?
+set -e
+
+g04_guard_state="$(psql -X --no-password -AtF '|' "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_step_definitions
+        WHERE step_key = 'g02-unreviewed-step'
+    ),
+    NOT EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0031_g04_independent_sections'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0025_fixed_task_semantic_alignment'
+    );
+SQL
+)"
+if [[ "${g04_guard_status}" == "0" \
+      || "${g04_guard_output}" != *"unreviewed step"* \
+      || "${g04_guard_state}" != "t|t|t" ]]; then
+  echo "0031 未原子拒绝未知 G04 step：${g04_guard_state}" >&2
+  echo "${g04_guard_output}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DELETE FROM tide.task_step_definitions WHERE step_key = 'g02-unreviewed-step'" >/dev/null
+
+# Rehearse the other reviewed production input (courseware + photo) inside an
+# outer transaction. Strip only the migration's own BEGIN/COMMIT so every DML
+# and postflight assertion runs, then roll the rehearsal back before the real
+# legacy-three-step managed upgrade below.
+two_step_rehearsal_state="$({
+  printf '%s\n' 'BEGIN;'
+  printf '%s\n' \
+    "DELETE FROM tide.task_step_definitions WHERE execution_version_id = '25abcdef-0000-4000-8000-000000000002'::uuid AND step_key = 'g02-device-check';" \
+    "UPDATE tide.task_step_definitions SET position = 2 WHERE execution_version_id = '25abcdef-0000-4000-8000-000000000002'::uuid AND step_key = 'g02-environment-photo';" \
+    "UPDATE tide.task_validation_rules SET teacher_failure_copy = '请完成备课确认和授课环境照片检查。' WHERE execution_version_id = '25abcdef-0000-4000-8000-000000000002'::uuid AND rule_key = 'all-steps-complete';" \
+    "UPDATE tide.task_validation_rules SET config = config || jsonb_build_object('criteriaVersion', 'lesson-preparation-camera-view-2026-08-v7-background-veto', 'criteriaKeys', jsonb_build_array('camera_angle', 'lighting', 'background', 'dressing')) WHERE execution_version_id = '25abcdef-0000-4000-8000-000000000002'::uuid AND rule_key = 'g02-environment-ai-review';"
+  sed '1d;$d' "${DB_DIR}/migrations/0031_g04_independent_sections.up.sql"
+  printf '%s\n' \
+    "SELECT count(*) = 3 AND bool_or(step_key = 'g02-device-check' AND id = '16cfbdd4-8486-4f87-8bae-4f4d8e365d18'::uuid) FROM tide.task_step_definitions WHERE execution_version_id = '25abcdef-0000-4000-8000-000000000002'::uuid;" \
+    'ROLLBACK;'
+} | psql -X --no-password -qAt -v ON_ERROR_STOP=1 "postgresql:///${UPGRADE_DB}")"
+if [[ "${two_step_rehearsal_state}" != "t" ]]; then
+  echo "0031 未通过已评审的 G04 旧两步结构演练：${two_step_rehearsal_state}" >&2
   exit 1
 fi
 
@@ -946,6 +1161,28 @@ ON tide.test_0030_outbox_target_dependency;
 DROP TABLE tide.test_0030_outbox_target_dependency;
 SQL
 
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+DO $optional_retired_g00$
+BEGIN
+    IF (
+        SELECT count(*)
+        FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'G05:v1'
+          AND task_code = 'G00'
+          AND status = 'RETIRED'
+    ) <> 1 THEN
+        RAISE EXCEPTION 'optional retired G00 execution fixture is not exact';
+    END IF;
+
+    DELETE FROM tide.task_execution_versions
+    WHERE shared_template_row_id = 'G05:v1'
+      AND task_code = 'G00'
+      AND status = 'RETIRED';
+END
+$optional_retired_g00$;
+SQL
+
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
 TIDE_MIGRATION_TEST_MODE="true" \
@@ -1024,7 +1261,6 @@ SELECT
                 ('25abcdef-0000-4000-8000-000000000002'::uuid, 'G02:v1', 'G04', 'ACTIVE'),
                 ('25abcdef-0000-4000-8000-000000000003'::uuid, 'G03:v1', 'G02', 'ACTIVE'),
                 ('25abcdef-0000-4000-8000-000000000004'::uuid, 'G04:v1', 'G03', 'ACTIVE'),
-                ('25abcdef-0000-4000-8000-000000000005'::uuid, 'G05:v1', 'G00', 'RETIRED'),
                 ('25abcdef-0000-4000-8000-000000000006'::uuid, 'G06:v1', 'G05', 'ACTIVE'),
                 ('25abcdef-0000-4000-8000-000000000007'::uuid, 'G07:v1', 'G06', 'ACTIVE'),
                 ('25abcdef-0000-4000-8000-000000000008'::uuid, 'G08:v1', 'G07', 'ACTIVE'),
@@ -1036,13 +1272,24 @@ SELECT
          AND execution.shared_template_row_id = expected.row_id
          AND execution.task_code = expected.task_code
          AND execution.status = expected.expected_status
-    ) = 10,
+    ) = 9,
+    NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'G05:v1'
+           OR task_code = 'G00'
+    ),
     NOT EXISTS (
         SELECT 1
         FROM tide.task_execution_versions
         WHERE task_code LIKE 'TMP-0025-%'
     ),
-    EXISTS (
+    (
+        SELECT count(*) = 3
+        FROM tide.task_step_definitions definition
+        WHERE definition.execution_version_id =
+              '25abcdef-0000-4000-8000-000000000002'::uuid
+    ) AND EXISTS (
         SELECT 1
         FROM tide.task_step_definitions definition
         WHERE definition.id =
@@ -1052,7 +1299,45 @@ SELECT
           AND definition.step_key = 'g02-device-check'
           AND definition.position = 1
           AND definition.config =
-              '{"migration_test":true}'::jsonb
+              '{"version":"g02-device-2026-08-05-browser-preflight-v1","role":"DEVICE_CHECK","items":["camera","microphone","network"]}'::jsonb
+    ) AND EXISTS (
+        SELECT 1
+        FROM tide.task_step_definitions definition
+        WHERE definition.id =
+              '25abcdef-0000-4000-8000-000000000101'::uuid
+          AND definition.step_key = 'g02-courseware-confirmation'
+          AND definition.position = 2
+          AND definition.config->>'version' =
+              'g02-courseware-2026-08-05-guidance-v1'
+    ) AND EXISTS (
+        SELECT 1
+        FROM tide.task_step_definitions definition
+        WHERE definition.id =
+              '25abcdef-0000-4000-8000-000000000103'::uuid
+          AND definition.step_key = 'g02-environment-photo'
+          AND definition.position = 3
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id =
+              '25abcdef-0000-4000-8000-000000000002'::uuid
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":15,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-05-g04-three-part","pendingReason":null,"independentModules":{"stepKeys":["g02-device-check","g02-environment-photo","g02-courseware-confirmation"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_validation_rules rule
+        WHERE rule.id =
+              '25abcdef-0000-4000-8000-000000000111'::uuid
+          AND rule.execution_version_id =
+              '25abcdef-0000-4000-8000-000000000002'::uuid
+          AND rule.rule_key = 'all-steps-complete'
+          AND rule.position = 1
+          AND rule.rule_version = '2026-08-05-g04-three-part-v1'
+          AND rule.config =
+              '{"requiredStepKeys":["g02-device-check","g02-environment-photo","g02-courseware-confirmation"]}'::jsonb
     ),
     EXISTS (
         SELECT 1
@@ -1079,12 +1364,135 @@ SELECT
     (
         SELECT count(*)
         FROM tide.schema_migrations
-        WHERE migration_id = '0025_fixed_task_semantic_alignment'
-    ) = 1;
+        WHERE migration_id IN (
+            '0025_fixed_task_semantic_alignment',
+            '0031_g04_independent_sections',
+            '0032_first_login_onboarding'
+        )
+    ) = 3;
 SQL
 )"
-if [[ "${semantic_alignment_state}" != "t|t|t|t|t|t" ]]; then
-  echo "0025 固定任务语义迁移未保留执行 ID/稳定模板行：${semantic_alignment_state}" >&2
+if [[ "${semantic_alignment_state}" != "t|t|t|t|t|t|t|t|t" ]]; then
+  echo "0025/0031 未保留 G04 执行、assignment 或 progress 身份：${semantic_alignment_state}" >&2
+  exit 1
+fi
+
+onboarding_migration_state="$(psql -X --no-password -AtF '|' "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    to_regclass('tide.account_onboarding_states') IS NOT NULL,
+    (
+        SELECT count(*) = 1
+        FROM tide.account_onboarding_states
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.account_onboarding_states
+        WHERE account_id = '27000000-0000-4000-8000-000000000001'
+          AND guide_code = 'FIRST_LOGIN'
+          AND guide_version = 1
+          AND status = 'MIGRATED_EXISTING'
+          AND idempotency_key = 'migration:0032:first-login:v1'
+          AND request_hash IS NULL
+          AND acknowledged_at = '2026-07-10 01:02:03+00'
+    ),
+    NOT EXISTS (
+        SELECT 1
+        FROM tide.account_onboarding_states
+        WHERE account_id IN (
+            '27000000-0000-4000-8000-000000000002',
+            '27000000-0000-4000-8000-000000000003'
+        )
+    ),
+    EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'tide.account_onboarding_states'::regclass
+          AND conname = 'account_onboarding_states_idempotency_key_check'
+          AND contype = 'c'
+    );
+SQL
+)"
+if [[ "${onboarding_migration_state}" != "t|t|t|t|t" ]]; then
+  echo "0032 存量登录回填或未登录保留异常：${onboarding_migration_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+DO $onboarding_constraints$
+DECLARE
+    null_hash_rejected boolean := false;
+    short_key_rejected boolean := false;
+BEGIN
+    BEGIN
+        INSERT INTO tide.account_onboarding_states (
+            account_id,
+            guide_code,
+            guide_version,
+            status,
+            idempotency_key,
+            request_hash,
+            acknowledged_at
+        ) VALUES (
+            '27000000-0000-4000-8000-000000000002',
+            'FIRST_LOGIN',
+            1,
+            'COMPLETED',
+            'complete-null-hash',
+            NULL,
+            now()
+        );
+    EXCEPTION WHEN check_violation THEN
+        null_hash_rejected := true;
+    END;
+
+    BEGIN
+        INSERT INTO tide.account_onboarding_states (
+            account_id,
+            guide_code,
+            guide_version,
+            status,
+            idempotency_key,
+            request_hash,
+            acknowledged_at
+        ) VALUES (
+            '27000000-0000-4000-8000-000000000002',
+            'FIRST_LOGIN',
+            1,
+            'SKIPPED',
+            '1234567',
+            repeat('a', 64),
+            now()
+        );
+    EXCEPTION WHEN check_violation THEN
+        short_key_rejected := true;
+    END;
+
+    IF NOT null_hash_rejected OR NOT short_key_rejected THEN
+        RAISE EXCEPTION
+            '0032 onboarding request hash or idempotency key constraint is incomplete';
+    END IF;
+END
+$onboarding_constraints$;
+SQL
+
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+onboarding_idempotent_state="$(psql -X --no-password -AtF '|' "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    count(*) = 30,
+    count(*) FILTER (
+        WHERE migration_id = '0032_first_login_onboarding'
+    ) = 1,
+    (SELECT count(*) FROM tide.account_onboarding_states) = 1
+FROM tide.schema_migrations;
+SQL
+)"
+if [[ "${onboarding_idempotent_state}" != "t|t|t" ]]; then
+  echo "0032 生产迁移链重跑不幂等：${onboarding_idempotent_state}" >&2
   exit 1
 fi
 
@@ -1437,6 +1845,63 @@ fi
 
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0032_first_login_onboarding.down.sql" >/dev/null
+onboarding_down_state="$(psql -X --no-password -Atqc "
+  SELECT to_regclass('tide.account_onboarding_states') IS NULL
+" "postgresql:///${UPGRADE_DB}")"
+if [[ "${onboarding_down_state}" != "t" ]]; then
+  echo "0032 down 未删除引导状态表。" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0032_first_login_onboarding.up.sql" >/dev/null
+onboarding_down_up_state="$(psql -X --no-password -AtF '|' "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    to_regclass('tide.account_onboarding_states') IS NOT NULL,
+    (
+        SELECT count(*) = 1
+        FROM tide.account_onboarding_states
+        WHERE status = 'MIGRATED_EXISTING'
+          AND request_hash IS NULL
+    ),
+    NOT EXISTS (
+        SELECT 1
+        FROM tide.account_onboarding_states
+        WHERE account_id = '27000000-0000-4000-8000-000000000002'
+    );
+SQL
+)"
+if [[ "${onboarding_down_up_state}" != "t|t|t" ]]; then
+  echo "0032 down-up 未准确重建引导状态：${onboarding_down_up_state}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0032_first_login_onboarding.down.sql" >/dev/null
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0031_g04_independent_sections.down.sql" >/dev/null
+g04_down_state="$(psql -X --no-password -Atqc "
+  SELECT
+    execution.config->>'contentVersion' = '2026-08-05-g04-three-part'
+    AND (
+      SELECT count(*) = 3
+      FROM tide.task_step_definitions definition
+      WHERE definition.execution_version_id = execution.id
+    )
+  FROM tide.task_execution_versions execution
+  WHERE execution.shared_template_row_id = 'G02:v1'
+" "postgresql:///${UPGRADE_DB}")"
+if [[ "${g04_down_state}" != "t" ]]; then
+  echo "0031 forward-only down 错误恢复了旧 G04 结构。" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
   -f "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.down.sql" >/dev/null
 restored_upgrade_file_visibility_signature="$(psql -X --no-password -Atqc "
   select concat_ws('|',
@@ -1541,23 +2006,31 @@ if [[ "${restored_business_change_view_definition}" != "${upgrade_business_chang
   echo "0028 down 未精确恢复原业务变化视图。" >&2
   exit 1
 fi
-
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" \
   -f "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.down.sql" >/dev/null
 semantic_down_state="$(psql -X --no-password -Atqc "
-  SELECT count(*) = 10
-  FROM (
-    VALUES
-      ('G01:v1', 'G01'), ('G02:v1', 'G04'),
-      ('G03:v1', 'G02'), ('G04:v1', 'G03'),
-      ('G05:v1', 'G00'), ('G06:v1', 'G05'),
-      ('G07:v1', 'G06'), ('G08:v1', 'G07'),
-      ('G09:v1', 'G08'), ('G10:v1', 'G09')
-  ) expected(row_id, task_code)
-  JOIN tide.task_execution_versions execution
-    ON execution.shared_template_row_id = expected.row_id
-   AND execution.task_code = expected.task_code
+  SELECT
+    (
+      SELECT count(*) = 9
+      FROM (
+        VALUES
+          ('G01:v1', 'G01'), ('G02:v1', 'G04'),
+          ('G03:v1', 'G02'), ('G04:v1', 'G03'),
+          ('G06:v1', 'G05'), ('G07:v1', 'G06'),
+          ('G08:v1', 'G07'), ('G09:v1', 'G08'),
+          ('G10:v1', 'G09')
+      ) expected(row_id, task_code)
+      JOIN tide.task_execution_versions execution
+        ON execution.shared_template_row_id = expected.row_id
+       AND execution.task_code = expected.task_code
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM tide.task_execution_versions execution
+      WHERE execution.shared_template_row_id = 'G05:v1'
+        AND execution.task_code <> 'G00'
+    )
 " "postgresql:///${UPGRADE_DB}")"
 if [[ "${semantic_down_state}" != "t" ]]; then
   echo "0025 forward-only down 错误恢复了旧任务语义。" >&2
@@ -1664,8 +2137,8 @@ guard_output="$(
 )"
 guard_status=$?
 set -e
-if [[ "${guard_status}" == "0" || "${guard_output}" != *"未实际使用 TLS"* ]]; then
-  echo "生产迁移未按 TLS 守卫阻断会话：${guard_output}" >&2
+if [[ "${guard_status}" == "0" || ( "${guard_output}" != *"未实际使用 TLS"* && "${guard_output}" != *"server does not support SSL"* && "${guard_output}" != *"禁止由高权限 session_user"* ) ]]; then
+  echo "生产迁移未按 TLS/会话身份守卫阻断会话：${guard_output}" >&2
   exit 1
 fi
 
@@ -1681,4 +2154,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、public46→teacher0028→public49→teacher0030 顺序门禁、旧表缺失权限探测、0022–0030、无用对象/字段/函数门禁与精确恢复、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"
+echo "生产 migrator fresh/upgrade、public46→teacher0028→public49→teacher0032 顺序门禁、旧表缺失权限探测、0022–0032、无用对象/字段/函数门禁与精确恢复、首次登录回填/down-up/幂等、G04 三模块、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"

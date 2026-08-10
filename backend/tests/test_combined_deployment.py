@@ -46,6 +46,8 @@ EXPECTED_TEACHER_MIGRATIONS = (
     "0028_retire_task_business_change_view",
     "0029_remove_unused_tide_objects",
     "0030_remove_unused_columns_and_orphan_function",
+    "0031_g04_independent_sections",
+    "0032_first_login_onboarding",
 )
 EXPECTED_FIXED_TASKS = (
     ("G01", "Profile & Credentials Completion", 3),
@@ -145,6 +147,16 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
         services["teacher-migrate"]["build"]["dockerfile"]
         == "Dockerfile.migrate"
     )
+    assert services["teacher-migrate"]["environment"]["TIDE_MIGRATION_TARGET"] == (
+        "${TIDE_TEACHER_MIGRATION_TARGET:-0032_first_login_onboarding}"
+    )
+    combined_environment_example = (DEPLOY / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "TIDE_TEACHER_MIGRATION_TARGET=0032_first_login_onboarding"
+        in combined_environment_example
+    )
     assert (
         services["teacher-api"]["environment"]["TASK_CATALOG_PUBLIC_WRITE"]
         == "false"
@@ -234,8 +246,14 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0028_retire_task_business_change_view" in preflight
     assert "0029_remove_unused_tide_objects" in preflight
     assert "0030_remove_unused_columns_and_orphan_function" in preflight
-    assert "public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030" in preflight
+    assert "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032" in preflight
     assert "product_analytics_recorded" in preflight
+    assert "0031_g04_independent_sections" in preflight
+    assert "0032_first_login_onboarding" in preflight
+    assert "tide.account_onboarding_states" in preflight
+    assert "g02-device-2026-08-05-browser-preflight-v1" in preflight
+    assert "g02-courseware-2026-08-05-guidance-v1" in preflight
+    assert "2026-08-05-g04-three-part-v1" in preflight
     assert "Lesson Preparation&Device Network Check" in preflight
     assert "is_loopback_or_rfc1918_ipv4" in preflight
     assert "TIDE_CONTRACT_PROBE_ENV_FILE" in preflight
@@ -250,13 +268,29 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "pg_stat_ssl" in probe
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
-    assert "20260807_49_unused_columns" in probe
+    assert "20260810_50_g04_sections" in probe
     assert "actual_titles text[]" in probe
     assert (
         "ARRAY['G01','G02','G03','G04','G05','G06','G07','G08','G09']"
         in probe
     )
     assert "Lesson Preparation&Device Network Check" in probe
+    assert "WHERE row_id = 'G02:v1'" in probe
+    assert "payload->>'template_id' = 'G04'" in probe
+    assert "Complete three independent sections in any order" in probe
+    assert "Each section keeps its own progress" in probe
+    assert "only after all three independent sections pass" in probe
+    assert "camera angle, lighting, background and dressing" in probe
+    assert "2026-08-05-g04-three-part" in probe
+    assert "independentModules" in probe
+    assert "g02-device-2026-08-05-browser-preflight-v1" in probe
+    assert "g02-courseware-2026-08-05-guidance-v1" in probe
+    assert "2026-08-05-g04-three-part-v1" in probe
+    assert "lesson-preparation-camera-view-2026-08-v7-background-veto" in probe
+    assert "G04 photo rule is not the reviewed four-criterion AI check" in probe
+    assert "G04 completion rule does not require all three" in probe
+    assert "tide.task_step_definitions" in probe
+    assert "tide.task_validation_rules" in probe
     assert "ARRAY[3,2,2,3,3,4,3,5,5]" in probe
     assert "count(assignment.assignment_id) <> 9" in probe
     assert "teacher_reply_deadline_at" in probe
@@ -274,10 +308,18 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "operator_sessions', 'last_seen_at" in probe
     assert "file_objects', 'visibility" in probe
     assert "tide.enforce_outbox_target()" in probe
+    assert "0031_g04_independent_sections" in probe
+    assert "0032_first_login_onboarding" in probe
+    assert "tide.account_onboarding_states" in probe
+    assert "account_onboarding_states_request_hash_check" in probe
+    assert "confdeltype = 'c'" in probe
     assert "p_message IS NULL" in probe
     assert "tide_support_ticket_owner" in probe
     assert "ALTER ROLE tit_contract_probe SET default_transaction_read_only" in grants
     assert "GRANT SELECT ON" in grants
+    assert "tide.task_step_definitions" in grants
+    assert "tide.task_validation_rules" in grants
+    assert "tide.account_onboarding_states" in grants
     assert "REVOKE ALL PRIVILEGES ON ALL TABLES" in grants
     assert "sslmode=verify-full" in runner
     assert "--no-password" in runner
@@ -324,7 +366,7 @@ def _teacher_migrator_fixture(
         f"  {migration_id}" for migration_id in migrations
     )
     cross_chain_gate = (
-        "# public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030\n"
+        "# public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032\n"
         "product_analytics_recorded=true\n"
         if include_cross_chain_gate
         else ""
@@ -367,6 +409,24 @@ def _make_preflight_environment(
         "backend/database/migrations/"
         "0030_remove_unused_columns_and_orphan_function.up.sql": (
             "BEGIN;\nCOMMIT;\n"
+        ),
+        "backend/database/migrations/"
+        "0031_g04_independent_sections.up.sql": (
+            "BEGIN;\n"
+            "SELECT '2026-08-05-g04-three-part';\n"
+            "SELECT 'g02-device-2026-08-05-browser-preflight-v1';\n"
+            "SELECT 'g02-courseware-2026-08-05-guidance-v1';\n"
+            "SELECT '2026-08-05-g04-three-part-v1';\n"
+            "COMMIT;\n"
+        ),
+        "backend/database/migrations/"
+        "0032_first_login_onboarding.up.sql": (
+            "BEGIN;\n"
+            "CREATE TABLE tide.account_onboarding_states (id integer);\n"
+            "SELECT security_event.event_type = 'LOGIN';\n"
+            "SELECT security_event.outcome = 'SUCCESS';\n"
+            "SELECT 'MIGRATED_EXISTING';\n"
+            "COMMIT;\n"
         ),
         "backend/Dockerfile": "FROM scratch\n",
         "backend/Dockerfile.migrate": "FROM scratch\n",
@@ -481,7 +541,7 @@ def _run_preflight(environment: dict[str, str]) -> subprocess.CompletedProcess[s
     )
 
 
-def test_combined_preflight_rejects_teacher_chain_ending_before_0030(
+def test_combined_preflight_rejects_teacher_chain_ending_before_0032(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
@@ -494,7 +554,7 @@ def test_combined_preflight_rejects_teacher_chain_ending_before_0030(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0030 结尾的完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0032 结尾的完整有序生产链" in result.stderr
 
 
 def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
@@ -510,7 +570,7 @@ def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "public46→teacher0028→public49→teacher0030" in result.stderr
+    assert "public46→teacher0028→public50→teacher0032" in result.stderr
 
 
 def test_combined_preflight_accepts_teacher_source_inside_one_clean_repository(

@@ -333,13 +333,21 @@ export default function FaqHelpDialog({
                   : copy(language, "TIDE FAQ assistant", "TIDE FAQ 助手")}
             </h2>
           </span>
-          <button type="button" onClick={onClose} aria-label={copy(language, "Close FAQ", "关闭 FAQ")}>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={copy(language, "Close FAQ", "关闭 FAQ")}
+          >
             <X size={20} />
           </button>
         </header>
 
         {mode === "CHOICE" ? (
-          <div className="help-route-choice">
+          <div
+            className="help-route-choice"
+            data-onboarding-target="help-route-choices"
+            data-onboarding-max-height="330"
+          >
             <div className="help-route-intro">
               <h3>{copy(language, "Choose the quickest route", "选择最合适的求助方式")}</h3>
               <p>{copy(language, "Try the FAQ for common questions, or send a ticket when you need an operations reply.", "常见问题可先问 AI；需要运营介入时，可直接提交工单。")}</p>

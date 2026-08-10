@@ -53,6 +53,7 @@ function CompletedState({ task, onSecondary, secondaryLabel }) {
 function LockedPreview({ task }) {
   const { language } = useI18n();
   const c = (en, zh) => language === "zh" ? zh : en;
+  const readOnlyPreview = task.previewReadOnly === true;
   const releaseDay = stageDescriptions.find((stage) => stage.range === (task.sourceStage || task.stage))?.releaseDay;
   const isStatusOnly = ["external_status", "external_course", "content_pending"].includes(task.method);
   const isChecklist = task.method === "learning_checklist";
@@ -84,16 +85,24 @@ function LockedPreview({ task }) {
       <div className="locked-preview-banner">
         <span className="locked-preview-icon"><Lock size={24} weight="fill" /></span>
         <div>
-          <span className="eyebrow">{isStatusOnly ? c("TASK PREVIEW", "任务预览") : c("FULL CONTENT PREVIEW", "完整内容预览")}</span>
-          <h3>{c(
-            `Complete the previous stage to unlock early${releaseDay ? `, or wait until Day ${releaseDay}` : ""}.`,
-            `完成上一阶段可提前解锁${releaseDay ? `；最晚第 ${releaseDay} 天自动开放` : ""}。`,
-          )}</h3>
-          <p>{isStatusOnly
-            ? c("You can review the available information and completion standard now. The latest result appears after this task is released.", "当前可查看已有信息和完成标准；任务开放后显示最新结果。")
-            : isChecklist
-              ? c("All checklist content is visible now. Confirmation actions open after this stage is released.", "现在可以查看完整清单；阶段开放后才能勾选确认并完成任务。")
-              : c("All configured content is visible now. Progress and submission stay locked until release.", "当前可查看全部已配置内容；开放前进度和提交操作保持锁定。")}</p>
+          <span className="eyebrow">{readOnlyPreview
+            ? c("LOCAL READ-ONLY PREVIEW", "本地只读预览")
+            : isStatusOnly
+              ? c("TASK PREVIEW", "任务预览")
+              : c("FULL CONTENT PREVIEW", "完整内容预览")}</span>
+          <h3>{readOnlyPreview
+            ? c("This is the real task workspace used in production.", "这里展示的是正式环境使用的真实任务工作区。")
+            : c(
+                `Complete the previous stage to unlock early${releaseDay ? `, or wait until Day ${releaseDay}` : ""}.`,
+                `完成上一阶段可提前解锁${releaseDay ? `；最晚第 ${releaseDay} 天自动开放` : ""}。`,
+              )}</h3>
+          <p>{readOnlyPreview
+            ? c("Actions are disabled only in this local acceptance route, so it cannot write task progress or request device permissions.", "仅此本地验收入口会禁用操作，因此不会写入任务进度，也不会申请设备权限。")
+            : isStatusOnly
+              ? c("You can review the available information and completion standard now. The latest result appears after this task is released.", "当前可查看已有信息和完成标准；任务开放后显示最新结果。")
+              : isChecklist
+                ? c("All checklist content is visible now. Confirmation actions open after this stage is released.", "现在可以查看完整清单；阶段开放后才能勾选确认并完成任务。")
+                : c("All configured content is visible now. Progress and submission stay locked until release.", "当前可查看全部已配置内容；开放前进度和提交操作保持锁定。")}</p>
           <div className="preview-standard"><SealCheck size={18} /><span><strong>{c("Completion standard", "完成标准")}</strong>{task.standard}</span></div>
         </div>
       </div>

@@ -112,7 +112,11 @@ describe('current task catalog locale fields', () => {
       G01: ['g01-essay-confirmation', 'g01-completion-proof'],
       G02: [],
       G03: [],
-      G04: ['g02-courseware-confirmation', 'g02-environment-photo'],
+      G04: [
+        'g02-device-check',
+        'g02-courseware-confirmation',
+        'g02-environment-photo',
+      ],
       G05: [],
       G06: [],
       G07: [],
@@ -147,5 +151,56 @@ describe('current task catalog locale fields', () => {
     expect(imageReview?.config.criteriaVersion).toBe(
       'lesson-preparation-camera-view-2026-08-v7-background-veto',
     );
+  });
+
+  it('configures G04 as three independent parts with the stable device step', () => {
+    const g04 = currentTaskCatalog.find((task) => task.code === 'G04');
+    const deviceStep = g04?.steps.find(
+      (step) => step.key === 'g02-device-check',
+    );
+    const guidanceStep = g04?.steps.find(
+      (step) => step.key === 'g02-courseware-confirmation',
+    );
+    const completionRule = g04?.rules.find(
+      (rule) => rule.type === 'ALL_STEPS_COMPLETE',
+    );
+
+    expect(g04?.independentModules).toEqual({
+      stepKeys: [
+        'g02-device-check',
+        'g02-environment-photo',
+        'g02-courseware-confirmation',
+      ],
+      allowOutOfOrderProgress: true,
+      keepAssignmentInProgressUntilPassed: true,
+    });
+    expect(deviceStep).toMatchObject({
+      type: 'DEVICE_CHECK',
+      config: {
+        version: 'g02-device-2026-08-05-browser-preflight-v1',
+        role: 'DEVICE_CHECK',
+        items: ['camera', 'microphone', 'network'],
+      },
+    });
+    expect(guidanceStep?.config.version).toBe(
+      'g02-courseware-2026-08-05-guidance-v1',
+    );
+    expect(completionRule?.version).toBe('2026-08-05-g04-three-part-v1');
+    expect(completionRule?.config.requiredStepKeys).toEqual(
+      g04?.independentModules?.stepKeys,
+    );
+  });
+
+  it('pins the shared G04 How, completion standard and benefit copy', () => {
+    const g04 = currentTaskCatalog.find((task) => task.code === 'G04');
+
+    expect(g04).toMatchObject({
+      whatToDo:
+        'Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.',
+      completionStandard:
+        'G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.',
+      benefit:
+        'Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.',
+    });
   });
 });

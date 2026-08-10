@@ -89,6 +89,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA tide
 ALTER DEFAULT PRIVILEGES IN SCHEMA tide
     GRANT USAGE, SELECT ON SEQUENCES TO tit_teacher_crud;
 
+-- 引导确认是一次性终态事实；应用只能幂等写入和读取，不能改写或删除。
+REVOKE ALL ON tide.account_onboarding_states FROM tit_teacher_crud;
+GRANT SELECT, INSERT ON tide.account_onboarding_states TO tit_teacher_crud;
+
 -- 迁移账本只存在于正式 migrator 管理的库。存在时只能由独立 migrator
 -- 写入，运行账号只允许 readiness 读取。
 DO $$

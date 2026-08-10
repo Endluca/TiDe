@@ -149,6 +149,8 @@ orphan_function_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
   exit 1
 }
 run_sql "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
+run_sql "${DB_DIR}/migrations/0031_g04_independent_sections.up.sql"
+run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
@@ -184,6 +186,7 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     ),
     to_regclass('public.teacher_support_tickets') is not null,
     to_regclass('tide.job_leases') is not null,
+    to_regclass('tide.account_onboarding_states') is not null,
     to_regclass('tide.teacher_tasks') is null,
     to_regclass('tide.analytics_task_business_change_v1') is null,
     (
@@ -205,6 +208,25 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   echo "空库升级后状态异常: ${final_state}" >&2
   exit 1
 }
+
+run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.down.sql"
+account_onboarding_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select to_regclass('tide.account_onboarding_states') is null
+")"
+[[ "${account_onboarding_down_state}" == "t" ]] || {
+  echo "0032 down 未删除新手引导状态表" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.up.sql"
+account_onboarding_up_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select to_regclass('tide.account_onboarding_states') is not null
+")"
+[[ "${account_onboarding_up_state}" == "t" ]] || {
+  echo "0032 down-up 未恢复新手引导状态表" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.down.sql"
+run_sql "${DB_DIR}/migrations/0031_g04_independent_sections.down.sql"
 
 run_sql "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.down.sql"
 restored_file_visibility_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
@@ -339,4 +361,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0030 并逐级回滚验证通过。"
+echo "空库升级至 0032 并逐级回滚验证通过。"

@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260807_49_unused_columns`、teacher `0030_remove_unused_columns_and_orphan_function`。`tit_growth_test_v2` 已于 2026-08-10 受控重建到同一 canonical head，Tide 为精确 28 条账本且 0027 本地 Quiz 与 0028–0030 退役对象均已清理；重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这只证明公司测试库结构和源数据计算链已落地，不代表外部监控服务或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码与 `tit_growth_test_v2` 的 head 均为 public `20260810_50_g04_sections`、teacher `0032_first_login_onboarding`。Tide 为精确 30 条 canonical 账本，0027 本地 Quiz、0028–0030 退役对象、0031 G04 三模块与 0032 首次登录引导均已落库；重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这只证明公司测试库结构和源数据计算链已落地，不代表外部监控服务或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -34,8 +34,8 @@
 
 - `tit_growth_test`：保留的旧测试库，不执行本轮迁移或清理；
 - `tit_growth_test_v2`：本轮受控重建的隔离测试库，`public` head 为
-  `20260807_49_unused_columns`，`tide` 为精确 28 条 canonical 账本且 head 为
-  `0030_remove_unused_columns_and_orphan_function`；重建前旧库以仅 DBA 可连接的
+  `20260810_50_g04_sections`，`tide` 为精确 30 条 canonical 账本且 head 为
+  `0032_first_login_onboarding`；重建前旧库以仅 DBA 可连接的
   `tit_growth_test_v2_pre0030_20260810` 保留为回滚点；
 - `tit_growth_app`：Web App 受限运行角色，无超级用户、建库、建角色和 Schema DDL 权限；
 - `tit_teacher_crud`：教师端后端预留受限角色，只能按共享任务契约读取任务并更新已有任务的状态字段，不能创建或删除 assignment；
@@ -59,7 +59,7 @@ export DATABASE_URL='postgresql+psycopg://tit_growth_app@127.0.0.1:5432/tit_grow
 ## 初始化空库
 
 如果该库同时承载 teacher 的 `tide` Schema，首次初始化不能直接把 public 升到 head：必须按
-public 46 → teacher 0028 → public 49 → teacher 0030 分阶段执行，详见
+public 46 → teacher 0028 → public 50 → teacher 0032 分阶段执行，详见
 [`deploy/combined/README.md`](../deploy/combined/README.md)。只有不初始化 teacher Schema 的
 独立 public 数据库才可直接执行以下 `upgrade head`。
 
@@ -150,6 +150,12 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   `3 / 2 / 2 / 3 / 3 / 4 / 3 / 5 / 5`。只有尚无固定任务积分流水、非零任务账户或
   非零任务分项时才自动修正；已有结分事实的库会整笔拒绝迁移，必须走受治理的积分规则
   发布与同事务全量重算，不能静默改写历史。
+- `20260810_50_g04_sections` 以 `20260807_49_unused_columns` 为直接前驱，仅更新
+  重排后承载当前 G04 的稳定物理行
+  `G02:v1`（其 `template_id = G04`）的 How、完成标准与
+  benefit 文案：备课须知、设备网络基础检测和授课环境照片审核为三个任意
+  顺序、独立保存进度的模块，三项全部通过才完成 G04。该迁移不修改编码、
+  分值、assignment 或任务状态，发现旧文案漂移时失败关闭。
 - `seed_database.py` 只幂等补齐 14 个当前任务模板，不创建教师或任何运行时业务事实，也不修改投诉规则导入或触发结果。G01–G09 assignment 由教师写入流程初始化；初始化不创建通知、提醒或投递意图。隔离测试中的 Mock fixture 不进入运营运行库。
 - `seed_config_center.py` 只创建本地默认配置版本；空库读取不会由 API 隐式补配置。
 - 两个 Seed 脚本都要求 `APP_ENV` 明确为 `local / dev / development / test`，否则拒绝执行。

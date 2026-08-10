@@ -38,8 +38,14 @@ interface CatalogTask {
   stage: 'FOUNDATION' | 'INTEGRATION' | 'ADVANCE' | 'PERSONALIZED';
   sequence: number;
   estimatedMinutes: number;
+  contentVersion?: string;
   contentStatus: 'READY' | 'PENDING';
   pendingReason?: string;
+  independentModules?: {
+    stepKeys: string[];
+    allowOutOfOrderProgress: boolean;
+    keepAssignmentInProgressUntilPassed: boolean;
+  };
   allowRetry: boolean;
   kind: 'FIXED_GROWTH' | 'PERSONALIZED_IMPROVEMENT';
   steps: CatalogStep[];
@@ -54,10 +60,11 @@ const uuidFor = (value: string): string => {
 const allStepsRule = (
   copy: string,
   config: Record<string, unknown> = {},
+  version = '2026-07-22',
 ): CatalogRule => ({
   key: 'all-steps-complete',
   type: 'ALL_STEPS_COMPLETE',
-  version: '2026-07-22',
+  version,
   config,
   teacherFailureCopy: copy,
 });
@@ -94,6 +101,12 @@ const environmentCriteria = [
   'lighting',
   'background',
   'dressing',
+];
+
+const g04IndependentStepKeys = [
+  'g02-device-check',
+  'g02-environment-photo',
+  'g02-courseware-confirmation',
 ];
 
 const pending = (
@@ -181,33 +194,49 @@ export const currentTaskCatalog: CatalogTask[] = [
     title: 'Lesson Preparation&Device Network Check',
     why: 'Complete lesson preparation and confirm that your teaching setup is ready before class.',
     whatToDo:
-      'Take one teaching-environment photo for AI review, then confirm that lesson preparation is complete.',
+      'Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.',
     completionStandard:
-      'The teaching-environment photo passes AI review and lesson preparation is confirmed.',
+      'G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.',
     benefit:
-      'Your lesson preparation and pre-class teaching view are recorded as ready.',
+      'Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.',
     priority: 'P1',
     score: 3,
     stage: 'FOUNDATION',
     sequence: 4,
     estimatedMinutes: 15,
+    contentVersion: '2026-08-05-g04-three-part',
     contentStatus: 'READY',
+    independentModules: {
+      stepKeys: g04IndependentStepKeys,
+      allowOutOfOrderProgress: true,
+      keepAssignmentInProgressUntilPassed: true,
+    },
     allowRetry: true,
     kind: 'FIXED_GROWTH',
     steps: [
       {
+        key: 'g02-device-check',
+        type: 'DEVICE_CHECK',
+        title: 'Check camera, microphone and network',
+        config: {
+          version: 'g02-device-2026-08-05-browser-preflight-v1',
+          role: 'DEVICE_CHECK',
+          items: ['camera', 'microphone', 'network'],
+        },
+      },
+      {
         key: 'g02-courseware-confirmation',
         type: 'CHECKLIST',
-        title: 'Confirm courseware preparation',
+        title: 'Review and confirm lesson-preparation guidance',
         config: {
-          version: 'g02-courseware-2026-07-28',
+          version: 'g02-courseware-2026-08-05-guidance-v1',
           role: 'COURSEWARE_CONFIRMATION',
           items: [
             {
               key: 'courseware-prepared',
               label:
-                'I have reviewed all the slides and finished preparing for this lesson.',
-              labelZh: '我已浏览全部课件，并完成本节课备课。',
+                'I have reviewed the lesson-preparation guidance and all slides, and I am ready for this lesson.',
+              labelZh: '我已阅读备课须知并浏览全部课件，已完成本节课备课。',
             },
           ],
         },
@@ -226,7 +255,11 @@ export const currentTaskCatalog: CatalogTask[] = [
       },
     ],
     rules: [
-      allStepsRule('请完成备课确认和授课环境照片检查。'),
+      allStepsRule(
+        '请分别完成备课须知确认、设备网络检测和授课环境照片四项检查，三部分可任意顺序完成。',
+        { requiredStepKeys: g04IndependentStepKeys },
+        '2026-08-05-g04-three-part-v1',
+      ),
       aiReviewRule({
         key: 'g02-environment-ai-review',
         stepKey: 'g02-environment-photo',
@@ -731,8 +764,11 @@ async function syncTask(
         estimatedMinutes: task.estimatedMinutes,
         allowRetry: task.allowRetry,
         contentStatus: task.contentStatus,
-        contentVersion: '2026-08-06',
+        contentVersion: task.contentVersion ?? '2026-08-06',
         pendingReason: task.pendingReason ?? null,
+        ...(task.independentModules
+          ? { independentModules: task.independentModules }
+          : {}),
       },
     ],
   );

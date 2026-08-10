@@ -301,9 +301,9 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 49 → teacher 0030`；
-   确认 public head 为 `20260807_49_unused_columns`、teacher 账本 head 为
-   `0030_remove_unused_columns_and_orphan_function`，随后执行只读契约探针。
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032`；
+   确认 public head 为 `20260810_50_g04_sections`、teacher 账本 head 为
+   `0032_first_login_onboarding`，随后执行只读契约探针。
 2. 配齐统一应用的运营、教师和两个 Worker 环境变量，确认密钥不在版本化配置中；
    `tit_source_worker_runtime` 必须是独立受限 LOGIN。
 3. 在 Gaea 将统一应用设置为至少 `2` 个副本并使用 `RollingUpdate`；若启用自动伸缩，设置

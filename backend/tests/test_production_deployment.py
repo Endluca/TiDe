@@ -316,6 +316,6 @@ def test_readme_runs_preflight_before_migration() -> None:
         "--profile migration run --rm migrate"
     )
     assert preflight < migration
-    assert "20260807_49_unused_columns" in readme
-    assert "0030_remove_unused_columns_and_orphan_function" in readme
-    assert "public 46 → teacher 0028 → public 49 → teacher 0030" in readme
+    assert "20260810_50_g04_sections" in readme
+    assert "0032_first_login_onboarding" in readme
+    assert "public 46 → teacher 0028 → public 50 → teacher 0032" in readme

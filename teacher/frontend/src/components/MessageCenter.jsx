@@ -124,7 +124,11 @@ export default function MessageCenter({
         </div>
       </header>
 
-      <nav className="message-view-switch" aria-label={copy(language, "Message views", "消息视图")}>
+      <nav
+        className="message-view-switch"
+        aria-label={copy(language, "Message views", "消息视图")}
+        data-onboarding-target="messages-tabs"
+      >
         <button className={view === "SYSTEM" ? "active" : ""} type="button" onClick={() => setView("SYSTEM")}>
           {copy(language, "System messages", "系统消息")}
           {unreadCount > 0 && <em>{unreadCount}</em>}
@@ -152,7 +156,12 @@ export default function MessageCenter({
           onUpdated={onSupportTicketUpdated}
         />
       ) : (
-      <section className="messages-workspace">
+      <section
+        className="messages-workspace"
+        data-onboarding-target="messages-overview"
+        data-onboarding-max-height="420"
+        data-onboarding-scroll-block="start"
+      >
         <div className="message-list-panel">
           <div className="message-list-toolbar">
             <div>

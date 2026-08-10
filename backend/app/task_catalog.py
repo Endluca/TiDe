@@ -97,9 +97,9 @@ TASK_COPY: dict[str, tuple[str, str, str, str]] = {
     ),
     "G04": (
         "Complete lesson preparation and confirm that your teaching setup is ready before class.",
-        "Confirm lesson preparation, check the camera, microphone and network, then take one teaching-environment photo.",
-        "Lesson preparation is confirmed, camera, microphone and network pass, and the teaching-environment photo passes AI review.",
-        "Your lesson preparation and pre-class setup are recorded as ready.",
+        "Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.",
+        "G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.",
+        "Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.",
     ),
     "G05": (
         "Understand TTP and its key business scenarios.",

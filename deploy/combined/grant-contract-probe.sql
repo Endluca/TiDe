@@ -49,6 +49,9 @@ BEGIN
        OR to_regclass('public.teacher_scorecard_current') IS NULL
        OR to_regclass('public.teacher_lesson_score_current') IS NULL
        OR to_regclass('tide.task_execution_versions') IS NULL
+       OR to_regclass('tide.task_step_definitions') IS NULL
+       OR to_regclass('tide.task_validation_rules') IS NULL
+       OR to_regclass('tide.account_onboarding_states') IS NULL
        OR to_regclass('tide.schema_migrations') IS NULL THEN
         RAISE EXCEPTION
             'both migration chains must complete before probe grants';
@@ -85,6 +88,9 @@ GRANT SELECT ON
     public.teacher_scorecard_current,
     public.teacher_lesson_score_current,
     tide.task_execution_versions,
+    tide.task_step_definitions,
+    tide.task_validation_rules,
+    tide.account_onboarding_states,
     tide.schema_migrations
 TO tit_contract_probe;
 

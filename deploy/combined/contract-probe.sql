@@ -82,6 +82,9 @@ BEGIN
        OR to_regclass('public.teacher_lesson_score_current') IS NULL
        OR to_regclass('tide.task_execution_versions') IS NULL
        OR to_regclass('tide.file_objects') IS NULL
+       OR to_regclass('tide.task_step_definitions') IS NULL
+       OR to_regclass('tide.task_validation_rules') IS NULL
+       OR to_regclass('tide.account_onboarding_states') IS NULL
        OR to_regclass('tide.schema_migrations') IS NULL THEN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
@@ -153,7 +156,7 @@ BEGIN
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260807_49_unused_columns' THEN
+    ) IS DISTINCT FROM '20260810_50_g04_sections' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -188,10 +191,12 @@ BEGIN
             '0027_remove_local_quiz_runtime',
             '0028_retire_task_business_change_view',
             '0029_remove_unused_tide_objects',
-            '0030_remove_unused_columns_and_orphan_function'
+            '0030_remove_unused_columns_and_orphan_function',
+            '0031_g04_independent_sections',
+            '0032_first_login_onboarding'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0030';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0032';
     END IF;
 
     IF to_regclass('tide.analytics_task_business_change_v1') IS NOT NULL
@@ -224,6 +229,60 @@ BEGIN
             'legacy objects, redundant columns or orphan function still exist';
     END IF;
 
+    IF (
+        SELECT count(*)
+        FROM pg_attribute
+        WHERE attrelid = 'tide.account_onboarding_states'::regclass
+          AND attnum > 0
+          AND NOT attisdropped
+          AND attname IN (
+              'account_id',
+              'guide_code',
+              'guide_version',
+              'status',
+              'idempotency_key',
+              'request_hash',
+              'acknowledged_at',
+              'created_at',
+              'updated_at'
+          )
+    ) <> 9 OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'tide.account_onboarding_states'::regclass
+          AND conname = 'account_onboarding_states_pkey'
+          AND contype = 'p'
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'tide.account_onboarding_states'::regclass
+          AND conname = 'account_onboarding_states_account_idempotency_key'
+          AND contype = 'u'
+    ) OR (
+        SELECT count(*)
+        FROM pg_constraint
+        WHERE conrelid = 'tide.account_onboarding_states'::regclass
+          AND conname IN (
+              'account_onboarding_states_guide_code_check',
+              'account_onboarding_states_guide_version_check',
+              'account_onboarding_states_status_check',
+              'account_onboarding_states_idempotency_key_check',
+              'account_onboarding_states_request_hash_check',
+              'account_onboarding_states_time_check'
+          )
+          AND contype = 'c'
+    ) <> 6 OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'tide.account_onboarding_states'::regclass
+          AND contype = 'f'
+          AND confrelid = 'tide.user_accounts'::regclass
+          AND confdeltype = 'c'
+    ) THEN
+        RAISE EXCEPTION
+            'teacher first-login onboarding state contract is incomplete';
+    END IF;
+
     SELECT
         array_agg(template_id ORDER BY template_id),
         array_agg(payload->>'title' ORDER BY template_id),
@@ -253,6 +312,25 @@ BEGIN
         RAISE EXCEPTION
             'mandatory catalog mismatch: codes=%, titles=%, scores=%, total=%',
             actual_codes, actual_titles, actual_scores, total_score;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.task_templates
+        WHERE row_id = 'G02:v1'
+          AND template_id = 'G04'
+          AND template_version = 1
+          AND status = 'PUBLISHED'
+          AND payload->>'template_id' = 'G04'
+          AND payload->>'how_summary' =
+              'Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.'
+          AND payload->>'completion_standard' =
+              'G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.'
+          AND payload->>'benefit' =
+              'Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.'
+    ) THEN
+        RAISE EXCEPTION
+            'stable G02:v1 row for current G04 does not expose the reviewed three independent sections';
     END IF;
 
     IF EXISTS (
@@ -292,6 +370,123 @@ BEGIN
     ) IS DISTINCT FROM
        ARRAY['G01','G02','G03','G04','G05','G06','G07','G08','G09']::text[] THEN
         RAISE EXCEPTION 'teacher execution catalog is not the current G01-G09 catalog';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        WHERE execution.shared_template_row_id = 'G02:v1'
+          AND execution.task_code = 'G04'
+          AND execution.status = 'ACTIVE'
+          AND execution.config->>'contentVersion' =
+              '2026-08-05-g04-three-part'
+          AND execution.config->'independentModules' = jsonb_build_object(
+              'stepKeys', jsonb_build_array(
+                  'g02-device-check',
+                  'g02-environment-photo',
+                  'g02-courseware-confirmation'
+              ),
+              'allowOutOfOrderProgress', true,
+              'keepAssignmentInProgressUntilPassed', true
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'G04 teacher execution does not enable the reviewed independent modules';
+    END IF;
+
+    IF (
+        SELECT array_agg(definition.step_key ORDER BY definition.position)
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_step_definitions AS definition
+          ON definition.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'G02:v1'
+          AND execution.task_code = 'G04'
+          AND execution.status = 'ACTIVE'
+    ) IS DISTINCT FROM ARRAY[
+        'g02-device-check',
+        'g02-courseware-confirmation',
+        'g02-environment-photo'
+    ]::text[] THEN
+        RAISE EXCEPTION
+            'G04 teacher execution does not have exactly the reviewed three steps';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_step_definitions AS definition
+          ON definition.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'G02:v1'
+          AND execution.task_code = 'G04'
+          AND execution.status = 'ACTIVE'
+          AND definition.step_key = 'g02-device-check'
+          AND definition.step_type = 'DEVICE_CHECK'
+          AND definition.config->>'version' =
+              'g02-device-2026-08-05-browser-preflight-v1'
+          AND definition.config->'items' =
+              '["camera", "microphone", "network"]'::jsonb
+    ) THEN
+        RAISE EXCEPTION
+            'G04 device step is not the reviewed browser preflight';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_step_definitions AS definition
+          ON definition.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'G02:v1'
+          AND execution.task_code = 'G04'
+          AND execution.status = 'ACTIVE'
+          AND definition.step_key = 'g02-courseware-confirmation'
+          AND definition.step_type = 'CHECKLIST'
+          AND definition.config->>'version' =
+              'g02-courseware-2026-08-05-guidance-v1'
+          AND definition.config->>'role' = 'COURSEWARE_CONFIRMATION'
+    ) THEN
+        RAISE EXCEPTION
+            'G04 lesson-preparation step is not the reviewed guidance confirmation';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_validation_rules AS rule
+          ON rule.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'G02:v1'
+          AND execution.task_code = 'G04'
+          AND execution.status = 'ACTIVE'
+          AND rule.rule_key = 'all-steps-complete'
+          AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+          AND rule.rule_version = '2026-08-05-g04-three-part-v1'
+          AND rule.config->'requiredStepKeys' = jsonb_build_array(
+              'g02-device-check',
+              'g02-environment-photo',
+              'g02-courseware-confirmation'
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'G04 completion rule does not require all three independent steps';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_validation_rules AS rule
+          ON rule.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'G02:v1'
+          AND execution.task_code = 'G04'
+          AND execution.status = 'ACTIVE'
+          AND rule.rule_key = 'g02-environment-ai-review'
+          AND rule.rule_type = 'AI_IMAGE_REVIEW'
+          AND rule.rule_version = '2026-07-27-strict'
+          AND rule.config->>'criteriaVersion' =
+              'lesson-preparation-camera-view-2026-08-v7-background-veto'
+          AND rule.config->'criteriaKeys' =
+              '["camera_angle", "lighting", "background", "dressing"]'::jsonb
+    ) THEN
+        RAISE EXCEPTION
+            'G04 photo rule is not the reviewed four-criterion AI check';
     END IF;
 
     IF to_regrole('tit_teacher_crud') IS NULL

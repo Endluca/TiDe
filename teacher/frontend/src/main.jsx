@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { HashRouter } from "react-router-dom";
+import { HashRouter, MemoryRouter } from "react-router-dom";
 import App from "./App";
 import "./styles.css";
 import "./modern.css";
@@ -11,7 +11,10 @@ import "./ai-help-fab.css";
 import { publicAsset } from "./public-assets";
 import { startAnalyticsRuntime } from "./analytics/product-analytics";
 
-startAnalyticsRuntime();
+const isOnboardingPreview = import.meta.env.DEV
+  && window.location.hash.replace(/^#/, "").split("?")[0] === "/preview/onboarding";
+
+if (!isOnboardingPreview) startAnalyticsRuntime();
 
 document.documentElement.style.setProperty(
   "--coach-card-background",
@@ -20,8 +23,14 @@ document.documentElement.style.setProperty(
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <HashRouter>
-      <App />
-    </HashRouter>
+    {isOnboardingPreview ? (
+      <MemoryRouter initialEntries={["/"]}>
+        <App onboardingPreview />
+      </MemoryRouter>
+    ) : (
+      <HashRouter>
+        <App />
+      </HashRouter>
+    )}
   </StrictMode>,
 );

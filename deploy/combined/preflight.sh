@@ -256,6 +256,8 @@ teacher_semantic_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migration
 teacher_legacy_view_retirement="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0028_retire_task_business_change_view.up.sql"
 teacher_unused_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0029_remove_unused_tide_objects.up.sql"
 teacher_unused_columns_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
+teacher_g04_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0031_g04_independent_sections.up.sql"
+teacher_onboarding_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0032_first_login_onboarding.up.sql"
 
 [[ -f "${teacher_service}" ]] || fail "缺少教师端任务服务"
 [[ -f "${teacher_catalog}" ]] || fail "缺少教师端任务目录同步器"
@@ -268,6 +270,26 @@ teacher_unused_columns_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migra
   || fail "缺少教师端 0029 无用对象清理迁移"
 [[ -f "${teacher_unused_columns_cleanup}" ]] \
   || fail "缺少教师端 0030 冗余列与孤儿函数清理迁移"
+[[ -f "${teacher_g04_migration}" ]] \
+  || fail "缺少教师端 0031 G04 三模块迁移"
+[[ -f "${teacher_onboarding_migration}" ]] \
+  || fail "缺少教师端 0032 首次登录引导迁移"
+grep -q "2026-08-05-g04-three-part" "${teacher_g04_migration}" \
+  || fail "教师端 0031 未发布经评审的 G04 三模块版本"
+grep -q "g02-device-2026-08-05-browser-preflight-v1" "${teacher_g04_migration}" \
+  || fail "教师端 0031 未包含经评审的设备基础预检"
+grep -q "g02-courseware-2026-08-05-guidance-v1" "${teacher_g04_migration}" \
+  || fail "教师端 0031 未包含经评审的备课须知确认版本"
+grep -q "2026-08-05-g04-three-part-v1" "${teacher_g04_migration}" \
+  || fail "教师端 0031 未包含经评审的三模块完成规则版本"
+grep -q "tide.account_onboarding_states" "${teacher_onboarding_migration}" \
+  || fail "教师端 0032 未创建账号引导状态事实表"
+grep -q "security_event.event_type = 'LOGIN'" "${teacher_onboarding_migration}" \
+  || fail "教师端 0032 未按成功登录事件识别存量账号"
+grep -q "security_event.outcome = 'SUCCESS'" "${teacher_onboarding_migration}" \
+  || fail "教师端 0032 未限定成功登录结果"
+grep -q "'MIGRATED_EXISTING'" "${teacher_onboarding_migration}" \
+  || fail "教师端 0032 未标记存量已登录账号"
 
 if grep -Eq "HIDDEN_FIXED_TASK_CODES.*G02|new Set\\(\\['G02'\\]\\)" "${teacher_service}"; then
   fail "教师端仍隐藏当前 G02 平台政策任务"
@@ -335,9 +357,9 @@ if sorted(declared_codes) != sorted(expected) or duplicate_codes or actual != ex
 PY
 
 [[ -f "${teacher_migrator}" ]] || fail "缺少教师端正式生产迁移器"
-grep -Fq "public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030" \
+grep -Fq "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032" \
   "${teacher_migrator}" \
-  || fail "教师端迁移器缺少 public46→teacher0028→public49→teacher0030 分阶段失败关闭门禁"
+  || fail "教师端迁移器缺少 public46→teacher0028→public50→teacher0032 分阶段失败关闭门禁"
 grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
   || fail "教师端迁移器未区分历史 0020 是否已经记录"
 [[ -f "${TIDE_TEACHER_REPO_PATH}/backend/Dockerfile" ]] \
@@ -345,7 +367,7 @@ grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
 [[ -f "${TIDE_TEACHER_REPO_PATH}/frontend/Dockerfile" ]] \
   || fail "缺少教师端 Web 生产镜像"
 python3 - "${teacher_migrator}" <<'PY' \
-  || fail "教师端生产迁移器不是以 0030 结尾的完整有序生产链"
+  || fail "教师端生产迁移器不是以 0032 结尾的完整有序生产链"
 from __future__ import annotations
 
 import re
@@ -382,6 +404,8 @@ expected = [
     "0028_retire_task_business_change_view",
     "0029_remove_unused_tide_objects",
     "0030_remove_unused_columns_and_orphan_function",
+    "0031_g04_independent_sections",
+    "0032_first_login_onboarding",
 ]
 target_match = re.search(
     r'TARGET_MIGRATION="\$\{TIDE_MIGRATION_TARGET:-([^}]+)\}"',
@@ -413,4 +437,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public49→teacher0030 执行，随后仍需通过契约探针和发布门禁。\n'
+printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032 执行，随后仍需通过契约探针和发布门禁。\n'

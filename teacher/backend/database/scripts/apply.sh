@@ -316,10 +316,18 @@ elif [[ "${unused_column_cleanup_state}" != "f|f" ]]; then
   echo "0030 无用字段与孤儿函数处于不一致状态，迁移已停止。" >&2
   exit 1
 fi
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0031_g04_independent_sections.up.sql"
+
+account_onboarding_states_exists="$("${PSQL[@]}" -Atqc "
+  select to_regclass('tide.account_onboarding_states') is not null
+")"
+if [[ "${account_onboarding_states_exists}" != "t" ]]; then
+  "${PSQL[@]}" -f "${DB_DIR}/migrations/0032_first_login_onboarding.up.sql"
+fi
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0030、共享表本地契约和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0032、共享表本地契约和当前 Seeds 已检查并执行。"

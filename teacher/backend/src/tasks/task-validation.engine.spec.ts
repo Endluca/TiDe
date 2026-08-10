@@ -13,6 +13,17 @@ const rule = {
   teacherFailureCopy: 'Please finish the remaining step.',
 };
 
+const g04Rule = {
+  ...rule,
+  config: {
+    requiredStepKeys: [
+      'g02-device-check',
+      'g02-environment-photo',
+      'g02-courseware-confirmation',
+    ],
+  },
+};
+
 describe('TaskValidationEngine', () => {
   const evaluateImage = jest.fn();
   const imageReview = {
@@ -70,11 +81,11 @@ describe('TaskValidationEngine', () => {
     });
   });
 
-  it('does not require the retired device step for the current G04 flow', async () => {
+  it('requires the restored device step for the current three-part G04 flow', async () => {
     await expect(
       engine.evaluate({
         ...context,
-        rules: [rule],
+        rules: [g04Rule],
         steps: [
           {
             stepKey: 'g02-courseware-confirmation',
@@ -88,6 +99,64 @@ describe('TaskValidationEngine', () => {
           },
           {
             stepKey: 'g02-environment-photo',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toEqual({
+      status: 'FAILED',
+      resultCode: 'STEPS_INCOMPLETE',
+      teacherMessage:
+        '请分别完成备课须知确认、设备网络检测和授课环境照片四项检查，三部分可任意顺序完成。',
+      ruleVersion: 'all-steps:1',
+    });
+  });
+
+  it('fails closed when the G04 execution catalog is missing a required part', async () => {
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [g04Rule],
+        steps: [
+          {
+            stepKey: 'g02-environment-photo',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+          {
+            stepKey: 'g02-courseware-confirmation',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toMatchObject({
+      status: 'FAILED',
+      resultCode: 'STEPS_INCOMPLETE',
+    });
+  });
+
+  it('passes G04 only after all three independent parts reach 100%', async () => {
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [g04Rule],
+        steps: [
+          {
+            stepKey: 'g02-device-check',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+          {
+            stepKey: 'g02-environment-photo',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+          {
+            stepKey: 'g02-courseware-confirmation',
             status: 'COMPLETED',
             percent: 100,
           },
@@ -116,8 +185,13 @@ describe('TaskValidationEngine', () => {
     await expect(
       engine.evaluate({
         ...context,
-        rules: [rule, imageRule],
+        rules: [g04Rule, imageRule],
         steps: [
+          {
+            stepKey: 'g02-device-check',
+            status: 'COMPLETED',
+            percent: 100,
+          },
           {
             stepKey: 'g02-courseware-confirmation',
             status: 'NOT_STARTED',

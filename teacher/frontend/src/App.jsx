@@ -65,13 +65,17 @@ import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { Toki as MotionToki } from "./components/UI";
 import KuozhiProgressCard from "./features/task-content/KuozhiProgressCard";
+import OnboardingGuide from "./components/OnboardingGuide";
+import GuideLibraryDialog from "./components/GuideLibraryDialog";
 import { logoutTeacher, requestPasswordReset } from "./api/auth-api";
 import { restoreSession } from "./api/api-client";
 import {
+  acknowledgeOnboarding,
   getAllCourses,
   getCourses,
   getG01Review,
   getNotifications,
+  getOnboardingStatus,
   getTeacherProfile,
   getTideSummary,
   markNotificationClicked,
@@ -134,6 +138,17 @@ import {
 import { createNotificationRequestQueue } from "./notification-refresh";
 import { localizeNotification } from "./notification-copy";
 import { buildCourseAbilityTags } from "./course-ability-tags";
+import {
+  getOnboardingGuide,
+  normalizeOnboardingCatalog,
+  normalizeOnboardingStatus,
+  ONBOARDING_DEFAULT_VERSION,
+  ONBOARDING_GUIDE_CODE,
+  ONBOARDING_GUIDE_CODES,
+  ONBOARDING_GUIDE_ORDER,
+  ONBOARDING_OUTCOMES,
+  shouldLoadOnboarding,
+} from "./onboarding-guide";
 import { I18nProvider, localizeStage, localizeTask } from "./i18n";
 import { describeDataError } from "./data-error";
 import { loadTaskContexts } from "./task-context-loader";
@@ -276,7 +291,7 @@ const workspaceMeta = {
   profile_credentials: ["Profile and TESOL completion", "档案与 TESOL 完成", "Complete all five conditions in one place.", "在一个页面内完成全部五项条件。"],
   learning_checklist: ["Completion checklist", "完成步骤", "Tick every item, then confirm to record this task as complete.", "勾选全部步骤，再点击“完成任务”。"],
   external_status: ["Review status", "审核状态", "Check the latest available result.", "查看最新审核结果。"],
-  readiness_photo: ["Pre-class environment check", "课前环境确认", "Take one photo in your real teaching position and review the four lesson-preparation checks.", "在真实授课位置拍一张照片，并逐项查看首课准备的 4 项画面检测结果。"],
+  readiness_photo: ["Three-part first-class readiness", "首课三项准备", "Complete the device and connection check, use one photo for the four lesson-preparation checks, and confirm lesson preparation in any order.", "任意顺序完成设备与连接预检、照片四项 AI 检测和课件备课确认。"],
   upload_review: ["Submit for review", "上传材料", "Follow the steps below to submit your material for review.", "按照下方要求提交材料并查看审核结果。"],
   embedded_course: ["In-platform course", "站内课程", "Complete every learning section inside this task page.", "在当前任务页内完成全部学习内容。"],
   guidance_acknowledgement: ["Result and next step", "结果与下一步", "Review the affected classes, complete the AC/ACE check and record the result.", "查看触发课程，完成 AC／ACE 检测并记录结果。"],
@@ -467,6 +482,7 @@ function FloatingAiHelpButton({ language, onOpen, routeKey }) {
       <button
         ref={buttonRef}
         type="button"
+        data-onboarding-target="help-entry"
         onClick={(event) => {
           if (suppressClickRef.current) {
             event.preventDefault();
@@ -589,12 +605,13 @@ function TaskDataErrorScreen({ error, language, onRetry }) {
   );
 }
 
-function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onMessagesOpen, onResetPassword }) {
+function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onMessagesOpen, onQuickGuide, onResetPassword }) {
   const teacher = useTeacher();
   const location = useLocation();
   const navigate = useNavigate();
   const [languageOpen, setLanguageOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const profileButtonRef = useRef(null);
   const isTask = location.pathname.startsWith("/task/");
   return (
     <header className={`ref-header ${isTask ? "task-header" : ""}`}>
@@ -612,14 +629,31 @@ function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onM
         <img src={publicAsset("/assets/brand/51talk-logo-blue.png")} alt="51Talk" />
         <span>{copy(language, "New Teacher Camp", "新师训练营")}</span>
       </Link>
-      <nav className="ref-desktop-nav" aria-label="Main navigation">
+      <nav
+        className="ref-desktop-nav"
+        aria-label="Main navigation"
+        data-onboarding-target="main-navigation"
+        data-onboarding-viewport="desktop"
+      >
         <NavLink to="/" end>
           {copy(language, "My TIDE", "我的成长")}
         </NavLink>
-        <NavLink to="/path">
+        <NavLink
+          to="/path"
+          data-onboarding-target="tasks-entry"
+          data-onboarding-action="open-tasks"
+          data-onboarding-viewport="desktop"
+        >
           {copy(language, "Tasks", "我的任务")}
         </NavLink>
-        <NavLink className="nav-message-link" to="/messages" onClick={onMessagesOpen}>
+        <NavLink
+          className="nav-message-link"
+          to="/messages"
+          onClick={onMessagesOpen}
+          data-onboarding-target="messages-entry"
+          data-onboarding-action="open-messages"
+          data-onboarding-viewport="desktop"
+        >
           {copy(language, "Messages", "消息")}
           {unreadCount > 0 && <span className="nav-unread-badge" aria-label={copy(language, `${unreadCount} unread messages`, `${unreadCount} 条未读消息`)}>{unreadCount}</span>}
         </NavLink>
@@ -629,6 +663,8 @@ function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onM
           type="button"
           onClick={onHelp}
           aria-label={copy(language, "Help", "帮助")}
+          data-onboarding-target="help-entry"
+          data-onboarding-viewport="desktop"
         >
           <Question size={20} />
           <span>{copy(language, "Help", "帮助")}</span>
@@ -671,6 +707,7 @@ function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onM
         </div>
         <div className="profile-menu">
           <button
+            ref={profileButtonRef}
             className="profile-button"
             type="button"
             onClick={() => setProfileOpen((value) => !value)}
@@ -687,6 +724,17 @@ function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onM
                 <strong>{teacher.name}</strong>
                 <small>{teacher.email}</small>
               </div>
+              <button
+                className="profile-guide-button"
+                type="button"
+                onClick={() => {
+                  setProfileOpen(false);
+                  onQuickGuide(profileButtonRef.current);
+                }}
+              >
+                <Sparkle size={18} />
+                {copy(language, "Feature guides", "功能引导")}
+              </button>
               <button
                 className="profile-security-button"
                 type="button"
@@ -711,16 +759,33 @@ function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onM
 
 function MobileNav({ language, unreadCount = 0, onMessagesOpen }) {
   return (
-    <nav className="ref-mobile-nav" aria-label="Mobile navigation">
+    <nav
+      className="ref-mobile-nav"
+      aria-label="Mobile navigation"
+      data-onboarding-target="main-navigation"
+      data-onboarding-viewport="mobile"
+    >
       <NavLink to="/" end>
         <GraduationCap size={25} />
         <span>{copy(language, "My TIDE", "我的成长")}</span>
       </NavLink>
-      <NavLink to="/path">
+      <NavLink
+        to="/path"
+        data-onboarding-target="tasks-entry"
+        data-onboarding-action="open-tasks"
+        data-onboarding-viewport="mobile"
+      >
         <ListChecks size={25} />
         <span>{copy(language, "Tasks", "我的任务")}</span>
       </NavLink>
-      <NavLink className="nav-message-link" to="/messages" onClick={onMessagesOpen}>
+      <NavLink
+        className="nav-message-link"
+        to="/messages"
+        onClick={onMessagesOpen}
+        data-onboarding-target="messages-entry"
+        data-onboarding-action="open-messages"
+        data-onboarding-viewport="mobile"
+      >
         <ChatCircleDots size={25} />
         <span>{copy(language, "Messages", "消息")}</span>
         {unreadCount > 0 && <span className="nav-unread-badge" aria-label={copy(language, `${unreadCount} unread messages`, `${unreadCount} 条未读消息`)}>{unreadCount}</span>}
@@ -796,6 +861,15 @@ function nextTask(tasks) {
     items[0] ||
     tasks[tasks.length - 1]
   );
+}
+
+function onboardingPrimaryRequiredTask(tasks) {
+  const requiredTasks = tasks.filter((task) => (
+    task.taskCategory !== "personalized"
+    && !task.assignmentMissing
+    && !["cancelled", "expired"].includes(task.status)
+  ));
+  return nextTask(requiredTasks);
 }
 
 function TodayPage({ tasks, language }) {
@@ -1247,6 +1321,8 @@ function RequiredTaskShortcut({ raw, language, priority = "primary" }) {
       </dl>
       <Link
         to={`/task/${raw.id}`}
+        data-onboarding-target={priority === "primary" ? "primary-task-action" : undefined}
+        data-onboarding-action={priority === "primary" ? "open-primary-task" : undefined}
         {...taskAnalyticsAttributes(
           raw,
           "TASKS",
@@ -1263,7 +1339,13 @@ function RequiredTaskShortcut({ raw, language, priority = "primary" }) {
 function PersonalizedTaskGrid({ rawTasks, language }) {
   if (rawTasks.length === 0) return null;
   return (
-    <section className="tasks-personalized-section" aria-labelledby="tasks-personalized-title">
+    <section
+      className="tasks-personalized-section"
+      aria-labelledby="tasks-personalized-title"
+      data-onboarding-target="personalized-task-area"
+      data-onboarding-max-height="320"
+      data-onboarding-scroll-block="start"
+    >
       <header className="tasks-personalized-heading">
         <div>
           <small>{copy(language, "PERSONALIZED FOR YOU", "为你定制")}</small>
@@ -1281,11 +1363,17 @@ function PersonalizedTaskGrid({ rawTasks, language }) {
         <span>{rawTasks.length} {copy(language, rawTasks.length === 1 ? "task" : "tasks", "项任务")}</span>
       </header>
       <div className="tasks-personalized-grid">
-        {rawTasks.map((raw) => {
+        {rawTasks.map((raw, index) => {
           const task = localizeTask(raw, language);
           const Icon = taskIcons[raw.id] || Sparkle;
           return (
-            <article className="tasks-personalized-strip" key={raw.backendId || raw.id}>
+            <article
+              className="tasks-personalized-strip"
+              key={raw.backendId || raw.id}
+              data-onboarding-target={index === 0 ? "personalized-task-reason" : undefined}
+              data-onboarding-max-height={index === 0 ? "230" : undefined}
+              data-onboarding-scroll-block={index === 0 ? "center" : undefined}
+            >
               <span className="tasks-personalized-icon"><Icon size={30} weight="duotone" /></span>
               <div className="tasks-personalized-copy">
                 <div className="tasks-personalized-kicker">
@@ -1683,7 +1771,10 @@ function GrowthPathPage({
         </div>
       </header>
 
-      <section className="tasks-current-section" aria-labelledby="tasks-current-title">
+      <section
+        className="tasks-current-section"
+        aria-labelledby="tasks-current-title"
+      >
         <div className="tasks-section-heading">
           <div>
             <small>{copy(language, "DO THIS NEXT", "建议先做")}</small>
@@ -1702,7 +1793,10 @@ function GrowthPathPage({
         language={language}
       />
 
-      <section className="tasks-required-path" aria-labelledby="required-path-title">
+      <section
+        className="tasks-required-path"
+        aria-labelledby="required-path-title"
+      >
         <header className="tasks-path-heading">
           <div>
             <small>{copy(language, "REQUIRED TASK PATH", "完整必修任务路径")}</small>
@@ -1801,6 +1895,7 @@ function TaskDetailPage({
   onTaskSubmitted,
   onHelp,
   language,
+  previewMode = false,
 }) {
   const { taskId } = useParams();
   const raw = tasks.find(
@@ -1821,7 +1916,7 @@ function TaskDetailPage({
     latestTaskStatusRef.current = raw?.status;
   }, [raw?.status]);
   useEffect(() => {
-    if (!raw?.backendId) return undefined;
+    if (previewMode || !raw?.backendId) return undefined;
     if (analyticsExitTimerRef.current?.taskId === raw.backendId) {
       window.clearTimeout(analyticsExitTimerRef.current.timer);
       analyticsExitTimerRef.current = null;
@@ -1871,9 +1966,9 @@ function TaskDetailPage({
       }, 500);
       analyticsExitTimerRef.current = { taskId: visit.taskId, timer };
     };
-  }, [raw?.backendId]);
+  }, [previewMode, raw?.backendId]);
   useEffect(() => {
-    if (raw || !taskId || attemptedTaskIdRef.current === taskId) return;
+    if (previewMode || raw || !taskId || attemptedTaskIdRef.current === taskId) return;
     let active = true;
     attemptedTaskIdRef.current = taskId;
     setMissingTaskLoading(true);
@@ -1885,18 +1980,19 @@ function TaskDetailPage({
     return () => {
       active = false;
     };
-  }, [onRefresh, raw, taskId]);
+  }, [onRefresh, previewMode, raw, taskId]);
   useEffect(() => {
-    if (!raw?.backendId || raw.backendStatus !== "ASSIGNED" || viewedTasksRef.current.has(raw.backendId)) return;
+    if (previewMode || !raw?.backendId || raw.backendStatus !== "ASSIGNED" || viewedTasksRef.current.has(raw.backendId)) return;
     viewedTasksRef.current.add(raw.backendId);
     viewTask(raw.backendId, raw.stateVersion)
       .then(() => onRefresh?.(raw.backendId))
       .catch(() => {
         viewedTasksRef.current.delete(raw.backendId);
       });
-  }, [onRefresh, raw]);
+  }, [onRefresh, previewMode, raw]);
   if (
     !raw &&
+    !previewMode &&
     (missingTaskLoading || attemptedTaskIdRef.current !== taskId)
   ) {
     return (
@@ -1955,14 +2051,23 @@ function TaskDetailPage({
       ].filter(Boolean).join(" ")}
     >
       <div className="task-route-actions">
-        <Link className="task-home-button" to="/path">
+        <Link
+          className="task-home-button"
+          to="/path"
+          data-onboarding-target="task-result-next-action"
+          data-onboarding-scroll-block="start"
+        >
           <ArrowLeft size={17} />
           {copy(language, "Back to Tasks", "返回任务列表")}
         </Link>
       </div>
       <div className="task-layout">
         <section className="task-main-card">
-          <div className="task-title-row">
+          <div
+            className="task-title-row"
+            data-onboarding-target="task-result-summary"
+            data-onboarding-scroll-block="start"
+          >
             <div>
               <h1>{task.name}</h1>
               <div className="task-pills">
@@ -1974,7 +2079,12 @@ function TaskDetailPage({
               </div>
             </div>
           </div>
-          <div className="task-info-grid">
+          <div
+            className="task-info-grid"
+            data-onboarding-target="task-instructions"
+            data-onboarding-max-height="430"
+            data-onboarding-scroll-block="start"
+          >
               <article>
                 <span className="outlined-icon">
                   <Star size={22} weight="fill" />
@@ -2018,7 +2128,12 @@ function TaskDetailPage({
           {(isProfileCredentials || isLessonPreparation) && (
             <TaskEvidenceDetails facts={raw.signalFacts} language={language} standalone />
           )}
-          <section className="task-workspace">
+          <section
+            className="task-workspace"
+            data-onboarding-target="task-workspace"
+            data-onboarding-max-height="360"
+            data-onboarding-scroll-block="start"
+          >
             {!isLessonPreparation && !isProfileCredentials && (
               <div className="workspace-heading">
                 <h2>{isProfileCredentials ? copy(language, "Profile status", "档案状态") : copy(language, workspaceTitleEn, workspaceTitleZh)}</h2>
@@ -2028,7 +2143,9 @@ function TaskDetailPage({
             <Suspense fallback={<LazyPanelFallback />}>
               <IntegratedTaskFlow
                 key={task.backendId || task.id}
-                task={raw}
+                task={previewMode
+                  ? { ...raw, locked: true, previewReadOnly: true }
+                  : raw}
                 onRefresh={onRefresh}
                 onTaskSubmitted={onTaskSubmitted}
                 onHelp={onHelp}
@@ -3409,13 +3526,23 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
             "已获得积分以最新积分卡为准；可获得积分为未完成必修任务分值之和，全部完成后不再显示。",
           )}
         </p>
-        <div className="score-dialog-summary">
+        <div
+          className="score-dialog-summary"
+          data-onboarding-target="score-detail-summary"
+          data-onboarding-scroll-block="start"
+        >
           <span><small>{copy(language, "Current", "已获得积分")}</small><strong>{score.current ?? "—"}</strong></span>
           {score.available !== null && (
             <span><small>{copy(language, "Available", "可获得积分")}</small><strong>{score.available}</strong></span>
           )}
         </div>
-        <section className="score-stage-section" aria-labelledby="score-stage-title">
+        <section
+          className="score-stage-section"
+          aria-labelledby="score-stage-title"
+          data-onboarding-target="score-detail-milestones"
+          data-onboarding-max-height="360"
+          data-onboarding-scroll-block="start"
+        >
           <header>
             <div>
               <span><Medal size={18} weight="duotone" /></span>
@@ -3590,6 +3717,9 @@ function TokiGrowthTipCard({ tip, language, onOpenTask }) {
     <aside
       className={`tit-next-step-card tit-growth-tip-card is-${tip.action.tone}`}
       aria-labelledby="toki-growth-tip-title"
+      data-onboarding-target="my-tide-recommendation"
+      data-onboarding-max-height="330"
+      data-onboarding-scroll-block="center"
     >
       <div className="tit-growth-tip-heading">
         <span className="tit-next-step-kicker">
@@ -3635,13 +3765,33 @@ function MyTitPage({
   language,
   unreadCount,
   onMessagesOpen,
+  onScoreDetailsOpen,
+  scoreGuideRequestKey = 0,
 }) {
   const teacher = useTeacher();
   const [activeDimension, setActiveDimension] = useState("");
   const [growthView, setGrowthView] = useState("dimensions");
   const [activeLessonId, setActiveLessonId] = useState(courses[0]?.lessonId || "");
   const [scoreDetailsOpen, setScoreDetailsOpen] = useState(false);
+  const handledScoreGuideRequestRef = useRef(scoreGuideRequestKey);
+  const scoreDetailsGuideNotifiedRef = useRef(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (scoreGuideRequestKey === handledScoreGuideRequestRef.current) return;
+    handledScoreGuideRequestRef.current = scoreGuideRequestKey;
+    setScoreDetailsOpen(true);
+  }, [scoreGuideRequestKey]);
+
+  useEffect(() => {
+    if (!scoreDetailsOpen) {
+      scoreDetailsGuideNotifiedRef.current = false;
+      return;
+    }
+    if (scoreDetailsGuideNotifiedRef.current) return;
+    scoreDetailsGuideNotifiedRef.current = true;
+    onScoreDetailsOpen?.();
+  }, [onScoreDetailsOpen, scoreDetailsOpen]);
   const stage = localizeStage(
     stageDescriptions[stageIndexForAvailableTasks(tasks, teacher.day)],
     language,
@@ -3917,7 +4067,12 @@ function MyTitPage({
       </div>
 
       <section className="tit-hero-layout">
-        <section className={`tit-overview-card ${allScoreMilestonesReached ? "is-gold-stage" : ""}`}>
+        <section
+          className={`tit-overview-card ${allScoreMilestonesReached ? "is-gold-stage" : ""}`}
+          data-onboarding-target="my-tide-overview"
+          data-onboarding-max-height="410"
+          data-onboarding-scroll-block="start"
+        >
           <div className="tit-welcome-block">
             <h2>{copy(language, "Welcome back", "欢迎回来")}, {teacher.name}</h2>
           </div>
@@ -3931,7 +4086,12 @@ function MyTitPage({
               </p>
             </div>
           </div>
-          <button className="tit-total-score" type="button" onClick={() => setScoreDetailsOpen(true)} aria-haspopup="dialog">
+          <button
+            className="tit-total-score"
+            type="button"
+            onClick={() => setScoreDetailsOpen(true)}
+            aria-haspopup="dialog"
+          >
             <span className="score-block-title">
               <span>{copy(language, "Total growth score", "我的成长积分")}</span>
               <Info size={17} />
@@ -3983,7 +4143,12 @@ function MyTitPage({
         />
       </section>
 
-      <section className="dimension-board-shell">
+      <section
+        className="dimension-board-shell"
+        data-onboarding-target="my-tide-dimensions"
+        data-onboarding-max-height="360"
+        data-onboarding-scroll-block="start"
+      >
         <div className="dimension-section-heading">
           <div>
             <h2>{copy(language, "My five growth dimensions", "我的成长表现")}</h2>
@@ -4166,6 +4331,7 @@ function PasswordResetDialog({ open, onClose, language, email }) {
 
 function AppShell() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpLoaded, setHelpLoaded] = useState(false);
   const [helpEntrySource, setHelpEntrySource] = useState("UNKNOWN");
@@ -4182,8 +4348,10 @@ function AppShell() {
   const [messageNextCursor, setMessageNextCursor] = useState(null);
   const [messageFilter, setMessageFilter] = useState("ALL");
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [supportTickets, setSupportTickets] = useState([]);
   const [supportTicketsLoading, setSupportTicketsLoading] = useState(false);
+  const [supportTicketsLoaded, setSupportTicketsLoaded] = useState(false);
   const [profile, setProfile] = useState(null);
   const [tideSummary, setTideSummary] = useState(null);
   const [scoreSyncStatus, setScoreSyncStatus] = useState("idle");
@@ -4197,6 +4365,20 @@ function AppShell() {
   const [dataError, setDataError] = useState(null);
   const [dataReloadKey, setDataReloadKey] = useState(0);
   const [sourceErrors, setSourceErrors] = useState({});
+  const [onboardingStatus, setOnboardingStatus] = useState(() => ({
+    required: false,
+    guideCode: ONBOARDING_GUIDE_CODE,
+    guideVersion: ONBOARDING_DEFAULT_VERSION,
+  }));
+  const [onboardingCatalog, setOnboardingCatalog] = useState(
+    () => normalizeOnboardingCatalog(null),
+  );
+  const [onboardingCatalogReady, setOnboardingCatalogReady] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingMode, setOnboardingMode] = useState("automatic");
+  const [onboardingRetryKey, setOnboardingRetryKey] = useState(0);
+  const [guideLibraryOpen, setGuideLibraryOpen] = useState(false);
+  const [scoreGuideRequestKey, setScoreGuideRequestKey] = useState(0);
   const authenticatedRef = useRef(false);
   const messageFilterRef = useRef("ALL");
   const messageCursorRef = useRef(null);
@@ -4208,6 +4390,14 @@ function AppShell() {
   const scoreSyncResetTimerRef = useRef(null);
   const coursePageAbortRef = useRef(null);
   const pageLoadFailureRef = useRef("");
+  const onboardingRequestRef = useRef({
+    checked: false,
+    loading: false,
+    retryCount: 0,
+  });
+  const onboardingReturnFocusRef = useRef(null);
+  const guideShownThisSessionRef = useRef(false);
+  const chainedOnboardingGuideRef = useRef(null);
   const currentTaskId = location.pathname.startsWith("/task/")
     ? tasks.find((item) => (
         location.pathname.endsWith(`/task/${item.id}`)
@@ -4373,7 +4563,9 @@ function AppShell() {
     setMessageTotalCount(0);
     setMessageUnreadCount(0);
     setMessageNextCursor(null);
+    setMessagesLoaded(false);
     setSupportTickets([]);
+    setSupportTicketsLoaded(false);
     messageCursorRef.current = null;
     messageFilterRef.current = "ALL";
     setMessageFilter("ALL");
@@ -4475,9 +4667,11 @@ function AppShell() {
           setMessageNextCursor(notificationResult.value.nextCursor);
           messageCursorRef.current = notificationResult.value.nextCursor;
         }
+        setMessagesLoaded(true);
         if (supportTicketResult.status === "fulfilled") {
           setSupportTickets(supportTicketResult.value.items);
         }
+        setSupportTicketsLoaded(true);
         if (courseResult.status === "fulfilled") {
           setCourses(courseResult.value.items);
           setCoursePage(courseResult.value.page);
@@ -4491,6 +4685,78 @@ function AppShell() {
     });
     return () => controller.abort();
   }, [authenticated, dataReloadKey]);
+  useEffect(() => {
+    const requestState = onboardingRequestRef.current;
+    if (
+      dataError
+      || !shouldLoadOnboarding({
+        authenticated,
+        dataReady,
+        checked: requestState.checked,
+        loading: requestState.loading,
+      })
+    ) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let settled = false;
+    let retryTimer = null;
+    requestState.loading = true;
+    getOnboardingStatus(controller.signal).then(
+      (payload) => {
+        if (controller.signal.aborted || !authenticatedRef.current) return;
+        settled = true;
+        requestState.loading = false;
+        requestState.checked = true;
+        const nextCatalog = normalizeOnboardingCatalog(payload);
+        const nextStatus = nextCatalog.find(
+          (guide) => guide.guideCode === ONBOARDING_GUIDE_CODE,
+        ) || normalizeOnboardingStatus(payload);
+        setOnboardingCatalog(nextCatalog);
+        setOnboardingCatalogReady(true);
+        setOnboardingStatus(nextStatus);
+        if (nextStatus.required) {
+          guideShownThisSessionRef.current = true;
+          onboardingReturnFocusRef.current = null;
+          setOnboardingMode("automatic");
+          if (location.pathname !== "/") navigate("/", { replace: true });
+          setOnboardingOpen(true);
+        }
+      },
+      () => {
+        if (controller.signal.aborted) return;
+        settled = true;
+        requestState.loading = false;
+        requestState.checked = false;
+        if (requestState.retryCount < 2) {
+          requestState.retryCount += 1;
+          retryTimer = window.setTimeout(() => {
+            if (!authenticatedRef.current) return;
+            setOnboardingRetryKey((current) => current + 1);
+          }, requestState.retryCount * 1_500);
+        } else {
+          requestState.checked = true;
+          setOnboardingCatalogReady(false);
+        }
+        // The optional guide never blocks the page while its status is retried.
+      },
+    );
+    return () => {
+      if (!settled) {
+        controller.abort();
+        requestState.loading = false;
+      }
+      window.clearTimeout(retryTimer);
+    };
+  }, [
+    authenticated,
+    dataError,
+    dataReady,
+    location.pathname,
+    navigate,
+    onboardingRetryKey,
+  ]);
   useEffect(() => {
     if (!authenticated || !dataReady || location.pathname !== "/") return undefined;
     const controller = new AbortController();
@@ -4524,6 +4790,7 @@ function AppShell() {
       setMessageNextCursor(result.nextCursor);
       messageCursorRef.current = result.nextCursor;
       setSourceErrors((current) => ({ ...current, notifications: null }));
+      setMessagesLoaded(true);
       return result;
     } catch (error) {
       if (authenticatedRef.current && messageFilterRef.current === filter) {
@@ -4532,6 +4799,7 @@ function AppShell() {
           notifications: error,
         }));
       }
+      setMessagesLoaded(true);
       throw error;
     } finally {
       if (!queue.isRunning()) setMessagesLoading(false);
@@ -4544,17 +4812,20 @@ function AppShell() {
       if (!authenticatedRef.current) return result;
       setSupportTickets(result.items);
       setSourceErrors((current) => ({ ...current, supportTickets: null }));
+      setSupportTicketsLoaded(true);
       return result;
     } catch (error) {
       if (authenticatedRef.current) {
         setSourceErrors((current) => ({ ...current, supportTickets: error }));
       }
+      setSupportTicketsLoaded(true);
       throw error;
     } finally {
       setSupportTicketsLoading(false);
     }
   }, []);
   const updateSupportTicket = useCallback((updated) => {
+    setSupportTicketsLoaded(true);
     setSupportTickets((current) => {
       const exists = current.some((ticket) => ticket.ticketId === updated.ticketId);
       return exists
@@ -4768,30 +5039,295 @@ function AppShell() {
       });
     }
     if (message.actionType === "HELP") {
-      setHelpLoaded(true);
-      setHelpEntrySource("MESSAGE");
-      trackProductEvent("AI_HELP_OPENED", {
-        properties: { entrySource: "MESSAGE" },
-      });
-      setHelpOpen(true);
+      openHelp("MESSAGE");
     }
     if (message.actionType === "ACCOUNT") setPasswordResetOpen(true);
   };
-  const openHelp = useCallback((entrySource) => {
+  const onboardingCatalogByCode = useMemo(
+    () => new Map(onboardingCatalog.map((guide) => [guide.guideCode, guide])),
+    [onboardingCatalog],
+  );
+  const firstCompletedRequiredTask = useMemo(
+    () => tasks.find((task) => task.taskCategory !== "personalized" && task.status === "completed") || null,
+    [tasks],
+  );
+  const firstPersonalizedTask = useMemo(
+    () => tasks.find((task) => (
+      task.taskCategory === "personalized"
+      && task.surface !== "growth_only"
+      && !["cancelled", "expired"].includes(task.status)
+    )) || null,
+    [tasks],
+  );
+  const onboardingAvailability = useMemo(() => ({
+    [ONBOARDING_GUIDE_CODES.firstLogin]: true,
+    [ONBOARDING_GUIDE_CODES.myTideOverview]: Boolean(
+      profile && tideSummary && !sourceErrors.profile && !sourceErrors.summary,
+    ),
+    [ONBOARDING_GUIDE_CODES.scoreDetails]: Boolean(
+      tideSummary && !sourceErrors.summary,
+    ),
+    [ONBOARDING_GUIDE_CODES.taskPath]: tasks.some((task) => task.taskCategory !== "personalized"),
+    [ONBOARDING_GUIDE_CODES.taskResult]: Boolean(firstCompletedRequiredTask),
+    [ONBOARDING_GUIDE_CODES.messagesTickets]: Boolean(
+      messagesLoaded && supportTicketsLoaded,
+    ),
+    [ONBOARDING_GUIDE_CODES.helpRoutes]: true,
+    [ONBOARDING_GUIDE_CODES.personalizedTaskFirst]: Boolean(firstPersonalizedTask),
+  }), [
+    firstCompletedRequiredTask,
+    firstPersonalizedTask,
+    messagesLoaded,
+    profile,
+    sourceErrors.profile,
+    sourceErrors.summary,
+    supportTicketsLoaded,
+    tasks,
+    tideSummary,
+  ]);
+  const guideLibraryGuides = useMemo(
+    () => ONBOARDING_GUIDE_ORDER.map((guideCode) => ({
+      ...(onboardingCatalogByCode.get(guideCode) || { guideCode }),
+      guideCode,
+      available: onboardingAvailability[guideCode] === true,
+      unavailableLabel: guideCode === ONBOARDING_GUIDE_CODES.messagesTickets
+        ? copy(language, "Available after the message center finishes loading", "消息中心加载完成后可查看")
+        : guideCode === ONBOARDING_GUIDE_CODES.taskResult
+          ? copy(language, "Available after a required task has a result", "必修任务产生结果后可查看")
+          : guideCode === ONBOARDING_GUIDE_CODES.personalizedTaskFirst
+            ? copy(language, "Available after your first personalized task is assigned", "分配首项个性化任务后可查看")
+            : copy(language, "The related data is not available yet", "相关数据暂不可用"),
+    })),
+    [language, onboardingAvailability, onboardingCatalogByCode],
+  );
+  const startOnboardingGuide = useCallback((guideCode, {
+    mode = "automatic",
+    returnFocusElement = null,
+    forceAvailable = false,
+  } = {}) => {
+    const guide = getOnboardingGuide(guideCode);
+    const state = onboardingCatalogByCode.get(guide.guideCode);
+    if (mode === "automatic" && (
+      !onboardingCatalogReady
+      || guideShownThisSessionRef.current
+      || onboardingOpen
+      || guideLibraryOpen
+      || (!forceAvailable && !onboardingAvailability[guide.guideCode])
+      || !state?.required
+      || Boolean(state.status)
+    )) {
+      return false;
+    }
+
+    guideShownThisSessionRef.current = true;
+    onboardingReturnFocusRef.current = returnFocusElement || document.activeElement;
+    setOnboardingStatus({
+      required: state?.required === true,
+      guideCode: guide.guideCode,
+      guideVersion: state?.guideVersion || guide.guideVersion,
+    });
+    setOnboardingMode(mode);
+    setGuideLibraryOpen(false);
+    setOnboardingOpen(true);
+    return true;
+  }, [
+    guideLibraryOpen,
+    onboardingAvailability,
+    onboardingCatalogByCode,
+    onboardingCatalogReady,
+    onboardingOpen,
+  ]);
+  const openHelp = useCallback((entrySource, { suppressGuide = false } = {}) => {
+    const returnFocusElement = document.activeElement;
     setHelpLoaded(true);
     setHelpEntrySource(entrySource);
     trackProductEvent("AI_HELP_OPENED", {
       properties: { entrySource },
     });
     setHelpOpen(true);
-  }, []);
+    if (!suppressGuide) {
+      window.requestAnimationFrame(() => {
+        startOnboardingGuide(ONBOARDING_GUIDE_CODES.helpRoutes, { returnFocusElement });
+      });
+    }
+  }, [startOnboardingGuide]);
   const closeHelp = useCallback(() => setHelpOpen(false), []);
+  const closeOnboarding = useCallback(() => {
+    setOnboardingOpen(false);
+    const nextGuideCode = chainedOnboardingGuideRef.current;
+    chainedOnboardingGuideRef.current = null;
+    if (!nextGuideCode) return;
+
+    const guide = getOnboardingGuide(nextGuideCode);
+    const state = onboardingCatalogByCode.get(nextGuideCode);
+    if (
+      !state?.required
+      || state.status
+      || !onboardingAvailability[nextGuideCode]
+    ) {
+      return;
+    }
+
+    setHelpOpen(false);
+    guideShownThisSessionRef.current = true;
+    onboardingReturnFocusRef.current = null;
+    setOnboardingStatus({
+      required: true,
+      guideCode: nextGuideCode,
+      guideVersion: state.guideVersion || guide.guideVersion,
+    });
+    setOnboardingMode("automatic");
+    window.setTimeout(() => setOnboardingOpen(true), 0);
+  }, [onboardingAvailability, onboardingCatalogByCode]);
+  const closeGuideLibrary = useCallback(() => setGuideLibraryOpen(false), []);
+  const openGuideLibrary = useCallback((returnFocusElement) => {
+    onboardingReturnFocusRef.current = returnFocusElement;
+    setGuideLibraryOpen(true);
+  }, []);
+  const playGuideFromLibrary = useCallback((guideCode) => {
+    if (!onboardingAvailability[guideCode]) return;
+    const returnFocusElement = onboardingReturnFocusRef.current;
+    if (guideCode === ONBOARDING_GUIDE_CODES.firstLogin
+      || guideCode === ONBOARDING_GUIDE_CODES.myTideOverview
+      || guideCode === ONBOARDING_GUIDE_CODES.scoreDetails) {
+      navigate("/", { replace: true });
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.taskPath) {
+      navigate("/", { replace: true });
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.personalizedTaskFirst) {
+      navigate("/path", { replace: true });
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.taskResult && firstCompletedRequiredTask) {
+      navigate(`/task/${firstCompletedRequiredTask.id}`, { replace: true });
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.messagesTickets) {
+      navigate("/messages", { replace: true });
+      void refreshNotifications().catch(() => undefined);
+      void refreshSupportTickets().catch(() => undefined);
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.scoreDetails) {
+      setScoreGuideRequestKey((current) => current + 1);
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.helpRoutes) {
+      openHelp("GUIDE_LIBRARY", { suppressGuide: true });
+    }
+    startOnboardingGuide(guideCode, { mode: "replay", returnFocusElement });
+  }, [
+    firstCompletedRequiredTask,
+    navigate,
+    onboardingAvailability,
+    openHelp,
+    refreshNotifications,
+    refreshSupportTickets,
+    startOnboardingGuide,
+  ]);
+  const acknowledgeCurrentOnboarding = useCallback(async (outcome, idempotencyKey) => {
+    const result = await acknowledgeOnboarding({
+      guideCode: onboardingStatus.guideCode,
+      guideVersion: onboardingStatus.guideVersion,
+      outcome,
+    }, idempotencyKey);
+    setOnboardingCatalog((current) => current.map((guide) => (
+      guide.guideCode === onboardingStatus.guideCode
+        ? {
+            ...guide,
+            ...result,
+            required: false,
+            status: result?.status || outcome,
+          }
+        : guide
+    )));
+    setOnboardingStatus((current) => ({ ...current, required: false }));
+    if (
+      outcome === ONBOARDING_OUTCOMES.completed
+      && onboardingStatus.guideCode === ONBOARDING_GUIDE_CODE
+    ) {
+      const taskPathState = onboardingCatalogByCode.get(ONBOARDING_GUIDE_CODES.taskPath);
+      if (
+        taskPathState?.required
+        && !taskPathState.status
+        && onboardingAvailability[ONBOARDING_GUIDE_CODES.taskPath]
+      ) {
+        chainedOnboardingGuideRef.current = ONBOARDING_GUIDE_CODES.taskPath;
+      }
+    }
+    return result;
+  }, [
+    onboardingAvailability,
+    onboardingCatalogByCode,
+    onboardingStatus.guideCode,
+    onboardingStatus.guideVersion,
+  ]);
+  const openTasksFromOnboarding = useCallback(() => {
+    setHelpOpen(false);
+    navigate("/path", { replace: true });
+  }, [navigate]);
+  const openMyTideFromOnboarding = useCallback(() => {
+    setHelpOpen(false);
+    navigate("/", { replace: true });
+  }, [navigate]);
+  const openPrimaryTaskFromOnboarding = useCallback(() => {
+    const task = onboardingPrimaryRequiredTask(tasks);
+    navigate(task ? `/task/${task.id}` : "/path", { replace: true });
+  }, [navigate, tasks]);
+  const openMessagesFromOnboarding = useCallback(() => {
+    setHelpOpen(false);
+    navigate("/messages", { replace: true });
+  }, [navigate]);
   const openMessages = useCallback(() => {
     if (location.pathname === "/messages") {
       void refreshNotifications().catch(() => undefined);
       void refreshSupportTickets().catch(() => undefined);
     }
   }, [location.pathname, refreshNotifications, refreshSupportTickets]);
+  const openScoreDetailsGuide = useCallback(() => {
+    startOnboardingGuide(ONBOARDING_GUIDE_CODES.scoreDetails, {
+      returnFocusElement: document.activeElement,
+    });
+  }, [startOnboardingGuide]);
+  useEffect(() => {
+    if (
+      !authenticated
+      || !dataReady
+      || !onboardingCatalogReady
+      || guideShownThisSessionRef.current
+      || onboardingOpen
+      || guideLibraryOpen
+      || helpOpen
+    ) {
+      return undefined;
+    }
+
+    let guideCode = null;
+    if (location.pathname === "/") {
+      guideCode = ONBOARDING_GUIDE_CODES.myTideOverview;
+    } else if (location.pathname === "/path") {
+      const taskPathState = onboardingCatalogByCode.get(ONBOARDING_GUIDE_CODES.taskPath);
+      guideCode = taskPathState?.required && !taskPathState.status
+        ? ONBOARDING_GUIDE_CODES.taskPath
+        : ONBOARDING_GUIDE_CODES.personalizedTaskFirst;
+    } else if (location.pathname === "/messages") {
+      guideCode = ONBOARDING_GUIDE_CODES.messagesTickets;
+    }
+
+    if (!guideCode || !onboardingAvailability[guideCode]) return undefined;
+    const timer = window.setTimeout(() => {
+      startOnboardingGuide(guideCode);
+    }, 240);
+    return () => window.clearTimeout(timer);
+  }, [
+    authenticated,
+    dataReady,
+    guideLibraryOpen,
+    helpOpen,
+    location.pathname,
+    onboardingAvailability,
+    onboardingCatalogByCode,
+    onboardingCatalogReady,
+    onboardingOpen,
+    startOnboardingGuide,
+  ]);
   const refreshAfterTask = useCallback((response) => {
     void refreshNotifications({ forceFresh: true }).catch(() => undefined);
     const completedTask = tasks.find(
@@ -4809,6 +5345,12 @@ function AppShell() {
     const controller = new AbortController();
     scoreSyncAbortRef.current = controller;
     setScoreSyncStatus("syncing");
+    window.requestAnimationFrame(() => {
+      startOnboardingGuide(ONBOARDING_GUIDE_CODES.taskResult, {
+        returnFocusElement: document.activeElement,
+        forceAvailable: true,
+      });
+    });
 
     void pollScorecard({
       baseline: tideSummaryRef.current,
@@ -4828,8 +5370,27 @@ function AppShell() {
         result.status === "updated" ? 5_000 : 10_000,
       );
     });
-  }, [refreshNotifications, tasks]);
+  }, [refreshNotifications, startOnboardingGuide, tasks]);
   const login = () => {
+    onboardingRequestRef.current = {
+      checked: false,
+      loading: false,
+      retryCount: 0,
+    };
+    onboardingReturnFocusRef.current = null;
+    guideShownThisSessionRef.current = false;
+    chainedOnboardingGuideRef.current = null;
+    setOnboardingOpen(false);
+    setOnboardingMode("automatic");
+    setGuideLibraryOpen(false);
+    setOnboardingCatalog(normalizeOnboardingCatalog(null));
+    setOnboardingCatalogReady(false);
+    setOnboardingStatus({
+      required: false,
+      guideCode: ONBOARDING_GUIDE_CODE,
+      guideVersion: ONBOARDING_DEFAULT_VERSION,
+    });
+    navigate("/", { replace: true });
     authenticatedRef.current = true;
     setAuthenticated(true);
   };
@@ -4837,6 +5398,19 @@ function AppShell() {
     try {
       await logoutTeacher();
     } finally {
+      onboardingRequestRef.current = {
+        checked: false,
+        loading: false,
+        retryCount: 0,
+      };
+      onboardingReturnFocusRef.current = null;
+      guideShownThisSessionRef.current = false;
+      chainedOnboardingGuideRef.current = null;
+      setOnboardingOpen(false);
+      setOnboardingMode("automatic");
+      setGuideLibraryOpen(false);
+      setOnboardingCatalog(normalizeOnboardingCatalog(null));
+      setOnboardingCatalogReady(false);
       authenticatedRef.current = false;
       setAuthenticated(false);
     }
@@ -4936,6 +5510,7 @@ function AppShell() {
           onLanguageChange={changeLanguage}
           onLogout={logout}
           onMessagesOpen={openMessages}
+          onQuickGuide={openGuideLibrary}
           onResetPassword={() => setPasswordResetOpen(true)}
         />
         <Routes>
@@ -4957,6 +5532,8 @@ function AppShell() {
                 language={language}
                 unreadCount={unreadCount}
                 onMessagesOpen={openMessages}
+                onScoreDetailsOpen={openScoreDetailsGuide}
+                scoreGuideRequestKey={scoreGuideRequestKey}
               />
             }
           />
@@ -5021,6 +5598,7 @@ function AppShell() {
             className={`score-sync-toast is-${scoreSyncStatus}`}
             role="status"
             aria-live="polite"
+            data-onboarding-target="task-result-score-sync"
           >
             {scoreSyncStatus === "updated"
               ? <CheckCircle size={22} weight="fill" />
@@ -5089,11 +5667,453 @@ function AppShell() {
           onClose={() => setPasswordResetOpen(false)}
         />
       </div>
+      <GuideLibraryDialog
+        open={guideLibraryOpen}
+        language={language}
+        guides={guideLibraryGuides}
+        returnFocusElement={onboardingReturnFocusRef.current}
+        onClose={closeGuideLibrary}
+        onPlay={playGuideFromLibrary}
+      />
+      <OnboardingGuide
+        open={onboardingOpen}
+        mode={onboardingMode}
+        language={language}
+        guideCode={onboardingStatus.guideCode}
+        guideVersion={onboardingStatus.guideVersion}
+        returnFocusElement={onboardingReturnFocusRef.current}
+        onLanguageChange={changeLanguage}
+        onAcknowledge={acknowledgeCurrentOnboarding}
+        onClose={closeOnboarding}
+        onOpenTasks={openTasksFromOnboarding}
+        onOpenMyTide={openMyTideFromOnboarding}
+        onOpenMessages={openMessagesFromOnboarding}
+        onOpenPrimaryTask={openPrimaryTaskFromOnboarding}
+      />
       </TeacherContext.Provider>
     </I18nProvider>
   );
 }
 
-export default function App() {
-  return <AppShell />;
+function buildOnboardingPreviewTasks(language) {
+  const methods = {
+    G01: "profile_credentials",
+    G02: "external_course",
+    G03: "content_pending",
+    G04: "readiness_photo",
+    G05: "external_course",
+    G06: "external_course",
+    G07: "external_course",
+    G08: "external_course",
+    G09: "external_course",
+  };
+  return fixedTaskCatalog.map((catalogTask, index) => {
+    const firstTask = catalogTask.taskCode === "G01";
+    const laterStage = index >= 4;
+    return {
+      ...catalogTask,
+      localizationId: catalogTask.id,
+      backendId: null,
+      taskCode: catalogTask.taskCode,
+      stateVersion: null,
+      backendStatus: "VIEWED",
+      backendContext: null,
+      name: catalogTask.name,
+      shortName: catalogTask.name,
+      method: methods[catalogTask.taskCode] || "content_pending",
+      status: "available",
+      locked: laterStage,
+      taskCategory: "required",
+      sourceStage: catalogTask.stage,
+      duration: copy(language, "About 15 min", "约 15 分钟"),
+      due: firstTask
+        ? copy(language, "Complete before your first lesson", "建议首课前完成")
+        : copy(language, "Available in your growth path", "按成长路径开放"),
+      dueAt: null,
+      priority: firstTask
+        ? copy(language, "Recommended first", "建议先做")
+        : copy(language, "Required task", "必修任务"),
+      reason: firstTask
+        ? copy(
+            language,
+            "Complete your teacher profile and credential requirements so you are ready for your first lesson.",
+            "完善教师档案与资质要求，为第一节课做好准备。",
+          )
+        : copy(
+            language,
+            "Complete this required step to keep your 30-day growth path moving.",
+            "完成这项必修内容，继续推进你的 30 天成长路径。",
+          ),
+      value: copy(
+        language,
+        "Know exactly what is ready and what to complete next.",
+        "清楚知道哪些已经准备好，以及下一步要完成什么。",
+      ),
+      result: firstTask
+        ? copy(
+            language,
+            "Review your profile status and complete the credential actions shown in the workspace.",
+            "查看档案状态，并在任务工作区完成资质相关操作。",
+          )
+        : copy(
+            language,
+            "Open the task and follow the instructions in its workspace.",
+            "打开任务，并按照工作区中的说明完成。",
+          ),
+      standard: firstTask
+        ? copy(
+            language,
+            "All required profile and credential conditions are complete.",
+            "所有档案与资质条件均已完成。",
+          )
+        : copy(
+            language,
+            "Meet every completion condition listed in the task.",
+            "达到任务中列出的全部完成条件。",
+          ),
+      steps: firstTask
+        ? [
+            copy(language, "Review profile status", "查看档案状态"),
+            copy(language, "Complete the credential check", "完成资质检查"),
+            copy(language, "Confirm the completion result", "确认完成结果"),
+          ]
+        : [copy(language, "Review the task instructions", "查看任务说明")],
+      backendSteps: [],
+      backendProgressByStep: {},
+      progress: 0,
+      displayRank: index + 1,
+      isPrimary: firstTask,
+      dataOrigin: "DEV_PREVIEW",
+      signalFacts: [],
+      externalStatusItems: firstTask
+        ? [
+            {
+              id: "preview-self-intro",
+              type: "self_intro",
+              label: "Self-intro video",
+              labelZh: "自我介绍视频",
+              source: "Preview status",
+              sourceZh: "预览状态",
+              updatedAt: "Preview",
+              updatedAtZh: "预览",
+              status: "waiting",
+            },
+            {
+              id: "preview-credential",
+              type: "credential",
+              label: "Teaching credential",
+              labelZh: "教学资质",
+              source: "Preview status",
+              sourceZh: "预览状态",
+              updatedAt: "Preview",
+              updatedAtZh: "预览",
+              status: "waiting",
+            },
+          ]
+        : [],
+    };
+  });
+}
+
+function OnboardingAcceptancePreview() {
+  const [language, setLanguage] = useState("zh");
+  const [open, setOpen] = useState(true);
+  const [previewGuideMode, setPreviewGuideMode] = useState("automatic");
+  const [activeGuideCode, setActiveGuideCode] = useState(ONBOARDING_GUIDE_CODE);
+  const [guideLibraryOpen, setGuideLibraryOpen] = useState(false);
+  const [scoreGuideRequestKey, setScoreGuideRequestKey] = useState(0);
+  const [previewHelpOpen, setPreviewHelpOpen] = useState(false);
+  const guideReturnFocusRef = useRef(null);
+  const chainedPreviewGuideRef = useRef(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const tasks = useMemo(
+    () => buildOnboardingPreviewTasks(language),
+    [language],
+  );
+  const calculatedAt = "2026-08-07T09:00:00+08:00";
+  const tideSummary = useMemo(() => ({
+    publicTotalScore: 18,
+    graduationThreshold: 100,
+    goldThreshold: 200,
+    graduationQualified: false,
+    goldQualified: false,
+    graduationState: copy(language, "Growing", "成长中"),
+    availableScore: { score: 182, items: [] },
+    scoreRuleVersion: "DEV_PREVIEW",
+    calculatedAt,
+    dimensions: [
+      { code: "USER_FEEDBACK", score: 6, components: [], calculatedAt },
+      { code: "RELIABILITY", score: 4, components: [], calculatedAt },
+      { code: "CLASS_QUALITY", score: 3, components: [], calculatedAt },
+      { code: "CAPACITY", score: 5, components: [], calculatedAt },
+      { code: "NEW_TEACHER_TASK", score: 0, components: [], calculatedAt },
+    ],
+  }), [language]);
+  const teacher = useMemo(() => ({
+    name: copy(language, "Teacher Mia", "Mia 老师"),
+    email: "preview.teacher@example.invalid",
+    day: 1,
+    totalDays: 30,
+    graduationStatus: copy(language, "Growing", "成长中"),
+    growthScore: {
+      current: tideSummary.publicTotalScore,
+      total: tideSummary.goldThreshold,
+      graduationMilestone: tideSummary.graduationThreshold,
+      goldMilestone: tideSummary.goldThreshold,
+      graduationQualified: false,
+      goldQualified: false,
+      available: tideSummary.availableScore.score,
+      availableItems: [],
+      rules: tideSummary.dimensions,
+      updatedAt: copy(language, "Preview data", "预览数据"),
+      resultVersion: tideSummary.scoreRuleVersion,
+    },
+    g01Review: null,
+  }), [language, tideSummary]);
+  const sourceErrors = useMemo(() => ({
+    profile: "",
+    summary: "",
+    g01: "",
+    notifications: "",
+    supportTickets: "",
+    courses: "",
+    courseAttributions: "",
+  }), []);
+  const previewMessages = useMemo(() => [], []);
+  const previewGuideStates = useMemo(
+    () => ONBOARDING_GUIDE_ORDER.map((guideCode) => {
+      const available = ![
+        ONBOARDING_GUIDE_CODES.taskResult,
+        ONBOARDING_GUIDE_CODES.personalizedTaskFirst,
+      ].includes(guideCode);
+      return {
+        guideCode,
+        guideVersion: getOnboardingGuide(guideCode).guideVersion,
+        required: false,
+        status: guideCode === ONBOARDING_GUIDE_CODE ? "COMPLETED" : null,
+        available,
+        unavailableLabel: guideCode === ONBOARDING_GUIDE_CODES.taskResult
+          ? copy(language, "Complete a real required task to unlock this guide", "真实必修任务产生完成结果后开放")
+          : copy(language, "A real personalized assignment is required", "出现真实个性化任务后开放"),
+      };
+    }),
+    [language],
+  );
+  const changePreviewLanguage = (nextLanguage) => {
+    const normalized = nextLanguage === "zh" ? "zh" : "en";
+    setLanguage(normalized);
+  };
+  const openPreviewGuideLibrary = (returnFocusElement) => {
+    guideReturnFocusRef.current = returnFocusElement;
+    setGuideLibraryOpen(true);
+  };
+  const playPreviewGuide = (guideCode) => {
+    const guide = previewGuideStates.find((item) => item.guideCode === guideCode);
+    if (!guide?.available) return;
+    setGuideLibraryOpen(false);
+    setActiveGuideCode(guideCode);
+    setPreviewGuideMode("replay");
+    if ([
+      ONBOARDING_GUIDE_CODES.firstLogin,
+      ONBOARDING_GUIDE_CODES.myTideOverview,
+      ONBOARDING_GUIDE_CODES.scoreDetails,
+    ].includes(guideCode)) {
+      navigate("/", { replace: true });
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.taskPath) {
+      navigate("/", { replace: true });
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.messagesTickets) {
+      navigate("/messages", { replace: true });
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.scoreDetails) {
+      setScoreGuideRequestKey((current) => current + 1);
+    }
+    if (guideCode === ONBOARDING_GUIDE_CODES.helpRoutes) {
+      setPreviewHelpOpen(true);
+    }
+    setOpen(true);
+  };
+
+  return (
+    <I18nProvider language={language}>
+      <TeacherContext.Provider value={teacher}>
+        <div
+          key={language}
+          className={`reference-app onboarding-real-preview ${location.pathname.startsWith("/task/") ? "detail-route" : ""}`}
+        >
+          <Header
+            language={language}
+            unreadCount={0}
+            onHelp={() => {
+              setPreviewHelpOpen(true);
+              setActiveGuideCode(ONBOARDING_GUIDE_CODES.helpRoutes);
+              setOpen(true);
+            }}
+            onLanguageChange={changePreviewLanguage}
+            onLogout={() => undefined}
+            onMessagesOpen={() => undefined}
+            onQuickGuide={openPreviewGuideLibrary}
+            onResetPassword={() => undefined}
+          />
+          <Routes>
+            <Route
+              path="/"
+              element={(
+                <MyTitPage
+                  tasks={tasks}
+                  tideSummary={tideSummary}
+                  courses={[]}
+                  attributionCourses={[]}
+                  coursePage={1}
+                  courseTotalCount={0}
+                  coursesLoading={false}
+                  onCoursePageChange={() => undefined}
+                  sourceErrors={sourceErrors}
+                  language={language}
+                  unreadCount={0}
+                  onMessagesOpen={() => undefined}
+                  onScoreDetailsOpen={() => {
+                    if (open) return;
+                    setActiveGuideCode(ONBOARDING_GUIDE_CODES.scoreDetails);
+                    setOpen(true);
+                  }}
+                  scoreGuideRequestKey={scoreGuideRequestKey}
+                />
+              )}
+            />
+            <Route
+              path="/path"
+              element={(
+                <GrowthPathPage
+                  tasks={tasks}
+                  language={language}
+                  unreadCount={0}
+                  onMessagesOpen={() => undefined}
+                />
+              )}
+            />
+            <Route
+              path="/messages"
+              element={(
+                <Suspense fallback={<LazyPanelFallback />}>
+                  <MessageCenter
+                    messages={previewMessages}
+                    tasks={tasks.map((task) => localizeTask(task, language))}
+                    language={language}
+                    onRead={() => undefined}
+                    onAction={() => undefined}
+                    filter="ALL"
+                    onFilterChange={() => undefined}
+                    totalCount={previewMessages.length}
+                    unreadCount={previewMessages.length}
+                    nextCursor=""
+                    loading={false}
+                    onLoadMore={() => undefined}
+                    error=""
+                    mobileNav={(
+                      <MobileNav
+                        language={language}
+                        unreadCount={previewMessages.length}
+                        onMessagesOpen={() => undefined}
+                      />
+                    )}
+                  />
+                </Suspense>
+              )}
+            />
+            <Route
+              path="/task/:taskId"
+              element={(
+                <TaskDetailPage
+                  tasks={tasks}
+                  onRefresh={async () => undefined}
+                  onTaskSubmitted={async () => undefined}
+                  onHelp={() => undefined}
+                  language={language}
+                  previewMode
+                />
+              )}
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+          <FloatingAiHelpButton
+            language={language}
+            onOpen={() => {
+              setPreviewHelpOpen(true);
+              setActiveGuideCode(ONBOARDING_GUIDE_CODES.helpRoutes);
+              setOpen(true);
+            }}
+            routeKey={location.pathname}
+          />
+          <Suspense fallback={null}>
+            <FaqHelpDialog
+              open={previewHelpOpen}
+              language={language}
+              entrySource="ONBOARDING_PREVIEW"
+              onClose={() => setPreviewHelpOpen(false)}
+              supportContext={{}}
+              taskOptions={tasks.map((task) => ({
+                id: task.id,
+                code: task.taskCode,
+                name: task.name,
+                displayName: localizeTask(task, language).name,
+              }))}
+              lessonOptions={[]}
+              onTicketCreated={() => undefined}
+            />
+          </Suspense>
+        </div>
+        <GuideLibraryDialog
+          open={guideLibraryOpen}
+          language={language}
+          guides={previewGuideStates}
+          returnFocusElement={guideReturnFocusRef.current}
+          onClose={() => setGuideLibraryOpen(false)}
+          onPlay={playPreviewGuide}
+        />
+        <OnboardingGuide
+          open={open}
+          mode={previewGuideMode}
+          language={language}
+          guideCode={activeGuideCode}
+          guideVersion={getOnboardingGuide(activeGuideCode).guideVersion}
+          analyticsEnabled={false}
+          returnFocusElement={guideReturnFocusRef.current}
+          onLanguageChange={changePreviewLanguage}
+          onAcknowledge={async (outcome) => {
+            if (
+              previewGuideMode === "automatic"
+              && activeGuideCode === ONBOARDING_GUIDE_CODE
+              && outcome === ONBOARDING_OUTCOMES.completed
+            ) {
+              chainedPreviewGuideRef.current = ONBOARDING_GUIDE_CODES.taskPath;
+            }
+          }}
+          onClose={() => {
+            setOpen(false);
+            const nextGuideCode = chainedPreviewGuideRef.current;
+            chainedPreviewGuideRef.current = null;
+            if (!nextGuideCode) return;
+            setPreviewHelpOpen(false);
+            setActiveGuideCode(nextGuideCode);
+            setPreviewGuideMode("automatic");
+            window.setTimeout(() => setOpen(true), 0);
+          }}
+          onOpenTasks={() => navigate("/path", { replace: true })}
+          onOpenMyTide={() => navigate("/", { replace: true })}
+          onOpenMessages={() => navigate("/messages", { replace: true })}
+          onOpenPrimaryTask={() => {
+            const task = onboardingPrimaryRequiredTask(tasks);
+            navigate(task ? `/task/${task.id}` : "/path", { replace: true });
+          }}
+        />
+      </TeacherContext.Provider>
+    </I18nProvider>
+  );
+}
+
+export default function App({ onboardingPreview = false }) {
+  return onboardingPreview ? <OnboardingAcceptancePreview /> : <AppShell />;
 }

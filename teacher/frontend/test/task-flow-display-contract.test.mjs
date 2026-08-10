@@ -96,33 +96,112 @@ test("task details show the reason only once in the why-this-task section", asyn
   assert.match(app, /<h3>\{copy\(language, "Why this task", "为什么要做"\)\}<\/h3>/);
 });
 
-test("G04 keeps preparation confirmation at the very bottom without gating photo review", async () => {
-  const [integratedTaskFlow, readinessPhoto] = await Promise.all([
+test("G04 presents three independent vertical parts and completes only at 3/3", async () => {
+  const [integratedTaskFlow, readinessPhoto, deviceCheck, styles] = await Promise.all([
     source("components/IntegratedTaskFlow.jsx"),
     source("features/task-content/ReadinessPhotoTask.jsx"),
+    source("features/task-content/DeviceCheckTask.jsx"),
+    source("features/task-content/readiness-photo-task.css"),
   ]);
 
+  assert.match(readinessPhoto, /<DeviceCheckTask task=\{task\} embedded forceGrandfathered=\{grandfatheredTaskCompleted\} onPassed=\{handleDevicePassed\} \/>/);
+  assert.match(readinessPhoto, /completedPartCount/);
+  assert.match(readinessPhoto, /<small>\/3<\/small>/);
+  assert.match(readinessPhoto, /role="progressbar"/);
+  assert.match(readinessPhoto, /aria-label=\{c\("Completed G04 parts", "G04 已完成模块"\)\}/);
+  assert.match(readinessPhoto, /aria-valuetext=/);
   assert.match(readinessPhoto, /disabled=\{opening\} onClick=\{openCamera\}/);
   assert.match(
     readinessPhoto,
     /disabled=\{!photoFile \|\| analyzing \|\| photoApproved\} onClick=\{submit\}/,
   );
   assert.doesNotMatch(readinessPhoto, /analyzing \|\| !coursewareConfirmed/);
-  assert.doesNotMatch(
-    readinessPhoto,
-    /DEVICE_CHECK|devicePassed|deviceProgress|checkingDevice|runDeviceCheck/,
-  );
+  assert.match(deviceCheck, /disabled=\{checking\} onClick=\{run\}/);
+  assert.doesNotMatch(deviceCheck, /disabled=\{[^}]*photo|disabled=\{[^}]*courseware/);
+  assert.match(readinessPhoto, /!nextDevicePassed[\s\S]*!nextPhotoApproved[\s\S]*!nextCoursewareConfirmed/);
   assert.match(integratedTaskFlow, /loadValidation: \(signal\) => getTaskValidation/);
   assert.match(readinessPhoto, /readinessPayloadFromValidation/);
 
+  const deviceIndex = readinessPhoto.indexOf('data-g04-part="device"');
+  const photoIndex = readinessPhoto.indexOf('data-g04-part="photo"');
+  const coursewareIndex = readinessPhoto.indexOf('data-g04-part="courseware"');
   const captureIndex = readinessPhoto.indexOf('className="readiness-capture"');
   const submitIndex = readinessPhoto.indexOf('className="primary-button wide-button"');
   const privacyIndex = readinessPhoto.indexOf("readiness-privacy");
   const confirmationIndex = readinessPhoto.indexOf("readiness-preparation-confirm");
+  assert.ok(deviceIndex >= 0);
+  assert.ok(photoIndex > deviceIndex);
+  assert.ok(coursewareIndex > photoIndex);
   assert.ok(captureIndex >= 0);
   assert.ok(submitIndex > captureIndex);
   assert.ok(privacyIndex > submitIndex);
-  assert.ok(confirmationIndex > privacyIndex);
+  assert.ok(confirmationIndex > coursewareIndex);
+  assert.match(styles, /\.g04-part-stack[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.doesNotMatch(styles, /\.g04-part-stack\s*\{[^}]*repeat\(3/);
+});
+
+test("G04 device check uses real media tracks and an uncached authenticated request", async () => {
+  const [deviceCheck, tideApi] = await Promise.all([
+    source("features/task-content/DeviceCheckTask.jsx"),
+    source("api/tide-api.js"),
+  ]);
+
+  assert.match(deviceCheck, /navigator\.mediaDevices\.getUserMedia/);
+  assert.match(deviceCheck, /getVideoTracks\(\)\.some\(\(track\) => track\.readyState === "live"\)/);
+  assert.match(deviceCheck, /getAudioTracks\(\)\.some\(\(track\) => track\.readyState === "live"\)/);
+  assert.match(deviceCheck, /await probeTeacherConnection\(\)/);
+  assert.doesNotMatch(deviceCheck, /navigator\.onLine/);
+  assert.match(deviceCheck, /if \(onPassed\) await onPassed\(response\);[\s\S]*else await task\.execution\.submit\(\)/);
+  assert.match(tideApi, /probeTeacherConnection[\s\S]*\/api\/v1\/me\/profile[\s\S]*cache: "no-store"/);
+  assert.match(deviceCheck, /results: next,[\s\S]*source: "BROWSER_LOCAL",[\s\S]*checkedAt,[\s\S]*measurements:[\s\S]*network: \{ durationMs:/);
+  assert.match(deviceCheck, /failed \? c\("Did not pass", "未通过"\)/);
+});
+
+test("G04 preserves an early-version completion without inventing current device results", async () => {
+  const [readinessPhoto, deviceCheck] = await Promise.all([
+    source("features/task-content/ReadinessPhotoTask.jsx"),
+    source("features/task-content/DeviceCheckTask.jsx"),
+  ]);
+
+  assert.match(deviceCheck, /saved\?\.details\?\.checkVersion === step\.config\.version/);
+  assert.match(deviceCheck, /saved\?\.details\?\.source === "BROWSER_LOCAL"/);
+  assert.match(deviceCheck, /forceGrandfathered \|\| \([\s\S]*task\.taskCode === "G04"[\s\S]*task\.status === "completed"[\s\S]*!hasCurrentEvidence/);
+  assert.match(deviceCheck, /grandfatheredCompleted \? \([\s\S]*device-check-grandfathered/);
+  assert.match(deviceCheck, /c\("Completed under the earlier G04 version", "已按 G04 早期版本完成"\)/);
+  assert.match(deviceCheck, /已完成状态已保留/);
+  assert.match(deviceCheck, /不展示单项结果，也无需重新检测/);
+  assert.match(deviceCheck, /grandfatheredCompleted \? null : completed \? \(/);
+  assert.match(deviceCheck, /const passed = results\[key\] === "PASSED"/);
+  assert.doesNotMatch(deviceCheck, /const passed = completed \|\|/);
+  assert.match(readinessPhoto, /const hasCurrentThreePartCompletion = Boolean\(/);
+  assert.match(readinessPhoto, /const grandfatheredTaskCompleted = taskCompleted && !hasCurrentThreePartCompletion/);
+  assert.match(readinessPhoto, /coursewareProgress\?\.details\?\.checklistVersion === coursewareStep\.config\.version/);
+  assert.match(readinessPhoto, /!grandfatheredTaskCompleted && \([\s\S]*role="progressbar"/);
+  assert.match(readinessPhoto, /c\("Your completed status is preserved", "已完成状态继续保留"\)/);
+  assert.match(readinessPhoto, /grandfatheredTaskCompleted \? c\("Earlier version", "早期版本"\)/);
+  assert.match(readinessPhoto, /grandfatheredTaskCompleted \? \([\s\S]*不显示“已通过”/);
+  assert.match(readinessPhoto, /grandfatheredTaskCompleted \? \([\s\S]*无需补做确认/);
+  assert.doesNotMatch(readinessPhoto, /taskCompleted \|\| deviceProgress\?\.status === "COMPLETED"/);
+  assert.doesNotMatch(readinessPhoto, /taskCompleted \|\| coursewareProgress\?\.status === "COMPLETED"/);
+});
+
+test("G04 keeps partial photo and finalization failures retryable without rolling back passed parts", async () => {
+  const [integratedTaskFlow, readinessPhoto] = await Promise.all([
+    source("components/IntegratedTaskFlow.jsx"),
+    source("features/task-content/ReadinessPhotoTask.jsx"),
+  ]);
+
+  assert.match(readinessPhoto, /const validation = persistedValidation \?\? response\?\.validation/);
+  assert.match(readinessPhoto, /analysis\?\.teacherMessage/);
+  assert.match(readinessPhoto, /validation\?\.resultCode === "STEPS_INCOMPLETE"/);
+  assert.match(readinessPhoto, /completion\?\.status !== "COMPLETED"/);
+  assert.match(readinessPhoto, /devicePassed && coursewareConfirmed && response\?\.status !== "COMPLETED"/);
+  assert.match(readinessPhoto, /completedPartCount === 3 && !taskCompleted/);
+  assert.match(readinessPhoto, /c\("Retry completion", "重试完成提交"\)/);
+  assert.match(readinessPhoto, /void finalizeIfReady\(\{ reportTo: setCompletionError \}\)/);
+  assert.doesNotMatch(readinessPhoto, /nextCoursewareConfirmed: true,[\s\S]{0,100}reportTo: setCoursewareError/);
+  assert.match(integratedTaskFlow, /presentationTask\.taskCode !== "G04"/);
+  assert.doesNotMatch(readinessPhoto, /setDevicePassed\(false\)|setCoursewareConfirmed\(false\)/);
 });
 
 test("G04 uses Sophia's checklist first qualified photo as its camera reference", async () => {
@@ -136,9 +215,10 @@ test("G04 uses Sophia's checklist first qualified photo as its camera reference"
 });
 
 test("G04 shows Sophia's four visual checks with their example gallery", async () => {
-  const [app, readinessPhoto] = await Promise.all([
+  const [app, readinessPhoto, i18n] = await Promise.all([
     source("App.jsx"),
     source("features/task-content/ReadinessPhotoTask.jsx"),
+    source("i18n.jsx"),
   ]);
 
   for (const criterion of ["camera_angle", "lighting", "background", "dressing"]) {
@@ -148,6 +228,9 @@ test("G04 shows Sophia's four visual checks with their example gallery", async (
   assert.doesNotMatch(readinessPhoto, /Teaching headset worn|佩戴授课耳麦|seven items|7 项/);
   assert.match(app, /four lesson-preparation checks/);
   assert.doesNotMatch(app, /all seven readiness checks|7 项准备检测结果/);
+  assert.match(i18n, /三个部分可任意顺序操作/);
+  assert.match(i18n, /授课画面照片的四项 AI 标准/);
+  assert.doesNotMatch(i18n, /授课环境照片的七项检测|通过七项画面检测/);
 });
 
 test("all four task summary regions use Shiwen content instead of local execution steps", async () => {

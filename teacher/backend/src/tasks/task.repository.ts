@@ -18,6 +18,7 @@ import type {
 } from './task.models';
 import { TaskValidationEngine } from './task-validation.engine';
 import type {
+  TaskValidationDecision,
   TaskValidationRule,
   TaskValidationStep,
 } from './task-validation.models';
@@ -145,6 +146,21 @@ interface EvaluatedStepProgress {
   result?: Record<string, unknown>;
 }
 
+type DeviceCheckItemStatus = 'PASSED' | 'FAILED' | 'ERROR' | 'SKIPPED';
+
+interface NormalizedDeviceEvidence extends Record<string, unknown> {
+  checkVersion: string;
+  results: Record<string, DeviceCheckItemStatus>;
+  source: 'BROWSER_LOCAL';
+  checkedAt: string;
+  measurements: { network?: { durationMs: number } };
+}
+
+interface NormalizedChecklistEvidence extends Record<string, unknown> {
+  checklistVersion: string;
+  checkedItemKeys: string[];
+}
+
 interface StepEvidenceRow extends QueryResultRow {
   stepKey: string;
   stepType: TaskStepType;
@@ -154,7 +170,11 @@ interface StepEvidenceRow extends QueryResultRow {
 
 interface ValidationRuleRow extends QueryResultRow, TaskValidationRule {}
 
-interface ValidationStepRow extends QueryResultRow, TaskValidationStep {}
+interface ValidationStepRow extends QueryResultRow, TaskValidationStep {
+  type: TaskStepType;
+  config: Record<string, unknown>;
+  progressSummary: Record<string, unknown>;
+}
 
 interface ValidationRow extends QueryResultRow {
   status: TaskValidationResponse['status'];
@@ -500,6 +520,7 @@ export class TaskRepository {
         input.taskInstanceId,
         definitions,
         input.outputs,
+        task.taskCode,
       );
       await this.validateOutputs(client, { ...input, outputs }, definitions);
 
@@ -544,13 +565,6 @@ export class TaskRepository {
         input.taskInstanceId,
         definitions,
       );
-      const submittedStateVersion = await this.updateAssignmentStatus(
-        client,
-        input.taskInstanceId,
-        input.expectedStateVersion,
-        'SUBMITTED',
-        null,
-      );
       const rules = await this.loadValidationRules(
         client,
         task.executionVersionId,
@@ -559,6 +573,7 @@ export class TaskRepository {
         client,
         input.taskInstanceId,
         task.executionVersionId,
+        task.taskCode,
       );
       const decision = await this.validationEngine.evaluate({
         client,
@@ -602,28 +617,17 @@ export class TaskRepository {
         ],
       );
 
-      const nextStatus: TaskStatus =
-        decision.status === 'PASSED'
-          ? 'COMPLETED'
-          : decision.status === 'FAILED'
-            ? 'FAILED'
-            : 'UNDER_REVIEW';
-      const stateVersion = await this.updateAssignmentStatus(
-        client,
-        input.taskInstanceId,
-        submittedStateVersion,
-        nextStatus,
-        nextStatus === 'FAILED'
-          ? (decision.resultCode ?? 'VALIDATION_FAILED')
-          : null,
-      );
-      await this.createTaskResultNotification(
-        client,
-        task,
-        input.attemptId,
-        decision.status,
-        decision.ruleVersion,
-      );
+      const { nextStatus, stateVersion } =
+        await this.applyAssignmentValidationResult(
+          client,
+          task,
+          {
+            taskInstanceId: input.taskInstanceId,
+            expectedStateVersion: input.expectedStateVersion,
+            attemptId: input.attemptId,
+          },
+          decision,
+        );
       if (decision.status === 'PASSED') {
         const completionSource = rules.some(
           (rule) => rule.ruleType === 'AI_IMAGE_REVIEW',
@@ -646,6 +650,11 @@ export class TaskRepository {
           ],
         );
       }
+      const imageReview = rules.some(
+        (rule) => rule.ruleType === 'AI_IMAGE_REVIEW',
+      )
+        ? await this.loadSubmissionImageReview(client, submissionId)
+        : null;
       const response = this.mutationResponse(
         input.taskInstanceId,
         nextStatus,
@@ -654,6 +663,7 @@ export class TaskRepository {
           status: decision.status,
           resultCode: decision.resultCode,
           teacherMessage: decision.teacherMessage,
+          imageReview,
         },
       );
       await this.saveCommandReceipt(client, input, 'SUBMIT', response);
@@ -742,7 +752,15 @@ export class TaskRepository {
             ) AS items
           FROM tide.image_reviews review
           WHERE review.submission_id = submission.id
-          ORDER BY review.reviewed_at DESC, review.id DESC
+             OR review.file_id IN (
+               SELECT reused_file.file_id
+               FROM tide.task_submission_files reused_file
+               WHERE reused_file.submission_id = submission.id
+             )
+          ORDER BY
+            (review.submission_id = submission.id) DESC,
+            review.reviewed_at DESC,
+            review.id DESC
           LIMIT 1
         ) image_review ON TRUE
         WHERE submission.task_assignment_id = $1
@@ -923,6 +941,69 @@ export class TaskRepository {
         allowedStatuses: allowed,
       });
     }
+  }
+
+  private shouldKeepAssignmentInProgress(
+    task: LockedTaskRow,
+    validationStatus: 'UNDER_REVIEW' | 'PASSED' | 'FAILED',
+  ): boolean {
+    if (task.taskCode !== 'G04' || validationStatus === 'PASSED') {
+      return false;
+    }
+    const independentModules = this.isRecord(
+      task.contentConfig.independentModules,
+    )
+      ? task.contentConfig.independentModules
+      : null;
+    return independentModules?.keepAssignmentInProgressUntilPassed === true;
+  }
+
+  private async applyAssignmentValidationResult(
+    client: PoolClient,
+    task: LockedTaskRow,
+    input: {
+      taskInstanceId: string;
+      expectedStateVersion: number;
+      attemptId: string;
+    },
+    decision: TaskValidationDecision,
+  ): Promise<{ nextStatus: TaskStatus; stateVersion: number }> {
+    if (this.shouldKeepAssignmentInProgress(task, decision.status)) {
+      return {
+        nextStatus: 'IN_PROGRESS',
+        stateVersion: Number(task.stateVersion),
+      };
+    }
+    const submittedStateVersion = await this.updateAssignmentStatus(
+      client,
+      input.taskInstanceId,
+      input.expectedStateVersion,
+      'SUBMITTED',
+      null,
+    );
+    const nextStatus: TaskStatus =
+      decision.status === 'PASSED'
+        ? 'COMPLETED'
+        : decision.status === 'FAILED'
+          ? 'FAILED'
+          : 'UNDER_REVIEW';
+    const stateVersion = await this.updateAssignmentStatus(
+      client,
+      input.taskInstanceId,
+      submittedStateVersion,
+      nextStatus,
+      nextStatus === 'FAILED'
+        ? (decision.resultCode ?? 'VALIDATION_FAILED')
+        : null,
+    );
+    await this.createTaskResultNotification(
+      client,
+      task,
+      input.attemptId,
+      decision.status,
+      decision.ruleVersion,
+    );
+    return { nextStatus, stateVersion };
   }
 
   private async evaluateStepProgress(
@@ -1209,17 +1290,19 @@ export class TaskRepository {
     step: StepDefinitionRow,
     progress: Record<string, unknown>,
   ): EvaluatedStepProgress {
-    const itemKeys = Array.isArray(step.config.items)
-      ? step.config.items.filter(
-          (key): key is string => typeof key === 'string',
-        )
-      : [];
-    const results =
-      progress.results && typeof progress.results === 'object'
-        ? (progress.results as Record<string, unknown>)
-        : {};
+    const evidence = this.normalizeDeviceEvidence(step.config, {
+      ...progress,
+      checkVersion: step.config.version,
+    });
+    if (!evidence) {
+      throw new TaskCommandConflictError('OUTPUT_INVALID', {
+        stepKey: step.stepKey,
+        reason: 'DEVICE_CHECK_EVIDENCE_INVALID',
+      });
+    }
+    const itemKeys = Object.keys(evidence.results);
     const passedCount = itemKeys.filter(
-      (key) => results[key] === 'PASSED',
+      (key) => evidence.results[key] === 'PASSED',
     ).length;
     const completed = itemKeys.length > 0 && passedCount === itemKeys.length;
     return {
@@ -1227,8 +1310,197 @@ export class TaskRepository {
       percent: completed
         ? 100
         : Math.round((passedCount / Math.max(1, itemKeys.length)) * 90),
-      summary: { checkVersion: step.config.version ?? '1', results },
+      summary: evidence,
       result: { passed: completed, passedCount, total: itemKeys.length },
+    };
+  }
+
+  private normalizeDeviceEvidence(
+    config: Record<string, unknown>,
+    evidence: Record<string, unknown>,
+  ): NormalizedDeviceEvidence | null {
+    const version =
+      typeof config.version === 'string' ? config.version.trim() : '';
+    const rawItems = config.items;
+    if (
+      !version ||
+      !Array.isArray(rawItems) ||
+      rawItems.length === 0 ||
+      !rawItems.every(
+        (item): item is string =>
+          typeof item === 'string' && item.trim().length > 0,
+      )
+    ) {
+      return null;
+    }
+    const itemKeys = rawItems.map((item) => item.trim());
+    if (new Set(itemKeys).size !== itemKeys.length) return null;
+
+    if (
+      evidence.checkVersion !== version ||
+      evidence.source !== 'BROWSER_LOCAL' ||
+      typeof evidence.checkedAt !== 'string'
+    ) {
+      return null;
+    }
+    const checkedAt = Date.parse(evidence.checkedAt);
+    if (!Number.isFinite(checkedAt)) return null;
+
+    if (!this.isRecord(evidence.results)) return null;
+    const resultKeys = Object.keys(evidence.results);
+    if (
+      resultKeys.length !== itemKeys.length ||
+      resultKeys.some((key) => !itemKeys.includes(key))
+    ) {
+      return null;
+    }
+    const allowedStatuses = new Set<DeviceCheckItemStatus>([
+      'PASSED',
+      'FAILED',
+      'ERROR',
+      'SKIPPED',
+    ]);
+    const results: Record<string, DeviceCheckItemStatus> = {};
+    for (const itemKey of itemKeys) {
+      const status = evidence.results[itemKey];
+      if (
+        typeof status !== 'string' ||
+        !allowedStatuses.has(status as DeviceCheckItemStatus)
+      ) {
+        return null;
+      }
+      results[itemKey] = status as DeviceCheckItemStatus;
+    }
+
+    const measurements: NormalizedDeviceEvidence['measurements'] = {};
+    if (itemKeys.includes('network')) {
+      if (!this.isRecord(evidence.measurements)) return null;
+      const network = evidence.measurements.network;
+      if (!this.isRecord(network)) return null;
+      const durationMs = network.durationMs;
+      if (
+        typeof durationMs !== 'number' ||
+        !Number.isFinite(durationMs) ||
+        durationMs < 0 ||
+        durationMs > 120_000
+      ) {
+        return null;
+      }
+      measurements.network = { durationMs: Math.round(durationMs) };
+    }
+
+    return {
+      checkVersion: version,
+      results,
+      source: 'BROWSER_LOCAL',
+      checkedAt: new Date(checkedAt).toISOString(),
+      measurements,
+    };
+  }
+
+  private normalizeChecklistEvidence(
+    config: Record<string, unknown>,
+    evidence: Record<string, unknown>,
+  ): NormalizedChecklistEvidence | null {
+    const version =
+      typeof config.version === 'string' ? config.version.trim() : '';
+    const rawItems = config.items;
+    if (!version || !Array.isArray(rawItems) || rawItems.length === 0) {
+      return null;
+    }
+    const itemKeys = rawItems.map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (this.isRecord(item) && typeof item.key === 'string') {
+        return item.key.trim();
+      }
+      return '';
+    });
+    if (
+      itemKeys.some((itemKey) => !itemKey) ||
+      new Set(itemKeys).size !== itemKeys.length ||
+      evidence.checklistVersion !== version ||
+      !Array.isArray(evidence.checkedItemKeys)
+    ) {
+      return null;
+    }
+    const checkedItemKeys = evidence.checkedItemKeys;
+    if (
+      !checkedItemKeys.every(
+        (itemKey): itemKey is string =>
+          typeof itemKey === 'string' && itemKeys.includes(itemKey),
+      ) ||
+      new Set(checkedItemKeys).size !== checkedItemKeys.length
+    ) {
+      return null;
+    }
+    return { checklistVersion: version, checkedItemKeys };
+  }
+
+  private effectiveStepProgress(
+    taskCode: string,
+    step: {
+      type: TaskStepType;
+      config: Record<string, unknown>;
+      status: TaskValidationStep['status'];
+      percent: number;
+      summary: Record<string, unknown>;
+    },
+  ): {
+    status: TaskValidationStep['status'];
+    percent: number;
+    summary: Record<string, unknown>;
+  } {
+    if (taskCode !== 'G04') {
+      return {
+        status: step.status,
+        percent: step.percent,
+        summary: step.summary,
+      };
+    }
+    if (step.type === 'DEVICE_CHECK') {
+      const evidence = this.normalizeDeviceEvidence(step.config, step.summary);
+      if (
+        !evidence ||
+        (step.status === 'COMPLETED' &&
+          (step.percent !== 100 ||
+            Object.values(evidence.results).some(
+              (status) => status !== 'PASSED',
+            )))
+      ) {
+        return { status: 'NOT_STARTED', percent: 0, summary: {} };
+      }
+      return {
+        status: step.status,
+        percent: step.percent,
+        summary: evidence,
+      };
+    }
+    if (step.type === 'CHECKLIST') {
+      const evidence = this.normalizeChecklistEvidence(
+        step.config,
+        step.summary,
+      );
+      if (
+        !evidence ||
+        (step.status === 'COMPLETED' &&
+          (step.percent !== 100 ||
+            evidence.checkedItemKeys.length !==
+              (Array.isArray(step.config.items)
+                ? step.config.items.length
+                : 0)))
+      ) {
+        return { status: 'NOT_STARTED', percent: 0, summary: {} };
+      }
+      return {
+        status: step.status,
+        percent: step.percent,
+        summary: evidence,
+      };
+    }
+    return {
+      status: step.status,
+      percent: step.percent,
+      summary: step.summary,
     };
   }
 
@@ -1314,6 +1586,24 @@ export class TaskRepository {
         });
       }
       seen.add(output.stepKey);
+      if (
+        definition.stepType === 'DEVICE_CHECK' &&
+        !this.normalizeDeviceEvidence(definition.config, output.value)
+      ) {
+        throw new TaskCommandConflictError('OUTPUT_INVALID', {
+          stepKey: output.stepKey,
+          reason: 'DEVICE_CHECK_EVIDENCE_INVALID',
+        });
+      }
+      if (
+        definition.stepType === 'CHECKLIST' &&
+        !this.normalizeChecklistEvidence(definition.config, output.value)
+      ) {
+        throw new TaskCommandConflictError('OUTPUT_INVALID', {
+          stepKey: output.stepKey,
+          reason: 'CHECKLIST_EVIDENCE_INVALID',
+        });
+      }
       if (output.outputType === 'FILE') {
         const fileId = output.value.fileId;
         if (typeof fileId !== 'string') {
@@ -1349,6 +1639,7 @@ export class TaskRepository {
     taskInstanceId: string,
     definitions: StepDefinitionRow[],
     requested: StepOutputDto[],
+    taskCode: string,
   ): Promise<StepOutputDto[]> {
     const rows = await client.query<{
       stepKey: string;
@@ -1379,6 +1670,19 @@ export class TaskRepository {
       const type = outputType[definition.stepType];
       const value = summaries.get(definition.stepKey);
       if (!type || !value || Object.keys(value).length === 0) continue;
+      if (
+        definition.stepType === 'DEVICE_CHECK' &&
+        !this.normalizeDeviceEvidence(definition.config, value)
+      ) {
+        continue;
+      }
+      if (
+        taskCode === 'G04' &&
+        definition.stepType === 'CHECKLIST' &&
+        !this.normalizeChecklistEvidence(definition.config, value)
+      ) {
+        continue;
+      }
       merged.set(definition.stepKey, {
         stepKey: definition.stepKey,
         outputType: type,
@@ -1411,13 +1715,17 @@ export class TaskRepository {
     client: PoolClient,
     taskInstanceId: string,
     executionVersionId: string,
+    taskCode: string,
   ): Promise<TaskValidationStep[]> {
     const result = await client.query<ValidationStepRow>(
       `
         SELECT
           definition.step_key AS "stepKey",
+          definition.step_type AS type,
+          definition.config,
           COALESCE(progress.status, 'NOT_STARTED') AS status,
-          COALESCE(progress.percent, 0) AS percent
+          COALESCE(progress.percent, 0) AS percent,
+          COALESCE(progress.progress_summary, '{}'::jsonb) AS "progressSummary"
         FROM tide.task_step_definitions definition
         LEFT JOIN tide.task_step_progress progress
           ON progress.task_assignment_id = $1
@@ -1427,10 +1735,20 @@ export class TaskRepository {
       `,
       [taskInstanceId, executionVersionId],
     );
-    return result.rows.map((row) => ({
-      ...row,
-      percent: Number(row.percent),
-    }));
+    return result.rows.map((row) => {
+      const effective = this.effectiveStepProgress(taskCode, {
+        type: row.type,
+        config: row.config,
+        status: row.status,
+        percent: Number(row.percent),
+        summary: row.progressSummary,
+      });
+      return {
+        stepKey: row.stepKey,
+        status: effective.status,
+        percent: effective.percent,
+      };
+    });
   }
 
   private async linkSubmissionFiles(
@@ -1453,6 +1771,53 @@ export class TaskRepository {
         [submissionId, output.value.fileId, output.stepKey, position],
       );
     }
+  }
+
+  private async loadSubmissionImageReview(
+    client: PoolClient,
+    submissionId: string,
+  ): Promise<TaskValidationResponse['imageReview']> {
+    const result = await client.query<{
+      imageReview: NonNullable<TaskValidationResponse['imageReview']>;
+    }>(
+      `
+        SELECT jsonb_build_object(
+          'criteriaVersion', review.criteria_version,
+          'decision', review.decision,
+          'teacherReason', review.teacher_reason,
+          'confidenceSummary', review.confidence_summary,
+          'items', COALESCE(
+            (
+              SELECT jsonb_agg(
+                jsonb_build_object(
+                  'criterionKey', item.criterion_key,
+                  'result', item.result,
+                  'teacherMessage', item.teacher_message
+                )
+                ORDER BY item.criterion_key
+              )
+              FROM tide.image_review_items item
+              WHERE item.image_review_id = review.id
+            ),
+            '[]'::jsonb
+          )
+        ) AS "imageReview"
+        FROM tide.image_reviews review
+        WHERE review.submission_id = $1
+           OR review.file_id IN (
+             SELECT reused_file.file_id
+             FROM tide.task_submission_files reused_file
+             WHERE reused_file.submission_id = $1
+           )
+        ORDER BY
+          (review.submission_id = $1) DESC,
+          review.reviewed_at DESC,
+          review.id DESC
+        LIMIT 1
+      `,
+      [submissionId],
+    );
+    return result.rows[0]?.imageReview ?? null;
   }
 
   private async persistProgressEvidence(
@@ -1515,26 +1880,20 @@ export class TaskRepository {
     attemptId: string,
     row: StepEvidenceRow,
   ): Promise<void> {
+    const evidence = this.normalizeChecklistEvidence(
+      row.config,
+      row.progressSummary,
+    );
+    if (!evidence) return;
     const checklistAttemptId = randomUUID();
-    const checked = Array.isArray(row.progressSummary.checkedItemKeys)
-      ? new Set(
-          row.progressSummary.checkedItemKeys.filter(
-            (key): key is string => typeof key === 'string',
-          ),
-        )
-      : new Set<string>();
+    const checked = new Set(evidence.checkedItemKeys);
     await client.query(
       `
         INSERT INTO tide.checklist_attempts (
           id, task_attempt_id, step_key, checklist_version, completed_at
         ) VALUES ($1, $2, $3, $4, now())
       `,
-      [
-        checklistAttemptId,
-        attemptId,
-        row.stepKey,
-        typeof row.config.version === 'string' ? row.config.version : '1',
-      ],
+      [checklistAttemptId, attemptId, row.stepKey, evidence.checklistVersion],
     );
     const items = Array.isArray(row.config.items) ? row.config.items : [];
     for (const item of items) {
@@ -1561,14 +1920,15 @@ export class TaskRepository {
     attemptId: string,
     row: StepEvidenceRow,
   ): Promise<void> {
+    const evidence = this.normalizeDeviceEvidence(
+      row.config,
+      row.progressSummary,
+    );
+    if (!evidence) return;
+    const itemKeys = Object.keys(evidence.results);
     const runId = randomUUID();
-    const results =
-      row.progressSummary.results &&
-      typeof row.progressSummary.results === 'object'
-        ? (row.progressSummary.results as Record<string, unknown>)
-        : {};
-    const passed = Object.values(results).every(
-      (status) => status === 'PASSED',
+    const passed = itemKeys.every(
+      (itemKey) => evidence.results[itemKey] === 'PASSED',
     );
     await client.query(
       `
@@ -1581,26 +1941,32 @@ export class TaskRepository {
         runId,
         attemptId,
         row.stepKey,
-        typeof row.config.version === 'string' ? row.config.version : '1',
+        evidence.checkVersion,
         passed ? 'PASSED' : 'FAILED',
       ],
     );
-    for (const [itemKey, statusValue] of Object.entries(results)) {
-      const status =
-        statusValue === 'PASSED' ||
-        statusValue === 'FAILED' ||
-        statusValue === 'ERROR' ||
-        statusValue === 'SKIPPED'
-          ? statusValue
-          : 'ERROR';
+    for (const itemKey of itemKeys) {
+      const status = evidence.results[itemKey];
       await client.query(
         `
           INSERT INTO tide.device_check_item_results (
             id, device_check_run_id, item_key, status,
             measured_summary, teacher_message
-          ) VALUES ($1, $2, $3, $4, '{}'::jsonb, NULL)
+          ) VALUES ($1, $2, $3, $4, $5::jsonb, NULL)
         `,
-        [randomUUID(), runId, itemKey, status],
+        [
+          randomUUID(),
+          runId,
+          itemKey,
+          status,
+          {
+            source: evidence.source,
+            checkedAt: evidence.checkedAt,
+            ...(itemKey === 'network' && evidence.measurements.network
+              ? { durationMs: evidence.measurements.network.durationMs }
+              : {}),
+          },
+        ],
       );
     }
   }
@@ -1830,12 +2196,21 @@ export class TaskRepository {
       title: row.title,
       config: this.publicStepConfig(row.config),
     }));
-    const progressSteps = rows.map((row) => ({
-      stepKey: row.stepKey,
-      status: row.progressStatus,
-      percent: Number(row.progressPercent),
-      details: this.publicProgressDetails(row.progressSummary),
-    }));
+    const progressSteps = rows.map((row) => {
+      const effective = this.effectiveStepProgress(task.taskCode, {
+        type: row.type,
+        config: row.config,
+        status: row.progressStatus,
+        percent: Number(row.progressPercent),
+        summary: row.progressSummary,
+      });
+      return {
+        stepKey: row.stepKey,
+        status: effective.status,
+        percent: effective.percent,
+        details: this.publicProgressDetails(effective.summary),
+      };
+    });
     const completed = task.status === 'COMPLETED';
     const percent = completed
       ? 100
@@ -2109,6 +2484,23 @@ export class TaskRepository {
     task: LockedTaskRow,
     stepKey: string,
   ): Promise<void> {
+    const independentModules = this.isRecord(
+      task.contentConfig.independentModules,
+    )
+      ? task.contentConfig.independentModules
+      : null;
+    const independentStepKeys = Array.isArray(independentModules?.stepKeys)
+      ? independentModules.stepKeys.filter(
+          (value): value is string => typeof value === 'string',
+        )
+      : [];
+    if (
+      task.taskCode === 'G04' &&
+      independentModules?.allowOutOfOrderProgress === true &&
+      independentStepKeys.includes(stepKey)
+    ) {
+      return;
+    }
     const incomplete = await client.query<{ stepKey: string }>(
       `
         SELECT previous.step_key AS "stepKey"

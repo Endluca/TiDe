@@ -32,3 +32,5 @@
 \ir migrations/0028_retire_task_business_change_view.up.sql
 \ir migrations/0029_remove_unused_tide_objects.up.sql
 \ir migrations/0030_remove_unused_columns_and_orphan_function.up.sql
+\ir migrations/0031_g04_independent_sections.up.sql
+\ir migrations/0032_first_login_onboarding.up.sql
