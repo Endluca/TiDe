@@ -7,10 +7,6 @@ import type {
   OperationsInterventionResponse,
   OperationsCaseDecisionResult,
   OperationsOverview,
-  OutputListResponse,
-  OutputRecord,
-  OutputStatus,
-  OutputType,
   SharedTaskAssignment,
   SharedTaskAssignmentPage,
   SupportTicket,
@@ -171,17 +167,6 @@ export async function request<T>(
     globalThis.clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abortFromCaller)
   }
-}
-
-export interface OutputFilters {
-  type?: OutputType | string
-  status?: OutputStatus
-  teacher_id?: string
-  keyword?: string
-  operational_only?: boolean
-  include_task_assignments?: boolean
-  page?: number
-  page_size?: number
 }
 
 export interface TeacherListQuery {
@@ -389,19 +374,4 @@ export const api = {
     const suffix = query.size ? `?${query.toString()}` : ''
     return request<AuditEventPage>(`/api/events${suffix}`, { cache: 'no-store' }, options)
   },
-  outputs: (filters: OutputFilters = {}, options?: RequestOptions) => {
-    const query = new URLSearchParams()
-    if (filters.type) query.set('type', filters.type)
-    if (filters.status) query.set('status', filters.status)
-    if (filters.teacher_id) query.set('teacher_id', filters.teacher_id)
-    if (filters.keyword) query.set('keyword', filters.keyword)
-    if (filters.operational_only !== undefined) query.set('operational_only', String(filters.operational_only))
-    if (filters.include_task_assignments !== undefined) query.set('include_task_assignments', String(filters.include_task_assignments))
-    if (filters.page !== undefined) query.set('page', String(filters.page))
-    if (filters.page_size !== undefined) query.set('page_size', String(filters.page_size))
-    const suffix = query.size ? `?${query.toString()}` : ''
-    return request<OutputListResponse>(`/api/outputs${suffix}`, {}, options)
-  },
-  retryOutput: (outputId: string) =>
-    request<OutputRecord>(`/api/outputs/${encodeURIComponent(outputId)}/retry`, { method: 'POST' }),
 }

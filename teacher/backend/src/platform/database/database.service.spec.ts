@@ -224,7 +224,7 @@ describe('DatabaseService', () => {
       shiwenRead: 'not_configured',
     });
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('0027_remove_local_quiz_runtime'),
+      expect.stringContaining('0030_remove_unused_columns_and_orphan_function'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.schema_migrations'),
@@ -240,6 +240,11 @@ describe('DatabaseService', () => {
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.kuozhi_course_syncs'),
     );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "'tide.analytics_task_business_change_v1'\n        ) IS NULL",
+      ),
+    );
     for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
       expect(query).toHaveBeenCalledWith(
         expect.stringContaining(
@@ -247,13 +252,17 @@ describe('DatabaseService', () => {
         ),
       );
     }
-    for (const privilege of ['SELECT', 'INSERT', 'UPDATE']) {
-      expect(query).toHaveBeenCalledWith(
-        expect.stringContaining(
-          `to_regclass('tide.teacher_photo_runs'),\n          '${privilege}'`,
-        ),
-      );
-    }
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("to_regclass('tide.teacher_photo_runs') IS NULL"),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("column_name = 'visibility'"),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "to_regprocedure('tide.enforce_outbox_target()') IS NULL",
+      ),
+    );
     expect(query).not.toHaveBeenCalledWith(
       expect.stringContaining("'SELECT,INSERT,UPDATE"),
     );

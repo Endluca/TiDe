@@ -163,36 +163,6 @@ const apiErrorCopy = {
     zh: "问答会话或消息不存在。",
   },
 
-  // Teacher photo
-  TEACHER_PHOTO_TASK_NOT_FOUND: {
-    en: "The camera-view check could not be found in this task.",
-    zh: "未找到首课准备中的摄像头画面检测步骤。",
-  },
-  TEACHER_PHOTO_STORAGE_FAILED: {
-    en: "The photo could not be saved securely. Please submit it again later.",
-    zh: "照片暂时无法安全保存，请稍后重新提交。",
-  },
-  TEACHER_PHOTO_NOT_FOUND: {
-    en: "No camera-view check has been submitted yet.",
-    zh: "还没有摄像头画面检测记录。",
-  },
-  TEACHER_PHOTO_FINAL_NOT_FOUND: {
-    en: "The checked photo is still being generated. Please try again shortly.",
-    zh: "画面检测证据尚未生成，请稍后重试。",
-  },
-  TEACHER_PHOTO_REQUIRED: {
-    en: "Take or choose a camera-view photo first.",
-    zh: "请先拍摄或选择当前摄像头画面。",
-  },
-  TEACHER_PHOTO_TOO_LARGE: {
-    en: "The photo is too large. Choose a smaller photo.",
-    zh: "照片过大，请选择更小的照片。",
-  },
-  TEACHER_PHOTO_TYPE_INVALID: {
-    en: "Only JPG, PNG or WEBP photos are supported.",
-    zh: "只支持 JPG、PNG 或 WEBP 照片。",
-  },
-
   // Shared HTTP fallbacks
   INTERNAL_ERROR: {
     en: "The service is temporarily unavailable. Please try again later.",

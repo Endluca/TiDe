@@ -36,42 +36,6 @@ def seed_teachers() -> list[dict]:
                     "evidence_refs": ["LESSON-L-1001:PRESENCE-CONFIRMED"],
                 }
             ],
-            "lesson_facts": [
-                {
-                    "lesson_id": "L-1001",
-                    "appoint_id": "A-1001",
-                    "is_first_lesson_mock": True,
-                    "scheduled_start_at": "2026-07-16T01:00:00Z",
-                    "lesson_status": "ENDED",
-                    "teacher_presence": "ABSENT",
-                    "evidence_status": "CONFIRMED",
-                    "evidence_source": "ovs_dw_teacher_fact_1v1_buy_performance (MOCK)",
-                    "data_mode": "MOCK",
-                }
-            ],
-            "lesson_dimension_scores": [
-                {
-                    "lesson_id": "L-1001",
-                    "dimension": "RELIABILITY",
-                    "score": 0,
-                    "evidence_status": "CONFIRMED",
-                    "reason_code": "REDLINE_RECORDED_NO_DEDUCTION",
-                },
-                {
-                    "lesson_id": "L-1001",
-                    "dimension": "USER_FEEDBACK",
-                    "score": 0,
-                    "evidence_status": "NO_EVIDENCE",
-                    "reason_code": "NO_SETTLEABLE_EVIDENCE",
-                },
-                {
-                    "lesson_id": "L-1001",
-                    "dimension": "CLASS_QUALITY",
-                    "score": 0,
-                    "evidence_status": "NOT_APPLICABLE",
-                    "reason_code": "TEACHER_PHYSICALLY_ABSENT",
-                },
-            ],
             "score_entries": [
                 {
                     "score_entry_id": "SCORE-L-1001-RELIABILITY",

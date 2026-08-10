@@ -16,11 +16,13 @@ from sqlalchemy import (
     or_,
     select,
 )
+from sqlalchemy.orm import Session
 
 from .database import engine as default_engine
 from .database import session_scope
 from .db_models import (
-    LessonFactRecord,
+    ComplaintCategoryRuleRecord,
+    LessonSourceWideRecord,
     NotificationRecord,
     OpsCaseRecord,
     OpsDecisionRecord,
@@ -28,6 +30,9 @@ from .db_models import (
     TaskAssignmentRecord,
     TeacherRecord,
 )
+from .personalized_rules import normalize_text
+
+
 TERMINAL_TASK_STATUSES = {
     "COMPLETED",
     "FAILED",
@@ -189,6 +194,39 @@ def _evidence_summary(snapshot: dict[str, Any] | None) -> str:
     return "；".join(parts) or "触发证据已记录"
 
 
+def _current_complaint_levels(
+    session: Session,
+    lessons: list[LessonSourceWideRecord],
+) -> dict[str, str]:
+    """Return the newest exact level-3 mapping for the paged lessons."""
+
+    categories = {
+        normalize_text(lesson.complaint_category_l3)
+        for lesson in lessons
+        if normalize_text(lesson.complaint_category_l3)
+    }
+    if not categories:
+        return {}
+    rules = session.scalars(
+        select(ComplaintCategoryRuleRecord)
+        .where(
+            ComplaintCategoryRuleRecord.category_l3_normalized.in_(
+                categories
+            )
+        )
+        .order_by(
+            ComplaintCategoryRuleRecord.created_at.desc(),
+            ComplaintCategoryRuleRecord.rule_id.desc(),
+        )
+    ).all()
+    levels: dict[str, str] = {}
+    for rule in rules:
+        key = normalize_text(rule.category_l3_normalized)
+        if key:
+            levels.setdefault(key, rule.source_level)
+    return levels
+
+
 class OperationsService:
     """Read model for an operator's macro-to-micro intervention workflow."""
 
@@ -201,16 +239,14 @@ class OperationsService:
             summary = session.execute(
                 select(
                     select(func.count())
-                    .select_from(LessonFactRecord)
-                    .where(LessonFactRecord.source_batch_id.is_not(None))
+                    .select_from(LessonSourceWideRecord)
                     .scalar_subquery()
                     .label("lesson_total"),
                     select(
                         func.count(
-                            func.distinct(LessonFactRecord.teacher_id)
+                            func.distinct(LessonSourceWideRecord.teacher_id)
                         )
                     )
-                    .where(LessonFactRecord.source_batch_id.is_not(None))
                     .scalar_subquery()
                     .label("teacher_total"),
                     select(
@@ -838,16 +874,18 @@ class OperationsService:
         risk_only: bool = False,
     ) -> dict[str, Any]:
         with session_scope(self.engine) as session:
-            statement = select(LessonFactRecord).where(
-                LessonFactRecord.source_batch_id.is_not(None)
-            )
+            statement = select(LessonSourceWideRecord)
             if teacher_id:
-                statement = statement.where(LessonFactRecord.teacher_id == teacher_id)
+                statement = statement.where(
+                    LessonSourceWideRecord.teacher_id == teacher_id
+                )
             if lesson_id:
-                statement = statement.where(LessonFactRecord.lesson_id == lesson_id)
+                statement = statement.where(
+                    LessonSourceWideRecord.course_id == lesson_id
+                )
             if risk_only:
                 statement = statement.where(
-                    LessonFactRecord.lesson_id.in_(
+                    LessonSourceWideRecord.course_id.in_(
                         select(PersonalizedTriggerMatchRecord.lesson_id).where(
                             PersonalizedTriggerMatchRecord.lesson_id.is_not(None),
                             _active_match_expression(),
@@ -858,14 +896,14 @@ class OperationsService:
             total = int(session.scalar(count_statement) or 0)
             records = session.scalars(
                 statement.order_by(
-                    LessonFactRecord.lesson_local_date.desc(),
-                    LessonFactRecord.lesson_local_time.desc(),
-                    LessonFactRecord.lesson_id.desc(),
+                    LessonSourceWideRecord.lesson_date.desc(),
+                    LessonSourceWideRecord.lesson_time.desc(),
+                    LessonSourceWideRecord.course_id.desc(),
                 )
                 .offset((page - 1) * page_size)
                 .limit(page_size)
             ).all()
-            lesson_ids = [item.lesson_id for item in records]
+            lesson_ids = [item.course_id for item in records]
             matches_by_lesson: dict[str, list[PersonalizedTriggerMatchRecord]] = defaultdict(list)
             if lesson_ids:
                 for match in session.scalars(
@@ -883,9 +921,10 @@ class OperationsService:
                     select(TeacherRecord).where(TeacherRecord.teacher_id.in_(teacher_ids))
                 ).all()
             }
+            complaint_levels = _current_complaint_levels(session, records)
             items: list[dict[str, Any]] = []
             for lesson in records:
-                matches = matches_by_lesson.get(lesson.lesson_id, [])
+                matches = matches_by_lesson.get(lesson.course_id, [])
                 domains = sorted(
                     {
                         _domain(
@@ -897,15 +936,17 @@ class OperationsService:
                 )
                 items.append(
                     {
-                        "lesson_id": lesson.lesson_id,
+                        "lesson_id": lesson.course_id,
                         "teacher_id": lesson.teacher_id,
                         "teacher_name": teachers.get(lesson.teacher_id, lesson.teacher_id),
-                        "lesson_date": lesson.lesson_local_date.isoformat() if lesson.lesson_local_date else None,
-                        "lesson_time": lesson.lesson_local_time.strftime("%H:%M") if lesson.lesson_local_time else None,
-                        "lesson_status": lesson.lesson_lifecycle_status,
+                        "lesson_date": lesson.lesson_date.isoformat() if lesson.lesson_date else None,
+                        "lesson_time": lesson.lesson_time.strftime("%H:%M") if lesson.lesson_time else None,
+                        "lesson_status": lesson.lesson_status,
                         "risk_domains": domains,
                         "signals": [item.output_title for item in matches],
-                        "complaint_level": lesson.complaint_source_level,
+                        "complaint_level": complaint_levels.get(
+                            normalize_text(lesson.complaint_category_l3)
+                        ),
                     }
                 )
             return {"items": items, "total": total, "page": page, "page_size": page_size}

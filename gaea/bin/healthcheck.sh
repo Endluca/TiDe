@@ -34,7 +34,14 @@ check(
 PY
 
 cd /app/operations
-exec /opt/venv/bin/python scripts/settle_shared_task_scores.py \
+/opt/venv/bin/python scripts/settle_shared_task_scores.py \
   --healthcheck \
   --heartbeat-path /tmp/tit-score-worker-heartbeat \
   --max-heartbeat-age-seconds 90
+
+exec /opt/venv/bin/python scripts/run_source_wide_worker.py \
+  --healthcheck \
+  --heartbeat-path /tmp/tit-source-worker-heartbeat \
+  --readiness-path /tmp/tit-source-worker-readiness \
+  --max-heartbeat-age-seconds 90 \
+  --max-readiness-age-seconds 90

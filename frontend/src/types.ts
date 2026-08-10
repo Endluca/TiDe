@@ -205,7 +205,6 @@ export interface Teacher {
   graduation_state?: string
   data_mode?: TeacherDataMode | string
   employment_status?: string | null
-  source_batch_id?: string | null
   source_snapshot_label?: string | null
   first_booked_date?: string | null
   is_cpl_tesol?: boolean | null
@@ -699,80 +698,6 @@ export interface LessonEvidencePage {
   total: number
   page: number
   page_size: number
-}
-
-export type OutputType =
-  | 'TEACHER_TASK'
-  | 'OPS_REVIEW_CASE'
-  | 'SYSTEM_ACTION_REQUEST'
-  | 'DELIVERY_INTENT'
-
-export type OutputDisplayType =
-  | 'TASK_ASSIGNMENT'
-  | 'IN_APP_NOTIFICATION'
-  | 'REMINDER'
-  | 'OPS_CASE'
-  | 'EXTERNAL_ACTION_REQUEST'
-  | 'PROVIDER_REQUEST'
-
-export type OutputAudience = 'TEACHER' | 'OPS' | 'EXTERNAL_SYSTEM'
-
-export type OutputStatus =
-  | 'PLANNED'
-  | 'REQUESTED'
-  | 'STORED'
-  | 'DELIVERED'
-  | 'READ'
-  | 'CLICKED'
-  | 'FAILED'
-  | 'ACTION_PENDING'
-  | 'CANCELLED'
-
-export interface OutputRecord {
-  output_id: string
-  output_type?: OutputType | null
-  display_type: OutputDisplayType
-  delivery_kind?: string | null
-  non_business?: boolean
-  audience_type: OutputAudience
-  recipient_id: string
-  recipient_name: string
-  channel: string
-  source_type: string
-  source_id: string
-  teacher_id?: string | null
-  task_id?: string | null
-  case_id?: string | null
-  status: OutputStatus
-  title: string
-  body?: string | null
-  content?: string | null
-  scheduled_at?: string | null
-  created_at: string
-  sent_at?: string | null
-  delivered_at?: string | null
-  attempt_count: number
-  max_attempts: number
-  next_retry_at?: string | null
-  last_error?: string | Record<string, unknown> | null
-  retryable: boolean
-  requires_human_approval: boolean
-  payload: Record<string, unknown>
-}
-
-export interface OutputListResponse {
-  items: OutputRecord[]
-  total: number
-  page?: number
-  page_size?: number
-  counts_by_type?: Record<string, number>
-}
-
-export interface OutputSummary {
-  total: number
-  by_type: Partial<Record<OutputType, number>>
-  by_display_type?: Partial<Record<OutputDisplayType, number>>
-  by_status: Partial<Record<OutputStatus, number>>
 }
 
 export type SupportTicketWorkflowState =

@@ -33,83 +33,156 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class DataImportBatchRecord(Base):
-    """One immutable batch received from a file baseline or a daily source API."""
+class ComplaintRuleImportRecord(Base):
+    """One immutable reviewed complaint-rule workbook."""
 
-    __tablename__ = "data_import_batches"
-    __table_args__ = (
-        UniqueConstraint("source_sha256", "source_sheet", name="uq_data_import_content_sheet"),
-        CheckConstraint(
-            "sync_mode IN ('MANUAL_BASELINE', 'API_DAILY')",
-            name="ck_data_import_batch_sync_mode",
-        ),
-        CheckConstraint(
-            "data_mode IN ('REAL', 'MIXED')",
-            name="ck_data_import_batch_data_mode",
-        ),
-        CheckConstraint(
-            "status IN ('VALIDATED', 'COMPLETED', 'FAILED')",
-            name="ck_data_import_batch_status",
-        ),
-        Index("ix_data_import_source_time", "source_system", "imported_at"),
-    )
+    __tablename__ = "complaint_rule_imports"
 
-    batch_id: Mapped[str] = mapped_column(String(96), primary_key=True)
-    source_kind: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="TEACHER_SNAPSHOT"
-    )
-    sync_mode: Mapped[str] = mapped_column(
-        String(24), nullable=False, default="MANUAL_BASELINE"
-    )
-    source_system: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     source_filename: Mapped[str] = mapped_column(String(512), nullable=False)
-    source_uri: Mapped[str] = mapped_column(Text, nullable=False)
-    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_sheet: Mapped[str] = mapped_column(String(128), nullable=False)
-    snapshot_label: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    data_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="MIXED")
-    column_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    header: Mapped[list[Any]] = mapped_column(JSON_VALUE, nullable=False)
-    status: Mapped[str] = mapped_column(String(24), nullable=False, default="COMPLETED", index=True)
+    raw_rows: Mapped[list[Any]] = mapped_column(JSON_VALUE, nullable=False)
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
-    )
 
 
-class SourceRecord(Base):
-    """Lossless source row; typed domain tables are projections of this evidence."""
+class TeacherSourceWideRecord(Base):
+    """Current upstream teacher-wide source row; no derived TiDe columns."""
 
-    __tablename__ = "source_records"
+    __tablename__ = "teacher_source_wide"
+
+    tchr_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    real_name: Mapped[Optional[str]] = mapped_column(Text)
+    tchr_group: Mapped[Optional[str]] = mapped_column(Text)
+    tchr_group_desc: Mapped[Optional[str]] = mapped_column(Text)
+    center_type_id: Mapped[Optional[str]] = mapped_column(Text)
+    center_type_desc: Mapped[Optional[str]] = mapped_column(Text)
+    bu: Mapped[Optional[str]] = mapped_column(Text)
+    based_type: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[Optional[str]] = mapped_column(Text)
+    status_on_date: Mapped[Optional[date]] = mapped_column(Date)
+    status_off_date: Mapped[Optional[date]] = mapped_column(Date)
+    last_on_date: Mapped[Optional[date]] = mapped_column(Date)
+    job_days: Mapped[Optional[int]] = mapped_column(Integer)
+    job_month: Mapped[Optional[float]] = mapped_column(Float)
+    is_ft_hbt: Mapped[Optional[bool]] = mapped_column(Boolean)
+    is_fte: Mapped[Optional[bool]] = mapped_column(Boolean)
+    teach_area_type: Mapped[Optional[str]] = mapped_column(Text)
+    tchr_score: Mapped[Optional[float]] = mapped_column(Float)
+    onboard_date: Mapped[Optional[date]] = mapped_column(Date)
+    onboard_30d_end_date: Mapped[Optional[date]] = mapped_column(Date)
+    first_open_slot_dt: Mapped[Optional[date]] = mapped_column(Date)
+    first_booked_dt: Mapped[Optional[date]] = mapped_column(Date)
+    first_completed_dt: Mapped[Optional[date]] = mapped_column(Date)
+    total_booked_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    peak_booked_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    total_completed_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    peak_completed_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    absent_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    late_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    early_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    anomaly_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    perfect_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    no_notice_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    first_completed_student_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    completed_again_student_15d_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    feedback_total_eval_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    feedback_praise_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    feedback_negative_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    feedback_complaint_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    feedback_valid_complaint_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    feedback_favorite_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    feedback_block_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    total_slot_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    reg_slot_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    peak_slot_cnt: Mapped[Optional[int]] = mapped_column(Integer)
+    slot_days: Mapped[Optional[int]] = mapped_column(Integer)
+    peak_slot_days: Mapped[Optional[int]] = mapped_column(Integer)
+    reliability_absent_rate: Mapped[Optional[float]] = mapped_column(Float)
+    reliability_late_rate: Mapped[Optional[float]] = mapped_column(Float)
+    reliability_early_leave_rate: Mapped[Optional[float]] = mapped_column(Float)
+    reliability_late_early_rate: Mapped[Optional[float]] = mapped_column(Float)
+    feedback_praise_rate: Mapped[Optional[float]] = mapped_column(Float)
+    feedback_negative_rate: Mapped[Optional[float]] = mapped_column(Float)
+    feedback_complaint_rate: Mapped[Optional[float]] = mapped_column(Float)
+    feedback_rebook_rate: Mapped[Optional[float]] = mapped_column(Float)
+    feedback_favorite_rate: Mapped[Optional[float]] = mapped_column(Float)
+    feedback_block_rate: Mapped[Optional[float]] = mapped_column(Float)
+    feedback_eval_rate: Mapped[Optional[float]] = mapped_column(Float)
+    capacity_avg_completed_per_day: Mapped[Optional[float]] = mapped_column(Float)
+    capacity_peak_slot_rate: Mapped[Optional[float]] = mapped_column(Float)
+    capacity_key_slot_day_rate: Mapped[Optional[float]] = mapped_column(Float)
+    is_cpl_tesol: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    is_self_introduce: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+
+class LessonSourceWideRecord(Base):
+    """Current upstream lesson-wide source row; no derived TiDe columns."""
+
+    __tablename__ = "lesson_source_wide"
+    # Teacher-time reads drive lesson scoring; teacher-student-time reads drive
+    # first-favorite attribution and distinct-student blacklist evaluation.
     __table_args__ = (
-        UniqueConstraint(
-            "batch_id",
-            "source_sheet",
-            "source_row_number",
-            name="uq_source_record_batch_sheet_row",
+        Index(
+            "ix_lesson_source_wide_teacher_time",
+            "老师id",
+            "上课日期",
+            "上课时间",
         ),
-        Index("ix_source_record_business_key", "batch_id", "business_key"),
-        Index("ix_source_record_teacher_time", "teacher_id", "occurred_at"),
+        Index(
+            "ix_lesson_source_wide_teacher_student_time",
+            "老师id",
+            "学员id",
+            "上课日期",
+            "上课时间",
+        ),
     )
 
-    source_record_id: Mapped[str] = mapped_column(String(160), primary_key=True)
-    batch_id: Mapped[str] = mapped_column(
-        ForeignKey("data_import_batches.batch_id", ondelete="RESTRICT"),
-        nullable=False,
-        index=True,
+    course_id: Mapped[str] = mapped_column("课程id", String(128), primary_key=True)
+    lesson_date: Mapped[Optional[date]] = mapped_column("上课日期", Date)
+    lesson_time: Mapped[Optional[time]] = mapped_column("上课时间", Time)
+    is_peak: Mapped[Optional[bool]] = mapped_column("是否高峰", Boolean)
+    teacher_id: Mapped[str] = mapped_column("老师id", String(64), nullable=False)
+    student_id: Mapped[Optional[str]] = mapped_column("学员id", String(128))
+    lesson_status: Mapped[Optional[str]] = mapped_column("课程状态", Text)
+    absence_reason_detail: Mapped[Optional[str]] = mapped_column(
+        "缺席原因明细",
+        Text,
     )
-    source_sheet: Mapped[str] = mapped_column(String(128), nullable=False)
-    source_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    business_key: Mapped[str] = mapped_column(String(256), nullable=False)
-    teacher_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
-    lesson_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
-    occurred_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
-    row_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    is_late: Mapped[Optional[bool]] = mapped_column("迟到", Boolean)
+    is_early: Mapped[Optional[bool]] = mapped_column("早退", Boolean)
+    negative_score: Mapped[Optional[float]] = mapped_column("差评分", Float)
+    has_negative_feedback_tag: Mapped[Optional[bool]] = mapped_column(
+        "差评标签",
+        Boolean,
+    )
+    complaint_category_l1: Mapped[Optional[str]] = mapped_column(
+        "投诉一级分类",
+        Text,
+    )
+    complaint_category_l2: Mapped[Optional[str]] = mapped_column(
+        "投诉二级分类",
+        Text,
+    )
+    complaint_category_l3: Mapped[Optional[str]] = mapped_column(
+        "投诉三级分类",
+        Text,
+    )
+    is_blocked: Mapped[Optional[bool]] = mapped_column("是否拉黑", Boolean)
+    is_favorited: Mapped[Optional[bool]] = mapped_column("收藏", Boolean)
+    has_positive_feedback_tag: Mapped[Optional[bool]] = mapped_column(
+        "好评标签",
+        Boolean,
+    )
+    feedback_detail: Mapped[Optional[str]] = mapped_column("评价详情", Text)
+    is_camera_off: Mapped[Optional[bool]] = mapped_column("未开摄像头", Boolean)
+    is_cpu_usage_high: Mapped[Optional[bool]] = mapped_column(
+        "cpu占用过高",
+        Boolean,
+    )
+    is_network_delay_high: Mapped[Optional[bool]] = mapped_column(
+        "网络延迟过高",
+        Boolean,
+    )
+    is_false_early_leave: Mapped[Optional[bool]] = mapped_column("假早退", Boolean)
 
 
 class TeacherRecord(Base):
@@ -128,151 +201,78 @@ class TeacherRecord(Base):
     total_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     graduation_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     data_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="MOCK")
-    source_batch_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("data_import_batches.batch_id", ondelete="RESTRICT"), nullable=True, index=True
-    )
     source_snapshot_label: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
-class TeacherMetricSnapshotRecord(Base):
-    """Queryable projection plus lossless source row for one teacher and batch."""
+class TeacherQualificationRecord(Base):
+    """Current criteria and irreversible earned qualifications for one teacher."""
 
-    __tablename__ = "teacher_metric_snapshots"
+    __tablename__ = "teacher_qualifications"
     __table_args__ = (
-        UniqueConstraint("batch_id", "teacher_id", name="uq_teacher_metric_snapshot_batch_teacher"),
-        CheckConstraint("data_mode = 'MIXED'", name="ck_teacher_metric_snapshot_mixed"),
-        Index(
-            "ix_teacher_metric_snapshot_ops_filter",
-            "snapshot_label",
-            "employment_status",
-            "bu",
-            "based_type",
-        ),
-    )
-
-    snapshot_id: Mapped[str] = mapped_column(String(192), primary_key=True)
-    batch_id: Mapped[str] = mapped_column(
-        ForeignKey("data_import_batches.batch_id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    teacher_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    snapshot_label: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    source_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    data_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="MIXED")
-    score_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    score_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    score_policy_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-
-    real_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    employment_status: Mapped[Optional[str]] = mapped_column(String(32), index=True)
-    bu: Mapped[Optional[str]] = mapped_column(String(64), index=True)
-    based_type: Mapped[Optional[str]] = mapped_column(String(64), index=True)
-    teach_area_type: Mapped[Optional[str]] = mapped_column(String(64), index=True)
-    onboard_date: Mapped[Optional[date]] = mapped_column(Date)
-    onboard_30d_end_date: Mapped[Optional[date]] = mapped_column(Date)
-    first_booked_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
-    is_cpl_tesol: Mapped[Optional[bool]] = mapped_column(Boolean)
-    is_self_introduce: Mapped[Optional[bool]] = mapped_column(Boolean)
-    lessons_completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    total_completed_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    peak_completed_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    peak_slot_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    perfect_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    on_time_completed_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    feedback_praise_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    feedback_favorite_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    completed_again_student_15d_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    late_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    early_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    absent_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    real_absent_cnt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    severe_redline_event: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    capacity_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    new_teacher_task_score: Mapped[float] = mapped_column(Float, nullable=False, default=30)
-    class_quality_no_issue_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.8)
-
-    reliability_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    user_feedback_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    class_quality_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    raw_total_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    public_total_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-
-    metric_inputs: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    metric_provenance: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
-    )
-
-
-class LessonFactRecord(Base):
-    __tablename__ = "lesson_facts"
-    __table_args__ = (
-        UniqueConstraint("source_record_id", name="uq_lesson_fact_source_record"),
         CheckConstraint(
-            "complaint_level_rank IS NULL OR complaint_level_rank BETWEEN 0 AND 4",
-            name="ck_lesson_fact_complaint_rank",
+            "gold_qualified = FALSE OR graduation_qualified = TRUE",
+            name="ck_teacher_qualification_gold_requires_graduation",
         ),
-        Index("ix_lesson_fact_teacher_local_date", "teacher_id", "lesson_local_date"),
-        Index("ix_lesson_fact_complaint_l3", "complaint_category_l3"),
+        CheckConstraint(
+            "graduation_qualified = TRUE OR graduation_qualified_at IS NULL",
+            name="ck_teacher_qualification_graduation_time",
+        ),
+        CheckConstraint(
+            "gold_qualified = TRUE OR gold_qualified_at IS NULL",
+            name="ck_teacher_qualification_gold_time",
+        ),
+        CheckConstraint(
+            "revision >= 1",
+            name="ck_teacher_qualification_revision",
+        ),
     )
 
-    lesson_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    source_appoint_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    camp_enrollment_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
-    teacher_id: Mapped[str] = mapped_column(ForeignKey("teachers.teacher_id"), nullable=False, index=True)
-    scheduled_start_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    scheduled_end_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    lesson_lifecycle_status: Mapped[str] = mapped_column(String(48), nullable=False)
-    lesson_local_date: Mapped[Optional[date]] = mapped_column(Date)
-    lesson_local_time: Mapped[Optional[time]] = mapped_column(Time)
-    student_id_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
-    is_late: Mapped[Optional[bool]] = mapped_column(Boolean)
-    is_early: Mapped[Optional[bool]] = mapped_column(Boolean)
-    is_false_early_leave: Mapped[Optional[bool]] = mapped_column(Boolean)
-    is_peak: Mapped[Optional[bool]] = mapped_column(Boolean)
-    negative_score: Mapped[Optional[float]] = mapped_column(Float)
-    has_negative_feedback_tag: Mapped[Optional[bool]] = mapped_column(Boolean)
-    feedback_detail: Mapped[Optional[str]] = mapped_column(Text)
-    negative_tag_values: Mapped[list[Any]] = mapped_column(
-        JSON_VALUE, nullable=False, default=list, server_default=text("'[]'")
+    teacher_id: Mapped[str] = mapped_column(
+        ForeignKey("teachers.teacher_id", ondelete="RESTRICT"),
+        primary_key=True,
     )
-    absence_reason_detail: Mapped[Optional[str]] = mapped_column(String(512))
-    complaint_category_l1: Mapped[Optional[str]] = mapped_column(String(255))
-    complaint_category_l2: Mapped[Optional[str]] = mapped_column(String(255))
-    complaint_category_l3: Mapped[Optional[str]] = mapped_column(String(500))
-    complaint_source_level: Mapped[Optional[str]] = mapped_column(String(32))
-    complaint_level_rank: Mapped[Optional[int]] = mapped_column(Integer)
-    complaint_route: Mapped[Optional[str]] = mapped_column(String(32))
-    complaint_rule_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("complaint_category_rules.rule_id", ondelete="RESTRICT"),
-        index=True,
+    graduation_criteria_met: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
     )
-    is_blocked: Mapped[Optional[bool]] = mapped_column(Boolean)
-    is_favorited: Mapped[Optional[bool]] = mapped_column(Boolean)
-    has_positive_feedback_tag: Mapped[Optional[bool]] = mapped_column(Boolean)
-    positive_tag_value: Mapped[Optional[str]] = mapped_column(String(255))
-    is_rebooked: Mapped[Optional[bool]] = mapped_column(Boolean)
-    is_camera_off: Mapped[Optional[bool]] = mapped_column(Boolean)
-    is_cpu_usage_high: Mapped[Optional[bool]] = mapped_column(Boolean)
-    is_network_delay_high: Mapped[Optional[bool]] = mapped_column(Boolean)
-    source_batch_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("data_import_batches.batch_id", ondelete="RESTRICT"),
-        index=True,
+    graduation_qualified: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
     )
-    source_record_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("source_records.source_record_id", ondelete="RESTRICT"),
+    graduation_qualified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
     )
-    valid_for_scoring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
-    data_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="MOCK")
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    gold_criteria_met: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+    gold_qualified: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+    gold_qualified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    score_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    gate_results: Mapped[dict[str, Any]] = mapped_column(
+        JSON_VALUE,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    calculated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
 
 
 class ComplaintCategoryRuleRecord(Base):
@@ -281,40 +281,34 @@ class ComplaintCategoryRuleRecord(Base):
     __tablename__ = "complaint_category_rules"
     __table_args__ = (
         UniqueConstraint(
-            "batch_id",
+            "source_sha256",
             "category_l3_normalized",
-            name="uq_complaint_rule_batch_l3",
-        ),
-        CheckConstraint(
-            "normalized_level IN ('L0', 'L1', 'L2', 'L3', 'L4')",
-            name="ck_complaint_rule_level",
+            name="uq_complaint_rule_source_l3",
         ),
         CheckConstraint(
             "severity_rank BETWEEN 0 AND 4",
             name="ck_complaint_rule_rank",
         ),
-        Index("ix_complaint_rule_l3_current", "category_l3_normalized", "batch_id"),
+        Index(
+            "ix_complaint_rule_l3_current",
+            "category_l3_normalized",
+            "source_sha256",
+        ),
     )
 
     rule_id: Mapped[str] = mapped_column(String(160), primary_key=True)
-    batch_id: Mapped[str] = mapped_column(
-        ForeignKey("data_import_batches.batch_id", ondelete="RESTRICT"),
+    source_sha256: Mapped[str] = mapped_column(
+        ForeignKey("complaint_rule_imports.source_sha256", ondelete="RESTRICT"),
         nullable=False,
-        index=True,
     )
-    source_sheet: Mapped[str] = mapped_column(String(128), nullable=False)
     source_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
     category_l1: Mapped[Optional[str]] = mapped_column(String(255))
     category_l2: Mapped[Optional[str]] = mapped_column(String(255))
     category_l3: Mapped[str] = mapped_column(String(500), nullable=False)
     category_l3_normalized: Mapped[str] = mapped_column(String(500), nullable=False)
     source_level: Mapped[str] = mapped_column(String(32), nullable=False)
-    normalized_level: Mapped[str] = mapped_column(String(2), nullable=False)
     severity_rank: Mapped[int] = mapped_column(Integer, nullable=False)
     default_route: Mapped[str] = mapped_column(String(32), nullable=False)
-    learning_title: Mapped[Optional[str]] = mapped_column(String(500))
-    learning_url: Mapped[Optional[str]] = mapped_column(Text)
-    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -354,18 +348,14 @@ class PersonalizedTriggerMatchRecord(Base):
     trigger_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
     teacher_id: Mapped[str] = mapped_column(
-        ForeignKey("teachers.teacher_id", ondelete="RESTRICT"), nullable=False, index=True
+        ForeignKey("teachers.teacher_id", ondelete="RESTRICT"), nullable=False
     )
     lesson_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("lesson_facts.lesson_id", ondelete="RESTRICT"), index=True
-    )
-    source_record_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("source_records.source_record_id", ondelete="RESTRICT"), index=True
+        ForeignKey("lesson_source_wide.课程id", ondelete="SET NULL"), index=True
     )
     complaint_rule_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("complaint_category_rules.rule_id", ondelete="RESTRICT"), index=True
     )
-    scope_key: Mapped[str] = mapped_column(String(256), nullable=False)
     dedupe_key: Mapped[str] = mapped_column(String(512), nullable=False)
     output_type: Mapped[str] = mapped_column(String(32), nullable=False)
     output_title: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -374,52 +364,84 @@ class PersonalizedTriggerMatchRecord(Base):
     evidence_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
     matched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     materialized_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
 
 
-class LessonDimensionScoreRecord(Base):
-    __tablename__ = "lesson_dimension_scores"
+class LessonScoreResultRecord(Base):
+    """Current one-row score result derived from one lesson source row."""
+
+    __tablename__ = "lesson_score_results"
     __table_args__ = (
-        UniqueConstraint("camp_enrollment_id", "lesson_id", "dimension", name="uq_lesson_dimension_state"),
-        Index(
-            "ix_lesson_dimension_score_teacher_lesson",
-            "teacher_id",
-            "lesson_id",
+        CheckConstraint(
+            "reliability_score >= 0 AND user_feedback_score >= 0 "
+            "AND class_quality_score >= 0 AND lesson_total_score >= 0",
+            name="ck_lesson_score_result_nonnegative",
+        ),
+        CheckConstraint(
+            "abs(lesson_total_score - (reliability_score + "
+            "user_feedback_score + class_quality_score)) <= 0.000001",
+            name="ck_lesson_score_result_total",
+        ),
+        CheckConstraint(
+            "projection_revision >= 1",
+            name="ck_lesson_score_result_projection_revision",
         ),
     )
 
-    score_state_id: Mapped[str] = mapped_column(String(256), primary_key=True)
-    camp_enrollment_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
-    lesson_id: Mapped[str] = mapped_column(ForeignKey("lesson_facts.lesson_id"), nullable=False, index=True)
-    teacher_id: Mapped[str] = mapped_column(ForeignKey("teachers.teacher_id"), nullable=False, index=True)
-    dimension: Mapped[str] = mapped_column(String(32), nullable=False)
-    current_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
-    evidence_coverage: Mapped[Optional[str]] = mapped_column(String(32))
+    lesson_id: Mapped[str] = mapped_column(
+        ForeignKey("lesson_source_wide.课程id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_feedback_score: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0,
+    )
+    reliability_score: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0,
+    )
+    class_quality_score: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0,
+    )
+    lesson_total_score: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0,
+    )
+    dimensions: Mapped[dict[str, Any]] = mapped_column(
+        JSON_VALUE,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
     score_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    current_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    score_as_of: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    last_score_entry_id: Mapped[Optional[str]] = mapped_column(String(128))
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    projection_revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+    )
+    calculated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
     )
 
 
 class ScoreAccountRecord(Base):
     __tablename__ = "score_accounts"
-    __table_args__ = (UniqueConstraint("teacher_id", "dimension", name="uq_score_account_teacher_dimension"),)
 
-    account_id: Mapped[str] = mapped_column(String(160), primary_key=True)
-    teacher_id: Mapped[str] = mapped_column(ForeignKey("teachers.teacher_id"), nullable=False, index=True)
-    camp_enrollment_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
-    dimension: Mapped[str] = mapped_column(String(32), nullable=False)
+    teacher_id: Mapped[str] = mapped_column(
+        ForeignKey("teachers.teacher_id"),
+        primary_key=True,
+    )
+    dimension: Mapped[str] = mapped_column(String(32), primary_key=True)
     current_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    minimum_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     score_rule_version: Mapped[str] = mapped_column(String(64), nullable=False, default="mock_score_v1")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -431,11 +453,6 @@ class ScoreComponentAccountRecord(Base):
 
     __tablename__ = "score_component_accounts"
     __table_args__ = (
-        UniqueConstraint(
-            "teacher_id",
-            "component_code",
-            name="uq_score_component_account_teacher_component",
-        ),
         CheckConstraint(
             "source_scope IN ('LESSON', 'TEACHER', 'TASK')",
             name="ck_score_component_account_source_scope",
@@ -451,30 +468,14 @@ class ScoreComponentAccountRecord(Base):
             "teacher_id",
             "dimension",
         ),
-        Index("ix_score_component_account_teacher_id", "teacher_id"),
-        Index(
-            "ix_score_component_account_camp_enrollment_id",
-            "camp_enrollment_id",
-        ),
-        Index(
-            "ix_score_component_account_source_teacher_batch_id",
-            "source_teacher_batch_id",
-        ),
-        Index(
-            "ix_score_component_account_source_lesson_batch_id",
-            "source_lesson_batch_id",
-        ),
-        Index("ix_score_component_account_calculated_at", "calculated_at"),
     )
 
-    component_account_id: Mapped[str] = mapped_column(String(192), primary_key=True)
     teacher_id: Mapped[str] = mapped_column(
         ForeignKey("teachers.teacher_id", ondelete="CASCADE"),
-        nullable=False,
+        primary_key=True,
     )
-    camp_enrollment_id: Mapped[str] = mapped_column(String(96), nullable=False)
     dimension: Mapped[str] = mapped_column(String(32), nullable=False)
-    component_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    component_code: Mapped[str] = mapped_column(String(64), primary_key=True)
     source_scope: Mapped[str] = mapped_column(String(16), nullable=False)
     source_metric: Mapped[Optional[str]] = mapped_column(String(128))
     unit_count: Mapped[float] = mapped_column(Float, nullable=False, default=0)
@@ -487,8 +488,6 @@ class ScoreComponentAccountRecord(Base):
         String(24), nullable=False, default="NOT_APPLICABLE"
     )
     score_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_teacher_batch_id: Mapped[Optional[str]] = mapped_column(String(160))
-    source_lesson_batch_id: Mapped[Optional[str]] = mapped_column(String(160))
     projection_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     calculated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
@@ -817,44 +816,6 @@ class OpsDecisionRecord(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
 
 
-class OutboundOutputRecord(Base):
-    __tablename__ = "outbound_outputs"
-    __table_args__ = (
-        UniqueConstraint("idempotency_key", name="uq_outbound_output_idempotency"),
-        Index("ix_outputs_type_status_teacher", "output_type", "status", "teacher_id"),
-    )
-
-    output_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    output_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    display_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
-    delivery_kind: Mapped[Optional[str]] = mapped_column(String(40))
-    audience_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    recipient_id: Mapped[Optional[str]] = mapped_column(String(128))
-    recipient_name: Mapped[Optional[str]] = mapped_column(String(255))
-    channel: Mapped[Optional[str]] = mapped_column(String(40))
-    source_type: Mapped[str] = mapped_column(String(48), nullable=False)
-    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    teacher_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
-    task_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
-    case_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    title: Mapped[str] = mapped_column(String(500), nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    last_error: Mapped[Optional[str]] = mapped_column(Text)
-    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    requires_human_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
-
-
 class OutboxEventRecord(Base):
     __tablename__ = "outbox_events"
     __table_args__ = (
@@ -923,20 +884,6 @@ class AuditEventRecord(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
 
 
-class AgentDecisionRecord(Base):
-    __tablename__ = "agent_decisions"
-
-    plan_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    plan_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
-    route: Mapped[str] = mapped_column(String(24), nullable=False)
-    planner: Mapped[str] = mapped_column(String(64), nullable=False)
-    teacher_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    constraints: Mapped[list[Any]] = mapped_column(JSON_VALUE, nullable=False)
-    selected_template_ids: Mapped[list[Any]] = mapped_column(JSON_VALUE, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-
-
 class IdempotencyRecord(Base):
     __tablename__ = "idempotency_records"
 
@@ -947,18 +894,3 @@ class IdempotencyRecord(Base):
     response_payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON_VALUE)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-
-
-class ProviderCallRecord(Base):
-    __tablename__ = "provider_calls"
-
-    provider_call_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    provider_event_id: Mapped[Optional[str]] = mapped_column(String(128), unique=True)
-    task_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    provider_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    call_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)
-    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
-    result_payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON_VALUE)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

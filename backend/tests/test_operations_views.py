@@ -2,17 +2,18 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import event, select
+from sqlalchemy import delete, event, select
 
 from app.database import engine, session_scope
 from app.db_models import (
-    DataImportBatchRecord,
-    LessonFactRecord,
+    ComplaintCategoryRuleRecord,
+    ComplaintRuleImportRecord,
+    LessonSourceWideRecord,
     NotificationRecord,
     OpsCaseRecord,
     PersonalizedTriggerMatchRecord,
-    SourceRecord,
     TaskAssignmentRecord,
 )
 from app.main import app
@@ -22,71 +23,66 @@ from app.operations_service import OperationsService
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _clear_source_lessons() -> None:
+    with session_scope(engine) as session:
+        session.execute(delete(LessonSourceWideRecord))
+    yield
+    with session_scope(engine) as session:
+        session.execute(delete(LessonSourceWideRecord))
+
+
 def _seed_operations_evidence() -> None:
     now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
-    batch_id = "BATCH-LESSON-TEST"
-    source_record_id = "SOURCE-LESSON-TEST"
+    source_sha256 = "a" * 64
     lesson_id = "LESSON-REAL-1"
     teacher_id = "T-1001"
     task_id = "TASK-PERSONALIZED-1"
     case_id = "CASE-SEVERE-1"
     with session_scope(engine) as session:
         session.add(
-            DataImportBatchRecord(
-                batch_id=batch_id,
-                source_kind="LESSON_FACT",
-                sync_mode="MANUAL_BASELINE",
-                source_system="TEST_WORKBOOK",
+            ComplaintRuleImportRecord(
+                source_sha256=source_sha256,
                 source_filename="lesson.xlsx",
-                source_uri="test://lesson.xlsx",
-                source_sha256="a" * 64,
-                source_sheet="Sheet1",
-                snapshot_label="TEST_LESSONS",
-                data_mode="REAL",
-                column_count=22,
-                row_count=1,
-                header=["课程id"],
-                status="COMPLETED",
+                raw_rows=[
+                    {
+                        "source_row_number": 2,
+                        "一级分类": "关于老师",
+                        "二级分类": "测试问题",
+                        "三级分类": "测试",
+                        "P级": "P0",
+                        "Course Title in the Learning Hub": None,
+                        "link": None,
+                    }
+                ],
                 imported_at=now,
-                payload={"test": True},
             )
         )
-        session.add(
-            SourceRecord(
-                source_record_id=source_record_id,
-                batch_id=batch_id,
-                source_sheet="Sheet1",
-                source_row_number=2,
-                business_key=lesson_id,
-                teacher_id=teacher_id,
-                lesson_id=lesson_id,
-                occurred_at=None,
-                row_sha256="b" * 64,
-                raw_payload={"课程id": lesson_id},
-            )
-        )
-        session.add(
-            LessonFactRecord(
-                lesson_id=lesson_id,
-                source_appoint_id=lesson_id,
-                camp_enrollment_id="CAMP-T-1001",
-                teacher_id=teacher_id,
-                scheduled_start_at=None,
-                scheduled_end_at=None,
-                lesson_lifecycle_status="end",
-                lesson_local_date=date(2026, 5, 1),
-                lesson_local_time=time(10, 0),
-                student_id_hash="c" * 64,
-                is_late=True,
-                complaint_source_level="P0",
-                complaint_level_rank=0,
-                source_batch_id=batch_id,
-                source_record_id=source_record_id,
-                valid_for_scoring=True,
-                evidence_status="CONFIRMED",
-                data_mode="REAL",
-                payload={"课程id": lesson_id},
-            )
+        session.add_all(
+            [
+                LessonSourceWideRecord(
+                    course_id=lesson_id,
+                    teacher_id=teacher_id,
+                    lesson_status="end",
+                    lesson_date=date(2026, 5, 1),
+                    lesson_time=time(10, 0),
+                    is_late=True,
+                    complaint_category_l3="测试",
+                ),
+                ComplaintCategoryRuleRecord(
+                    rule_id="COMPLAINT-RULE-OPERATIONS-1",
+                    source_sha256=source_sha256,
+                    source_row_number=2,
+                    category_l1="关于老师",
+                    category_l2="测试问题",
+                    category_l3="测试",
+                    category_l3_normalized="测试",
+                    source_level="P0",
+                    severity_rank=0,
+                    default_route="OPS_CASE",
+                    created_at=now,
+                ),
+            ]
         )
         session.add(
             TaskAssignmentRecord(
@@ -145,9 +141,7 @@ def _seed_operations_evidence() -> None:
                     rule_version="2026-07-22",
                     teacher_id=teacher_id,
                     lesson_id=lesson_id,
-                    source_record_id=source_record_id,
                     complaint_rule_id=None,
-                    scope_key=lesson_id,
                     dedupe_key="match:attendance:1",
                     output_type="TEACHER_TASK",
                     output_title="出席问题",
@@ -168,9 +162,7 @@ def _seed_operations_evidence() -> None:
                     rule_version="2026-07-22",
                     teacher_id=teacher_id,
                     lesson_id=lesson_id,
-                    source_record_id=source_record_id,
                     complaint_rule_id=None,
-                    scope_key=lesson_id,
                     dedupe_key="match:case:1",
                     output_type="OPS_CASE",
                     output_title="严重投诉-测试问题",
@@ -195,9 +187,7 @@ def _seed_operations_evidence() -> None:
                     rule_version="2026-07-22",
                     teacher_id=teacher_id,
                     lesson_id=None,
-                    source_record_id=None,
                     complaint_rule_id=None,
-                    scope_key=teacher_id,
                     dedupe_key="match:pending:1",
                     output_type="PENDING_DATA",
                     output_title="差评标签名称待补齐",
@@ -317,9 +307,7 @@ def test_intervention_evidence_is_bounded_per_output() -> None:
                     rule_version="2026-07-22",
                     teacher_id="T-1001",
                     lesson_id="LESSON-REAL-1",
-                    source_record_id="SOURCE-LESSON-TEST",
                     complaint_rule_id=None,
-                    scope_key=f"LESSON-REAL-1:{index}",
                     dedupe_key=f"match:attendance:sample:{index}",
                     output_type="TEACHER_TASK",
                     output_title="Attendance Improvement",
@@ -394,9 +382,7 @@ def test_notification_copy_is_read_directly_from_database() -> None:
                 rule_version="2026-07-22",
                 teacher_id="T-1001",
                 lesson_id="LESSON-REAL-1",
-                source_record_id="SOURCE-LESSON-TEST",
                 complaint_rule_id=None,
-                scope_key="LESSON-REAL-1:quality",
                 dedupe_key="match:notification:legacy",
                 output_type="NOTIFICATION",
                 output_title="课中质量问题",
@@ -437,9 +423,7 @@ def test_missing_materialized_output_keeps_trigger_copy_and_is_not_open() -> Non
                 rule_version="2026-07-22",
                 teacher_id="T-1001",
                 lesson_id="LESSON-REAL-1",
-                source_record_id="SOURCE-LESSON-TEST",
                 complaint_rule_id=None,
-                scope_key="missing-task",
                 dedupe_key="match:missing-task",
                 output_type="TEACHER_TASK",
                 output_title="Unmaterialized reliability task",
@@ -502,9 +486,7 @@ def test_current_ops_todo_excludes_terminal_case_statuses() -> None:
                 rule_version="2026-07-22",
                 teacher_id="T-1001",
                 lesson_id="LESSON-REAL-1",
-                source_record_id="SOURCE-LESSON-TEST",
                 complaint_rule_id=None,
-                scope_key="other-open",
                 dedupe_key="match:other-open",
                 output_type="OPS_CASE",
                 output_title="其他类型待办",
@@ -542,9 +524,7 @@ def test_current_ops_todo_excludes_terminal_case_statuses() -> None:
                     rule_version="2026-07-22",
                     teacher_id="T-1001",
                     lesson_id="LESSON-REAL-1",
-                    source_record_id="SOURCE-LESSON-TEST",
                     complaint_rule_id=None,
-                    scope_key=f"terminal-{index}",
                     dedupe_key=f"match:terminal:{index}",
                     output_type="OPS_CASE",
                     output_title=f"已结束运营事项 {index}",
@@ -594,6 +574,74 @@ def test_lesson_evidence_is_safe_and_filterable() -> None:
     assert item["risk_domains"] == ["RELIABILITY", "USER_FEEDBACK"]
     assert "student_id" not in item
     assert "raw_payload" not in item
+
+
+def test_lesson_reads_use_current_source_and_latest_complaint_rule() -> None:
+    _seed_operations_evidence()
+    newer_at = datetime(2026, 7, 23, 10, 0, tzinfo=timezone.utc)
+    with session_scope(engine) as session:
+        session.add(
+            ComplaintRuleImportRecord(
+                source_sha256="d" * 64,
+                source_filename="complaint-newer.xlsx",
+                raw_rows=[
+                    {
+                        "source_row_number": 2,
+                        "一级分类": "关于老师",
+                        "二级分类": "测试问题",
+                        "三级分类": "测试",
+                        "P级": "P2",
+                        "Course Title in the Learning Hub": None,
+                        "link": None,
+                    }
+                ],
+                imported_at=newer_at,
+            )
+        )
+        session.add(
+            ComplaintCategoryRuleRecord(
+                rule_id="COMPLAINT-RULE-OPERATIONS-NEWER",
+                source_sha256="d" * 64,
+                source_row_number=2,
+                category_l1="关于老师",
+                category_l2="测试问题",
+                category_l3="测试",
+                category_l3_normalized="测试",
+                source_level="P2",
+                severity_rank=2,
+                default_route="TEACHER_TASK",
+                created_at=newer_at,
+            )
+        )
+
+    statements: list[str] = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        overview = OperationsService(engine).overview()
+        lessons = OperationsService(engine).lessons(
+            lesson_id="LESSON-REAL-1"
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    sql = "\n".join(statements).lower()
+    assert "lesson_source_wide" in sql
+    assert "lesson_facts" not in sql
+    assert overview["lesson_total"] == 1
+    assert overview["teacher_total"] == 1
+    assert lessons["items"][0]["complaint_level"] == "P2"
 
 
 def test_lesson_evidence_excludes_suppressed_matches() -> None:

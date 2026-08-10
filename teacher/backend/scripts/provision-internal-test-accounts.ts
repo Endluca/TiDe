@@ -25,11 +25,8 @@ interface SourceTeacherRow extends QueryResultRow {
   totalScore: number;
   graduationThreshold: number;
   dataMode: 'MIXED' | 'REAL' | 'MOCK';
-  sourceBatchId: string | null;
   sourceSnapshotLabel: string | null;
   sourceUpdatedAt: Date;
-  tesolCompleted: boolean | null;
-  selfIntroduced: boolean | null;
 }
 
 function requiredEnvironment(name: string): string {
@@ -55,19 +52,9 @@ async function queryTeacher(
         COALESCE(teacher.total_score, 0) AS "totalScore",
         COALESCE(teacher.graduation_threshold, 100) AS "graduationThreshold",
         teacher.data_mode AS "dataMode",
-        teacher.source_batch_id AS "sourceBatchId",
         teacher.source_snapshot_label AS "sourceSnapshotLabel",
-        COALESCE(metric.updated_at, teacher.updated_at) AS "sourceUpdatedAt",
-        metric.is_cpl_tesol AS "tesolCompleted",
-        metric.is_self_introduce AS "selfIntroduced"
+        teacher.updated_at AS "sourceUpdatedAt"
       FROM public.teachers teacher
-      LEFT JOIN LATERAL (
-        SELECT snapshot.*
-        FROM public.teacher_metric_snapshots snapshot
-        WHERE snapshot.teacher_id = teacher.teacher_id
-        ORDER BY snapshot.updated_at DESC, snapshot.created_at DESC, snapshot.snapshot_id DESC
-        LIMIT 1
-      ) metric ON true
       WHERE teacher.teacher_id = $1
       LIMIT 1
     `,

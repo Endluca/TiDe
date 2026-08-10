@@ -80,22 +80,13 @@ WHERE event_day >= :'from_time'::timestamptz
   AND event_day < :'to_time'::timestamptz
 ORDER BY event_day DESC, entry_source;
 
--- 8. 完成任务前后 7 天、30 天业务指标变化。
---    此结果仅用于相关性分析，不能直接认定任务导致指标变化。
-SELECT *
-FROM tide.analytics_task_business_change_v1
-WHERE completed_at >= :'from_time'::timestamptz
-  AND completed_at < :'to_time'::timestamptz
-  AND (NULLIF(:'task_code', '') IS NULL OR task_code = :'task_code')
-ORDER BY completed_at DESC;
-
--- 9. 查重复 event_id。正常结果应为空。
+-- 8. 查重复 event_id。正常结果应为空。
 SELECT anonymous_teacher_id, event_id, count(*) AS duplicate_count
 FROM tide.app_events
 GROUP BY anonymous_teacher_id, event_id
 HAVING count(*) > 1;
 
--- 10. 抽样核对分析漏斗与共享任务最终状态。
+-- 9. 抽样核对分析漏斗与共享任务最终状态。
 SELECT
     funnel.task_assignment_id,
     funnel.task_code,
@@ -114,7 +105,7 @@ WHERE assignment.updated_at >= :'from_time'::timestamptz
 ORDER BY assignment.updated_at DESC
 LIMIT 100;
 
--- 11. 上线前检查核心任务事件查询计划。
+-- 10. 上线前检查核心任务事件查询计划。
 EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
 SELECT event_name, occurred_at, properties
 FROM tide.app_events

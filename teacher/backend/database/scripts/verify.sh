@@ -178,8 +178,38 @@ rule_distribution="$("${PSQL[@]}" -Atqc "
   ) current_rules
 ")"
 faq_count="$("${PSQL[@]}" -Atqc "select count(*) from tide.knowledge_chunks chunk join tide.knowledge_documents document on document.id = chunk.document_id where document.document_key = 'mock-tide-confirmed-rules' and document.status = 'ACTIVE'")"
-teacher_photo_processing_ready="$("${PSQL[@]}" -Atqc "
-  select to_regclass('tide.teacher_photo_runs') is not null
+unused_tide_objects_removed="$("${PSQL[@]}" -Atqc "
+  select
+    to_regclass('tide.outcome_projections') is null
+    and to_regclass('tide.camp_enrollment_projections') is null
+    and to_regclass('tide.audit_events') is null
+    and to_regclass('tide.task_template_files') is null
+    and to_regclass('tide.file_migrations') is null
+    and to_regclass('tide.teacher_photo_runs') is null
+    and to_regclass('tide.analytics_actor_task_journey_v1') is null
+    and to_regclass('tide.analytics_task_assignment_funnel_v1') is null
+    and to_regclass('tide.analytics_task_funnel_v1') is null
+    and to_regclass('tide.analytics_task_step_funnel_v1') is null
+    and to_regclass('tide.analytics_content_quality_v1') is null
+")"
+unused_file_metadata_removed="$("${PSQL[@]}" -Atqc "
+  select
+    not exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'file_objects'
+        and column_name = 'visibility'
+    )
+    and to_regprocedure('tide.enforce_outbox_target()') is null
+")"
+current_analytics_ready="$("${PSQL[@]}" -Atqc "
+  select
+    to_regclass('tide.analytics_actor_task_journey_v2') is not null
+    and to_regclass('tide.analytics_task_assignment_funnel_v2') is not null
+    and to_regclass('tide.analytics_task_funnel_v2') is not null
+    and to_regclass('tide.analytics_technical_quality_v1') is not null
+    and to_regclass('tide.analytics_help_usage_v1') is not null
 ")"
 system_notification_publication_ready="$("${PSQL[@]}" -Atqc "
   select
@@ -208,15 +238,7 @@ teacher_support_tickets_ready="$("${PSQL[@]}" -Atqc "
     ) is not null
 ")"
 performance_job_leases_ready="$("${PSQL[@]}" -Atqc "
-  select
-    to_regclass('tide.job_leases') is not null
-    and exists (
-      select 1
-      from information_schema.columns
-      where table_schema = 'tide'
-        and table_name = 'teacher_photo_runs'
-        and column_name = 'processing_owner'
-    )
+  select to_regclass('tide.job_leases') is not null
 ")"
 operator_reply_atomicity_ready="$("${PSQL[@]}" -Atqc "
   select position(
@@ -350,11 +372,13 @@ assert_equals "${local_quiz_runtime_absent}" "t" "TIDE 本地考试表或步骤�
 assert_equals "${rule_count}" "6" "当前验证规则总数异常"
 assert_equals "${rule_distribution}" "G01:3,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:0,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
 assert_equals "${faq_count}" "3" "FAQ Mock 知识数异常"
-assert_equals "${teacher_photo_processing_ready}" "t" "首课摄像头画面处理表缺失"
+assert_equals "${unused_tide_objects_removed}" "t" "0029 无用 tide 表或 v1 分析视图仍然存在"
+assert_equals "${unused_file_metadata_removed}" "t" "0030 无用文件可见性字段或孤儿函数仍然存在"
+assert_equals "${current_analytics_ready}" "t" "当前 analytics v2 或保留的技术/帮助视图缺失"
 assert_equals "${system_notification_publication_ready}" "t" "系统通知发布表或发布时间字段缺失"
 assert_equals "${growth_stage_notification_state_ready}" "t" "成长阶段通知观察状态表缺失"
 assert_equals "${teacher_support_tickets_ready}" "t" "教师工单共享表或原子追加方法缺失"
-assert_equals "${performance_job_leases_ready}" "t" "照片或后台任务租约结构缺失"
+assert_equals "${performance_job_leases_ready}" "t" "后台任务租约结构缺失"
 assert_equals "${operator_reply_atomicity_ready}" "t" "运营回复未原子维护状态和 48 小时窗口"
 assert_equals "${support_ticket_security_hardened}" "t" "工单 CAS 或 SECURITY DEFINER owner 未加固"
 assert_equals "${notification_event_dedupe_ready}" "t" "外部消息事件幂等索引缺失"
@@ -375,9 +399,15 @@ assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_cru
 assert_equals "$("${PSQL[@]}" -Atqc "select to_regclass('public.teacher_lesson_score_current') is not null")" "t" "逐课积分当前视图缺失"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.teacher_lesson_score_current', 'SELECT')")" "t" "教师角色缺少逐课积分当前视图读取权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.score_entries', 'SELECT')")" "f" "教师角色不应读取原始积分流水"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.lesson_facts', 'SELECT')")" "f" "教师角色不应读取原始课程事实"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.lesson_dimension_scores', 'SELECT')")" "f" "教师角色不应读取原始逐课积分表"
+assert_equals "$("${PSQL[@]}" -Atqc "select coalesce(has_table_privilege('tit_teacher_crud', to_regclass('public.lesson_facts'), 'SELECT'), false)")" "f" "教师角色不应读取原始课程事实"
+assert_equals "$("${PSQL[@]}" -Atqc "select coalesce(has_table_privilege('tit_teacher_crud', to_regclass('public.lesson_dimension_scores'), 'SELECT'), false)")" "f" "教师角色不应读取原始逐课积分表"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.config_versions', 'SELECT')")" "f" "教师角色不应读取原始配置表"
+assert_equals "$("${PSQL[@]}" -Atqc "select coalesce(has_table_privilege('tit_teacher_crud', to_regclass('public.teacher_metric_snapshots'), 'SELECT'), false)")" "f" "教师角色不应继续读取旧教师快照"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'SELECT')")" "f" "教师角色不应读取整张教师宽表"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'tchr_id', 'SELECT')")" "t" "教师角色缺少 G01 教师关联键读取权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_cpl_tesol', 'SELECT')")" "t" "教师角色缺少 TESOL 状态读取权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_self_introduce', 'SELECT')")" "t" "教师角色缺少 Self-intro 状态读取权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'real_name', 'SELECT')")" "f" "教师角色不应读取 G01 无关的宽表字段"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.notifications', 'read_at', 'UPDATE')")" "t" "教师角色缺少消息已读权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.notifications', 'clicked_at', 'UPDATE')")" "t" "教师角色缺少消息点击权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.notification_events', 'INSERT')")" "t" "教师角色缺少消息事件写入权限"

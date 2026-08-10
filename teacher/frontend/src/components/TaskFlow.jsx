@@ -3,7 +3,6 @@ import {
   ArrowClockwise,
   ArrowLeft,
   BookOpen,
-  Camera,
   Check,
   CheckCircle,
   CloudArrowUp,
@@ -24,10 +23,8 @@ import {
 import { stageDescriptions } from "../live-catalog";
 import { getLearningTaskContent } from "../data/tasks/learning-task-content";
 import { useI18n } from "../i18n";
-import { publicAsset } from "../public-assets";
 import { ChapterVideoLearning } from "../features/task-content/VideoLearningTask";
 import KuozhiCourseTask from "../features/task-content/KuozhiCourseTask";
-import EnvironmentPhotoTask from "../features/task-content/EnvironmentPhotoTask";
 import ExternalStatusTask from "../features/task-content/ExternalStatusTask";
 import ReadinessPhotoTask from "../features/task-content/ReadinessPhotoTask";
 import DeviceCheckTask from "../features/task-content/DeviceCheckTask";
@@ -660,72 +657,6 @@ function UploadReviewFlow({ task, onUpdate }) {
   );
 }
 
-function EnvironmentPhotoFlow({ task, onUpdate }) {
-  const { language } = useI18n();
-  const c = (en, zh) => language === "zh" ? zh : en;
-  const [checked, setChecked] = useState(task.environmentChecks || []);
-  const [permission, setPermission] = useState("idle");
-  const [photo, setPhoto] = useState(false);
-  const [redo, setRedo] = useState(false);
-  if (task.locked) return <LockedPreview task={task} />;
-  if (task.status === "completed" && !redo) return <CompletedState task={task} onSecondary={() => setRedo(true)} secondaryLabel={c("Review setup again", "再次检查上课环境")} />;
-  const standards = [
-    c("Camera view is bright and keeps your face visible", "画面光线清晰，面部完整可见"),
-    c("Microphone and speakers are ready for class", "麦克风和扬声器已可正常使用"),
-    c("The teaching area is tidy and free from private information", "授课区域整洁，画面中没有个人隐私信息"),
-  ];
-  const toggle = (index) => {
-    const next = checked.includes(index) ? checked.filter((value) => value !== index) : [...checked, index];
-    setChecked(next);
-    onUpdate(task.id, "started", { environmentChecks: next, progress: Math.round((next.length / standards.length) * 45) });
-  };
-  return (
-    <div className="environment-photo-flow">
-      <div className="flow-note"><ShieldCheck size={22} weight="fill" /><span><strong>{c("Classroom setup standard", "授课环境标准")}</strong>{c("Confirm the visible setup, then submit one classroom photo. No hardware score is calculated here.", "先检查画面、声音和教学区域，再拍一张照片提交。")}</span></div>
-      <div className="environment-checks">
-        {standards.map((item, index) => (
-          <label key={item} className={checked.includes(index) ? "checked" : ""}><input type="checkbox" checked={checked.includes(index)} onChange={() => toggle(index)} /><span>{checked.includes(index) && <Check size={15} weight="bold" />}</span>{item}</label>
-        ))}
-      </div>
-      <section className="camera-permission-card">
-        <header><Camera size={24} weight="duotone" /><div><h3>{c("Classroom photo", "授课环境照片")}</h3><p>{c("Used to confirm the visible classroom setup.", "用于确认可见的授课环境。")}</p></div></header>
-        {permission === "idle" && <div className="camera-actions"><button className="primary-button" type="button" onClick={() => setPermission("allowed")}><VideoCamera size={18} />{c("Allow camera", "允许相机")}</button><button className="text-button" type="button" onClick={() => setPermission("help")}>{c("I can’t enable camera", "相机打不开？")}</button></div>}
-        {permission === "help" && <div className="camera-help" role="alert"><WarningCircle size={20} weight="fill" /><span><strong>{c("Camera permission is not enabled.", "相机权限尚未开启。")}</strong>{c("Open browser site settings, allow camera access, then return and try again. You can still review the standard above.", "请在浏览器站点设置中允许相机权限，再返回重试；你仍可先查看上方标准。")}</span><button className="secondary-button" type="button" onClick={() => setPermission("idle")}>{c("Try again", "重试")}</button></div>}
-        {permission === "allowed" && (
-          <div className="mock-camera-stage">
-            <img src={publicAsset("/assets/illustrations/training-video-teacher.png")} alt={c("Classroom camera preview", "授课环境相机预览")} />
-            <span>{c("CAMERA PREVIEW", "相机预览")}</span>
-            {!photo ? <button className="primary-button" type="button" onClick={() => setPhoto(true)}><Camera size={18} />{c("Take photo", "拍摄照片")}</button> : <div className="photo-confirm"><CheckCircle size={20} weight="fill" /><strong>{c("Photo ready", "照片已拍摄")}</strong><button className="secondary-button" type="button" onClick={() => setPhoto(false)}>{c("Retake", "重拍")}</button></div>}
-          </div>
-        )}
-      </section>
-      <button className="primary-button wide-button" type="button" disabled={checked.length !== standards.length || !photo} onClick={() => { setRedo(false); onUpdate(task.id, "completed", { environmentChecks: checked, photoSubmitted: true, progress: 100 }); }}>{c("Submit setup confirmation", "提交并完成任务")}</button>
-    </div>
-  );
-}
-
-function EmbeddedCourseFlow({ task, onUpdate }) {
-  const { language } = useI18n();
-  const c = (en, zh) => language === "zh" ? zh : en;
-  const [reviewed, setReviewed] = useState(task.courseSections || []);
-  if (task.locked) return <LockedPreview task={task} />;
-  if (task.status === "completed") return <CompletedState task={task} />;
-  const toggle = (index) => {
-    const next = reviewed.includes(index) ? reviewed.filter((value) => value !== index) : [...reviewed, index];
-    setReviewed(next);
-    onUpdate(task.id, "started", { courseSections: next, progress: Math.round((next.length / task.steps.length) * 90) });
-  };
-  return (
-    <div className="embedded-course-flow">
-      <div className="course-cover"><img src={publicAsset("/assets/illustrations/training-video-teacher.png")} alt="" aria-hidden="true" /><span><BookOpen size={24} weight="fill" />{c("IN-PLATFORM COURSE", "站内课程")}</span><h3>{task.name}</h3><p>{task.material}</p></div>
-      <div className="course-section-list">
-        {task.steps.map((step, index) => <button type="button" key={step} className={reviewed.includes(index) ? "completed" : ""} onClick={() => toggle(index)}><span>{reviewed.includes(index) ? <Check size={16} weight="bold" /> : index + 1}</span><strong>{step}</strong><small>{reviewed.includes(index) ? c("Reviewed", "已学习") : c("Open section", "开始学习")}</small></button>)}
-      </div>
-      <button className="primary-button wide-button" type="button" disabled={reviewed.length !== task.steps.length} onClick={() => onUpdate(task.id, "completed", { progress: 100 })}>{c("Confirm course completion", "完成课程")}</button>
-    </div>
-  );
-}
-
 const flowComponents = {
   content_pending: PendingContentFlow,
   learning_checklist: ChecklistFlow,
@@ -743,9 +674,6 @@ export default function TaskFlow({ task, onUpdate, onHelp, onKuozhiProgressState
         onProgressStateChange={onKuozhiProgressStateChange}
       />
     );
-  }
-  if (task.method === "environment_photo") {
-    return <EnvironmentPhotoTask task={task} onUpdate={onUpdate} />;
   }
   if (task.method === "readiness_photo") {
     return <ReadinessPhotoTask task={task} />;

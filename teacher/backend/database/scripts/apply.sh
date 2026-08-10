@@ -144,21 +144,33 @@ if [[ "${system_notification_owner_maintenance_enabled}" != "t" ]]; then
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0013_system_notification_owner_maintenance.up.sql"
 fi
 
-teacher_photo_processing_exists="$("${PSQL[@]}" -Atqc "select to_regclass('tide.teacher_photo_runs') is not null")"
-if [[ "${teacher_photo_processing_exists}" != "t" ]]; then
-  "${PSQL[@]}" -f "${DB_DIR}/migrations/0014_teacher_photo_processing.up.sql"
+unused_tide_objects_removed="$("${PSQL[@]}" -Atqc "
+  select
+    to_regclass('tide.analytics_task_event_semantics_v2') is not null
+    and to_regclass('tide.teacher_photo_runs') is null
+")"
+if [[ "${unused_tide_objects_removed}" != "t" ]]; then
+  teacher_photo_processing_exists="$("${PSQL[@]}" -Atqc "select to_regclass('tide.teacher_photo_runs') is not null")"
+  if [[ "${teacher_photo_processing_exists}" != "t" ]]; then
+    "${PSQL[@]}" -f "${DB_DIR}/migrations/0014_teacher_photo_processing.up.sql"
+  fi
+
+  teacher_photo_full_strength_enabled="$("${PSQL[@]}" -Atqc "
+    select position(
+      '1.000' in pg_get_constraintdef(oid)
+    ) > 0
+    from pg_constraint
+    where conrelid = 'tide.teacher_photo_runs'::regclass
+      and conname = 'teacher_photo_runs_strength_check'
+  ")"
+  if [[ "${teacher_photo_full_strength_enabled}" != "t" ]]; then
+    "${PSQL[@]}" -f "${DB_DIR}/migrations/0015_teacher_photo_filter_strength.up.sql"
+  fi
 fi
 
-teacher_photo_full_strength_enabled="$("${PSQL[@]}" -Atqc "
-  select position(
-    '1.000' in pg_get_constraintdef(oid)
-  ) > 0
-  from pg_constraint
-  where conrelid = 'tide.teacher_photo_runs'::regclass
-    and conname = 'teacher_photo_runs_strength_check'
-")"
-if [[ "${teacher_photo_full_strength_enabled}" != "t" ]]; then
-  "${PSQL[@]}" -f "${DB_DIR}/migrations/0015_teacher_photo_filter_strength.up.sql"
+quiz_banks_exists="$("${PSQL[@]}" -Atqc "select to_regclass('tide.task_quiz_banks') is not null")"
+if [[ "${quiz_banks_exists}" != "t" ]]; then
+  "${PSQL[@]}" -f "${DB_DIR}/migrations/0016_database_quiz_banks.up.sql"
 fi
 
 assignment_teacher_response_column_count="$("${PSQL[@]}" -Atqc "
@@ -180,7 +192,7 @@ if [[ "${growth_stage_notification_state_exists}" != "t" ]]; then
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0019_growth_stage_notification_state.up.sql"
 fi
 
-product_analytics_exists="$("${PSQL[@]}" -Atqc "select to_regclass('tide.analytics_task_funnel_v1') is not null")"
+product_analytics_exists="$("${PSQL[@]}" -Atqc "select to_regclass('tide.analytics_task_funnel_v2') is not null")"
 if [[ "${product_analytics_exists}" != "t" ]]; then
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0020_product_analytics.up.sql"
 fi
@@ -193,15 +205,22 @@ fi
 performance_job_leases_exists="$("${PSQL[@]}" -Atqc "
   select
     to_regclass('tide.job_leases') is not null
-    and exists (
-      select 1
-      from information_schema.columns
-      where table_schema = 'tide'
-        and table_name = 'teacher_photo_runs'
-        and column_name = 'processing_owner'
+    and (
+      to_regclass('tide.teacher_photo_runs') is null
+      or exists (
+        select 1
+        from information_schema.columns
+        where table_schema = 'tide'
+          and table_name = 'teacher_photo_runs'
+          and column_name = 'processing_owner'
+      )
     )
 ")"
 if [[ "${performance_job_leases_exists}" != "t" ]]; then
+  if [[ "${unused_tide_objects_removed}" == "t" ]]; then
+    echo "0029 已应用但 tide.job_leases 缺失，数据库处于不一致状态。" >&2
+    exit 1
+  fi
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0022_performance_job_leases.up.sql"
 fi
 
@@ -278,10 +297,29 @@ if [[ "${kuozhi_course_syncs_exists}" != "t" ]]; then
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
 fi
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0028_retire_task_business_change_view.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0029_remove_unused_tide_objects.up.sql"
+unused_column_cleanup_state="$("${PSQL[@]}" -AtF '|' -c "
+  select
+    exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'file_objects'
+        and column_name = 'visibility'
+    ),
+    to_regprocedure('tide.enforce_outbox_target()') is not null
+")"
+if [[ "${unused_column_cleanup_state}" == "t|t" ]]; then
+  "${PSQL[@]}" -f "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
+elif [[ "${unused_column_cleanup_state}" != "f|f" ]]; then
+  echo "0030 无用字段与孤儿函数处于不一致状态，迁移已停止。" >&2
+  exit 1
+fi
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0027、共享表本地契约和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0030、共享表本地契约和当前 Seeds 已检查并执行。"

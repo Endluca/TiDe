@@ -36,9 +36,6 @@ describe('environment configuration', () => {
     expect(environment.AI_GATEWAY_ENABLED).toBe(false);
     expect(environment.BACKGROUND_JOBS_ENABLED).toBe(true);
     expect(environment.BACKGROUND_JOB_LEASE_MS).toBe(180_000);
-    expect(environment.TEACHER_PHOTO_WORKER_POLL_INTERVAL_MS).toBe(1_000);
-    expect(environment.TEACHER_PHOTO_WORKER_BATCH_SIZE).toBe(2);
-    expect(environment.TEACHER_PHOTO_WORKER_LEASE_MS).toBe(120_000);
     expect(environment.PERSONALIZED_TASK_NOTIFICATION_SCHEDULER_ENABLED).toBe(
       false,
     );

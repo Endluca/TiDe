@@ -50,7 +50,6 @@ const taskCode = z
 const audienceFilterSchema = z
   .object({
     teacherIds: z.array(z.string().trim().min(1)).max(5_000).optional(),
-    campBatchIds: z.array(z.string().trim().min(1)).max(500).optional(),
     campDay: z
       .object({
         min: z.number().int().min(0).max(365),
@@ -76,7 +75,6 @@ const audienceFilterSchema = z
     (value) =>
       Boolean(
         value.teacherIds?.length ||
-        value.campBatchIds?.length ||
         value.campDay ||
         value.accountStatuses?.length ||
         value.task,

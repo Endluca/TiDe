@@ -63,7 +63,7 @@ describe('首次进入加载边界', () => {
     expect(config).not.toContain("request<OperatorIdentity>('/api/auth/me')")
   })
 
-  it('全量更新会先取消三个独立分页请求，避免旧分页覆盖新快照', () => {
+  it('全量更新会先取消两个独立分页请求，避免旧分页覆盖新快照', () => {
     const outputs = source('./pages/OutputCenter.tsx')
     const fullLoader = outputs.slice(
       outputs.indexOf('const load = useCallback'),
@@ -72,6 +72,6 @@ describe('首次进入加载边界', () => {
 
     expect(fullLoader).toContain('assignmentRequest.cancel()')
     expect(fullLoader).toContain('interventionRequest.cancel()')
-    expect(fullLoader).toContain('outputRequest.cancel()')
+    expect(fullLoader).not.toContain('outputRequest')
   })
 })

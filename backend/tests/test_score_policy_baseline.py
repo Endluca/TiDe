@@ -19,6 +19,7 @@ from app.db_models import (
     TaskAssignmentRecord,
     TaskTemplateRecord,
     TeacherRecord,
+    TeacherSourceWideRecord,
 )
 from app.fixed_growth_baseline import ensure_fixed_growth_assignments
 from app.score_policy_baseline import (
@@ -43,6 +44,19 @@ EXPECTED_POINTS = {
 
 
 def test_reset_collapses_score_history_rebuilds_ledger_and_preserves_qualifications() -> None:
+    # The generic UI fixture predates the source-wide contract.  This policy
+    # rebuild test must not mix that retired contract into a current full
+    # refresh, so give its fixture teachers the same current baseline used by
+    # production before publishing the initial score policy.
+    with session_scope(engine) as session:
+        fixture_teachers = list(session.scalars(select(TeacherRecord)).all())
+        ensure_fixed_growth_assignments(
+            session,
+            [item.teacher_id for item in fixture_teachers],
+            occurred_at=NOW,
+        )
+        for teacher in fixture_teachers:
+            teacher.source_snapshot_label = "SOURCE_WIDE_CURRENT"
     seed_default_configs()
     teacher_id = "RESET-V1-TEACHER"
     with session_scope(engine) as session:
@@ -103,8 +117,7 @@ def test_reset_collapses_score_history_rebuilds_ledger_and_preserves_qualificati
                 total_score=220,
                 graduation_threshold=100,
                 data_mode="REAL",
-                source_batch_id=None,
-                source_snapshot_label=None,
+                source_snapshot_label="SOURCE_WIDE_CURRENT",
                 payload={
                     "teacher_id": teacher_id,
                     "graduation_qualified": True,
@@ -126,6 +139,22 @@ def test_reset_collapses_score_history_rebuilds_ledger_and_preserves_qualificati
                 },
                 created_at=NOW,
                 updated_at=NOW,
+            )
+        )
+        session.add(
+            TeacherSourceWideRecord(
+                tchr_id=teacher_id,
+                real_name="Reset V1 Teacher",
+                status="TEST-ACTIVE",
+                job_days=30,
+                total_completed_cnt=0,
+                peak_completed_cnt=0,
+                peak_slot_cnt=0,
+                feedback_praise_cnt=0,
+                feedback_favorite_cnt=0,
+                late_cnt=0,
+                early_cnt=0,
+                absent_cnt=0,
             )
         )
         ensure_fixed_growth_assignments(

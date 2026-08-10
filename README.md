@@ -94,7 +94,7 @@ Tide_teachers_camp/
 ├── teacher/           # 教师端 NestJS API、React Web App 及其文档
 ├── contracts/         # 两端共享任务和课程数据契约
 ├── deploy/combined/   # 两端同机、不同域名的联合部署入口
-├── gaea/              # 运营端、教师端与数据库选主结算 Worker 的单镜像 Gaea 配置
+├── gaea/              # 运营端、教师端与两个数据库选主 Worker 的单镜像 Gaea 配置
 ├── docs/              # 架构、数据、积分、认证和配置说明
 ├── project-context/   # 业务方与 AI 的项目背景
 └── scripts/           # 运营端一键安装和启动
@@ -107,18 +107,32 @@ Tide_teachers_camp/
 ## 数据与系统边界
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
-- 当前交接测试库包含教师宽表和课程基线快照，不是生产日更数据。
+- 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
+- 当前代码迁移 head 为 public `20260807_49_unused_columns` 与 teacher
+  `0030_remove_unused_columns_and_orphan_function`。现有交接测试库的 public 已到 rev49，但
+  tide 仍记账为合并前旧编号的 `0029_remove_unused_columns_and_orphan_function`；它没有
+  release 新增的 0027 本地 Quiz 清理，不能冒充 canonical 0030。部署本分支前必须受控重建
+  或完成账本与实存结构对账。当前结构中
+  `teacher_source_wide` 为 CSV 教师 61 列加 2 个可空 G01 状态字段，
+  `lesson_source_wide` 严格对应 CSV 课程 23 列（无“是否复约”）；两表均不增加
+  更新时间、版本、哈希或同步批次字段。旧教师快照、旧课程事实、旧逐课三行积分表及其
+  唯一分析视图已按所有权顺序无 `CASCADE` 删除；rev48 进一步删除 4 张无用 public 表、
+  合并投诉规则来源表并原位瘦身两张积分账户表；rev49 删除两个可从投诉原始行恢复的学习字段和未独立维护的会话活跃时间；teacher 0029 删除 6 张空置无消费者表和
+  5 个被当前实现替代的分析视图，0030 继续删除固定为私有的文件可见性列与无消费者的孤儿函数。旧库 `tit_growth_test` 未原地改造。
+- 两张源表提交真实变化时，Trigger 只记录字段差异 Outbox；独立 SourceWide Worker
+  默认每 3 秒轮询，按变化字段定位受影响教师，在另一个事务内幂等更新逐课结果、积分、
+  任务触发和资格。失败事件保留重试，不在源表事务里执行复杂计算。
 - 原始 Excel、学生身份、数据库 dump、环境文件和日志都不进入 Git。
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
-- 外部数据日更、教师端生产接入、真实通知回执、监控、备份和回滚仍待完成。
+- 外部数据日更、教师端生产接入、真实通知回执、监控、备份和回滚仍待完成。国内/海外两个业务库到宽表的字段查询 SQL 与影响映射尚未提供，因此 Otter、MQ 消费与宽表写入逻辑不在当前已实现边界内。
 
 ## Gaea 部署骨架（单项目、单镜像、双域名）
 
 [`gaea/Dockerfile`](gaea/Dockerfile) 同时构建运营 React、教师 React、运营 FastAPI 和
-教师 NestJS，并用 s6-overlay 在一个 Pod 中管理运营 API、教师 API、教师 Nginx 与积分
-结算 Worker 四个进程。运营域名指向容器 `8010`，教师域名指向 `8080`；教师 NestJS
+教师 NestJS，并用 s6-overlay 在一个 Pod 中管理运营 API、教师 API、教师 Nginx、积分
+结算 Worker 与 SourceWide Worker 五个进程。运营域名指向容器 `8010`，教师域名指向 `8080`；教师 NestJS
 监听 `3000`，只供同 Pod 的 Nginx 代理：
 
 ```bash
@@ -126,9 +140,9 @@ docker build -f gaea/Dockerfile -t tide-camp:gaea .
 ```
 
 同一 Gaea 项目和镜像支持整套 Pod 设置为 `2` 个或更多副本，并使用 `RollingUpdate`：每个
-Pod 都启动四个进程，积分结算候选进程通过 PostgreSQL session advisory lock 保持逻辑单活；
-未持锁的 standby 仍刷新本 Pod heartbeat 并保持健康。教师全局调度使用
-`tide.job_leases`，照片处理按数据库行租约认领，因此无需再拆出新的 Gaea Worker 项目。
+Pod 都启动五个进程；两个 Worker 分别通过 PostgreSQL session advisory lock 保持逻辑单活，
+未持锁的 standby 仍刷新本 Pod heartbeat，并用数据库探测维持 readiness。教师全局调度使用
+`tide.job_leases`；G04 图片审核属于任务提交校验，不再运行独立照片 Worker。
 
 多副本的私有文件首选 OSS；`FILE_STORAGE_PROVIDER=LOCAL` 只允许所有 Pod 共享同一块
 `ReadWriteMany (RWX)` 卷。视频预热脚本的本地幂等账本若被执行，也必须使用跨执行节点可见
@@ -146,6 +160,7 @@ Pod 都启动四个进程，积分结算候选进程通过 PostgreSQL session ad
 ```bash
 export TIDE_RUNTIME_ENV_FILE=/安全路径/TiDe.runtime.production.env
 export TIDE_MIGRATION_ENV_FILE=/安全路径/TiDe.migration.production.env
+export TIDE_SOURCE_WORKER_ENV_FILE=/安全路径/TiDe.source-worker.production.env
 export TIDE_MIGRATION_EXPECTED_DATABASE=tit_growth
 export TIDE_OPS_HOST=tit-growth.example.com
 
@@ -165,19 +180,22 @@ docker compose -f docker-compose.production.yml --profile migration run --rm mig
 # 首次部署时单独创建启动运营账号。密码仅注入本次命令，不写入环境文件。
 TIT_BOOTSTRAP_USERNAME='<运营账号>' \
 TIT_BOOTSTRAP_PASSWORD='<至少 12 位的强密码>' \
-docker compose -f docker-compose.production.yml run --rm \
+docker compose -f docker-compose.production.yml --profile migration run --rm \
   -e TIT_BOOTSTRAP_USERNAME -e TIT_BOOTSTRAP_PASSWORD \
-  api python scripts/bootstrap_operator.py
+  migrate python scripts/bootstrap_operator.py
 
-# 启动两个 API Worker、一个固定任务积分结算进程和静态 Web 服务。
-docker compose -f docker-compose.production.yml up -d api score-settlement web
+# 启动两个 API Worker、两个后台 Worker 和静态 Web 服务。
+docker compose -f docker-compose.production.yml up -d api score-settlement source-wide web
 ```
 
 - `backend/Dockerfile` 使用非 root 用户运行 FastAPI，默认 2 个 Worker；
 - `frontend/Dockerfile` 产出静态资源，Nginx 同源代理 `/api`；
 - `TIDE_RUNTIME_ENV_FILE` 只使用受限运行角色 `tit_growth_app`，
-  `TIDE_MIGRATION_ENV_FILE` 只使用迁移角色 `tit_growth_migrator`；两个文件不得复用，
+  `TIDE_MIGRATION_ENV_FILE` 只使用迁移角色 `tit_growth_migrator`，
+  `TIDE_SOURCE_WORKER_ENV_FILE` 只使用独立 LOGIN `tit_source_worker_runtime`；三个文件不得复用，
   数据库凭据只由部署环境注入，不能复制进镜像；
+- 启动运营账号属于一次性管理动作，必须复用迁移/管理凭据执行；运行角色只有账号读取和
+  自身密码哈希列更新权限，不能创建账号或授予角色；
 - 同源代理会把 Web App 域名作为 API 的 `Host`。`TIDE_OPS_HOST` 必须同时出现在运行
   环境文件的 `TIT_ALLOWED_HOSTS` 中，Compose 会用它覆盖 `TIT_HEALTHCHECK_HOST`；
   同源部署的 `TIT_ALLOWED_ORIGINS` 保持为空；
@@ -197,10 +215,11 @@ docker compose -f docker-compose.production.yml up -d api score-settlement web
 [联合部署说明](deploy/combined/README.md) 和
 [联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
 独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
-联合部署门禁要求教师端生产迁移完整到
-`0025_fixed_task_semantic_alignment`，并同时通过固定提交源码中的精确
-`G01–G09` 标题/分值预检和目标数据库契约探针。教师端只到 0024、目录缺项或语义错误
-都会失败关闭；即使门禁通过，也不能把“已有 Compose”解释为已完成生产切流。
+联合部署门禁要求按 `public 46 → teacher 0028 → public 49 → teacher 0030` 分阶段迁移，教师端生产账本完整到
+`0030_remove_unused_columns_and_orphan_function`，并同时通过固定提交源码中的精确
+`G01–G09` 标题/分值预检和目标数据库契约探针。教师端未到 0030、目录缺项或语义错误
+都会失败关闭；在 public 47 及之后的空库直接回放 teacher 历史链同样会失败关闭。即使门禁通过，
+也不能把“已有 Compose”解释为已完成生产切流。
 
 ## 开发验证
 

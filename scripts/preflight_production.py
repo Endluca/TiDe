@@ -51,7 +51,7 @@ def _ipv4_address(name: str, raw_value: str) -> IPv4Address:
         raise PreflightError(f"{name} must be an IPv4 address") from exc
 
 
-def _database_url(path: Path) -> str:
+def _environment_value(path: Path, variable_name: str) -> str:
     values: list[str] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -60,7 +60,7 @@ def _database_url(path: Path) -> str:
         if line.startswith("export "):
             line = line.removeprefix("export ").lstrip()
         key, separator, value = line.partition("=")
-        if separator and key.strip() == "DATABASE_URL":
+        if separator and key.strip() == variable_name:
             candidate = value.strip()
             if (
                 len(candidate) >= 2
@@ -71,7 +71,7 @@ def _database_url(path: Path) -> str:
             values.append(candidate)
     if len(values) != 1 or not values[0]:
         raise PreflightError(
-            f"{path.name} must contain exactly one non-empty DATABASE_URL"
+            f"{path.name} must contain exactly one non-empty {variable_name}"
         )
     return values[0]
 
@@ -79,10 +79,11 @@ def _database_url(path: Path) -> str:
 def _validate_database_identity(
     path: Path,
     *,
+    variable_name: str = "DATABASE_URL",
     expected_role: str,
     expected_database: str,
 ) -> None:
-    database_url = _database_url(path)
+    database_url = _environment_value(path, variable_name)
     normalized_url = database_url.replace(
         "postgresql+psycopg://",
         "postgresql://",
@@ -104,9 +105,18 @@ def _validate_database_identity(
 def validate(environment: Mapping[str, str]) -> None:
     runtime_env = _existing_file(environment, "TIDE_RUNTIME_ENV_FILE")
     migration_env = _existing_file(environment, "TIDE_MIGRATION_ENV_FILE")
-    if os.path.samefile(runtime_env, migration_env):
+    source_worker_env = _existing_file(
+        environment,
+        "TIDE_SOURCE_WORKER_ENV_FILE",
+    )
+    protected_files = (runtime_env, migration_env, source_worker_env)
+    if any(
+        os.path.samefile(left, right)
+        for index, left in enumerate(protected_files)
+        for right in protected_files[index + 1 :]
+    ):
         raise PreflightError(
-            "TIDE_RUNTIME_ENV_FILE and TIDE_MIGRATION_ENV_FILE must differ"
+            "runtime, migration and source-worker env files must differ"
         )
 
     expected_database = _required(
@@ -169,6 +179,21 @@ def validate(environment: Mapping[str, str]) -> None:
         expected_role="tit_growth_migrator",
         expected_database=expected_database,
     )
+    _validate_database_identity(
+        source_worker_env,
+        variable_name="TIT_SOURCE_WORKER_DATABASE_URL",
+        expected_role="tit_source_worker_runtime",
+        expected_database=expected_database,
+    )
+    worker_expected_database = _environment_value(
+        source_worker_env,
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE",
+    )
+    if worker_expected_database != expected_database:
+        raise PreflightError(
+            f"{source_worker_env.name} source-worker expected database must "
+            f"be {expected_database}"
+        )
 
 
 def main() -> int:

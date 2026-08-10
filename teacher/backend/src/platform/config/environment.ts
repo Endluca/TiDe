@@ -221,24 +221,6 @@ export const environmentSchema = z
       .min(30_000)
       .max(3_600_000)
       .default(180_000),
-    TEACHER_PHOTO_WORKER_POLL_INTERVAL_MS: z.coerce
-      .number()
-      .int()
-      .min(250)
-      .max(60_000)
-      .default(1_000),
-    TEACHER_PHOTO_WORKER_BATCH_SIZE: z.coerce
-      .number()
-      .int()
-      .min(1)
-      .max(10)
-      .default(2),
-    TEACHER_PHOTO_WORKER_LEASE_MS: z.coerce
-      .number()
-      .int()
-      .min(30_000)
-      .max(600_000)
-      .default(120_000),
     SYSTEM_NOTIFICATION_PUBLISHER_ENABLED: booleanFromEnvironment,
     SYSTEM_NOTIFICATION_CONFIG_PATH: z
       .string()

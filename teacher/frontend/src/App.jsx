@@ -278,7 +278,6 @@ const workspaceMeta = {
   external_status: ["Review status", "审核状态", "Check the latest available result.", "查看最新审核结果。"],
   readiness_photo: ["Pre-class environment check", "课前环境确认", "Take one photo in your real teaching position and review the four lesson-preparation checks.", "在真实授课位置拍一张照片，并逐项查看首课准备的 4 项画面检测结果。"],
   upload_review: ["Submit for review", "上传材料", "Follow the steps below to submit your material for review.", "按照下方要求提交材料并查看审核结果。"],
-  environment_photo: ["First-lesson preparation", "首课准备中心", "Check four visible items in one live camera photo and confirm your courseware preparation.", "用一张实时摄像头照片检测四项画面内容，并确认课件准备。"],
   embedded_course: ["In-platform course", "站内课程", "Complete every learning section inside this task page.", "在当前任务页内完成全部学习内容。"],
   guidance_acknowledgement: ["Result and next step", "结果与下一步", "Review the affected classes, complete the AC/ACE check and record the result.", "查看触发课程，完成 AC／ACE 检测并记录结果。"],
   factual_response: ["Factual response", "事实说明", "Describe the verifiable classroom facts, save a draft if needed, then submit it for operational review.", "填写可核实的课堂事实；需要时先保存草稿，再提交运营复核。"],
@@ -784,7 +783,6 @@ function taskAction(language, task) {
   if (task.status === "retry_required") {
     if (["device_readiness", "readiness_photo"].includes(task.method)) return copy(language, "Retry", "重试");
     if (task.method === "upload_review") return copy(language, "Update files", "补充材料");
-    if (task.method === "environment_photo") return copy(language, "Update preparation", "更新准备内容");
     return copy(language, "Update", "重新完成");
   }
   return copy(language, "Start", "开始");

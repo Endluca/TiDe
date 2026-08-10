@@ -52,6 +52,9 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0025_fixed_task_semantic_alignment',
   '0026_kuozhi_course_syncs',
   '0027_remove_local_quiz_runtime',
+  '0028_retire_task_business_change_view',
+  '0029_remove_unused_tide_objects',
+  '0030_remove_unused_columns_and_orphan_function',
 ] as const;
 
 @Injectable()
@@ -268,17 +271,16 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0027_remove_local_quiz_runtime'
+        ) = '0030_remove_unused_columns_and_orphan_function'
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
-        AND to_regclass('tide.teacher_photo_runs') IS NOT NULL
         AND to_regclass('tide.job_leases') IS NOT NULL
         AND to_regclass('tide.kuozhi_course_syncs') IS NOT NULL
+        AND to_regclass(
+          'tide.analytics_task_business_change_v1'
+        ) IS NULL
         AND to_regclass('public.task_templates') IS NOT NULL
         AND to_regclass('public.teacher_support_tickets') IS NOT NULL
-        AND to_regclass(
-          'tide.teacher_photo_runs_pending_claim_idx'
-        ) IS NOT NULL
         AND to_regclass('tide.job_leases_expiry_idx') IS NOT NULL
         AND to_regclass(
           'public.teacher_support_tickets_status_deadline_idx'
@@ -347,19 +349,27 @@ export class DatabaseService implements OnModuleDestroy {
               )
             )
         )
-        AND (
-          SELECT count(*)
-          FROM pg_attribute
-          WHERE attrelid = to_regclass('tide.teacher_photo_runs')
-            AND attnum > 0
-            AND NOT attisdropped
-            AND attname IN (
-              'processing_owner',
-              'lease_expires_at',
-              'attempt_count',
-              'next_attempt_at'
-            )
-        ) = 4
+        AND to_regclass('tide.outcome_projections') IS NULL
+        AND to_regclass('tide.camp_enrollment_projections') IS NULL
+        AND to_regclass('tide.audit_events') IS NULL
+        AND to_regclass('tide.task_template_files') IS NULL
+        AND to_regclass('tide.file_migrations') IS NULL
+        AND to_regclass('tide.teacher_photo_runs') IS NULL
+        AND to_regclass('tide.analytics_actor_task_journey_v1') IS NULL
+        AND to_regclass(
+          'tide.analytics_task_assignment_funnel_v1'
+        ) IS NULL
+        AND to_regclass('tide.analytics_task_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_task_step_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_content_quality_v1') IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'tide'
+            AND table_name = 'file_objects'
+            AND column_name = 'visibility'
+        )
+        AND to_regprocedure('tide.enforce_outbox_target()') IS NULL
         AND (
           SELECT count(*)
           FROM pg_attribute
@@ -460,21 +470,6 @@ export class DatabaseService implements OnModuleDestroy {
           current_user,
           to_regclass('tide.job_leases'),
           'DELETE'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.teacher_photo_runs'),
-          'SELECT'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.teacher_photo_runs'),
-          'INSERT'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.teacher_photo_runs'),
-          'UPDATE'
         )
         AND has_table_privilege(
           current_user,

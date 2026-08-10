@@ -2,29 +2,37 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-import hashlib
 
 from sqlalchemy import event, func, select
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import Session
 
 from app.config_service import seed_default_configs
 from app.database import engine, session_scope
 from app.db_models import (
     AuditEventRecord,
-    DataImportBatchRecord,
-    LessonDimensionScoreRecord,
+    LessonScoreResultRecord,
+    LessonSourceWideRecord,
     OutboxEventRecord,
     ScoreAccountRecord,
     ScoreComponentAccountRecord,
     ScoreEntryRecord,
     TaskAssignmentRecord,
     TaskTemplateRecord,
-    TeacherMetricSnapshotRecord,
+    TeacherQualificationRecord,
     TeacherRecord,
+    TeacherSourceWideRecord,
 )
+from app.fixed_growth_baseline import ensure_fixed_growth_assignments
 from app.shared_task_score_settlement import (
     ENTRY_TYPE,
+    SOURCE_WIDE_SNAPSHOT_LABEL,
     SharedTaskScoreSettlementWorker,
+)
+from app.source_contracts import TEACHER_SOURCE_FIELDS
+from app.source_wide_worker import (
+    EVENT_TYPE as SOURCE_WIDE_EVENT_TYPE,
+    SourceWideWorker,
 )
 from app.task_catalog import MANDATORY_TASK_CODES
 
@@ -63,37 +71,51 @@ def test_valid_ledger_read_does_not_require_score_entry_update_privilege() -> No
     assert "FOR UPDATE" not in sql.upper()
 
 
+def test_worker_never_requests_update_locks_on_shared_assignments() -> None:
+    violating_statements: list[str] = []
+
+    def inspect_orm_statement(orm_execute_state) -> None:
+        if not orm_execute_state.is_select:
+            return
+        sql = str(
+            orm_execute_state.statement.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        ).upper()
+        if "TASK_ASSIGNMENTS" in sql and "FOR UPDATE" in sql:
+            violating_statements.append(sql)
+
+    _prepare_config()
+    teacher_id = "REAL-SCORE-READ-ONLY-ASSIGNMENTS"
+    _teacher(teacher_id)
+    _assignments(teacher_id, completed={"G01"})
+
+    event.listen(Session, "do_orm_execute", inspect_orm_statement)
+    try:
+        result = SharedTaskScoreSettlementWorker(engine).run_once(max_events=1)
+    finally:
+        event.remove(Session, "do_orm_execute", inspect_orm_statement)
+
+    assert result["settled"] == 1
+    assert violating_statements == []
+
+
 def _teacher(
     teacher_id: str,
     *,
     untrusted_score: float | None = None,
-    with_score_snapshot: bool = False,
+    initial_total_score: float = 0,
+    source_wide: bool = True,
 ) -> None:
     with session_scope(engine) as session:
-        batch_id = f"BATCH-{teacher_id}" if with_score_snapshot else None
-        if batch_id is not None:
+        if source_wide:
             session.add(
-                DataImportBatchRecord(
-                    batch_id=batch_id,
-                    source_kind="TEACHER_SNAPSHOT",
-                    sync_mode="MANUAL_BASELINE",
-                    source_system="TEST",
-                    source_filename=f"{teacher_id}.xlsx",
-                    source_uri=f"test://{teacher_id}",
-                    source_sha256=hashlib.sha256(
-                        teacher_id.encode("utf-8")
-                    ).hexdigest(),
-                    source_sheet="TEST",
-                    snapshot_label="TEST",
-                    data_mode="MIXED",
-                    column_count=1,
-                    row_count=1,
-                    header=["teacher_id"],
-                    status="COMPLETED",
-                    imported_at=NOW,
-                    payload={},
-                    created_at=NOW,
-                    updated_at=NOW,
+                TeacherSourceWideRecord(
+                    tchr_id=teacher_id,
+                    real_name=f"Teacher {teacher_id}",
+                    status="TEST-ACTIVE",
+                    job_days=5,
                 )
             )
         metric_inputs = {
@@ -112,85 +134,62 @@ def _teacher(
                 timezone="Asia/Manila",
                 camp_day=5,
                 graduation_state="IN_PROGRESS",
-                total_score=72.8 if with_score_snapshot else 0,
+                total_score=initial_total_score,
                 graduation_threshold=100,
-                data_mode="MIXED" if with_score_snapshot else "REAL",
-                source_batch_id=batch_id,
-                source_snapshot_label="TEST",
+                data_mode="REAL",
+                source_snapshot_label=(
+                    SOURCE_WIDE_SNAPSHOT_LABEL if source_wide else "TEST"
+                ),
                 payload={
                     "teacher_id": teacher_id,
-                    "data_mode": "MIXED" if with_score_snapshot else "REAL",
+                    "data_mode": "REAL",
                     "metric_inputs": metric_inputs,
                     "metric_provenance": {},
                     "dimensions": [],
-                    "raw_total_score": 72.8 if with_score_snapshot else 0,
-                    "total_score": 72.8 if with_score_snapshot else 0,
-                    "external_display_score": 72.8 if with_score_snapshot else 0,
+                    "raw_total_score": initial_total_score,
+                    "total_score": initial_total_score,
+                    "external_display_score": initial_total_score,
+                    "score_projection_scope": (
+                        SOURCE_WIDE_SNAPSHOT_LABEL if source_wide else "TEST"
+                    ),
                 },
                 created_at=NOW,
                 updated_at=NOW,
             )
         )
-        if batch_id is not None:
-            session.add(
-                TeacherMetricSnapshotRecord(
-                    snapshot_id=f"{batch_id}:{teacher_id}",
-                    batch_id=batch_id,
-                    teacher_id=teacher_id,
-                    snapshot_label="TEST",
-                    source_row_number=2,
-                    data_mode="MIXED",
-                    score_rule_version="new_teacher_30d_20260723_v6",
-                    score_policy_snapshot={},
-                    score_policy_sha256="0" * 64,
-                    real_name=f"Teacher {teacher_id}",
-                    employment_status="on",
-                    bu=None,
-                    based_type=None,
-                    teach_area_type=None,
-                    onboard_date=None,
-                    onboard_30d_end_date=None,
-                    first_booked_date=None,
-                    is_cpl_tesol=None,
-                    is_self_introduce=None,
-                    lessons_completed=0,
-                    total_completed_cnt=0,
-                    peak_completed_cnt=0,
-                    peak_slot_cnt=40,
-                    perfect_cnt=8,
-                    on_time_completed_cnt=0,
-                    feedback_praise_cnt=0,
-                    feedback_favorite_cnt=0,
-                    completed_again_student_15d_cnt=0,
-                    late_cnt=0,
-                    early_cnt=0,
-                    real_absent_cnt=0,
-                    severe_redline_event=False,
-                    capacity_score=10,
-                    new_teacher_task_score=0,
-                    class_quality_no_issue_rate=0,
-                    reliability_score=24,
-                    user_feedback_score=26,
-                    class_quality_score=12.8,
-                    raw_total_score=72.8,
-                    public_total_score=72.8,
-                    metric_inputs=metric_inputs,
-                    metric_provenance={},
-                    raw_payload={},
-                    created_at=NOW,
-                    updated_at=NOW,
-                )
+        session.add(
+            TeacherQualificationRecord(
+                teacher_id=teacher_id,
+                graduation_criteria_met=False,
+                graduation_qualified=False,
+                graduation_qualified_at=None,
+                gold_criteria_met=False,
+                gold_qualified=False,
+                gold_qualified_at=None,
+                score_rule_version="test-source-wide",
+                gate_results={
+                    "source_teacher_present": source_wide,
+                    "mandatory_task_assignment_count": 0,
+                    "mandatory_task_completed_count": 0,
+                    "mandatory_task_expected_count": len(TASK_CODES),
+                    "l0_complaint_count": 0,
+                    "l0_complaint_evidence_status": "CONFIRMED",
+                    "late_count": 0,
+                    "early_count": 0,
+                    "absent_count": 0,
+                    "attendance_evidence_status": "CONFIRMED",
+                    "raw_total_score": initial_total_score,
+                },
+                revision=1,
+                calculated_at=NOW,
             )
+        )
         if untrusted_score is not None:
             session.add(
                 ScoreAccountRecord(
-                    account_id=f"{teacher_id}:NEW_TEACHER_TASK",
                     teacher_id=teacher_id,
-                    camp_enrollment_id=f"CAMP-{teacher_id}",
                     dimension="NEW_TEACHER_TASK",
                     current_score=untrusted_score,
-                    minimum_score=0,
-                    weight=0,
                     score_rule_version="historical-import",
                     version=1,
                     updated_at=NOW,
@@ -297,7 +296,61 @@ def _add_event(
 
 
 def _prepare_config() -> None:
+    # The global test service seeds four unrelated demo teachers.  Policy
+    # publication now rejects mixed legacy/current projections, so make those
+    # fixture-only rows satisfy the same source-wide contract before publishing.
+    with session_scope(engine) as session:
+        teachers = list(session.scalars(select(TeacherRecord)).all())
+        for teacher in teachers:
+            teacher.source_snapshot_label = SOURCE_WIDE_SNAPSHOT_LABEL
+            if session.get(TeacherSourceWideRecord, teacher.teacher_id) is None:
+                session.add(
+                    TeacherSourceWideRecord(
+                        tchr_id=teacher.teacher_id,
+                        real_name=teacher.name,
+                        status="TEST-ACTIVE",
+                    )
+                )
+        ensure_fixed_growth_assignments(
+            session,
+            [teacher.teacher_id for teacher in teachers],
+            actor_id="TEST:SHARED_TASK_SETTLEMENT",
+            occurred_at=NOW,
+        )
     seed_default_configs()
+
+
+def _complete_existing_assignments(
+    teacher_id: str,
+    codes: set[str],
+    *,
+    suffix: str,
+) -> None:
+    with session_scope(engine) as session:
+        assignments = {
+            item.task_code: item
+            for item in session.scalars(
+                select(TaskAssignmentRecord).where(
+                    TaskAssignmentRecord.teacher_id == teacher_id,
+                    TaskAssignmentRecord.task_code.in_(codes),
+                )
+            ).all()
+        }
+        assert set(assignments) == codes
+        for code in sorted(codes):
+            assignment = assignments[code]
+            assignment.status = "COMPLETED"
+            assignment.completed_at = NOW
+            assignment.status_changed_at = NOW
+            assignment.row_version = int(assignment.row_version or 0) + 1
+            _add_event(
+                session,
+                assignment_id=assignment.assignment_id,
+                teacher_id=teacher_id,
+                task_code=code,
+                source_mode="REAL",
+                suffix=f"{suffix}-{code}",
+            )
 
 
 def _entry_scores(teacher_id: str) -> dict[str, float]:
@@ -332,7 +385,10 @@ def test_g01_g08_and_all_current_tasks_settle_to_3_5_and_30_with_explicit_cutove
     assert _entry_scores(teacher_id) == {"G01": 3, "G08": 5}
 
     with session_scope(engine) as session:
-        account = session.get(ScoreAccountRecord, f"{teacher_id}:NEW_TEACHER_TASK")
+        account = session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        )
         assert account is not None
         assert account.current_score == 8
         assert account.payload["source_mode"] == "SYSTEM_TASK_STATUS"
@@ -369,7 +425,10 @@ def test_g01_g08_and_all_current_tasks_settle_to_3_5_and_30_with_explicit_cutove
     assert len(_entry_scores(teacher_id)) == 9
     assert sum(_entry_scores(teacher_id).values()) == 30
     with session_scope(engine) as session:
-        account = session.get(ScoreAccountRecord, f"{teacher_id}:NEW_TEACHER_TASK")
+        account = session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        )
         assert account is not None and account.current_score == 30
         assert session.scalar(
             select(func.count()).select_from(AuditEventRecord).where(
@@ -402,10 +461,109 @@ def test_duplicate_completion_event_is_idempotent() -> None:
     assert _entry_scores(teacher_id) == {"G01": 3}
 
 
+def test_non_source_wide_teacher_retries_then_dead_letters_without_snapshot_read() -> None:
+    _prepare_config()
+    teacher_id = "LEGACY-TEACHER-REJECTED"
+    _teacher(teacher_id, source_wide=False)
+    assignment_ids = _assignments(
+        teacher_id,
+        codes=("G01",),
+        completed={"G01"},
+    )
+    legacy_snapshot_reads: list[str] = []
+
+    def capture_legacy_snapshot_read(orm_execute_state) -> None:
+        if not orm_execute_state.is_select:
+            return
+        sql = str(
+            orm_execute_state.statement.compile(
+                dialect=postgresql.dialect(),
+            )
+        ).lower()
+        if "teacher_metric_snapshots" in sql:
+            legacy_snapshot_reads.append(sql)
+
+    worker = SharedTaskScoreSettlementWorker(
+        engine,
+        retry_delay=timedelta(0),
+        max_retry_delay=timedelta(0),
+        max_attempts=2,
+        retry_jitter_ratio=0,
+    )
+    event.listen(Session, "do_orm_execute", capture_legacy_snapshot_read)
+    try:
+        first = worker.run_once(max_events=1)
+        second = worker.run_once(max_events=1)
+    finally:
+        event.remove(Session, "do_orm_execute", capture_legacy_snapshot_read)
+
+    assert first["failed"] == 1
+    assert first["dead_lettered"] == 0
+    assert second["failed"] == 1
+    assert second["dead_lettered"] == 1
+    assert legacy_snapshot_reads == []
+    assert _entry_scores(teacher_id) == {}
+    with session_scope(engine) as session:
+        outbox = session.scalar(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id
+                == assignment_ids["G01"]
+            )
+        )
+        assert outbox is not None
+        assert outbox.status == "DEAD_LETTER"
+        assert outbox.attempt_count == 2
+        assert outbox.last_error == (
+            "SettlementDataError:SOURCE_WIDE_TEACHER_EXPECTED"
+        )
+        assert session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        ) is None
+
+
+def test_source_wide_label_without_source_row_is_an_explicit_retryable_failure() -> None:
+    _prepare_config()
+    teacher_id = "SOURCE-WIDE-ROW-MISSING"
+    _teacher(teacher_id)
+    assignment_ids = _assignments(
+        teacher_id,
+        codes=("G01",),
+        completed={"G01"},
+    )
+    with session_scope(engine) as session:
+        source = session.get(TeacherSourceWideRecord, teacher_id)
+        assert source is not None
+        session.delete(source)
+
+    result = SharedTaskScoreSettlementWorker(
+        engine,
+        retry_delay=timedelta(0),
+        retry_jitter_ratio=0,
+    ).run_once(max_events=1)
+
+    assert result["failed"] == 1
+    assert result["dead_lettered"] == 0
+    assert _entry_scores(teacher_id) == {}
+    with session_scope(engine) as session:
+        outbox = session.scalar(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id
+                == assignment_ids["G01"]
+            )
+        )
+        assert outbox is not None
+        assert outbox.status == "PENDING"
+        assert outbox.attempt_count == 1
+        assert outbox.last_error == (
+            "SettlementDataError:SOURCE_WIDE_TEACHER_SOURCE_NOT_FOUND"
+        )
+
+
 def test_completion_persists_task_points_into_current_total_score_fields() -> None:
     _prepare_config()
     teacher_id = "REAL-SCORE-PROJECTION"
-    _teacher(teacher_id, with_score_snapshot=True)
+    _teacher(teacher_id, initial_total_score=72.8)
     completed = set(TASK_CODES) - {"G01", "G03"}
     _assignments(teacher_id, completed=completed)
 
@@ -416,15 +574,7 @@ def test_completion_persists_task_points_into_current_total_score_fields() -> No
     assert result["projection_refreshes"] == 1
     with session_scope(engine) as session:
         teacher = session.get(TeacherRecord, teacher_id)
-        snapshot = session.get(
-            TeacherMetricSnapshotRecord,
-            f"BATCH-{teacher_id}:{teacher_id}",
-        )
         assert teacher is not None
-        assert snapshot is not None
-        assert snapshot.new_teacher_task_score == 25
-        assert snapshot.raw_total_score == 97.8
-        assert snapshot.public_total_score == 97.8
         assert teacher.total_score == 97.8
         assert teacher.payload["raw_total_score"] == 97.8
         assert teacher.payload["external_display_score"] == 97.8
@@ -436,26 +586,28 @@ def test_completion_persists_task_points_into_current_total_score_fields() -> No
 def test_task_events_are_coalesced_without_rebuilding_lesson_scores() -> None:
     _prepare_config()
     teacher_id = "REAL-SCORE-INCREMENTAL"
-    _teacher(teacher_id, with_score_snapshot=True)
+    _teacher(teacher_id, initial_total_score=72.8)
     _assignments(teacher_id, completed={"G01", "G08"})
     original_updated_at = NOW - timedelta(days=1)
     with session_scope(engine) as session:
         session.add(
-            LessonDimensionScoreRecord(
-                score_state_id=f"CAMP-{teacher_id}:LESSON-KEEP:RELIABILITY",
-                camp_enrollment_id=f"CAMP-{teacher_id}",
-                lesson_id="LESSON-KEEP",
+            LessonSourceWideRecord(
+                course_id="LESSON-KEEP",
                 teacher_id=teacher_id,
-                dimension="RELIABILITY",
-                current_score=4,
-                evidence_status="CONFIRMED",
-                evidence_coverage="FULL",
+                lesson_status="COMPLETED",
+            )
+        )
+        session.add(
+            LessonScoreResultRecord(
+                lesson_id="LESSON-KEEP",
+                reliability_score=4,
+                user_feedback_score=0,
+                class_quality_score=0,
+                lesson_total_score=4,
+                dimensions={"marker": "must-survive-task-settlement"},
                 score_rule_version="lesson-policy-existing",
-                current_revision=41,
-                score_as_of=NOW,
-                last_score_entry_id=None,
-                payload={"marker": "must-survive-task-settlement"},
-                updated_at=original_updated_at,
+                projection_revision=41,
+                calculated_at=original_updated_at,
             )
         )
 
@@ -465,15 +617,18 @@ def test_task_events_are_coalesced_without_rebuilding_lesson_scores() -> None:
     assert result["projection_refreshes"] == 1
     with session_scope(engine) as session:
         lesson_score = session.get(
-            LessonDimensionScoreRecord,
-            f"CAMP-{teacher_id}:LESSON-KEEP:RELIABILITY",
+            LessonScoreResultRecord,
+            "LESSON-KEEP",
         )
         assert lesson_score is not None
-        assert lesson_score.current_revision == 41
+        assert lesson_score.projection_revision == 41
         assert lesson_score.score_rule_version == "lesson-policy-existing"
-        assert lesson_score.payload == {
+        assert lesson_score.dimensions == {
             "marker": "must-survive-task-settlement"
         }
+        assert lesson_score.calculated_at.replace(tzinfo=timezone.utc) == (
+            original_updated_at
+        )
         components = list(
             session.scalars(
                 select(ScoreComponentAccountRecord)
@@ -498,7 +653,7 @@ def test_task_events_are_coalesced_without_rebuilding_lesson_scores() -> None:
 def test_incremental_task_projection_can_grant_irreversible_qualification() -> None:
     _prepare_config()
     teacher_id = "REAL-SCORE-QUALIFICATION"
-    _teacher(teacher_id, with_score_snapshot=True)
+    _teacher(teacher_id, initial_total_score=72.8)
     provenance = {
         key: {
             "source_mode": "REAL",
@@ -539,21 +694,7 @@ def test_incremental_task_projection_can_grant_irreversible_qualification() -> N
     }
     with session_scope(engine) as session:
         teacher = session.get(TeacherRecord, teacher_id)
-        snapshot = session.get(
-            TeacherMetricSnapshotRecord,
-            f"BATCH-{teacher_id}:{teacher_id}",
-        )
         assert teacher is not None
-        assert snapshot is not None
-        snapshot.metric_inputs = metric_inputs
-        snapshot.metric_provenance = provenance
-        snapshot.capacity_score = 10
-        snapshot.reliability_score = 24
-        snapshot.user_feedback_score = 30
-        snapshot.class_quality_score = 6
-        snapshot.new_teacher_task_score = 0
-        snapshot.raw_total_score = 70
-        snapshot.public_total_score = 70
         payload = dict(teacher.payload)
         payload.update(
             metric_inputs=metric_inputs,
@@ -575,13 +716,9 @@ def test_incremental_task_projection_can_grant_irreversible_qualification() -> N
         teacher.total_score = 70
         session.add(
             ScoreAccountRecord(
-                account_id=f"{teacher_id}:CLASS_QUALITY",
                 teacher_id=teacher_id,
-                camp_enrollment_id=f"CAMP-{teacher_id}",
                 dimension="CLASS_QUALITY",
                 current_score=6,
-                minimum_score=0,
-                weight=0,
                 score_rule_version="current-quality",
                 version=1,
                 updated_at=NOW,
@@ -601,6 +738,225 @@ def test_incremental_task_projection_can_grant_irreversible_qualification() -> N
         assert teacher.graduation_state == "GRADUATED"
         assert teacher.payload["graduation_criteria_met"] is True
         assert teacher.payload["graduation_qualified"] is True
+
+
+def test_source_wide_task_settlement_is_targeted_and_survives_source_refresh() -> None:
+    _prepare_config()
+    teacher_id = "SOURCE-WIDE-TASK-QUALIFICATION"
+    with session_scope(engine) as session:
+        session.add(
+            TeacherSourceWideRecord(
+                tchr_id=teacher_id,
+                real_name="Source Wide Task Teacher",
+                status="TEST-ACTIVE",
+                job_days=1,
+                total_completed_cnt=0,
+                peak_completed_cnt=5,
+                feedback_praise_cnt=7,
+                feedback_favorite_cnt=4,
+                peak_slot_cnt=0,
+                late_cnt=0,
+                early_cnt=0,
+                absent_cnt=0,
+            )
+        )
+        session.add(
+            OutboxEventRecord(
+                outbox_id=f"OUT-SOURCE-{teacher_id}-INSERT",
+                event_id=f"EVT-SOURCE-{teacher_id}-INSERT",
+                aggregate_type="TEACHER_SOURCE_WIDE",
+                aggregate_id=teacher_id,
+                event_type=SOURCE_WIDE_EVENT_TYPE,
+                payload={
+                    "source_table": "teacher_source_wide",
+                    "source_id": teacher_id,
+                    "operation": "INSERT",
+                    "changed_fields": list(TEACHER_SOURCE_FIELDS),
+                    "old_teacher_id": None,
+                    "new_teacher_id": teacher_id,
+                },
+                status="PENDING",
+                available_at=NOW,
+                attempt_count=0,
+                last_error=None,
+                created_at=NOW,
+                published_at=None,
+            )
+        )
+
+    source_result = SourceWideWorker(engine).run_once(max_events=10)
+    assert source_result["published"] == 1
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        qualification = session.get(TeacherQualificationRecord, teacher_id)
+        assert teacher is not None and teacher.total_score == 65
+        assert qualification is not None
+        assert qualification.graduation_criteria_met is False
+        assert qualification.graduation_qualified is False
+
+    forbidden_task_path_reads: list[str] = []
+
+    def capture_forbidden_reads(orm_execute_state) -> None:
+        if not orm_execute_state.is_select:
+            return
+        sql = str(
+            orm_execute_state.statement.compile(
+                dialect=postgresql.dialect(),
+            )
+        ).lower()
+        if any(
+            table in sql
+            for table in (
+                "lesson_source_wide",
+                "lesson_score_results",
+                "lesson_facts",
+                "teacher_metric_snapshots",
+            )
+        ):
+            forbidden_task_path_reads.append(sql)
+
+    worker = SharedTaskScoreSettlementWorker(engine)
+
+    def settle_without_lesson_scan(*, max_events: int = 20) -> dict:
+        event.listen(Session, "do_orm_execute", capture_forbidden_reads)
+        try:
+            return worker.run_once(max_events=max_events)
+        finally:
+            event.remove(
+                Session,
+                "do_orm_execute",
+                capture_forbidden_reads,
+            )
+
+    _complete_existing_assignments(teacher_id, {"G01"}, suffix="FIRST")
+    first = settle_without_lesson_scan()
+    assert first["settled"] == 1
+    with session_scope(engine) as session:
+        assert session.get(TeacherRecord, teacher_id).total_score == 68
+
+        source = session.get(TeacherSourceWideRecord, teacher_id)
+        assert source is not None
+        source.feedback_praise_cnt = 8
+        session.add(
+            OutboxEventRecord(
+                outbox_id=f"OUT-SOURCE-{teacher_id}-PRAISE",
+                event_id=f"EVT-SOURCE-{teacher_id}-PRAISE",
+                aggregate_type="TEACHER_SOURCE_WIDE",
+                aggregate_id=teacher_id,
+                event_type=SOURCE_WIDE_EVENT_TYPE,
+                payload={
+                    "source_table": "teacher_source_wide",
+                    "source_id": teacher_id,
+                    "operation": "UPDATE",
+                    "changed_fields": ["feedback_praise_cnt"],
+                    "old_teacher_id": teacher_id,
+                    "new_teacher_id": teacher_id,
+                },
+                status="PENDING",
+                available_at=NOW,
+                attempt_count=0,
+                last_error=None,
+                created_at=NOW,
+                published_at=None,
+            )
+        )
+
+    assert SourceWideWorker(engine).run_once(max_events=10)["published"] == 1
+    with session_scope(engine) as session:
+        assert session.get(TeacherRecord, teacher_id).total_score == 73
+
+    _complete_existing_assignments(teacher_id, {"G02"}, suffix="SECOND")
+    second = settle_without_lesson_scan()
+    assert second["settled"] == 1
+    with session_scope(engine) as session:
+        assert session.get(TeacherRecord, teacher_id).total_score == 75
+        task_account = session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        )
+        assert task_account is not None and task_account.current_score == 5
+
+    remaining = set(TASK_CODES) - {"G01", "G02"}
+    _complete_existing_assignments(teacher_id, remaining, suffix="REMAINING")
+    final = settle_without_lesson_scan()
+    assert final["settled"] == len(remaining)
+    assert forbidden_task_path_reads == []
+
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        qualification = session.get(TeacherQualificationRecord, teacher_id)
+        task_account = session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        )
+        task_components = list(
+            session.scalars(
+                select(ScoreComponentAccountRecord).where(
+                    ScoreComponentAccountRecord.teacher_id == teacher_id,
+                    ScoreComponentAccountRecord.dimension
+                    == "NEW_TEACHER_TASK",
+                )
+            ).all()
+        )
+        assert teacher is not None and teacher.total_score == 100
+        assert teacher.graduation_state == "GRADUATED"
+        assert qualification is not None
+        assert qualification.graduation_criteria_met is True
+        assert qualification.graduation_qualified is True
+        assert qualification.gate_results[
+            "mandatory_task_completed_count"
+        ] == 9
+        assert task_account is not None and task_account.current_score == 30
+        assert task_account.payload["settlement_contract"] == (
+            "shared-fixed-growth.v1"
+        )
+        assert len(task_components) == 9
+        assert sum(item.current_score for item in task_components) == 30
+        qualification_revision = qualification.revision
+        component_revisions = {
+            item.component_code: item.projection_revision
+            for item in task_components
+        }
+        account_version = task_account.version
+        teacher_updated_at = teacher.updated_at
+        g01 = next(item for item in task_components if item.component_code == "G01")
+        g01_assignment_id = str(g01.payload["assignment_id"])
+
+    with session_scope(engine) as session:
+        _add_event(
+            session,
+            assignment_id=g01_assignment_id,
+            teacher_id=teacher_id,
+            task_code="G01",
+            source_mode="REAL",
+            suffix="DUPLICATE-AFTER-FINAL",
+        )
+    duplicate = settle_without_lesson_scan()
+    assert duplicate["settled"] == 1
+    assert duplicate["score_entries_created"] == 0
+    assert forbidden_task_path_reads == []
+    with session_scope(engine) as session:
+        qualification = session.get(TeacherQualificationRecord, teacher_id)
+        task_account = session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        )
+        teacher = session.get(TeacherRecord, teacher_id)
+        assert qualification is not None
+        assert qualification.revision == qualification_revision
+        assert task_account is not None
+        assert task_account.version == account_version
+        assert teacher is not None and teacher.updated_at == teacher_updated_at
+        assert {
+            item.component_code: item.projection_revision
+            for item in session.scalars(
+                select(ScoreComponentAccountRecord).where(
+                    ScoreComponentAccountRecord.teacher_id == teacher_id,
+                    ScoreComponentAccountRecord.dimension
+                    == "NEW_TEACHER_TASK",
+                )
+            ).all()
+        } == component_revisions
 
 
 def test_mock_and_non_completed_events_are_consumed_without_score() -> None:
@@ -663,7 +1019,10 @@ def test_real_completion_settles_each_completed_assignment_without_waiting_for_a
     assert result["settled"] == 1
     assert _entry_scores(teacher_id) == {"G01": 3}
     with session_scope(engine) as session:
-        account = session.get(ScoreAccountRecord, f"{teacher_id}:NEW_TEACHER_TASK")
+        account = session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        )
         assert account is not None
         assert account.current_score == 3
         assert account.payload["source_mode"] == "SYSTEM_TASK_STATUS"
@@ -706,7 +1065,10 @@ def test_two_workers_cannot_duplicate_fixed_task_awards() -> None:
     assert first["claimed"] + second["claimed"] + retry["claimed"] >= 2
     assert _entry_scores(teacher_id) == {"G01": 3, "G08": 5}
     with session_scope(engine) as session:
-        account = session.get(ScoreAccountRecord, f"{teacher_id}:NEW_TEACHER_TASK")
+        account = session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        )
         assert account is not None and account.current_score == 8
         assert session.scalar(
             select(func.count()).select_from(ScoreEntryRecord).where(
@@ -762,7 +1124,7 @@ def test_poison_event_is_not_hot_looped_and_moves_to_dead_letter() -> None:
     assert worker.run_once(max_events=10)["claimed"] == 0
 
 
-def test_same_teacher_events_batch_assignment_locks_without_n_plus_one() -> None:
+def test_same_teacher_events_batch_assignment_reads_without_n_plus_one() -> None:
     _prepare_config()
     teacher_id = "REAL-SCORE-BATCH-LOCKS"
     _teacher(teacher_id)

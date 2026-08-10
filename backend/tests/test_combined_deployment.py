@@ -13,6 +13,10 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "deploy" / "combined"
+SOURCE_WORKER_ENV_FILE = (
+    "${TIDE_SOURCE_WORKER_ENV_FILE:?Set TIDE_SOURCE_WORKER_ENV_FILE "
+    "to a protected source-worker-only env file}"
+)
 EXPECTED_TEACHER_MIGRATIONS = (
     "0001_initial",
     "0002_shared_database_exchange",
@@ -37,6 +41,11 @@ EXPECTED_TEACHER_MIGRATIONS = (
     "0023_teacher_support_operator_atomicity",
     "0024_support_ticket_cas_and_function_owner",
     "0025_fixed_task_semantic_alignment",
+    "0026_kuozhi_course_syncs",
+    "0027_remove_local_quiz_runtime",
+    "0028_retire_task_business_change_view",
+    "0029_remove_unused_tide_objects",
+    "0030_remove_unused_columns_and_orphan_function",
 )
 EXPECTED_FIXED_TASKS = (
     ("G01", "Profile & Credentials Completion", 3),
@@ -66,6 +75,7 @@ def test_combined_deployment_exposes_only_the_edge() -> None:
         "teacher-migrate",
         "api",
         "score-settlement",
+        "source-wide",
         "web",
         "teacher-api",
         "teacher-web",
@@ -116,6 +126,9 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
 
     assert services["api"]["env_file"] != services["teacher-api"]["env_file"]
     assert services["migrate"]["env_file"] != services["api"]["env_file"]
+    assert services["source-wide"]["env_file"] == [SOURCE_WORKER_ENV_FILE]
+    assert services["source-wide"]["env_file"] != services["api"]["env_file"]
+    assert services["source-wide"]["env_file"] != services["migrate"]["env_file"]
     assert services["contract-probe"]["env_file"] != services["migrate"]["env_file"]
     assert services["contract-probe"]["env_file"] != services["api"]["env_file"]
     assert services["contract-probe"]["env_file"] == [
@@ -163,6 +176,49 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
     ]
 
 
+def test_combined_deployment_runs_source_worker_with_bounded_resources() -> None:
+    source_worker = _compose()["services"]["source-wide"]
+
+    assert source_worker["command"] == [
+        "python",
+        "scripts/run_source_wide_worker.py",
+        "--watch",
+        "--max-events",
+        "25",
+        "--interval-seconds",
+        "3",
+        "--heartbeat-path",
+        "/tmp/tit-source-worker-heartbeat",
+        "--readiness-path",
+        "/tmp/tit-source-worker-readiness",
+    ]
+    assert source_worker["environment"]["TIT_DB_POOL_SIZE"] == (
+        "${TIT_SOURCE_WORKER_DB_POOL_SIZE:-1}"
+    )
+    assert source_worker["environment"]["TIT_DB_MAX_OVERFLOW"] == (
+        "${TIT_SOURCE_WORKER_DB_MAX_OVERFLOW:-0}"
+    )
+    assert source_worker["read_only"] is True
+    assert source_worker["pids_limit"] == 128
+    assert source_worker["cpus"] == 0.75
+    assert source_worker["mem_limit"] == "768m"
+    assert source_worker["networks"] == ["ops-internal"]
+    assert source_worker["healthcheck"]["test"] == [
+        "CMD",
+        "python",
+        "scripts/run_source_wide_worker.py",
+        "--healthcheck",
+        "--heartbeat-path",
+        "/tmp/tit-source-worker-heartbeat",
+        "--readiness-path",
+        "/tmp/tit-source-worker-readiness",
+        "--max-heartbeat-age-seconds",
+        "90",
+        "--max-readiness-age-seconds",
+        "90",
+    ]
+
+
 def test_combined_preflight_and_database_probe_fail_closed() -> None:
     preflight = (DEPLOY / "preflight.sh").read_text(encoding="utf-8")
     probe = (DEPLOY / "contract-probe.sql").read_text(encoding="utf-8")
@@ -175,9 +231,17 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0017_task_assignment_teacher_response" in preflight
     assert "0024_support_ticket_cas_and_function_owner" in preflight
     assert "0025_fixed_task_semantic_alignment" in preflight
+    assert "0028_retire_task_business_change_view" in preflight
+    assert "0029_remove_unused_tide_objects" in preflight
+    assert "0030_remove_unused_columns_and_orphan_function" in preflight
+    assert "public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030" in preflight
+    assert "product_analytics_recorded" in preflight
     assert "Lesson Preparation&Device Network Check" in preflight
     assert "is_loopback_or_rfc1918_ipv4" in preflight
     assert "TIDE_CONTRACT_PROBE_ENV_FILE" in preflight
+    assert "TIDE_SOURCE_WORKER_ENV_FILE" in preflight
+    assert "TIT_SOURCE_WORKER_DATABASE_URL" in preflight
+    assert "tit_source_worker_runtime" in preflight
     assert "公司网关可信源" in preflight
 
     assert "current_user IS DISTINCT FROM 'tit_contract_probe'" in probe
@@ -186,7 +250,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "pg_stat_ssl" in probe
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
-    assert "20260729_38_catalog_scores" in probe
+    assert "20260807_49_unused_columns" in probe
     assert "actual_titles text[]" in probe
     assert (
         "ARRAY['G01','G02','G03','G04','G05','G06','G07','G08','G09']"
@@ -199,6 +263,17 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "interval ''48 hours''" in probe
     assert "0024_support_ticket_cas_and_function_owner" in probe
     assert "0025_fixed_task_semantic_alignment" in probe
+    assert "0028_retire_task_business_change_view" in probe
+    assert "0029_remove_unused_tide_objects" in probe
+    assert "0030_remove_unused_columns_and_orphan_function" in probe
+    assert "analytics_task_business_change_v1" in probe
+    assert "teacher_metric_snapshots" in probe
+    assert "teacher_photo_runs" in probe
+    assert "complaint_category_rules', 'learning_title" in probe
+    assert "complaint_category_rules', 'learning_url" in probe
+    assert "operator_sessions', 'last_seen_at" in probe
+    assert "file_objects', 'visibility" in probe
+    assert "tide.enforce_outbox_target()" in probe
     assert "p_message IS NULL" in probe
     assert "tide_support_ticket_owner" in probe
     assert "ALTER ROLE tit_contract_probe SET default_transaction_read_only" in grants
@@ -206,6 +281,22 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "REVOKE ALL PRIVILEGES ON ALL TABLES" in grants
     assert "sslmode=verify-full" in runner
     assert "--no-password" in runner
+
+
+def test_tide_0030_accepts_only_its_own_postgresql_18_not_null_dependency() -> None:
+    migration = (
+        ROOT
+        / "teacher/backend/database/migrations"
+        / "0030_remove_unused_columns_and_orphan_function.up.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "attribute.attnotnull" in migration
+    assert "visibility_is_not_null IS DISTINCT FROM true" in migration
+    assert "file_objects_visibility_not_null" in migration
+    assert "constraint_row.contype = 'n'" in migration
+    assert "dependency.objid = visibility_not_null_constraint_oid" in migration
+    assert "DROP COLUMN visibility" in migration
+    assert "CASCADE" not in migration.upper()
 
 
 def _teacher_catalog_fixture(
@@ -226,12 +317,21 @@ def _teacher_catalog_fixture(
 
 def _teacher_migrator_fixture(
     migrations: tuple[str, ...] = EXPECTED_TEACHER_MIGRATIONS,
+    *,
+    include_cross_chain_gate: bool = True,
 ) -> str:
     migration_lines = "\n".join(
         f"  {migration_id}" for migration_id in migrations
     )
+    cross_chain_gate = (
+        "# public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030\n"
+        "product_analytics_recorded=true\n"
+        if include_cross_chain_gate
+        else ""
+    )
     return (
         "#!/usr/bin/env bash\n"
+        f"{cross_chain_gate}"
         "TARGET_MIGRATION="
         f'"${{TIDE_MIGRATION_TARGET:-{migrations[-1]}}}"\n'
         "PRODUCTION_MIGRATIONS=(\n"
@@ -260,6 +360,14 @@ def _make_preflight_environment(
         "backend/database/scripts/apply-production.sh": _teacher_migrator_fixture(),
         "backend/database/migrations/"
         "0025_fixed_task_semantic_alignment.up.sql": "BEGIN;\nCOMMIT;\n",
+        "backend/database/migrations/"
+        "0028_retire_task_business_change_view.up.sql": "BEGIN;\nCOMMIT;\n",
+        "backend/database/migrations/"
+        "0029_remove_unused_tide_objects.up.sql": "BEGIN;\nCOMMIT;\n",
+        "backend/database/migrations/"
+        "0030_remove_unused_columns_and_orphan_function.up.sql": (
+            "BEGIN;\nCOMMIT;\n"
+        ),
         "backend/Dockerfile": "FROM scratch\n",
         "backend/Dockerfile.migrate": "FROM scratch\n",
         "frontend/Dockerfile": "FROM scratch\n",
@@ -301,12 +409,20 @@ def _make_preflight_environment(
     environment_files = [
         tmp_path / "ops.env",
         tmp_path / "ops-migration.env",
+        tmp_path / "source-worker.env",
         tmp_path / "contract-probe.env",
         tmp_path / "teacher.env",
         tmp_path / "teacher-migration.env",
     ]
     for environment_file in environment_files:
         environment_file.write_text("PLACEHOLDER=true\n", encoding="utf-8")
+    environment_files[2].write_text(
+        "TIT_SOURCE_WORKER_DATABASE_URL="
+        "postgresql+psycopg://tit_source_worker_runtime:secret@db.example/"
+        "tit_growth?sslmode=verify-full\n"
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth\n",
+        encoding="utf-8",
+    )
 
     return {
         **os.environ,
@@ -319,9 +435,10 @@ def _make_preflight_environment(
         "TIDE_DATABASE_NAME": "tit_growth",
         "TIDE_OPS_ENV_FILE": str(environment_files[0]),
         "TIDE_OPS_MIGRATION_ENV_FILE": str(environment_files[1]),
-        "TIDE_CONTRACT_PROBE_ENV_FILE": str(environment_files[2]),
-        "TIDE_TEACHER_ENV_FILE": str(environment_files[3]),
-        "TIDE_TEACHER_MIGRATION_ENV_FILE": str(environment_files[4]),
+        "TIDE_SOURCE_WORKER_ENV_FILE": str(environment_files[2]),
+        "TIDE_CONTRACT_PROBE_ENV_FILE": str(environment_files[3]),
+        "TIDE_TEACHER_ENV_FILE": str(environment_files[4]),
+        "TIDE_TEACHER_MIGRATION_ENV_FILE": str(environment_files[5]),
         "TIDE_TEACHER_REPO_PATH": str(teacher_repo),
         "TIDE_TEACHER_EXPECTED_COMMIT": commit,
         "TIDE_TEACHER_PUBLIC_ASSET_BASE_URL": "https://media.example.com",
@@ -364,7 +481,7 @@ def _run_preflight(environment: dict[str, str]) -> subprocess.CompletedProcess[s
     )
 
 
-def test_combined_preflight_rejects_teacher_chain_ending_at_only_0024(
+def test_combined_preflight_rejects_teacher_chain_ending_before_0030(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
@@ -377,7 +494,23 @@ def test_combined_preflight_rejects_teacher_chain_ending_at_only_0024(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0025 结尾的完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0030 结尾的完整有序生产链" in result.stderr
+
+
+def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
+    tmp_path: Path,
+) -> None:
+    environment = _make_preflight_environment(tmp_path)
+    environment = _commit_teacher_fixture_change(
+        environment,
+        "backend/database/scripts/apply-production.sh",
+        _teacher_migrator_fixture(include_cross_chain_gate=False),
+    )
+
+    result = _run_preflight(environment)
+
+    assert result.returncode != 0
+    assert "public46→teacher0028→public49→teacher0030" in result.stderr
 
 
 def test_combined_preflight_accepts_teacher_source_inside_one_clean_repository(

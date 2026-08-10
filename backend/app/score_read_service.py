@@ -4,21 +4,25 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import Engine, func, select
+from sqlalchemy.orm import Session
 
 from .database import engine as default_engine
 from .database import session_scope
 from .db_models import (
-    LessonDimensionScoreRecord,
-    LessonFactRecord,
+    ComplaintCategoryRuleRecord,
+    LessonScoreResultRecord,
+    LessonSourceWideRecord,
     ScoreAccountRecord,
     ScoreComponentAccountRecord,
-    TeacherMetricSnapshotRecord,
     TeacherRecord,
+    TeacherSourceWideRecord,
 )
 from .lesson_quality import hardware_quality_passed, is_perfect_lesson
+from .personalized_rules import normalize_text
 
 
 DIMENSION_ORDER = {
@@ -35,6 +39,14 @@ DIMENSION_LABELS = {
     "CAPACITY": "供给达标（Peak slots）",
     "NEW_TEACHER_TASK": "成长任务（必修）",
 }
+_COMPLETED_LESSON_STATUSES = frozenset(
+    {"已完课", "完课", "ended", "end", "completed", "complete", "finished"}
+)
+_LESSON_DIMENSION_COMPONENTS = {
+    "USER_FEEDBACK": ("FEEDBACK_PRAISE", "FEEDBACK_FAVORITE"),
+    "RELIABILITY": ("PERFECT_COMPLETED", "PEAK_COMPLETED"),
+    "CLASS_QUALITY": ("CLASS_QUALITY_HARDWARE",),
+}
 
 
 class ScoreReadModelNotFound(LookupError):
@@ -45,11 +57,102 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _lesson_business_facts(lesson: LessonFactRecord) -> dict[str, Any]:
-    """Return the typed business facts that are safe for both consumers."""
+def _source_lesson_is_completed(status: str | None) -> bool:
+    return str(status or "").strip().casefold() in _COMPLETED_LESSON_STATUSES
 
+
+def _evidence_status(statuses: list[str]) -> str:
+    if not statuses:
+        return "SOURCE_MISSING"
+    if all(status == "CONFIRMED" for status in statuses):
+        return "CONFIRMED"
+    if all(status == "SOURCE_MISSING" for status in statuses):
+        return "SOURCE_MISSING"
+    return "PARTIAL"
+
+
+def _source_lesson_dimensions(
+    result: LessonScoreResultRecord,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    persisted = result.dimensions if isinstance(result.dimensions, dict) else {}
+    score_by_dimension = {
+        "USER_FEEDBACK": result.user_feedback_score,
+        "RELIABILITY": result.reliability_score,
+        "CLASS_QUALITY": result.class_quality_score,
+    }
+    projected: list[dict[str, Any]] = []
+    all_statuses: list[str] = []
+    for dimension, component_codes in _LESSON_DIMENSION_COMPONENTS.items():
+        raw_dimension = persisted.get(dimension)
+        raw_dimension = raw_dimension if isinstance(raw_dimension, dict) else {}
+        raw_components = raw_dimension.get("components")
+        raw_components = raw_components if isinstance(raw_components, list) else []
+        components: list[dict[str, Any]] = []
+        statuses: list[str] = []
+        for index, component_code in enumerate(component_codes):
+            raw_component = (
+                raw_components[index]
+                if index < len(raw_components)
+                and isinstance(raw_components[index], dict)
+                else {}
+            )
+            component = deepcopy(raw_component)
+            component["code"] = component_code
+            component_status = str(
+                component.get("evidence_status") or "SOURCE_MISSING"
+            )
+            component["evidence_status"] = component_status
+            components.append(component)
+            statuses.append(component_status)
+        all_statuses.extend(statuses)
+        projected.append(
+            {
+                "code": dimension,
+                "score": float(score_by_dimension[dimension]),
+                "evidence_status": _evidence_status(statuses),
+                "evidence_coverage": (
+                    f"{sum(status == 'CONFIRMED' for status in statuses)}"
+                    f"/{len(statuses)}"
+                ),
+                "business_facts": components,
+            }
+        )
+    return projected, all_statuses
+
+
+def _source_complaint_rules(
+    session: Session,
+    lessons: list[LessonSourceWideRecord],
+) -> dict[str, ComplaintCategoryRuleRecord]:
+    categories = {
+        normalize_text(lesson.complaint_category_l3)
+        for lesson in lessons
+        if normalize_text(lesson.complaint_category_l3)
+    }
+    if not categories:
+        return {}
+    records = session.scalars(
+        select(ComplaintCategoryRuleRecord)
+        .where(
+            ComplaintCategoryRuleRecord.category_l3_normalized.in_(categories)
+        )
+        .order_by(
+            ComplaintCategoryRuleRecord.created_at.desc(),
+            ComplaintCategoryRuleRecord.rule_id.desc(),
+        )
+    ).all()
+    result: dict[str, ComplaintCategoryRuleRecord] = {}
+    for record in records:
+        result.setdefault(normalize_text(record.category_l3_normalized), record)
+    return result
+
+
+def _source_lesson_business_facts(
+    lesson: LessonSourceWideRecord,
+    complaint_rule: ComplaintCategoryRuleRecord | None,
+) -> dict[str, Any]:
     is_perfect = is_perfect_lesson(
-        lesson_lifecycle_status=lesson.lesson_lifecycle_status,
+        lesson_lifecycle_status=lesson.lesson_status,
         is_late=lesson.is_late,
         is_early=lesson.is_early,
     )
@@ -60,7 +163,7 @@ def _lesson_business_facts(lesson: LessonFactRecord) -> dict[str, Any]:
     )
     return {
         "attendance": {
-            "lesson_lifecycle_status": lesson.lesson_lifecycle_status,
+            "lesson_lifecycle_status": lesson.lesson_status,
             "is_late": lesson.is_late,
             "is_early": lesson.is_early,
             "is_false_early_leave": lesson.is_false_early_leave,
@@ -68,12 +171,12 @@ def _lesson_business_facts(lesson: LessonFactRecord) -> dict[str, Any]:
         },
         "user_feedback": {
             "has_positive_feedback_tag": lesson.has_positive_feedback_tag,
-            "positive_tag_value": lesson.positive_tag_value,
+            "positive_tag_value": None,
             "has_negative_feedback_tag": lesson.has_negative_feedback_tag,
-            "negative_tag_values": deepcopy(lesson.negative_tag_values or []),
+            "negative_tag_values": [],
             "feedback_detail": lesson.feedback_detail,
             "is_favorited": lesson.is_favorited,
-            "is_rebooked": lesson.is_rebooked,
+            "is_rebooked": None,
             "is_blocked": lesson.is_blocked,
         },
         "classroom_quality": {
@@ -83,17 +186,92 @@ def _lesson_business_facts(lesson: LessonFactRecord) -> dict[str, Any]:
             "hardware_quality_passed": hardware_quality,
             "is_perfect": is_perfect,
         },
-        "capacity": {
-            "is_peak": lesson.is_peak,
-        },
+        "capacity": {"is_peak": lesson.is_peak},
         "complaint": {
             "category_l1": lesson.complaint_category_l1,
             "category_l2": lesson.complaint_category_l2,
             "category_l3": lesson.complaint_category_l3,
-            "level": lesson.complaint_source_level,
-            "route": lesson.complaint_route,
+            "level": complaint_rule.source_level if complaint_rule else None,
+            "route": complaint_rule.default_route if complaint_rule else None,
         },
     }
+
+
+def _source_lesson_page(
+    session: Session,
+    teacher_id: str,
+    *,
+    page: int,
+    page_size: int,
+) -> tuple[int, list[dict[str, Any]]]:
+    lesson_join = (
+        LessonScoreResultRecord.lesson_id == LessonSourceWideRecord.course_id
+    )
+    total = int(
+        session.scalar(
+            select(func.count())
+            .select_from(LessonSourceWideRecord)
+            .where(LessonSourceWideRecord.teacher_id == teacher_id)
+        )
+        or 0
+    )
+    rows = session.execute(
+        select(LessonSourceWideRecord, LessonScoreResultRecord)
+        .outerjoin(LessonScoreResultRecord, lesson_join)
+        .where(LessonSourceWideRecord.teacher_id == teacher_id)
+        .order_by(
+            LessonSourceWideRecord.lesson_date.desc().nullslast(),
+            LessonSourceWideRecord.lesson_time.desc().nullslast(),
+            LessonSourceWideRecord.course_id,
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    lessons = [row[0] for row in rows]
+    complaint_rules = _source_complaint_rules(session, lessons)
+    items: list[dict[str, Any]] = []
+    for lesson, result in rows:
+        if result is None:
+            dimensions: list[dict[str, Any]] = []
+            component_statuses: list[str] = []
+        else:
+            dimensions, component_statuses = _source_lesson_dimensions(result)
+        scheduled_start_at = (
+            datetime.combine(
+                lesson.lesson_date,
+                lesson.lesson_time,
+                tzinfo=timezone.utc,
+            )
+            if lesson.lesson_date is not None and lesson.lesson_time is not None
+            else None
+        )
+        complaint_rule = complaint_rules.get(
+            normalize_text(lesson.complaint_category_l3)
+        )
+        items.append(
+            {
+                "lesson_id": lesson.course_id,
+                "source_appoint_id": lesson.course_id,
+                "scheduled_start_at": _iso(scheduled_start_at),
+                "lesson_local_date": _iso(lesson.lesson_date),
+                "lesson_local_time": _iso(lesson.lesson_time),
+                "status": (
+                    str(lesson.lesson_status).strip()
+                    if str(lesson.lesson_status or "").strip()
+                    else "SOURCE_MISSING"
+                ),
+                "valid_for_scoring": _source_lesson_is_completed(
+                    lesson.lesson_status
+                ),
+                "evidence_status": _evidence_status(component_statuses),
+                "business_facts": _source_lesson_business_facts(
+                    lesson,
+                    complaint_rule,
+                ),
+                "dimensions": dimensions,
+            }
+        )
+    return total, items
 
 
 class ScoreReadService:
@@ -112,15 +290,14 @@ class ScoreReadService:
             if teacher is None:
                 raise ScoreReadModelNotFound(teacher_id)
 
-            snapshot = None
-            if teacher.source_batch_id:
-                snapshot = session.scalar(
-                    select(TeacherMetricSnapshotRecord).where(
-                        TeacherMetricSnapshotRecord.teacher_id == teacher_id,
-                        TeacherMetricSnapshotRecord.batch_id
-                        == teacher.source_batch_id,
+            teacher_source_present = (
+                session.scalar(
+                    select(TeacherSourceWideRecord.tchr_id).where(
+                        TeacherSourceWideRecord.tchr_id == teacher_id
                     )
                 )
+                is not None
+            )
             dimensions = list(
                 session.scalars(
                     select(ScoreAccountRecord)
@@ -144,49 +321,12 @@ class ScoreReadService:
             for component in components:
                 components_by_dimension[component.dimension].append(component)
 
-            lesson_total = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(LessonFactRecord)
-                    .where(LessonFactRecord.teacher_id == teacher_id)
-                )
-                or 0
+            lesson_total, lesson_items = _source_lesson_page(
+                session,
+                teacher_id,
+                page=lesson_page,
+                page_size=lesson_page_size,
             )
-            lesson_query = (
-                select(LessonFactRecord)
-                .where(LessonFactRecord.teacher_id == teacher_id)
-                .order_by(
-                    LessonFactRecord.lesson_local_date.desc(),
-                    LessonFactRecord.lesson_local_time.desc(),
-                    LessonFactRecord.lesson_id,
-                )
-                .offset((lesson_page - 1) * lesson_page_size)
-                .limit(lesson_page_size)
-            )
-            lessons = list(session.scalars(lesson_query).all())
-            lesson_ids = [item.lesson_id for item in lessons]
-            lesson_scores = (
-                list(
-                    session.scalars(
-                        select(LessonDimensionScoreRecord)
-                        .where(
-                            LessonDimensionScoreRecord.teacher_id == teacher_id,
-                            LessonDimensionScoreRecord.lesson_id.in_(lesson_ids),
-                        )
-                        .order_by(
-                            LessonDimensionScoreRecord.lesson_id,
-                            LessonDimensionScoreRecord.dimension,
-                        )
-                    ).all()
-                )
-                if lesson_ids
-                else []
-            )
-            scores_by_lesson: dict[
-                str, list[LessonDimensionScoreRecord]
-            ] = defaultdict(list)
-            for row in lesson_scores:
-                scores_by_lesson[row.lesson_id].append(row)
 
             calculated_at = max(
                 [
@@ -195,34 +335,40 @@ class ScoreReadService:
                 + [item.updated_at for item in dimensions],
                 default=teacher.updated_at,
             )
-            snapshot_payload = snapshot.score_policy_snapshot if snapshot else {}
-            teacher_payload = teacher.payload if isinstance(teacher.payload, dict) else {}
+            teacher_payload = (
+                teacher.payload if isinstance(teacher.payload, dict) else {}
+            )
+            raw_thresholds = teacher_payload.get("thresholds")
+            thresholds: dict[str, Any] = (
+                deepcopy(raw_thresholds)
+                if isinstance(raw_thresholds, dict)
+                else {}
+            )
+            graduation_threshold = teacher_payload.get("graduation_threshold")
+            if graduation_threshold is None:
+                graduation_threshold = teacher.graduation_threshold
+            thresholds.setdefault(
+                "graduation_raw_score",
+                float(graduation_threshold),
+            )
+            gold_threshold = teacher_payload.get("gold_threshold")
+            if gold_threshold is not None:
+                thresholds.setdefault("gold_raw_score", float(gold_threshold))
             return {
                 "teacher_id": teacher.teacher_id,
                 "camp_enrollment_id": teacher.camp_enrollment_id,
                 "score_rule_version": (
-                    snapshot.score_rule_version
-                    if snapshot
-                    else teacher_payload.get("score_policy_version")
+                    teacher_payload.get("score_policy_version")
+                    or teacher_payload.get("score_rule_version")
                 ),
-                "score_policy_sha256": (
-                    snapshot.score_policy_sha256
-                    if snapshot
-                    else teacher_payload.get("score_policy_sha256")
+                "score_policy_sha256": teacher_payload.get(
+                    "score_policy_sha256"
                 ),
-                "raw_total_score": (
-                    float(snapshot.raw_total_score)
-                    if snapshot
-                    else float(teacher.total_score)
-                ),
-                "public_total_score": (
-                    float(snapshot.public_total_score)
-                    if snapshot
-                    else float(
-                        teacher_payload.get(
-                            "external_display_score",
-                            teacher.total_score,
-                        )
+                "raw_total_score": float(teacher.total_score),
+                "public_total_score": float(
+                    teacher_payload.get(
+                        "external_display_score",
+                        teacher.total_score,
                     )
                 ),
                 "graduation_state": teacher.graduation_state,
@@ -236,13 +382,10 @@ class ScoreReadService:
                 ),
                 "calculated_at": _iso(calculated_at),
                 "source": {
-                    "teacher_batch_id": teacher.source_batch_id,
-                    "lesson_batch_ids": sorted(
-                        {
-                            item.source_lesson_batch_id
-                            for item in components
-                            if item.source_lesson_batch_id
-                        }
+                    "teacher_source_status": (
+                        "CONFIRMED"
+                        if teacher_source_present
+                        else "SOURCE_MISSING"
                     ),
                     "score_projection_id": teacher_payload.get(
                         "score_projection_id"
@@ -317,53 +460,7 @@ class ScoreReadService:
                     "page": lesson_page,
                     "page_size": lesson_page_size,
                     "total": lesson_total,
-                    "items": [
-                        {
-                            "lesson_id": lesson.lesson_id,
-                            "source_appoint_id": lesson.source_appoint_id,
-                            "scheduled_start_at": _iso(
-                                lesson.scheduled_start_at
-                            ),
-                            "lesson_local_date": (
-                                lesson.lesson_local_date.isoformat()
-                                if lesson.lesson_local_date
-                                else None
-                            ),
-                            "lesson_local_time": (
-                                lesson.lesson_local_time.isoformat()
-                                if lesson.lesson_local_time
-                                else None
-                            ),
-                            "status": lesson.lesson_lifecycle_status,
-                            "valid_for_scoring": lesson.valid_for_scoring,
-                            "evidence_status": lesson.evidence_status,
-                            "business_facts": _lesson_business_facts(lesson),
-                            "dimensions": [
-                                {
-                                    "code": score.dimension,
-                                    "score": float(score.current_score),
-                                    "evidence_status": score.evidence_status,
-                                    "evidence_coverage": score.evidence_coverage,
-                                    "business_facts": deepcopy(
-                                        (score.payload or {}).get(
-                                            "business_facts", []
-                                        )
-                                    ),
-                                }
-                                for score in sorted(
-                                    scores_by_lesson[lesson.lesson_id],
-                                    key=lambda item: DIMENSION_ORDER.get(
-                                        item.dimension, 999
-                                    ),
-                                )
-                            ],
-                        }
-                        for lesson in lessons
-                    ],
+                    "items": lesson_items,
                 },
-                "thresholds": deepcopy(
-                    snapshot_payload.get("thresholds", {})
-                    if isinstance(snapshot_payload, dict)
-                    else {}
-                ),
+                "thresholds": thresholds,
             }

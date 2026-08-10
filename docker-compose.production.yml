@@ -124,6 +124,66 @@ services:
     networks:
       - runtime
 
+  source-wide:
+    build:
+      context: ./backend
+    env_file:
+      - ${TIDE_SOURCE_WORKER_ENV_FILE:?Set TIDE_SOURCE_WORKER_ENV_FILE to a protected source-worker-only env file}
+    environment:
+      APP_ENV: production
+      TIT_MIGRATION_MODE: "false"
+      TIT_DB_POOL_SIZE: ${TIT_SOURCE_WORKER_DB_POOL_SIZE:-1}
+      TIT_DB_MAX_OVERFLOW: ${TIT_SOURCE_WORKER_DB_MAX_OVERFLOW:-0}
+      TIT_DB_POOL_TIMEOUT_SECONDS: ${TIT_SOURCE_WORKER_DB_POOL_TIMEOUT_SECONDS:-5}
+      TIT_DB_POOL_RECYCLE_SECONDS: ${TIT_DB_POOL_RECYCLE_SECONDS:-1800}
+      TIT_DB_APPLICATION_NAME: tit-growth-source-worker
+      TIT_DB_STATEMENT_TIMEOUT_MS: ${TIT_SOURCE_WORKER_DB_STATEMENT_TIMEOUT_MS:-60000}
+      TIT_SOURCE_WORKER_HEARTBEAT: /tmp/tit-source-worker-heartbeat
+      TIT_SOURCE_WORKER_READINESS: /tmp/tit-source-worker-readiness
+    command:
+      [
+        "python",
+        "scripts/run_source_wide_worker.py",
+        "--watch",
+        "--max-events",
+        "25",
+        "--interval-seconds",
+        "3",
+        "--heartbeat-path",
+        "/tmp/tit-source-worker-heartbeat",
+        "--readiness-path",
+        "/tmp/tit-source-worker-readiness",
+      ]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "scripts/run_source_wide_worker.py",
+          "--healthcheck",
+          "--heartbeat-path",
+          "/tmp/tit-source-worker-heartbeat",
+          "--readiness-path",
+          "/tmp/tit-source-worker-readiness",
+          "--max-heartbeat-age-seconds",
+          "90",
+          "--max-readiness-age-seconds",
+          "90",
+        ]
+      interval: 20s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging: *default-logging
+    networks:
+      - runtime
+
   web:
     build:
       context: ./frontend

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 
-from app.database import engine
-from app.simulated_cohort_seed import remove_balanced_simulated_cohort
+from app.simulated_cohort_seed import (
+    LegacySimulatedCohortRetiredError,
+    remove_balanced_simulated_cohort,
+)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Guarded cleanup for the explicit July 28 test cohort.",
     )
@@ -22,14 +24,17 @@ def main() -> int:
         default=20,
         help="Safety guard for the exact number of simulation teachers.",
     )
-    args = parser.parse_args()
-    result = remove_balanced_simulated_cohort(
-        engine,
-        expected_teacher_count=args.expected_teachers,
-        apply=args.apply,
-    )
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0
+    args = parser.parse_args(argv)
+    try:
+        remove_balanced_simulated_cohort(
+            object(),  # type: ignore[arg-type]
+            expected_teacher_count=args.expected_teachers,
+            apply=args.apply,
+        )
+    except LegacySimulatedCohortRetiredError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    raise AssertionError("retired simulated cohort cleanup unexpectedly ran")
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ def test_gaea_uses_one_project_and_one_image() -> None:
     assert not (GAEA_DIR / "gaea.yml").exists()
     assert not (GAEA_DIR / "operations" / "Dockerfile").exists()
     assert not (GAEA_DIR / "score-settlement" / "Dockerfile").exists()
+    assert not (GAEA_DIR / "source-wide" / "Dockerfile").exists()
     assert list(GAEA_DIR.glob("*/Dockerfile")) == []
 
 
@@ -50,7 +51,6 @@ def test_company_test_migrator_reads_back_multi_replica_contract() -> None:
     for relation in (
         "tide.job_leases",
         "tide.job_leases_expiry_idx",
-        "tide.teacher_photo_runs_pending_claim_idx",
         "tide.analytics_task_event_semantics_v2",
         "tide.analytics_actor_task_journey_v2",
         "tide.analytics_task_assignment_funnel_v2",
@@ -60,13 +60,23 @@ def test_company_test_migrator_reads_back_multi_replica_contract() -> None:
     ):
         assert f"to_regclass('{relation}') is not null" in verification
 
-    for column in (
-        "processing_owner",
-        "lease_expires_at",
-        "attempt_count",
-        "next_attempt_at",
+    for retired_relation in (
+        "tide.outcome_projections",
+        "tide.camp_enrollment_projections",
+        "tide.audit_events",
+        "tide.task_template_files",
+        "tide.file_migrations",
+        "tide.teacher_photo_runs",
+        "tide.analytics_actor_task_journey_v1",
+        "tide.analytics_task_assignment_funnel_v1",
+        "tide.analytics_task_funnel_v1",
+        "tide.analytics_task_step_funnel_v1",
+        "tide.analytics_content_quality_v1",
     ):
-        assert f"'{column}'" in verification
+        assert f"to_regclass('{retired_relation}') is null" in verification
+
+    assert "column_name = 'visibility'" in verification
+    assert "to_regprocedure('tide.enforce_outbox_target()') is null" in verification
 
     for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
         assert (
@@ -187,7 +197,12 @@ def test_gaea_image_uses_internal_sources_and_s6_supervision() -> None:
     assert "USER gaea" not in dockerfile
     assert "nginx -t" in dockerfile
 
-    for service in ("operations", "teacher-api", "score-settlement"):
+    for service in (
+        "operations",
+        "teacher-api",
+        "score-settlement",
+        "source-wide",
+    ):
         run_script = (S6_DIR / service / "run").read_text(encoding="utf-8")
         assert "s6-setuidgid gaea" in run_script
 
@@ -335,14 +350,16 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "http://127.0.0.1:8080/health/ready" in healthcheck
     assert "http://127.0.0.1:3000/health/ready" not in healthcheck
     assert "TIDE_TEACHER_HOST must be a hostname" in healthcheck
-    assert "--healthcheck" in healthcheck
+    assert healthcheck.count("--healthcheck") == 2
     assert "--max-heartbeat-age-seconds 90" in healthcheck
+    assert "--max-readiness-age-seconds 90" in healthcheck
 
     expected_services = {
         "operations": "scripts/run_api.py",
         "teacher-api": "dist/src/main.js",
         "teacher-web": "nginx",
         "score-settlement": "settle_shared_task_scores.py",
+        "source-wide": "run_source_wide_worker.py",
     }
     for service, command in expected_services.items():
         service_type = (S6_DIR / service / "type").read_text(
@@ -360,7 +377,27 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "--watch --max-events 25 --interval-seconds 3" in worker_run
     assert "--heartbeat-path /tmp/tit-score-worker-heartbeat" in worker_run
     assert "--heartbeat-path /tmp/tit-score-worker-heartbeat" in healthcheck
+    source_worker_run = (S6_DIR / "source-wide" / "run").read_text(
+        encoding="utf-8"
+    )
+    assert (S6_DIR / "source-wide" / "timeout-kill").read_text(
+        encoding="utf-8"
+    ).strip() == "25000"
+    assert "TIT_SOURCE_WORKER_DATABASE_URL is required" in source_worker_run
+    assert "--watch --max-events 25 --interval-seconds 3" in source_worker_run
+    assert (
+        "--heartbeat-path /tmp/tit-source-worker-heartbeat"
+        in source_worker_run
+    )
+    assert (
+        "--readiness-path /tmp/tit-source-worker-readiness"
+        in source_worker_run
+    )
+    assert "--heartbeat-path /tmp/tit-source-worker-heartbeat" in healthcheck
+    assert "--readiness-path /tmp/tit-source-worker-readiness" in healthcheck
     assert "TIT_SCORE_WORKER_HEARTBEAT" in dockerfile
+    assert "TIT_SOURCE_WORKER_HEARTBEAT" in dockerfile
+    assert "TIT_SOURCE_WORKER_READINESS" in dockerfile
     assert "STOPSIGNAL SIGTERM" in dockerfile
 
 
@@ -369,7 +406,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
 
     assert "单模块" in readme
     assert "单镜像" in readme
-    assert "四个常驻进程" in readme
+    assert "五个常驻进程" in readme
     assert "8010" in readme and "8080" in readme and "3000" in readme
     assert "设置为 `2` 或更高" in readme
     assert "RollingUpdate" in readme
@@ -386,6 +423,9 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "同一 UID" in readme
     assert "tit_growth_migrator" in readme
     assert "tide_migrator" in readme
+    assert "20260807_49_unused_columns" in readme
+    assert "0030_remove_unused_columns_and_orphan_function" in readme
+    assert "public 46 → teacher 0028 → public 49 → teacher 0030" in readme
     assert "settle_shared_task_scores.py --watch" in readme
     assert "TIT_SCORE_WORKER_HEARTBEAT" in readme
     assert "TIT_BOOTSTRAP_USERNAME" in readme

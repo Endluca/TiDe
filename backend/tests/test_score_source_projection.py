@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 
 from app.database import engine, session_scope
 from app.db_models import (
-    LessonFactRecord,
+    ComplaintCategoryRuleRecord,
+    ComplaintRuleImportRecord,
+    LessonSourceWideRecord,
     TaskAssignmentRecord,
     TaskTemplateRecord,
     TeacherRecord,
@@ -31,7 +34,6 @@ def _add_teacher(teacher_id: str) -> None:
                 total_score=0,
                 graduation_threshold=100,
                 data_mode="REAL",
-                source_batch_id=None,
                 source_snapshot_label="TEST",
                 payload={"teacher_id": teacher_id, "data_mode": "REAL"},
                 created_at=NOW,
@@ -91,27 +93,53 @@ def _add_lesson(
     complaint_l2: str | None = None,
     complaint_l3: str | None = None,
     complaint_level_rank: int | None = None,
-    data_mode: str = "REAL",
 ) -> None:
     lesson_id = f"LESSON-{teacher_id}-{sequence}"
     with session_scope(engine) as session:
+        source_sha256 = hashlib.sha256(teacher_id.encode()).hexdigest()
+        if complaint_l3 is not None and complaint_level_rank is not None:
+            if session.get(ComplaintRuleImportRecord, source_sha256) is None:
+                session.add(
+                    ComplaintRuleImportRecord(
+                        source_sha256=source_sha256,
+                        source_filename="complaint-rules.xlsx",
+                        raw_rows=[
+                            {
+                                "source_row_number": sequence + 1,
+                                "一级分类": complaint_l1,
+                                "二级分类": complaint_l2,
+                                "三级分类": complaint_l3,
+                                "P级": f"P{complaint_level_rank}",
+                                "Course Title in the Learning Hub": None,
+                                "link": None,
+                            }
+                        ],
+                        imported_at=NOW,
+                    )
+                )
+            session.add(
+                ComplaintCategoryRuleRecord(
+                    rule_id=f"RULE-{teacher_id}-{sequence}",
+                    source_sha256=source_sha256,
+                    source_row_number=sequence + 1,
+                    category_l1=complaint_l1,
+                    category_l2=complaint_l2,
+                    category_l3=complaint_l3,
+                    category_l3_normalized=complaint_l3,
+                    source_level=f"L{complaint_level_rank}",
+                    severity_rank=complaint_level_rank,
+                    default_route="DIRECT",
+                    created_at=NOW,
+                )
+            )
         session.add(
-            LessonFactRecord(
-                lesson_id=lesson_id,
-                source_appoint_id=lesson_id,
-                camp_enrollment_id=f"CAMP-{teacher_id}",
+            LessonSourceWideRecord(
+                course_id=lesson_id,
                 teacher_id=teacher_id,
-                lesson_lifecycle_status="COMPLETED",
+                lesson_status="COMPLETED",
                 complaint_category_l1=complaint_l1,
                 complaint_category_l2=complaint_l2,
                 complaint_category_l3=complaint_l3,
-                complaint_level_rank=complaint_level_rank,
-                valid_for_scoring=False,
-                evidence_status="OBSERVED_REAL_SOURCE",
-                data_mode=data_mode,
-                payload={},
-                created_at=NOW,
-                updated_at=NOW,
             )
         )
 
@@ -202,7 +230,7 @@ def test_invalid_pinned_task_template_fails_closed_instead_of_using_snapshot_sco
     assert task_score["expected_count"] == 9
 
 
-def test_l0_complaints_are_aggregated_from_real_lesson_level_ranks() -> None:
+def test_l0_complaints_are_aggregated_from_current_lesson_source_and_rules() -> None:
     teacher_id = "PROJECTION-L0"
     _add_teacher(teacher_id)
     _add_lesson(
@@ -224,14 +252,6 @@ def test_l0_complaints_are_aggregated_from_real_lesson_level_ranks() -> None:
         complaint_level_rank=1,
     )
     _add_lesson(teacher_id, 4)
-    # Synthetic rows cannot establish or change a real qualification gate.
-    _add_lesson(
-        teacher_id,
-        5,
-        complaint_l3="Mock L0 category",
-        complaint_level_rank=0,
-        data_mode="MOCK",
-    )
 
     complaint = DatabaseStore(engine).score_account_values({teacher_id})[
         teacher_id
@@ -240,7 +260,10 @@ def test_l0_complaints_are_aggregated_from_real_lesson_level_ranks() -> None:
     assert complaint == {
         "count": 2,
         "source_mode": "DERIVED_REAL",
-        "source_field": "lesson_facts.complaint_level_rank",
+        "source_field": (
+            "lesson_source_wide.投诉三级分类+"
+            "complaint_category_rules.source_level"
+        ),
         "lesson_count": 4,
         "unmapped_complaint_count": 0,
     }

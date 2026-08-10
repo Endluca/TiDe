@@ -6,7 +6,7 @@ from sqlalchemy import event
 from app.database import engine, session_scope
 from app.db_models import TeacherRecord
 from app.main import app
-from app.teacher_read_service import DashboardReadService
+from app.teacher_read_service import DashboardReadService, TeacherReadService
 
 
 client = TestClient(app)
@@ -36,6 +36,75 @@ def test_dashboard_uses_compact_database_aggregation() -> None:
     assert dashboard["data_mode_counts"] == {"MOCK": 4}
     assert dashboard["employment_status_counts"] == {"unknown": 4}
     assert len(statements) == 4
+    assert all(
+        "teacher_metric_snapshots" not in statement.casefold()
+        for statement in statements
+    )
+
+
+def test_teacher_reads_use_current_teacher_projection_without_snapshot_join() -> None:
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, "T-1001")
+        assert teacher is not None
+        teacher.total_score = 123
+        teacher.graduation_threshold = 110
+        teacher.payload = {
+            **teacher.payload,
+            "employment_status": " HEI ",
+            # The typed scalar is the current total; this stale compatibility
+            # value must not override it.
+            "raw_total_score": 999,
+            "external_display_score": 88,
+            "graduation_threshold": 110,
+            "gold_threshold": 200,
+            "first_booked_date": "2026-08-01",
+            "is_cpl_tesol": True,
+            "is_self_introduce": False,
+            "lessons_completed": 17,
+            "score_policy_version": "source-current-v1",
+            "score_policy_sha256": "abc123",
+        }
+
+    statements: list[str] = []
+
+    def record_statement(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    service = TeacherReadService(engine)
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        page = service.list_teachers(employment_status="hei")
+        options = service.teacher_options(keyword="T-1001")
+        detail = service.teacher_detail("T-1001")
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert page["total"] == 1
+    assert page["items"][0]["teacher_id"] == "T-1001"
+    assert page["items"][0]["raw_total_score"] == 123
+    assert page["items"][0]["external_display_score"] == 88
+    assert options[0]["employment_status"] == " HEI "
+    assert detail["raw_total_score"] == 123
+    assert detail["total_score"] == 123
+    assert detail["external_display_score"] == 88
+    assert detail["first_booked_date"] == "2026-08-01"
+    assert detail["is_cpl_tesol"] is True
+    assert detail["is_self_introduce"] is False
+    assert detail["lessons_completed"] == 17
+    assert detail["score_policy_version"] == "source-current-v1"
+    assert detail["score_policy_sha256"] == "abc123"
+    assert all(
+        "teacher_metric_snapshots" not in statement.casefold()
+        for statement in statements
+    )
 
 
 def test_teacher_list_is_paged_filtered_and_lightweight() -> None:
@@ -115,7 +184,6 @@ def test_1069_teacher_list_projects_only_24_and_avoids_megabyte_response() -> No
                     total_score=0,
                     graduation_threshold=100,
                     data_mode="MIXED",
-                    source_batch_id=None,
                     source_snapshot_label=None,
                     payload={
                         "teacher_id": teacher_id,

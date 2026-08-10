@@ -47,6 +47,7 @@ services:
       - ${TIDE_TEACHER_MIGRATION_ENV_FILE:?Set TIDE_TEACHER_MIGRATION_ENV_FILE to a protected env file}
     environment:
       TIDE_MIGRATION_EXPECTED_DATABASE: ${TIDE_DATABASE_NAME:?Set TIDE_DATABASE_NAME}
+      TIDE_MIGRATION_TARGET: ${TIDE_TEACHER_MIGRATION_TARGET:-0030_remove_unused_columns_and_orphan_function}
     read_only: true
     tmpfs:
       - /tmp:size=32m
@@ -141,6 +142,66 @@ services:
           "scripts/settle_shared_task_scores.py",
           "--healthcheck",
           "--max-heartbeat-age-seconds",
+          "90",
+        ]
+      interval: 20s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging: *default-logging
+    networks:
+      - ops-internal
+
+  source-wide:
+    <<: *runtime-security
+    build:
+      context: ../../backend
+    env_file:
+      - ${TIDE_SOURCE_WORKER_ENV_FILE:?Set TIDE_SOURCE_WORKER_ENV_FILE to a protected source-worker-only env file}
+    environment:
+      APP_ENV: production
+      TIT_MIGRATION_MODE: "false"
+      TIT_DB_POOL_SIZE: ${TIT_SOURCE_WORKER_DB_POOL_SIZE:-1}
+      TIT_DB_MAX_OVERFLOW: ${TIT_SOURCE_WORKER_DB_MAX_OVERFLOW:-0}
+      TIT_DB_POOL_TIMEOUT_SECONDS: ${TIT_SOURCE_WORKER_DB_POOL_TIMEOUT_SECONDS:-5}
+      TIT_DB_POOL_RECYCLE_SECONDS: ${TIT_DB_POOL_RECYCLE_SECONDS:-1800}
+      TIT_DB_APPLICATION_NAME: tit-growth-source-worker
+      TIT_DB_STATEMENT_TIMEOUT_MS: ${TIT_SOURCE_WORKER_DB_STATEMENT_TIMEOUT_MS:-60000}
+      TIT_SOURCE_WORKER_HEARTBEAT: /tmp/tit-source-worker-heartbeat
+      TIT_SOURCE_WORKER_READINESS: /tmp/tit-source-worker-readiness
+    command:
+      [
+        "python",
+        "scripts/run_source_wide_worker.py",
+        "--watch",
+        "--max-events",
+        "25",
+        "--interval-seconds",
+        "3",
+        "--heartbeat-path",
+        "/tmp/tit-source-worker-heartbeat",
+        "--readiness-path",
+        "/tmp/tit-source-worker-readiness",
+      ]
+    tmpfs:
+      - /tmp:size=64m
+    pids_limit: 128
+    cpus: 0.75
+    mem_limit: 768m
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "scripts/run_source_wide_worker.py",
+          "--healthcheck",
+          "--heartbeat-path",
+          "/tmp/tit-source-worker-heartbeat",
+          "--readiness-path",
+          "/tmp/tit-source-worker-readiness",
+          "--max-heartbeat-age-seconds",
+          "90",
+          "--max-readiness-age-seconds",
           "90",
         ]
       interval: 20s

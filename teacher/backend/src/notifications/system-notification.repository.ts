@@ -305,12 +305,6 @@ export class SystemNotificationRepository {
           `teacher.teacher_id = ANY(${addValue(teacherIds)}::varchar[])`,
         );
       }
-      const campBatchIds = this.stringArray(audience.campBatchIds);
-      if (campBatchIds.length > 0) {
-        conditions.push(
-          `teacher.source_batch_id = ANY(${addValue(campBatchIds)}::varchar[])`,
-        );
-      }
       const campDay = audience.campDay as
         { min?: unknown; max?: unknown } | undefined;
       if (

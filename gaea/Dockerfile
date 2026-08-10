@@ -80,14 +80,14 @@ RUN python -m venv /opt/venv
 COPY backend/requirements.txt ./requirements.txt
 RUN /opt/venv/bin/pip install --no-cache-dir --requirement requirements.txt
 
-# ========== Stage 5: one image, four supervised processes ==========
+# ========== Stage 5: one image, five supervised processes ==========
 FROM hub.51talk.biz/library/python:3.12-alpine AS runtime
 LABEL maintainer="51talk SRE"
 
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
 
-# The score heartbeat is deliberately Pod-local: standby workers must prove
-# their own process liveness instead of reading the elected leader's file.
+# Worker health files are deliberately Pod-local: standby workers must prove
+# their own liveness/readiness instead of reading the elected leader's files.
 ENV TZ=Asia/Shanghai \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -99,6 +99,8 @@ ENV TZ=Asia/Shanghai \
     PORT=3000 \
     TIT_FRONTEND_REQUIRED=true \
     TIT_SCORE_WORKER_HEARTBEAT=/tmp/tit-score-worker-heartbeat \
+    TIT_SOURCE_WORKER_HEARTBEAT=/tmp/tit-source-worker-heartbeat \
+    TIT_SOURCE_WORKER_READINESS=/tmp/tit-source-worker-readiness \
     VIDEO_PREFETCH_STATE_DIR=/var/lib/tide/video-prefetch-runs \
     S6_KEEP_ENV=1 \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \

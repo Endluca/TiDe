@@ -6,7 +6,6 @@ from app.database import engine, session_scope
 from app.db_models import (
     NotificationRecord,
     OpsCaseRecord,
-    OutboundOutputRecord,
     OutboxEventRecord,
     ScoreEntryRecord,
     TaskAssignmentRecord,
@@ -36,12 +35,6 @@ def test_shared_task_mock_seed_is_current_idempotent_and_non_deliverable() -> No
         "G02": "IN_PROGRESS",
         "G03": "COMPLETED",
     }
-    assert first["output_display_types"] == [
-        "EXTERNAL_ACTION_REQUEST",
-        "IN_APP_NOTIFICATION",
-        "OPS_CASE",
-        "REMINDER",
-    ]
     assert first["score_entries_written"] == 0
     assert first["real_delivery_enabled"] is False
 
@@ -57,23 +50,6 @@ def test_shared_task_mock_seed_is_current_idempotent_and_non_deliverable() -> No
         assert {item.creator_system for item in assignments} == {"TRIGGER_CENTER"}
         assert {item.source_mode for item in assignments} == {"MOCK"}
         assert {item.created_by for item in assignments} == {"MOCK_SEED"}
-        outputs = session.scalars(
-            select(OutboundOutputRecord).where(
-                OutboundOutputRecord.source_type == "MOCK_SEED"
-            )
-        ).all()
-        assert len(outputs) == 4
-        assert {item.output_id for item in outputs} == set(first["output_ids"])
-        assert {item.payload["origin"] for item in outputs} == {"MOCK_SEED"}
-        assert {item.payload["source"] for item in outputs} == {"MOCK_SEED"}
-        assert {item.payload["delivery_disabled"] for item in outputs} == {True}
-        assert not any(item.retryable for item in outputs)
-        action = next(
-            item for item in outputs if item.display_type == "EXTERNAL_ACTION_REQUEST"
-        )
-        assert action.requires_human_approval is True
-        assert action.payload["execution_allowed"] is False
-
         notification = session.get(NotificationRecord, "MOCK-NOTIFICATION-SHARED-G01")
         assert notification is not None
         assert notification.status == "CANCELLED"
@@ -107,17 +83,6 @@ def test_shared_task_mock_seed_is_current_idempotent_and_non_deliverable() -> No
     assert all(item["title"] for item in task_page_rows)
 
     reloaded = DatabaseStore(engine, seed_on_empty=False)
-    output_page_rows = [
-        item
-        for item in reloaded.outbound_outputs.values()
-        if item.get("source_type") == "MOCK_SEED"
-    ]
-    assert {item["display_type"] for item in output_page_rows} == {
-        "IN_APP_NOTIFICATION",
-        "REMINDER",
-        "OPS_CASE",
-        "EXTERNAL_ACTION_REQUEST",
-    }
     action_queue = GrowthService(reloaded).action_queue()
     mock_case = next(
         item for item in action_queue if item["queue_id"] == "MOCK-CASE-SHARED-G02"

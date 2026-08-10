@@ -13,7 +13,6 @@ tags:
   - name: Auth
   - name: Tasks
   - name: Files
-  - name: TeacherPhoto
   - name: MyTIDE
   - name: Notifications
   - name: FAQ
@@ -373,65 +372,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ValidationResult' }
-        '404': { $ref: '#/components/responses/NotFound' }
-  /api/v1/tasks/{taskInstanceId}/teacher-photo:
-    post:
-      tags: [TeacherPhoto]
-      summary: 提交首课摄像头画面，完成四项可见内容检测和私有保存
-      operationId: submitTeacherPhoto
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TaskInstanceId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [photo]
-              properties:
-                photo: { type: string, format: binary }
-      responses:
-        '201':
-          description: 检测与保存状态；四项通过后不会再要求教师重拍
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TeacherPhotoRun' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/ValidationError' }
-    get:
-      tags: [TeacherPhoto]
-      summary: 查询当前首课摄像头画面检测和保存状态
-      operationId: getTeacherPhoto
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TaskInstanceId'
-      responses:
-        '200':
-          description: 最新摄像头画面检测状态
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TeacherPhotoRun' }
-        '404': { $ref: '#/components/responses/NotFound' }
-  /api/v1/tasks/{taskInstanceId}/teacher-photo/content:
-    get:
-      tags: [TeacherPhoto]
-      summary: 读取已鉴权的画面检测证据
-      operationId: downloadTeacherPhoto
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: '#/components/parameters/TaskInstanceId'
-      responses:
-        '200':
-          description: 后台处理并私有保存的画面检测证据
-          headers:
-            Cache-Control:
-              schema: { type: string, const: 'private, no-store' }
-          content:
-            image/jpeg:
-              schema: { type: string, format: binary }
         '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/tasks/{taskInstanceId}/retry:
     post:
@@ -1390,52 +1330,6 @@ components:
         mimeType: { type: string }
         sizeBytes: { type: integer, minimum: 0 }
         sha256: { type: string }
-    TeacherPhotoCheck:
-      type: object
-      additionalProperties: false
-      required: [id, title, status, message, suggestion]
-      properties:
-        id: { type: string, enum: [camera_angle, lighting, background, dressing] }
-        title: { type: string }
-        status: { type: string, enum: [pass, fail, uncertain] }
-        message: { type: string }
-        suggestion: { type: string }
-    TeacherPhotoRun:
-      type: object
-      additionalProperties: false
-      required: [photoRunId, status, decision, criteriaVersion, teacherMessage, submittedAt, checkedAt, checks, finalPhoto]
-      properties:
-        photoRunId: { type: string, format: uuid }
-        status:
-          type: string
-          enum: [UPLOADING, CHECKING, RETRY_REQUIRED, BEAUTIFYING, READY, UNDER_REVIEW, PROCESSING_FAILED]
-        decision:
-          oneOf:
-            - { type: string, enum: [PASS, RETRY, ERROR] }
-            - { type: 'null' }
-        criteriaVersion: { type: string }
-        teacherMessage: { type: [string, 'null'] }
-        submittedAt: { type: string, format: date-time }
-        checkedAt: { type: [string, 'null'], format: date-time }
-        checks:
-          type: array
-          minItems: 0
-          maxItems: 4
-          items: { $ref: '#/components/schemas/TeacherPhotoCheck' }
-        finalPhoto:
-          oneOf:
-            - type: object
-              additionalProperties: false
-              required: [fileId, contentUrl, filterPreset, filterStrength, savedAt]
-              properties:
-                fileId: { type: string, format: uuid }
-                contentUrl: { type: string, format: uri }
-                filterPreset:
-                  type: string
-                  enum: [cream_bright_04_adaptive_v1, cream_bright_04_adaptive_v2, cream_bright_04_adaptive_v3]
-                filterStrength: { type: number, enum: [0.6, 0.75, 1] }
-                savedAt: { type: string, format: date-time }
-            - { type: 'null' }
     SourceFreshness:
       type: object
       required: [source, sourceUpdatedAt, fetchedAt, stale]

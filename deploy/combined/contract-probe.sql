@@ -76,9 +76,12 @@ BEGIN
     IF to_regclass('public.task_templates') IS NULL
        OR to_regclass('public.task_assignments') IS NULL
        OR to_regclass('public.teachers') IS NULL
+       OR to_regclass('public.complaint_category_rules') IS NULL
+       OR to_regclass('public.operator_sessions') IS NULL
        OR to_regclass('public.teacher_scorecard_current') IS NULL
        OR to_regclass('public.teacher_lesson_score_current') IS NULL
        OR to_regclass('tide.task_execution_versions') IS NULL
+       OR to_regclass('tide.file_objects') IS NULL
        OR to_regclass('tide.schema_migrations') IS NULL THEN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
@@ -150,7 +153,7 @@ BEGIN
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260729_38_catalog_scores' THEN
+    ) IS DISTINCT FROM '20260807_49_unused_columns' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -180,10 +183,45 @@ BEGIN
             '0022_performance_job_leases',
             '0023_teacher_support_operator_atomicity',
             '0024_support_ticket_cas_and_function_owner',
-            '0025_fixed_task_semantic_alignment'
+            '0025_fixed_task_semantic_alignment',
+            '0026_kuozhi_course_syncs',
+            '0027_remove_local_quiz_runtime',
+            '0028_retire_task_business_change_view',
+            '0029_remove_unused_tide_objects',
+            '0030_remove_unused_columns_and_orphan_function'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0025';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0030';
+    END IF;
+
+    IF to_regclass('tide.analytics_task_business_change_v1') IS NOT NULL
+       OR to_regclass('public.teacher_metric_snapshots') IS NOT NULL
+       OR to_regclass('public.lesson_facts') IS NOT NULL
+       OR to_regclass('public.lesson_dimension_scores') IS NOT NULL
+       OR to_regclass('tide.outcome_projections') IS NOT NULL
+       OR to_regclass('tide.camp_enrollment_projections') IS NOT NULL
+       OR to_regclass('tide.audit_events') IS NOT NULL
+       OR to_regclass('tide.task_template_files') IS NOT NULL
+       OR to_regclass('tide.file_migrations') IS NOT NULL
+       OR to_regclass('tide.teacher_photo_runs') IS NOT NULL
+       OR to_regclass('tide.analytics_actor_task_journey_v1') IS NOT NULL
+       OR to_regclass('tide.analytics_task_assignment_funnel_v1') IS NOT NULL
+       OR to_regclass('tide.analytics_task_funnel_v1') IS NOT NULL
+       OR to_regclass('tide.analytics_task_step_funnel_v1') IS NOT NULL
+       OR to_regclass('tide.analytics_content_quality_v1') IS NOT NULL
+       OR EXISTS (
+           SELECT 1
+           FROM information_schema.columns
+           WHERE (table_schema, table_name, column_name) IN (
+               ('public', 'complaint_category_rules', 'learning_title'),
+               ('public', 'complaint_category_rules', 'learning_url'),
+               ('public', 'operator_sessions', 'last_seen_at'),
+               ('tide', 'file_objects', 'visibility')
+           )
+       )
+       OR to_regprocedure('tide.enforce_outbox_target()') IS NOT NULL THEN
+        RAISE EXCEPTION
+            'legacy objects, redundant columns or orphan function still exist';
     END IF;
 
     SELECT

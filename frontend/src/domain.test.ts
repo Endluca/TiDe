@@ -1,67 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { canRetryOutput, displayError, employmentStatusLabel, eventLabel, isOperationalOutput, isOperationalTaskAssignment, methodLabel, normalizeOutputList, outputDisplayTypeLabel, outputDisplayTypeLabels, outputStatusLabel, outputTypeLabel, outputTypeLabels, sortTasksForDisplay, summarizeOutputs } from './domain'
-import type { OutputRecord, SharedTaskAssignment, Task } from './types'
+import { displayError, employmentStatusLabel, eventLabel, isOperationalTaskAssignment, methodLabel, sortTasksForDisplay } from './domain'
+import type { SharedTaskAssignment, Task } from './types'
 
-const output = {
-  output_id: 'OUT-1',
-  output_type: 'DELIVERY_INTENT',
-  display_type: 'IN_APP_NOTIFICATION',
-  audience_type: 'TEACHER',
-  recipient_id: 'T-1001',
-  recipient_name: 'Maria Santos',
-  channel: 'WEBAPP_INBOX',
-  source_type: 'TASK',
-  source_id: 'TASK-1',
-  status: 'FAILED',
-  title: '任务提醒',
-  created_at: '2026-07-17T00:00:00Z',
-  attempt_count: 1,
-  max_attempts: 3,
-  retryable: true,
-  requires_human_approval: false,
-  payload: {},
-} as OutputRecord
-
-describe('输出中心派生逻辑', () => {
-  it('正式运营列表排除调试输出和演示任务', () => {
-    expect(isOperationalOutput(output)).toBe(true)
-    expect(isOperationalOutput({ ...output, output_id: 'OUT-MOCK', title: '模拟通知' })).toBe(false)
-    expect(isOperationalOutput({ ...output, output_id: 'OUT-PROVIDER', display_type: 'PROVIDER_REQUEST', non_business: true })).toBe(false)
+describe('触达中心派生逻辑', () => {
+  it('正式运营列表排除演示任务', () => {
     expect(isOperationalTaskAssignment({ source_mode: 'REAL' } as SharedTaskAssignment)).toBe(true)
     expect(isOperationalTaskAssignment({ source_mode: 'MOCK' } as SharedTaskAssignment)).toBe(false)
-  })
-
-  it('兼容数组列表并按类型、状态汇总', () => {
-    expect(normalizeOutputList([output])).toEqual({ items: [output], total: 1 })
-    expect(summarizeOutputs([output])).toMatchObject({
-      total: 1,
-      by_type: { DELIVERY_INTENT: 1 },
-      by_display_type: { IN_APP_NOTIFICATION: 1 },
-      by_status: { FAILED: 1 },
-    })
-    expect(outputTypeLabels.DELIVERY_INTENT).toBe('触达意图')
-    expect(outputDisplayTypeLabels.IN_APP_NOTIFICATION).toBe('站内通知')
-  })
-
-  it('将 Provider 调用放在展示汇总，但不计入四类业务输出', () => {
-    const provider = {
-      ...output,
-      output_id: 'OUT-DEBUG-1',
-      output_type: 'SYSTEM_ACTION_REQUEST',
-      display_type: 'PROVIDER_REQUEST',
-      non_business: true,
-    } as OutputRecord
-    expect(summarizeOutputs([output, provider])).toMatchObject({
-      total: 2,
-      by_type: { DELIVERY_INTENT: 1 },
-      by_display_type: { IN_APP_NOTIFICATION: 1, PROVIDER_REQUEST: 1 },
-    })
-  })
-
-  it('只允许对尚未耗尽尝试次数的可重试失败输出重试', () => {
-    expect(canRetryOutput(output)).toBe(true)
-    expect(canRetryOutput({ ...output, status: 'REQUESTED' })).toBe(false)
-    expect(canRetryOutput({ ...output, attempt_count: 3 })).toBe(false)
   })
 })
 
@@ -78,9 +22,6 @@ describe('运营错误展示', () => {
     )
     expect(methodLabel('QUIZ', 'en-US')).toBe('Learning quiz')
     expect(eventLabel('ops_case.decided.v1', 'en-US')).toBe('Operations decision recorded')
-    expect(outputTypeLabel('TEACHER_TASK', 'en-US')).toBe('Teacher task')
-    expect(outputDisplayTypeLabel('IN_APP_NOTIFICATION', 'en-US')).toBe('In-app notification')
-    expect(outputStatusLabel('DELIVERED', 'en-US')).toBe('Delivered')
   })
 })
 

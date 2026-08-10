@@ -786,7 +786,6 @@ export default function Teacher360({
                     <Descriptions.Item label={t('教师端展示（封顶 200）', 'Teacher display (capped at 200)')}>{scoreText(score.external)}</Descriptions.Item>
                     <Descriptions.Item label={t('基础分', 'Base score')}>{finiteNumber(readyDetail.base_score) ?? '—'}</Descriptions.Item>
                     <Descriptions.Item label={t('计分口径', 'Scoring policy')}>{scorePolicyLabel(readyDetail.score_policy_version, locale)}</Descriptions.Item>
-                    <Descriptions.Item label={t('来源批次', 'Source batch')}>{readyDetail.source_batch_id ?? t('暂未绑定批次', 'No batch linked')}</Descriptions.Item>
                     <Descriptions.Item label={t('来源快照', 'Source snapshot')}>{readyDetail.source_snapshot_label ?? t('未标注', 'Not labeled')}</Descriptions.Item>
                   </Descriptions>
                   <Flex gap={6} wrap="wrap" style={{ marginTop: 14 }}>

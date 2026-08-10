@@ -29,3 +29,6 @@
 \ir migrations/0025_fixed_task_semantic_alignment.up.sql
 \ir migrations/0026_kuozhi_course_syncs.up.sql
 \ir migrations/0027_remove_local_quiz_runtime.up.sql
+\ir migrations/0028_retire_task_business_change_view.up.sql
+\ir migrations/0029_remove_unused_tide_objects.up.sql
+\ir migrations/0030_remove_unused_columns_and_orphan_function.up.sql

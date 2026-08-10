@@ -12,7 +12,6 @@ from .database import session_scope
 from .db_models import (
     NotificationRecord,
     OpsCaseRecord,
-    OutboundOutputRecord,
     OutboxEventRecord,
     ScoreEntryRecord,
     TaskAssignmentRecord,
@@ -31,82 +30,6 @@ _TASKS = (
     ("G02", "IN_PROGRESS"),
     ("G03", "COMPLETED"),
 )
-
-_OUTPUTS = (
-    {
-        "output_id": "MOCK-OUTPUT-IN-APP-NOTIFICATION",
-        "task_code": "G01",
-        "output_type": "DELIVERY_INTENT",
-        "display_type": "IN_APP_NOTIFICATION",
-        "delivery_kind": "IN_APP_NOTIFICATION",
-        "audience_type": "TEACHER",
-        "recipient_id": SHARED_TASK_MOCK_TEACHER_ID,
-        "recipient_name": "Maria Santos (Mock)",
-        "channel": "WEBAPP_INBOX",
-        "source_id": _NOTIFICATION_ID,
-        "case_id": None,
-        "status": "CANCELLED",
-        "title": "[Mock 调试] G01 站内通知",
-        "body": "仅用于输出中心展示；没有向教师端执行真实投递。",
-        "last_error": "MOCK_SEED_DELIVERY_DISABLED",
-        "requires_human_approval": False,
-    },
-    {
-        "output_id": "MOCK-OUTPUT-TASK-REMINDER",
-        "task_code": "G02",
-        "output_type": "DELIVERY_INTENT",
-        "display_type": "REMINDER",
-        "delivery_kind": "REMINDER",
-        "audience_type": "TEACHER",
-        "recipient_id": SHARED_TASK_MOCK_TEACHER_ID,
-        "recipient_name": "Maria Santos (Mock)",
-        "channel": "WEBAPP_INBOX",
-        "source_id": "ASSIGNMENT",
-        "case_id": None,
-        "status": "CANCELLED",
-        "title": "[Mock 调试] G02 任务提醒",
-        "body": "模拟教师任务处理中提醒；本地 Seed 不会安排真实发送。",
-        "last_error": "MOCK_SEED_DELIVERY_DISABLED",
-        "requires_human_approval": False,
-    },
-    {
-        "output_id": "MOCK-OUTPUT-OPS-CASE",
-        "task_code": "G02",
-        "output_type": "OPS_REVIEW_CASE",
-        "display_type": "OPS_CASE",
-        "delivery_kind": "INTERNAL_CASE",
-        "audience_type": "OPS",
-        "recipient_id": "TIT_GROWTH_OPS",
-        "recipient_name": "TIT Growth Operations",
-        "channel": "OPS_QUEUE",
-        "source_id": _CASE_ID,
-        "case_id": _CASE_ID,
-        "status": "STORED",
-        "title": "[Mock 调试] 教师任务跟进 Case",
-        "body": "模拟运营查看教师任务处理中状态；不产生真实运营处置。",
-        "last_error": None,
-        "requires_human_approval": True,
-    },
-    {
-        "output_id": "MOCK-OUTPUT-EXTERNAL-ACTION",
-        "task_code": "G02",
-        "output_type": "SYSTEM_ACTION_REQUEST",
-        "display_type": "EXTERNAL_ACTION_REQUEST",
-        "delivery_kind": "DEBUG_ONLY",
-        "audience_type": "EXTERNAL_SYSTEM",
-        "recipient_id": "NO_REAL_RECIPIENT",
-        "recipient_name": "Mock external system",
-        "channel": "DEBUG_ONLY",
-        "source_id": _CASE_ID,
-        "case_id": _CASE_ID,
-        "status": "ACTION_PENDING",
-        "title": "[Mock 调试] 外部动作请求",
-        "body": "仅展示动作结构；execution_allowed=false，不能真实执行。",
-        "last_error": None,
-        "requires_human_approval": True,
-    },
-)
-
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -165,7 +88,7 @@ def _validate_assignment(
 
 def _seed_assignments(session: Any, started_at: datetime) -> dict[str, TaskAssignmentRecord]:
     teacher = session.get(TeacherRecord, SHARED_TASK_MOCK_TEACHER_ID)
-    if teacher is None or teacher.data_mode != "MOCK" or teacher.source_batch_id is not None:
+    if teacher is None or teacher.data_mode != "MOCK":
         raise RuntimeError("Reserved local Mock teacher T-1001 is required")
 
     result: dict[str, TaskAssignmentRecord] = {}
@@ -330,61 +253,6 @@ def _seed_notification_and_case(
         case.updated_at = created_at
 
 
-def _seed_outputs(
-    session: Any,
-    assignments: dict[str, TaskAssignmentRecord],
-    created_at: datetime,
-) -> list[OutboundOutputRecord]:
-    result: list[OutboundOutputRecord] = []
-    for offset, spec in enumerate(_OUTPUTS):
-        assignment = assignments[spec["task_code"]]
-        source_id = assignment.assignment_id if spec["source_id"] == "ASSIGNMENT" else spec["source_id"]
-        output = session.get(OutboundOutputRecord, spec["output_id"])
-        if output is None:
-            output = OutboundOutputRecord(
-                output_id=spec["output_id"],
-                output_type=spec["output_type"],
-                display_type=spec["display_type"],
-                delivery_kind=spec["delivery_kind"],
-                audience_type=spec["audience_type"],
-                recipient_id=spec["recipient_id"],
-                recipient_name=spec["recipient_name"],
-                channel=spec["channel"],
-                source_type="MOCK_SEED",
-                source_id=source_id,
-                teacher_id=SHARED_TASK_MOCK_TEACHER_ID,
-                task_id=assignment.assignment_id,
-                case_id=spec["case_id"],
-                status=spec["status"],
-                title=spec["title"],
-                body=spec["body"],
-                scheduled_at=None,
-                created_at=created_at + timedelta(seconds=offset),
-                sent_at=None,
-                delivered_at=None,
-                attempt_count=0,
-                max_attempts=1,
-                next_retry_at=None,
-                last_error=spec["last_error"],
-                retryable=False,
-                requires_human_approval=spec["requires_human_approval"],
-                payload=_mock_meta(
-                    schema_version="shared_task_mock_output.v1",
-                    assignment_id=assignment.assignment_id,
-                    task_code=spec["task_code"],
-                    debug_output_kind=spec["display_type"],
-                    note="Local display only; no real recipient or system is called.",
-                ),
-                idempotency_key=f"mock-seed:output:{spec['display_type'].lower()}",
-                updated_at=created_at + timedelta(seconds=offset),
-            )
-            session.add(output)
-        elif output.source_type != "MOCK_SEED" or output.payload.get("origin") != "MOCK_SEED":
-            raise RuntimeError(f"Mock output ID {output.output_id} conflicts with existing data")
-        result.append(output)
-    return result
-
-
 def _cancel_assignment_outbox(session: Any, assignment_ids: set[str]) -> None:
     records = session.scalars(
         select(OutboxEventRecord).where(
@@ -408,7 +276,6 @@ def seed_shared_task_mock_outputs(bind: Engine | None = None) -> dict[str, Any]:
         assignments = _seed_assignments(session, started_at)
         output_at = started_at + timedelta(minutes=4)
         _seed_notification_and_case(session, assignments, output_at)
-        outputs = _seed_outputs(session, assignments, output_at)
         _cancel_assignment_outbox(
             session,
             {assignment.assignment_id for assignment in assignments.values()},
@@ -423,8 +290,6 @@ def seed_shared_task_mock_outputs(bind: Engine | None = None) -> dict[str, Any]:
             "assignment_statuses": {
                 code: assignment.status for code, assignment in assignments.items()
             },
-            "output_ids": sorted(item.output_id for item in outputs),
-            "output_display_types": sorted(item.display_type for item in outputs),
             "score_entries_written": 0,
             "real_delivery_enabled": False,
         }

@@ -9,6 +9,10 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SOURCE_WORKER_ENV_FILE = (
+    "${TIDE_SOURCE_WORKER_ENV_FILE:?Set TIDE_SOURCE_WORKER_ENV_FILE "
+    "to a protected source-worker-only env file}"
+)
 
 
 def _compose() -> dict:
@@ -27,6 +31,9 @@ def test_production_compose_separates_migration_and_runtime_credentials() -> Non
         "${TIDE_RUNTIME_ENV_FILE:?Set TIDE_RUNTIME_ENV_FILE to a protected runtime-only env file}"
     ]
     assert services["score-settlement"]["env_file"] == services["api"]["env_file"]
+    assert services["source-wide"]["env_file"] == [SOURCE_WORKER_ENV_FILE]
+    assert services["source-wide"]["env_file"] != services["api"]["env_file"]
+    assert services["source-wide"]["env_file"] != services["migrate"]["env_file"]
 
     migrate_environment = services["migrate"]["environment"]
     assert migrate_environment["TIT_MIGRATION_MODE"] == "true"
@@ -38,6 +45,72 @@ def test_production_compose_separates_migration_and_runtime_credentials() -> Non
         services["score-settlement"]["environment"]["TIT_MIGRATION_MODE"]
         == "false"
     )
+    assert (
+        services["source-wide"]["environment"]["TIT_MIGRATION_MODE"]
+        == "false"
+    )
+
+
+def test_production_compose_supervises_source_worker_and_both_health_files() -> None:
+    source_worker = _compose()["services"]["source-wide"]
+
+    assert source_worker["command"] == [
+        "python",
+        "scripts/run_source_wide_worker.py",
+        "--watch",
+        "--max-events",
+        "25",
+        "--interval-seconds",
+        "3",
+        "--heartbeat-path",
+        "/tmp/tit-source-worker-heartbeat",
+        "--readiness-path",
+        "/tmp/tit-source-worker-readiness",
+    ]
+    assert source_worker["environment"]["TIT_DB_POOL_SIZE"] == (
+        "${TIT_SOURCE_WORKER_DB_POOL_SIZE:-1}"
+    )
+    assert source_worker["environment"]["TIT_DB_MAX_OVERFLOW"] == (
+        "${TIT_SOURCE_WORKER_DB_MAX_OVERFLOW:-0}"
+    )
+    assert source_worker["environment"]["TIT_DB_APPLICATION_NAME"] == (
+        "tit-growth-source-worker"
+    )
+    assert source_worker["restart"] == "unless-stopped"
+    assert source_worker["read_only"] is True
+    healthcheck = source_worker["healthcheck"]
+    assert healthcheck["test"] == [
+        "CMD",
+        "python",
+        "scripts/run_source_wide_worker.py",
+        "--healthcheck",
+        "--heartbeat-path",
+        "/tmp/tit-source-worker-heartbeat",
+        "--readiness-path",
+        "/tmp/tit-source-worker-readiness",
+        "--max-heartbeat-age-seconds",
+        "90",
+        "--max-readiness-age-seconds",
+        "90",
+    ]
+
+
+def test_local_start_supervises_source_worker_process() -> None:
+    start_script = (ROOT / "scripts" / "start.sh").read_text(encoding="utf-8")
+
+    assert "scripts/run_source_wide_worker.py" in start_script
+    assert (
+        '--heartbeat-path "$RUNTIME_DIR/source-worker-heartbeat"'
+        in start_script
+    )
+    assert (
+        '--readiness-path "$RUNTIME_DIR/source-worker-readiness"'
+        in start_script
+    )
+    assert '>"$RUNTIME_DIR/source-worker.log" 2>&1 &' in start_script
+    assert "SOURCE_WORKER_PID=$!" in start_script
+    assert start_script.count('"${SOURCE_WORKER_PID:-}"') == 1
+    assert start_script.count('"$SOURCE_WORKER_PID"') == 1
 
 
 def test_production_compose_trusts_only_the_fixed_web_proxy() -> None:
@@ -95,6 +168,9 @@ def test_production_env_examples_keep_database_roles_separate() -> None:
     migration_example = (
         ROOT / "backend" / ".env.migration.production.example"
     ).read_text(encoding="utf-8")
+    source_worker_example = (
+        ROOT / "backend" / ".env.source-worker.production.example"
+    ).read_text(encoding="utf-8")
 
     assert "tit_growth_app:" in runtime_example
     assert "tit_growth_migrator:" not in runtime_example
@@ -102,6 +178,11 @@ def test_production_env_examples_keep_database_roles_separate() -> None:
     assert "tit_growth_migrator:" in migration_example
     assert "tit_growth_app:" not in migration_example
     assert "TIT_MIGRATION_MODE=true" not in migration_example
+    assert "tit_source_worker_runtime:" in source_worker_example
+    assert "tit_growth_app:" not in source_worker_example
+    assert "tit_growth_migrator:" not in source_worker_example
+    assert "TIT_SOURCE_WORKER_DATABASE_URL=" in source_worker_example
+    assert "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth" in source_worker_example
 
 
 def _preflight_environment(tmp_path: Path) -> dict[str, str]:
@@ -119,10 +200,19 @@ def _preflight_environment(tmp_path: Path) -> dict[str, str]:
         "tit_growth?sslmode=verify-full\n",
         encoding="utf-8",
     )
+    source_worker_env = tmp_path / "source-worker.env"
+    source_worker_env.write_text(
+        "TIT_SOURCE_WORKER_DATABASE_URL="
+        "postgresql+psycopg://tit_source_worker_runtime:secret@db.example/"
+        "tit_growth?sslmode=verify-full\n"
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth\n",
+        encoding="utf-8",
+    )
     return {
         **os.environ,
         "TIDE_RUNTIME_ENV_FILE": str(runtime_env),
         "TIDE_MIGRATION_ENV_FILE": str(migration_env),
+        "TIDE_SOURCE_WORKER_ENV_FILE": str(source_worker_env),
         "TIDE_MIGRATION_EXPECTED_DATABASE": "tit_growth",
         "TIDE_OPS_HOST": "tit-growth.example.com",
         "TIDE_GATEWAY_BIND_ADDRESS": "127.0.0.1",
@@ -198,6 +288,25 @@ def test_production_preflight_rejects_reused_env_file(
     assert "must differ" in result.stderr
 
 
+def test_production_preflight_rejects_api_role_for_source_worker(
+    tmp_path: Path,
+) -> None:
+    environment = _preflight_environment(tmp_path)
+    source_worker_env = Path(environment["TIDE_SOURCE_WORKER_ENV_FILE"])
+    source_worker_env.write_text(
+        "TIT_SOURCE_WORKER_DATABASE_URL="
+        "postgresql+psycopg://tit_growth_app:secret@db.example/"
+        "tit_growth?sslmode=verify-full\n"
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth\n",
+        encoding="utf-8",
+    )
+
+    result = _run_preflight(environment)
+
+    assert result.returncode == 1
+    assert "tit_source_worker_runtime PostgreSQL role" in result.stderr
+
+
 def test_readme_runs_preflight_before_migration() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -207,3 +316,6 @@ def test_readme_runs_preflight_before_migration() -> None:
         "--profile migration run --rm migrate"
     )
     assert preflight < migration
+    assert "20260807_49_unused_columns" in readme
+    assert "0030_remove_unused_columns_and_orphan_function" in readme
+    assert "public 46 → teacher 0028 → public 49 → teacher 0030" in readme

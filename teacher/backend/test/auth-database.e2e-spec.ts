@@ -338,9 +338,9 @@ runDatabaseIntegration('shared database backend flow (e2e)', () => {
     await expectG01NotComplete(server, tokens.accessToken, database);
     await database.query(
       `
-        UPDATE public.teacher_metric_snapshots
-        SET is_self_introduce = true, is_cpl_tesol = true, updated_at = now()
-        WHERE teacher_id = $1
+        UPDATE public.teacher_source_wide
+        SET is_self_introduce = true, is_cpl_tesol = true
+        WHERE tchr_id = $1
       `,
       [TEST_TEACHER_ID],
     );
@@ -759,6 +759,14 @@ async function prepareSharedTeacher(database: Pool): Promise<void> {
   );
   await database.query(
     `
+      INSERT INTO public.teacher_source_wide (
+        tchr_id, real_name, is_self_introduce, is_cpl_tesol
+      ) VALUES ($1, 'Integration Teacher', true, false)
+    `,
+    [TEST_TEACHER_ID],
+  );
+  await database.query(
+    `
       INSERT INTO public.teacher_metric_snapshots (
         snapshot_id, batch_id, teacher_id, snapshot_label, source_row_number,
         data_mode, is_self_introduce, is_cpl_tesol, raw_payload,
@@ -957,6 +965,15 @@ async function cleanup(database: Pool): Promise<void> {
         [assignmentIds],
       );
     }
+    await database.query(
+      `DELETE FROM public.teacher_source_wide WHERE tchr_id = $1`,
+      [TEST_TEACHER_ID],
+    );
+    await database.query(
+      `DELETE FROM public.outbox_events
+       WHERE aggregate_id = $1 AND event_type = 'source_wide.changed.v1'`,
+      [TEST_TEACHER_ID],
+    );
     await database.query(
       `DELETE FROM public.teacher_metric_snapshots WHERE teacher_id = $1`,
       [TEST_TEACHER_ID],

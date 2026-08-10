@@ -38,7 +38,6 @@ def _teacher(session, teacher_id: str) -> None:
             total_score=0,
             graduation_threshold=100,
             data_mode="REAL",
-            source_batch_id=None,
             source_snapshot_label="API_DAILY_TEST",
             payload={"teacher_id": teacher_id, "data_mode": "REAL"},
             created_at=NOW,

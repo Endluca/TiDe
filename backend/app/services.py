@@ -346,7 +346,6 @@ class GrowthService:
             return {
                 "source_mode": fallback_mode,
                 "source_field": None,
-                "batch_id": projected.get("source_batch_id"),
                 "note": note or "Metric was absent; scoring used an explicit safe default.",
             }
 
@@ -1473,7 +1472,6 @@ class GrowthService:
             "graduation_state",
             "data_mode",
             "employment_status",
-            "source_batch_id",
             "source_snapshot_label",
             "score_policy_version",
             "score_policy_source",
@@ -2677,19 +2675,6 @@ class GrowthService:
             },
         )
         return self.task_detail(task["task_id"])
-
-    def replay_first_lesson_absence(self) -> dict:
-        teacher = self._teacher("T-1001")
-        trigger_result = self.evaluate_triggers(teacher["teacher_id"])
-        return {
-            "scenario": "FIRST_LESSON_PHYSICAL_ABSENCE_CONFIRMED",
-            "data_mode": "MOCK",
-            "teacher_id": teacher["teacher_id"],
-            "lesson_fact": deepcopy(teacher["lesson_facts"][0]),
-            "lesson_dimension_scores": deepcopy(teacher["lesson_dimension_scores"]),
-            "score_entries": deepcopy(teacher["score_entries"]),
-            "trigger_result": trigger_result,
-        }
 
     def _issue_task(
         self,
