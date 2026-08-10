@@ -4,7 +4,7 @@ set -euo pipefail
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL:-}"
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0026_kuozhi_course_syncs}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0029_remove_unused_columns_and_orphan_function}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 
 if [[ -z "${DATABASE_URL}" ]]; then
@@ -70,12 +70,19 @@ PRODUCTION_MIGRATIONS=(
   0024_support_ticket_cas_and_function_owner
   0025_fixed_task_semantic_alignment
   0026_kuozhi_course_syncs
+  0027_retire_task_business_change_view
+  0028_remove_unused_tide_objects
+  0029_remove_unused_columns_and_orphan_function
 )
 
 target_found=false
+target_includes_product_analytics=false
 TARGET_MIGRATIONS=()
 for migration_id in "${PRODUCTION_MIGRATIONS[@]}"; do
   TARGET_MIGRATIONS+=("${migration_id}")
+  if [[ "${migration_id}" == "0020_product_analytics" ]]; then
+    target_includes_product_analytics=true
+  fi
   if [[ "${migration_id}" == "${TARGET_MIGRATION}" ]]; then
     target_found=true
     break
@@ -85,9 +92,10 @@ if [[ "${target_found}" != "true" ]]; then
   echo "未知生产迁移目标：${TARGET_MIGRATION}" >&2
   exit 1
 fi
-if [[ "${TARGET_MIGRATION}" != "0026_kuozhi_course_syncs" \
+if [[ "${TARGET_MIGRATION}" != "0027_retire_task_business_change_view" \
+      && "${TARGET_MIGRATION}" != "0029_remove_unused_columns_and_orphan_function" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  echo "生产运行不允许停在旧版本；TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
+  echo "生产只允许停在跨 Schema 切换点 0027 或最终版本 0029；其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1
 fi
 
@@ -216,9 +224,22 @@ SELECT
     to_regclass('public.task_templates') IS NOT NULL
         AND to_regclass('public.task_assignments') IS NOT NULL
         AND to_regclass('public.teachers') IS NOT NULL
-        AND to_regclass('public.teacher_metric_snapshots') IS NOT NULL
+        AND to_regclass('public.teacher_source_wide') IS NOT NULL
+        AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'teacher_source_wide'
+              AND column_name = 'is_cpl_tesol'
+        )
+        AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'teacher_source_wide'
+              AND column_name = 'is_self_introduce'
+        )
         AND to_regclass('public.notifications') IS NOT NULL
         AND to_regclass('public.notification_events') IS NOT NULL,
+    to_regclass('public.teacher_metric_snapshots') IS NOT NULL,
     to_regclass('tide.schema_migrations') IS NOT NULL,
     (
         (
@@ -283,6 +304,7 @@ SQL
 )"
 IFS='|' read -r \
   shared_ready \
+  legacy_teacher_snapshot_exists \
   ledger_exists \
   authoritative_fixed_catalog_ready \
   managed_objects_exist \
@@ -302,6 +324,23 @@ if [[ "${ledger_exists}" != "t" && "${managed_objects_exist}" == "t" ]]; then
 fi
 if [[ "${forbidden_column_count}" != "0" ]]; then
   echo "public.task_assignments 含教师端越权字段，生产迁移已停止。" >&2
+  exit 1
+fi
+
+product_analytics_recorded=false
+if [[ "${ledger_exists}" == "t" ]]; then
+  product_analytics_recorded="$("${PSQL[@]}" -Atqc "
+    SELECT EXISTS (
+      SELECT 1
+      FROM tide.schema_migrations
+      WHERE migration_id = '0020_product_analytics'
+    )
+  ")"
+fi
+if [[ "${target_includes_product_analytics}" == "true" \
+      && "${product_analytics_recorded}" != "t" \
+      && "${legacy_teacher_snapshot_exists}" != "t" ]]; then
+  echo "历史 0020 尚未记录且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029 分阶段迁移；禁止在 public head 49 空库回放历史 teacher 链。" >&2
   exit 1
 fi
 

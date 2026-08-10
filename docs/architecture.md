@@ -1,6 +1,6 @@
 # TIT 外教成长系统当前架构
 
-日期：2026-08-04
+日期：2026-08-07
 
 状态：共享测试库和运营 Web App 可试跑；教师端生产接入、外部日更和生产部署未完成
 
@@ -13,7 +13,8 @@
 - 任务触发中心在新教师首次写入时幂等初始化当前 9 项固定 assignment，默认 `ASSIGNED`；
 - 任务触发中心读取固定任务完成状态并幂等结分，同时按确定性课程规则创建个性化 assignment；
 - 教师端不创建 assignment，对已有 G/P 任务只更新执行状态；
-- 当前 2.0 课程基线的有效投影为 829 个开放个性化任务、512 条提醒、0 个运营 Case 和 0 条 `PENDING_DATA`。历史已消费输出保留，失效的未消费输出取消，不删除共享任务事实。
+- 当前隔离测试库仅保留显式 Seed 的 2 位虚构教师和 4 节虚构课程；源数据更新由字段差异
+  Outbox 驱动 SourceWide Worker 增量投影。旧库的大批量历史试跑数据不迁入当前库。
 
 共用数据库不等于共用写权限。教师端服务和触发中心必须使用不同的受限数据库角色；浏览器不得直连数据库。
 
@@ -29,7 +30,7 @@
         │ Cookie Session + REST
 任务触发中心 FastAPI
 ├── Auth / RBAC
-├── 教师宽表 / 课程基线 / 投诉规则导入
+├── 当前教师 / 课程宽表读取与投诉规则
 ├── 课程确定性触发与幂等物化
 ├── 积分与资格计算
 ├── 任务读模型 / 固定任务结分
@@ -38,10 +39,9 @@
 └── 版本化配置
         │ SQLAlchemy + Alembic
 PostgreSQL
-├── data_import_batches / source_records
-├── teachers / teacher_metric_snapshots
-├── lesson_facts / complaint_category_rules / personalized_trigger_matches
-├── lesson_dimension_scores
+├── teacher_source_wide / lesson_source_wide
+├── teachers / complaint_category_rules / personalized_trigger_matches
+├── lesson_score_results / teacher_qualifications
 ├── score_accounts / score_entries
 ├── task_templates / task_assignments
 ├── 通知 / Case / 动作请求 / Outbox
@@ -52,9 +52,9 @@ PostgreSQL
 └── 按状态机只更新执行状态
 ```
 
-Gaea 测试交付使用一个项目和一个镜像，整套 Pod 可以水平复制。每个 Pod 仍保留四个逻辑
+Gaea 测试交付使用一个项目和一个镜像，整套 Pod 可以水平复制。每个 Pod 保留五个逻辑
 进程：FastAPI 在 `8010` 同源提供运营 React 与 API，教师 Nginx 在 `8080` 提供教师 React 并代理到
-Pod 内 `3000` 的 NestJS，积分 Worker 不暴露端口。Gaea 分别把运营、教师域名绑定到
+Pod 内 `3000` 的 NestJS，积分 Worker 与 SourceWide Worker 都不暴露端口。Gaea 分别把运营、教师域名绑定到
 `8010/8080`。s6 负责进程生命周期，聚合健康检查同时覆盖两端 HTTP 与 Worker heartbeat。
 积分候选进程通过 PostgreSQL session advisory lock 保持逻辑单活，standby 仍刷新各自
 Pod heartbeat；教师全局调度使用 `tide.job_leases`，照片处理按数据库行租约认领。因此应用
@@ -81,15 +81,19 @@ ReadWriteMany 共享卷。这个受控 TEST 形态不提供进程级秘密隔离
 
 ### 数据底座
 
-- 4 月教师 30 天宽表和 37,317 节课程明细 2.0 是当前手工基线，不是生产日更链路；
-- 批次、无损原始行和类型化投影已落库；每日外部接口的鉴权、分页/水位、调度、修正和重放仍未实现；
-- 只有完整拉取、校验和标准化均成功的批次，才能更新当前事实并触发重算；
-- `teacher_metric_snapshots` 保存教师维度的计分输入，包括 `peak_slot_cnt`、`first_booked_date`、`is_cpl_tesol`、`is_self_introduce` 等已确认字段；
+- 当前测试库只保存显式生成的 2 位虚构教师和 4 节虚构课程；历史 4 月宽表与
+  37,317 节课程不迁入新库，也不是生产日更链路；
+- 教师和课程当前源事实分别只保存在两张宽表。每日外部接口的鉴权、分页/水位、调度、
+  修正和重放由待接入的监控服务负责；投诉分类规则文件另有独立批次与原始行追溯；
+- 监控服务只有在一组来源变更完整获取、校验和标准化成功后，才能提交源表事务；
+- `teacher_source_wide` 保存教师维度当前源事实，包括 CSV 的 61 个指标以及
+  `is_cpl_tesol`、`is_self_introduce` 两个可空 G01 状态字段；旧教师快照已删除；
 - 课程基线中的出席、投诉、拉黑、三个课中质量标志以及差评评价详情已用于个性化触发；`是否高峰` 已作为课程事实保存，但供给分仍只按教师统计表的 `peak_slot_cnt` 结算。
 
 ### 积分事实
 
-- 课程分按教师维度统计快照计算；
+- 课程分由 `lesson_source_wide` 的逐课事实计算到一课一行的 `lesson_score_results`，
+  再按受影响教师聚合到积分组件与账户；
 - 供给分只认 `peak_slot_cnt >= 40`，首次达成 +10 且永久锁定，它不是教师任务；
 - 当前 9 项固定成长任务合计 30 分，只由共享 assignment 的可信完成事实产生；
 - 5 个个性化改善任务固定为 0 分，任务完成和干预效果分开。

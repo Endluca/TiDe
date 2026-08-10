@@ -36,7 +36,11 @@ mkdir -p "$RUNTIME_DIR"
 
 cleanup() {
   trap - EXIT INT TERM
-  for pid in "${WORKER_PID:-}" "${FRONTEND_PID:-}" "${BACKEND_PID:-}"; do
+  for pid in \
+    "${SOURCE_WORKER_PID:-}" \
+    "${WORKER_PID:-}" \
+    "${FRONTEND_PID:-}" \
+    "${BACKEND_PID:-}"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
       kill "$pid" >/dev/null 2>&1 || true
     fi
@@ -60,6 +64,17 @@ BACKEND_PID=$!
     --interval-seconds 3
 ) >"$RUNTIME_DIR/score-worker.log" 2>&1 &
 WORKER_PID=$!
+
+(
+  cd "$ROOT_DIR/backend"
+  exec .venv/bin/python scripts/run_source_wide_worker.py \
+    --watch \
+    --max-events 25 \
+    --interval-seconds 3 \
+    --heartbeat-path "$RUNTIME_DIR/source-worker-heartbeat" \
+    --readiness-path "$RUNTIME_DIR/source-worker-readiness"
+) >"$RUNTIME_DIR/source-worker.log" 2>&1 &
+SOURCE_WORKER_PID=$!
 
 (
   cd "$ROOT_DIR/frontend"
@@ -96,7 +111,11 @@ echo "  日志     $RUNTIME_DIR"
 echo "按 Ctrl+C 停止全部本地进程。"
 
 while true; do
-  for pid in "$BACKEND_PID" "$WORKER_PID" "$FRONTEND_PID"; do
+  for pid in \
+    "$BACKEND_PID" \
+    "$WORKER_PID" \
+    "$SOURCE_WORKER_PID" \
+    "$FRONTEND_PID"; do
     if ! kill -0 "$pid" >/dev/null 2>&1; then
       echo "有进程意外退出，请查看 $RUNTIME_DIR 下的日志。"
       exit 1

@@ -3,125 +3,82 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect
 
 from app.database import engine, session_scope
 from app.db_models import (
     ComplaintCategoryRuleRecord,
-    DataImportBatchRecord,
-    LessonFactRecord,
+    ComplaintRuleImportRecord,
+    LessonSourceWideRecord,
     NotificationRecord,
     PersonalizedTriggerMatchRecord,
-    SourceRecord,
     TaskAssignmentRecord,
 )
+from app.source_contracts import LESSON_SOURCE_FIELDS
 
 
-def test_lesson_projection_covers_the_24_source_fields_without_plain_student_id() -> None:
-    columns = set(inspect(LessonFactRecord).columns.keys())
-
-    assert {
-        "lesson_id",
-        "lesson_local_date",
-        "lesson_local_time",
-        "teacher_id",
-        "student_id_hash",
-        "lesson_lifecycle_status",
-        "is_peak",
-        "is_late",
-        "is_early",
-        "negative_score",
-        "has_negative_feedback_tag",
-        "feedback_detail",
-        "negative_tag_values",
-        "absence_reason_detail",
-        "complaint_category_l1",
-        "complaint_category_l2",
-        "complaint_category_l3",
-        "is_blocked",
-        "is_favorited",
-        "has_positive_feedback_tag",
-        "positive_tag_value",
-        "is_rebooked",
-        "is_camera_off",
-        "is_cpu_usage_high",
-        "is_network_delay_high",
-        "is_false_early_leave",
-    }.issubset(columns)
-    assert "student_id" not in columns
-    assert {
-        "source_batch_id",
-        "source_record_id",
-        "complaint_source_level",
-        "complaint_level_rank",
-        "complaint_route",
-    }.issubset(columns)
-
-
-def test_real_api_batch_and_lossless_source_row_are_portable_to_sqlite() -> None:
-    now = datetime.now(timezone.utc)
-    batch = DataImportBatchRecord(
-        batch_id="TEST-LESSON-API-BATCH",
-        source_kind="LESSON_FACT",
-        sync_mode="API_DAILY",
-        source_system="test-source",
-        source_filename="api-2026-07-22.json",
-        source_uri="test://lesson-source",
-        source_sha256="a" * 64,
-        source_sheet="api",
-        snapshot_label="2026-07-22",
-        data_mode="REAL",
-        column_count=24,
-        row_count=1,
-        header=["课程id", "老师id", "学员id"],
-        status="COMPLETED",
-        imported_at=now,
-        payload={},
+def test_lesson_source_wide_is_exactly_the_23_field_contract() -> None:
+    columns = tuple(
+        column.name for column in inspect(LessonSourceWideRecord).columns
     )
-    source_record = SourceRecord(
-        source_record_id="SRC-TEST-LESSON-1",
-        batch_id=batch.batch_id,
-        source_sheet="api",
-        source_row_number=1,
-        business_key="lesson:1",
-        teacher_id="teacher-1",
-        lesson_id="1",
-        occurred_at=now,
-        row_sha256="b" * 64,
-        raw_payload={"课程id": 1, "学员id": 99},
-        created_at=now,
+
+    assert columns == LESSON_SOURCE_FIELDS
+    assert len(columns) == 23
+    assert "学员id" in columns
+    assert "student_id_hash" not in columns
+    assert "source_batch_id" not in columns
+
+
+def test_complaint_rule_import_keeps_lossless_source_rows_in_one_table() -> None:
+    now = datetime.now(timezone.utc)
+    source_sha256 = "a" * 64
+    imported = ComplaintRuleImportRecord(
+        source_sha256=source_sha256,
+        source_filename="complaint-rules.xlsx",
+        raw_rows=[
+            {
+                "source_row_number": 3,
+                "一级分类": "关于老师",
+                "二级分类": "教学技巧问题",
+                "三级分类": "无纠错",
+                "P级": "P4",
+                "Course Title in the Learning Hub": "Correcting Learners",
+                "link": None,
+            }
+        ],
+        imported_at=now,
     )
     complaint_rule = ComplaintCategoryRuleRecord(
         rule_id="COMPLAINT-RULE-TEST-1",
-        batch_id=batch.batch_id,
-        source_sheet="api",
-        source_row_number=1,
+        source_sha256=source_sha256,
+        source_row_number=3,
         category_l1="关于老师",
         category_l2="教学技巧问题",
         category_l3="无纠错",
         category_l3_normalized="无纠错",
         source_level="P4",
-        normalized_level="L4",
         severity_rank=4,
         default_route="TEACHER_TASK",
-        learning_title="Correcting Learners",
-        learning_url=None,
-        raw_payload={"P级": "P4"},
         created_at=now,
     )
 
     with session_scope(engine) as session:
-        session.add_all([batch, source_record, complaint_rule])
+        session.add_all([imported, complaint_rule])
 
     with session_scope(engine) as session:
-        stored = session.scalar(
-            select(SourceRecord).where(
-                SourceRecord.source_record_id == source_record.source_record_id
-            )
-        )
+        stored = session.get(ComplaintRuleImportRecord, source_sha256)
         assert stored is not None
-        assert stored.raw_payload == {"课程id": 1, "学员id": 99}
-        assert stored.batch_id == batch.batch_id
+        assert stored.raw_rows == [
+            {
+                "source_row_number": 3,
+                "一级分类": "关于老师",
+                "二级分类": "教学技巧问题",
+                "三级分类": "无纠错",
+                "P级": "P4",
+                "Course Title in the Learning Hub": "Correcting Learners",
+                "link": None,
+            }
+        ]
 
 
 def test_task_output_and_source_only_notification_columns_exist() -> None:

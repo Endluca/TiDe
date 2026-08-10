@@ -1,9 +1,9 @@
 # 教师端与运营端同机部署
 
-状态：**部署骨架与技术加固已建立，联合门禁已固定到教师端
-`0025_fixed_task_semantic_alignment` 和唯一当前 `G01–G09` 目录。只有固定到已评审的
-干净教师端提交、真实执行 0025 并通过数据库契约探针后，才可解除任务语义阻断；在此之前
-禁止上线。**
+状态：**部署骨架与技术加固已建立，联合门禁已固定到 public
+`20260807_49_unused_columns`、教师端 `0029_remove_unused_columns_and_orphan_function` 和唯一当前
+`G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0027 → public 49 → teacher 0029 执行；
+完整链和数据库契约探针未通过前禁止上线。**
 
 ## 结论
 
@@ -39,7 +39,7 @@ teacher-api ---/     public = shared/TiDe facts
 验收后再启用，不能只把监听值改成 `::`。
 生产 PostgreSQL 建议使用公司内网数据库；即使数据库也在同一主机，仍不得发布 `5432`。
 
-## 教师端 0025 任务语义迁移门
+## 教师端 0025 任务语义与 0027–0029 清理迁移门
 
 TiDe 的唯一当前目录是连续 `G01–G09`，其中 `G04` 为合并的首课备课与设备网络检测。
 教师端旧目录 `G01-G04,G06-G10` 的执行记录不能只改展示文案，否则会把教师执行流程、
@@ -69,25 +69,26 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
 当前工作树已经落地以下技术门禁：
 
 1. 教师端正式迁移器永久排除 `0017/0018` 对 `public.task_assignments` 的 DDL，并包含
-   从 `0001` 到 `0025` 的完整有序生产链、迁移账本、checksum 与 advisory lock。
+   从 `0001` 到 `0029` 的完整有序生产链、迁移账本、checksum 与 advisory lock。
+   `0027` 只退役依赖旧教师快照的 `tide.analytics_task_business_change_v1`；`0028` 在空表、G00 路由和外部依赖门禁后删除 6 张无消费者表与 5 个已被 v2 替代的视图，均不删除 public 表。
+   `0029` 在确认所有文件都为私有、无外部列依赖和无函数消费者后，无 `CASCADE`
+   删除 `tide.file_objects.visibility` 与孤儿 `tide.enforce_outbox_target()`。
 2. 运营回复工单函数在同一事务设置 `WAITING_TEACHER`、最后回复时间和 48 小时截止时间，
    `tit_growth_app` 只获得查询和函数执行的必要权限。
 3. 教师端生产配置对双数据库、严格 SSL、HTTPS 公共地址和 OSS fail-closed；readiness
    同时检查两条数据库连接。
 4. 教师端 API 的后台调度器虽然仍嵌在 HTTP 进程，但所有全局任务都通过
    `tide.job_leases` 竞争数据库租约；只有当前持租约副本执行，续租失败立即停止，其他副本
-   可接管。照片处理另按任务行租约跨副本分片并续租，因此 `teacher-api` 可以直接运行多个
-   副本，不要求为了扩容再拆独立 Worker；该能力要求教师端迁移至少包含 0022，联合部署仍
-   固定完整升级到 0025。
+   可接管。G04 图片走任务提交校验，不再有独立照片队列。联合部署固定完整升级到 0029。
 
 切流前仍需关闭两项：
 
-1. 在目标库真实执行 0025，并用迁移前后快照证明 execution ID、步骤/规则 ID、教师进度以及
-   运营端 `task_templates/task_assignments/score_entries` 均未被重建或越权修改。
+1. 在目标库按跨 Schema 顺序执行到 public 49 / teacher 0029：验证 0025 保留 execution ID、步骤/规则 ID 和教师进度，
+   同时验证 rev47–49 与 0027–0029 已删除旧视图、空置对象、可还原冗余列和孤儿函数，且未改写业务事实。
 2. 教师端主 PRD 仍描述“TIDE 刷新后再修改工单状态”，需要与已落地的原子回复函数同步，
    不能同时保留两套状态时序口径。
 
-`preflight.sh` 会正向核对固定提交中的完整 0025 迁移清单以及精确 G01–G09 标题/分值；
+`preflight.sh` 会正向核对固定提交中的完整 0029 迁移清单以及精确 G01–G09 标题/分值；
 `contract-probe.sql` 会在目标库正向核对完整迁移账本、共享目录、assignment 和 execution。
 任一通过都不替代另一个，也不替代备份恢复演练和真实压测。
 完整的发布前证据、主键级前后对照和停止条件见
@@ -107,6 +108,8 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
 - `tide_migrator`：仅迁 `tide.*` 与共享工单例外；
 - `tide_support_ticket_owner`：非登录、非超级的共享工单函数 owner；
 - `tit_growth_app`：运营 API；
+- `tit_source_worker_runtime`：只继承 `tit_source_worker` 的独立 LOGIN；可读取两张源表、
+  写派生结果并按列完成源事件，不能写源表，也不能属于运营或教师运行角色；
 - `tit_teacher_crud`：教师 API，只更新 assignment 允许的状态五字段；
 - `tit_contract_probe`：只在发布门禁连接的独立只读 LOGIN 角色，不属于任何其他角色，
   无 Schema CREATE、表写入、序列和变更函数权限；
@@ -121,8 +124,9 @@ TiDe migration 会在连接后核对 `current_user=tit_growth_migrator`、角色
 
 - 运营 API：`2 workers * (5 pool + 2 overflow) = 14`；
 - 积分 Worker：`1`；
+- SourceWide Worker：`1`；
 - 教师 API：两个池各 `5`，共 `10`；
-- 运行时理论峰值 `25`，不含迁移、监控、备份和 DBA。
+- 运行时理论峰值 `26`，不含迁移、监控、备份和 DBA。
 
 该预算必须低于 PostgreSQL `max_connections` 的 70%–80%，否则先缩池，不能靠提高
 数据库连接上限掩盖等待。`tit_contract_probe` 只在发布门禁临时占用一个连接，不进入
@@ -140,9 +144,11 @@ TiDe migration 会在连接后核对 `current_user=tit_growth_migrator`、角色
    Docker 网络不重叠；运营 API 只信任该网络中固定的 `TIDE_EDGE_PROXY_IP`，不能信任整个
    RFC1918 地址段。`TIDE_COMPANY_GATEWAY_CIDR` 只填写公司网关实际源 IP（推荐 `/32`）
    或最小必要的 `/24`–`/32` 私网段。
-3. 分别创建运营运行、运营迁移、契约探针、教师运行和教师迁移五个受保护环境文件；权限
+3. 分别创建运营运行、运营迁移、SourceWide Worker、契约探针、教师运行和教师迁移六个受保护环境文件；权限
    至少为仅部署账号可读。运行、迁移和探针账号不能复用，迁移文件和探针文件不得进入运行
-   应用容器。探针文件只包含
+   应用容器。SourceWide Worker 文件必须包含独立的
+   `TIT_SOURCE_WORKER_DATABASE_URL`（LOGIN 固定为 `tit_source_worker_runtime`）和
+   `TIT_SOURCE_WORKER_EXPECTED_DATABASE`；探针文件只包含
    `DATABASE_URL=postgresql://tit_contract_probe:...?...&sslmode=verify-full`。
    可从 `deploy/combined/contract-probe.env.example` 复制字段骨架，不能把填写后的文件留在
    仓库工作树。
@@ -172,27 +178,27 @@ bash deploy/combined/preflight.sh
 docker compose -f deploy/combined/docker-compose.yml config --quiet
 ```
 
-教师端只到 0024、目录缺项、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
+教师端未到 0029、目录缺项、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
 这是预期结果。
 
 ## 发布顺序
 
-1. 评审教师端 0025、任务编码、读取过滤和执行配置；固定包含完整修复的新提交 SHA。
+1. 评审 public 49、教师端 0029、任务编码、读取过滤和执行配置；固定包含完整修复的新提交 SHA。
 2. 停止两端写流量、教师后台任务和积分结算 Worker。
 3. 创建一致性备份，记录 Alembic head、教师迁移账本和任务目录快照；验证恢复路径。
 4. DBA 预建或确认 `pg_trgm`。
-5. 运行 TiDe migration：
+5. TiDe Alembic 先只升级到 revision 46，保留历史 teacher 0020 回放所需的旧快照表：
 
    ```bash
    docker compose -f deploy/combined/docker-compose.yml \
-     --profile migration run --rm migrate
+     --profile migration run --rm migrate \
+     alembic upgrade 20260807_46_teacher_g01_source
    ```
 
-   revision 38 只会在没有既有固定任务积分事实时自动对齐分值；若迁移拒绝，必须先走
-   受治理的积分规则发布与同事务全量重算。
+   禁止在新库先升级到 public 49；否则旧快照表已删除，teacher 历史迁移 0020 无法建立原视图，
+   teacher migrator 会失败关闭并提示正确分阶段顺序。
 
-6. 使用教师端独立迁移环境文件运行正式 migrator，按完整有序生产链升级到
-   `0025_fixed_task_semantic_alignment`；迁移 `tide.*` 和共享工单例外，不得执行
+6. 将 `TIDE_TEACHER_MIGRATION_TARGET` 临时设为 `0027_retire_task_business_change_view`，使用教师端独立迁移环境文件运行正式 migrator；迁移 `tide.*` 和共享工单例外，不得执行
    `0017/0018` 的共享任务表 DDL。迁移器必须确认严格 SSL、目标库、固定非超级账号和受限
    SECURITY DEFINER owner：
 
@@ -200,10 +206,28 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    docker compose -f deploy/combined/docker-compose.yml \
      --profile migration run --rm teacher-migrate
    ```
-7. 0025 完成旧执行编码迁移后，以只读共享目录模式同步/核对教师端执行内容，确认 execution
+
+7. 确认 teacher 账本完整到 0027 且
+   `tide.analytics_task_business_change_v1` 不存在后，再把 TiDe Alembic 从 46 升到 public head 49：
+
+   ```bash
+   docker compose -f deploy/combined/docker-compose.yml \
+     --profile migration run --rm migrate
+   ```
+
+   public 47（包含在 head 49 链内）删除 `teacher_metric_snapshots`、`lesson_facts` 和
+   `lesson_dimension_scores`；rev48 继续收紧表结构，rev49 在可还原性核验后删除
+   `complaint_category_rules.learning_title / learning_url` 与 `operator_sessions.last_seen_at`。
+   随后把 `TIDE_TEACHER_MIGRATION_TARGET` 改回
+   `0029_remove_unused_columns_and_orphan_function` 并再次运行 `teacher-migrate`，确认账本 head 为 0029、
+   0028 删除的 6 张废弃表和 5 个旧分析视图均不存在，且 0029 删除的
+   `file_objects.visibility` 和 `enforce_outbox_target()` 也不存在。0027 down 只能在
+   public 47 之前验证，生产回退使用备份或向前修复。
+
+8. 0025 完成旧执行编码迁移后，以只读共享目录模式同步/核对教师端执行内容，确认 execution
    ID 和已有进度不变；`TASK_CATALOG_PUBLIC_WRITE` 必须为 `false`，不得再以迁移器外脚本
    改写共享任务编码。
-8. DBA 在完整教师端迁移链结束后统一应用最小权限；由于 0024 改变了函数 owner，权限脚本
+9. DBA 在两条完整迁移链结束后统一应用最小权限；由于 0024 改变了函数 owner，权限脚本
    必须在本次迁移后重跑，即在 DBA 自己的受控数据库会话中执行
    `$TIDE_TEACHER_REPO_PATH/backend/database/scripts/grant-tit-teacher-crud.sql`，否则教师角色
    不会获得工单教师消息函数的执行权。DBA 还需通过密码管理系统预建无高权限、无角色成员
@@ -228,16 +252,16 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    无角色继承和无写权限。用迁移账号、运行账号、`SET ROLE` 或非 TLS 会话执行都会失败，
    因此通过结果才真实覆盖探针自身权限，而不是高权限账号代查。
 
-9. 先启动并观察积分 Worker，再启动运营 API、一个或多个教师 API 副本和两个 Web。多个
+10. 先启动并观察积分 Worker 与 SourceWide Worker，再启动运营 API、一个或多个教师 API 副本和两个 Web。多个
    `teacher-api` 副本必须连接同一逻辑 PostgreSQL，并在扩容前确认 0022 的
    `tide.job_leases` 已落库、后台租约与照片任务行租约可正常续租和接管：
 
    ```bash
    docker compose -f deploy/combined/docker-compose.yml \
-     up -d score-settlement api teacher-api web teacher-web
+     up -d score-settlement source-wide api teacher-api web teacher-web
    ```
 
-10. 最后启动 `edge`，由公司网关按域名灰度切流。验证运营登录、教师登录、9 项任务、
+11. 最后启动 `edge`，由公司网关按域名灰度切流。验证运营登录、教师登录、9 项任务、
     状态更新、幂等结分、积分/课程读取和工单往返全链路后再全量。
 
 ## 回滚与观测
@@ -249,7 +273,7 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
 
 - 两端 P50/P95/P99、5xx 与超时；
 - PostgreSQL 活跃/空闲/等待连接、锁等待、慢 SQL 和事务时长；
-- 积分 Outbox 待处理数、最老事件年龄、Worker heartbeat；
+- 积分 Outbox 与 `source_wide.changed.v1` 待处理数、最老事件年龄、两个 Worker 的 heartbeat/readiness；
 - 教师后台租约、图片任务积压和最近成功时间；
 - Nginx 上游失败、请求体大小与静态资源命中率；
 - 容器 CPU、RSS、OOM、重启次数和日志写入速率。

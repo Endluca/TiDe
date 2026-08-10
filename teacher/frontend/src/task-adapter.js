@@ -75,7 +75,6 @@ function inferMethod(context) {
   ))) return "factual_response";
   const capabilities = new Set(context.capabilities);
   if (capabilities.has("DEVICE_CHECK") && capabilities.has("UPLOAD")) return "readiness_photo";
-  if (capabilities.has("DOCUMENT") && capabilities.has("CHECKLIST") && capabilities.has("UPLOAD")) return "environment_photo";
   if (capabilities.has("VIDEO") && capabilities.has("QUIZ")) return "learning_quiz";
   if (capabilities.has("VIDEO") && capabilities.has("CHECKLIST")) return "learning_checklist";
   if (capabilities.has("VIDEO")) return "video_learning";

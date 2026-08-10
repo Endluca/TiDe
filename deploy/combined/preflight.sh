@@ -88,6 +88,7 @@ required_variables=(
   TIDE_DATABASE_NAME
   TIDE_OPS_ENV_FILE
   TIDE_OPS_MIGRATION_ENV_FILE
+  TIDE_SOURCE_WORKER_ENV_FILE
   TIDE_CONTRACT_PROBE_ENV_FILE
   TIDE_TEACHER_ENV_FILE
   TIDE_TEACHER_MIGRATION_ENV_FILE
@@ -141,6 +142,8 @@ is_loopback_or_rfc1918_ipv4 "${company_gateway_network_int}" \
 [[ "${TIDE_OPS_ENV_FILE}" == /* ]] || fail "运营端环境文件必须使用绝对路径"
 [[ "${TIDE_OPS_MIGRATION_ENV_FILE}" == /* ]] \
   || fail "运营端迁移环境文件必须使用绝对路径"
+[[ "${TIDE_SOURCE_WORKER_ENV_FILE}" == /* ]] \
+  || fail "SourceWide Worker 环境文件必须使用绝对路径"
 [[ "${TIDE_CONTRACT_PROBE_ENV_FILE}" == /* ]] \
   || fail "契约探针环境文件必须使用绝对路径"
 [[ "${TIDE_TEACHER_ENV_FILE}" == /* ]] || fail "教师端环境文件必须使用绝对路径"
@@ -148,6 +151,12 @@ is_loopback_or_rfc1918_ipv4 "${company_gateway_network_int}" \
   || fail "教师端迁移环境文件必须使用绝对路径"
 [[ "${TIDE_OPS_ENV_FILE}" != "${TIDE_OPS_MIGRATION_ENV_FILE}" ]] \
   || fail "运营运行与迁移环境文件不得复用"
+[[ "${TIDE_SOURCE_WORKER_ENV_FILE}" != "${TIDE_OPS_ENV_FILE}" \
+    && "${TIDE_SOURCE_WORKER_ENV_FILE}" != "${TIDE_OPS_MIGRATION_ENV_FILE}" \
+    && "${TIDE_SOURCE_WORKER_ENV_FILE}" != "${TIDE_CONTRACT_PROBE_ENV_FILE}" \
+    && "${TIDE_SOURCE_WORKER_ENV_FILE}" != "${TIDE_TEACHER_ENV_FILE}" \
+    && "${TIDE_SOURCE_WORKER_ENV_FILE}" != "${TIDE_TEACHER_MIGRATION_ENV_FILE}" ]] \
+  || fail "SourceWide Worker 必须使用独立数据库账号环境文件"
 [[ "${TIDE_CONTRACT_PROBE_ENV_FILE}" != "${TIDE_OPS_ENV_FILE}" \
     && "${TIDE_CONTRACT_PROBE_ENV_FILE}" != "${TIDE_OPS_MIGRATION_ENV_FILE}" \
     && "${TIDE_CONTRACT_PROBE_ENV_FILE}" != "${TIDE_TEACHER_ENV_FILE}" \
@@ -160,12 +169,14 @@ is_loopback_or_rfc1918_ipv4 "${company_gateway_network_int}" \
   || fail "教师端固定提交必须是完整 40 位 SHA"
 [[ -f "${TIDE_OPS_ENV_FILE}" ]] || fail "运营端生产环境文件不存在"
 [[ -f "${TIDE_OPS_MIGRATION_ENV_FILE}" ]] || fail "运营端迁移环境文件不存在"
+[[ -f "${TIDE_SOURCE_WORKER_ENV_FILE}" ]] || fail "SourceWide Worker 环境文件不存在"
 [[ -f "${TIDE_CONTRACT_PROBE_ENV_FILE}" ]] || fail "契约探针环境文件不存在"
 [[ -f "${TIDE_TEACHER_ENV_FILE}" ]] || fail "教师端生产环境文件不存在"
 [[ -f "${TIDE_TEACHER_MIGRATION_ENV_FILE}" ]] || fail "教师端迁移环境文件不存在"
 protected_environment_files=(
   "${TIDE_OPS_ENV_FILE}"
   "${TIDE_OPS_MIGRATION_ENV_FILE}"
+  "${TIDE_SOURCE_WORKER_ENV_FILE}"
   "${TIDE_CONTRACT_PROBE_ENV_FILE}"
   "${TIDE_TEACHER_ENV_FILE}"
   "${TIDE_TEACHER_MIGRATION_ENV_FILE}"
@@ -177,6 +188,51 @@ for ((left_index = 0; left_index < ${#protected_environment_files[@]}; left_inde
       || fail "运行、迁移和契约探针环境文件不得通过软链接或硬链接复用"
   done
 done
+python3 - "${TIDE_SOURCE_WORKER_ENV_FILE}" "${TIDE_DATABASE_NAME}" <<'PY' \
+  || fail "SourceWide Worker 环境文件的专用数据库身份无效"
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+path = Path(sys.argv[1])
+expected_database = sys.argv[2]
+values: dict[str, list[str]] = {}
+for raw_line in path.read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("export "):
+        line = line.removeprefix("export ").lstrip()
+    key, separator, value = line.partition("=")
+    if not separator:
+        continue
+    candidate = value.strip()
+    if (
+        len(candidate) >= 2
+        and candidate[0] == candidate[-1]
+        and candidate[0] in {"'", '"'}
+    ):
+        candidate = candidate[1:-1]
+    values.setdefault(key.strip(), []).append(candidate)
+
+urls = values.get("TIT_SOURCE_WORKER_DATABASE_URL", [])
+expected_values = values.get("TIT_SOURCE_WORKER_EXPECTED_DATABASE", [])
+if len(urls) != 1 or not urls[0] or expected_values != [expected_database]:
+    raise SystemExit("missing or ambiguous source-worker database settings")
+parsed = urlparse(
+    urls[0].replace("postgresql+psycopg://", "postgresql://", 1)
+)
+if (
+    parsed.scheme != "postgresql"
+    or unquote(parsed.username or "") != "tit_source_worker_runtime"
+    or unquote(parsed.path.removeprefix("/")) != expected_database
+    or parse_qs(parsed.query, keep_blank_values=True).get("sslmode")
+    != ["verify-full"]
+):
+    raise SystemExit("source-worker URL must use its restricted LOGIN and target")
+PY
 git -C "${TIDE_TEACHER_REPO_PATH}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   || fail "教师端路径不在 Git 工作副本内"
 
@@ -197,12 +253,21 @@ teacher_catalog="${TIDE_TEACHER_REPO_PATH}/backend/scripts/sync-current-task-cat
 teacher_growth="${TIDE_TEACHER_REPO_PATH}/backend/src/notifications/growth-stage-notification.repository.ts"
 teacher_migrator="${TIDE_TEACHER_REPO_PATH}/backend/database/scripts/apply-production.sh"
 teacher_semantic_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0025_fixed_task_semantic_alignment.up.sql"
+teacher_legacy_view_retirement="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0027_retire_task_business_change_view.up.sql"
+teacher_unused_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0028_remove_unused_tide_objects.up.sql"
+teacher_unused_columns_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
 
 [[ -f "${teacher_service}" ]] || fail "缺少教师端任务服务"
 [[ -f "${teacher_catalog}" ]] || fail "缺少教师端任务目录同步器"
 [[ -f "${teacher_growth}" ]] || fail "缺少教师端成长阶段读取逻辑"
 [[ -f "${teacher_semantic_migration}" ]] \
   || fail "缺少教师端 0025 固定任务语义迁移"
+[[ -f "${teacher_legacy_view_retirement}" ]] \
+  || fail "缺少教师端 0027 旧业务变化视图退役迁移"
+[[ -f "${teacher_unused_cleanup}" ]] \
+  || fail "缺少教师端 0028 无用对象清理迁移"
+[[ -f "${teacher_unused_columns_cleanup}" ]] \
+  || fail "缺少教师端 0029 冗余列与孤儿函数清理迁移"
 
 if grep -Eq "HIDDEN_FIXED_TASK_CODES.*G02|new Set\\(\\['G02'\\]\\)" "${teacher_service}"; then
   fail "教师端仍隐藏当前 G02 平台政策任务"
@@ -270,12 +335,17 @@ if sorted(declared_codes) != sorted(expected) or duplicate_codes or actual != ex
 PY
 
 [[ -f "${teacher_migrator}" ]] || fail "缺少教师端正式生产迁移器"
+grep -Fq "public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029" \
+  "${teacher_migrator}" \
+  || fail "教师端迁移器缺少 public46→teacher0027→public49→teacher0029 分阶段失败关闭门禁"
+grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
+  || fail "教师端迁移器未区分历史 0020 是否已经记录"
 [[ -f "${TIDE_TEACHER_REPO_PATH}/backend/Dockerfile" ]] \
   || fail "缺少教师端 API 生产镜像"
 [[ -f "${TIDE_TEACHER_REPO_PATH}/frontend/Dockerfile" ]] \
   || fail "缺少教师端 Web 生产镜像"
 python3 - "${teacher_migrator}" <<'PY' \
-  || fail "教师端生产迁移器不是以 0025 结尾的完整有序生产链"
+  || fail "教师端生产迁移器不是以 0029 结尾的完整有序生产链"
 from __future__ import annotations
 
 import re
@@ -307,6 +377,10 @@ expected = [
     "0023_teacher_support_operator_atomicity",
     "0024_support_ticket_cas_and_function_owner",
     "0025_fixed_task_semantic_alignment",
+    "0026_kuozhi_course_syncs",
+    "0027_retire_task_business_change_view",
+    "0028_remove_unused_tide_objects",
+    "0029_remove_unused_columns_and_orphan_function",
 ]
 target_match = re.search(
     r'TARGET_MIGRATION="\$\{TIDE_MIGRATION_TARGET:-([^}]+)\}"',
@@ -338,4 +412,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；仍需执行数据库契约探针和发布门禁。\n'
+printf '联合部署静态预检通过；数据库必须按 public46→teacher0027→public49→teacher0029 执行，随后仍需通过契约探针和发布门禁。\n'

@@ -64,7 +64,6 @@ def test_current_read_routes_require_viewer_role() -> None:
         "/api/teachers/T-1001/scorecard",
         "/api/task-templates",
         "/api/task-assignments",
-        "/api/outputs",
     ):
         response = client.get(path)
         assert response.status_code == 403, path
@@ -89,6 +88,9 @@ def test_retired_task_transport_and_legacy_runtime_routes_are_absent() -> None:
         ("POST", "/api/task-assignments/ASSIGNMENT-OLD/status-events"),
         ("GET", "/api/ops/action-queue"),
         ("GET", "/api/ops/cases"),
+        ("GET", "/api/outputs"),
+        ("GET", "/api/outputs/summary"),
+        ("POST", "/api/outputs/anything/retry"),
     )
 
     for method, path in retired_requests:

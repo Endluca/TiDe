@@ -22,7 +22,6 @@ from .db_models import (
     OpsCaseRecord,
     ScoreAccountRecord,
     TaskAssignmentRecord,
-    TeacherMetricSnapshotRecord,
     TeacherRecord,
 )
 from .task_service import TaskService
@@ -78,52 +77,20 @@ def _policy_from_payload(
     return policy, source, digest
 
 
-def _employment_status(
-    teacher: TeacherRecord,
-    snapshot: TeacherMetricSnapshotRecord | None,
-) -> str | None:
-    if snapshot is not None and snapshot.employment_status is not None:
-        return snapshot.employment_status
+def _employment_status(teacher: TeacherRecord) -> str | None:
     value = (teacher.payload or {}).get("employment_status")
     return str(value) if value is not None else None
 
 
-def _teacher_projection(
-    teacher: TeacherRecord,
-    snapshot: TeacherMetricSnapshotRecord | None,
-) -> dict[str, Any]:
+def _teacher_projection(teacher: TeacherRecord) -> dict[str, Any]:
     payload = deepcopy(teacher.payload or {})
-    snapshot_policy = (
-        snapshot.score_policy_snapshot
-        if snapshot is not None
-        and isinstance(snapshot.score_policy_snapshot, dict)
-        else {}
-    )
-    thresholds = snapshot_policy.get("thresholds", {})
-    raw_total = (
-        float(snapshot.raw_total_score)
-        if snapshot is not None
-        else float(teacher.total_score)
-    )
-    public_total = (
-        float(snapshot.public_total_score)
-        if snapshot is not None
-        else float(payload.get("external_display_score", raw_total))
-    )
+    raw_total = float(teacher.total_score)
+    public_total = float(payload.get("external_display_score", raw_total))
     graduation_threshold = float(
-        thresholds.get(
-            "graduation_raw_score",
-            payload.get("graduation_threshold", teacher.graduation_threshold),
-        )
+        payload.get("graduation_threshold", teacher.graduation_threshold)
         or 0
     )
-    gold_threshold = float(
-        thresholds.get(
-            "gold_raw_score",
-            payload.get("gold_threshold", 200),
-        )
-        or 0
-    )
+    gold_threshold = float(payload.get("gold_threshold", 200) or 0)
     graduation_qualified = bool(
         teacher.graduation_state == "GRADUATED"
         or payload.get("graduation_qualified")
@@ -142,11 +109,11 @@ def _teacher_projection(
         "graduation_threshold": graduation_threshold,
         "gold_threshold": gold_threshold,
         "graduation_external_score": float(
-            thresholds.get("graduation_external_score", graduation_threshold)
+            payload.get("graduation_external_score", graduation_threshold)
             or 0
         ),
         "gold_external_score": float(
-            thresholds.get("gold_external_score", gold_threshold) or 0
+            payload.get("gold_external_score", gold_threshold) or 0
         ),
         "graduation_score_threshold_met": raw_total >= graduation_threshold,
         "gold_score_threshold_met": raw_total >= gold_threshold,
@@ -160,39 +127,17 @@ def _teacher_projection(
         "gold_qualified": gold_qualified,
         "graduation_state": teacher.graduation_state,
         "data_mode": teacher.data_mode,
-        "employment_status": _employment_status(teacher, snapshot),
-        "source_batch_id": teacher.source_batch_id,
+        "employment_status": _employment_status(teacher),
         "source_snapshot_label": teacher.source_snapshot_label,
-        "first_booked_date": (
-            snapshot.first_booked_date.isoformat()
-            if snapshot is not None and snapshot.first_booked_date
-            else payload.get("first_booked_date")
+        "first_booked_date": payload.get("first_booked_date"),
+        "is_cpl_tesol": payload.get("is_cpl_tesol"),
+        "is_self_introduce": payload.get("is_self_introduce"),
+        "lessons_completed": int(payload.get("lessons_completed") or 0),
+        "score_policy_version": payload.get(
+            "score_policy_version",
+            payload.get("score_rule_version"),
         ),
-        "is_cpl_tesol": (
-            snapshot.is_cpl_tesol
-            if snapshot is not None
-            else payload.get("is_cpl_tesol")
-        ),
-        "is_self_introduce": (
-            snapshot.is_self_introduce
-            if snapshot is not None
-            else payload.get("is_self_introduce")
-        ),
-        "lessons_completed": (
-            snapshot.lessons_completed
-            if snapshot is not None
-            else int(payload.get("lessons_completed") or 0)
-        ),
-        "score_policy_version": (
-            snapshot.score_rule_version
-            if snapshot is not None
-            else payload.get("score_policy_version")
-        ),
-        "score_policy_sha256": (
-            snapshot.score_policy_sha256
-            if snapshot is not None
-            else payload.get("score_policy_sha256")
-        ),
+        "score_policy_sha256": payload.get("score_policy_sha256"),
         "updated_at": _iso(teacher.updated_at),
     }
 
@@ -238,7 +183,6 @@ def _teacher_list_summary(projected: dict[str, Any]) -> dict[str, Any]:
         "graduation_state",
         "data_mode",
         "employment_status",
-        "source_batch_id",
         "source_snapshot_label",
         "score_policy_version",
         "score_policy_source",
@@ -272,18 +216,7 @@ class TeacherReadService:
 
     @staticmethod
     def _base_statement() -> Any:
-        return (
-            select(TeacherRecord, TeacherMetricSnapshotRecord)
-            .outerjoin(
-                TeacherMetricSnapshotRecord,
-                and_(
-                    TeacherMetricSnapshotRecord.teacher_id
-                    == TeacherRecord.teacher_id,
-                    TeacherMetricSnapshotRecord.batch_id
-                    == TeacherRecord.source_batch_id,
-                ),
-            )
-        )
+        return select(TeacherRecord)
 
     def data_mode_counts(self) -> dict[str, int]:
         with session_scope(self.engine) as session:
@@ -321,7 +254,6 @@ class TeacherReadService:
             employment_expression = func.lower(
                 func.trim(
                     func.coalesce(
-                        TeacherMetricSnapshotRecord.employment_status,
                         TeacherRecord.payload["employment_status"].as_string(),
                         "UNKNOWN",
                     )
@@ -347,7 +279,7 @@ class TeacherReadService:
                 )
                 or 0
             )
-            rows = session.execute(
+            teachers = session.scalars(
                 statement.order_by(
                     case(
                         (func.upper(TeacherRecord.data_mode) == "REAL", 0),
@@ -360,7 +292,7 @@ class TeacherReadService:
                 .offset((page - 1) * page_size)
                 .limit(page_size)
             ).all()
-            teacher_ids = [teacher.teacher_id for teacher, _ in rows]
+            teacher_ids = [teacher.teacher_id for teacher in teachers]
             active_task_counts = {
                 teacher_id: int(count)
                 for teacher_id, count in session.execute(
@@ -384,8 +316,8 @@ class TeacherReadService:
                 ).all()
             }
             items: list[dict[str, Any]] = []
-            for teacher, snapshot in rows:
-                item = _teacher_projection(teacher, snapshot)
+            for teacher in teachers:
+                item = _teacher_projection(teacher)
                 item["active_task_count"] = active_task_counts.get(
                     teacher.teacher_id, 0
                 )
@@ -408,7 +340,6 @@ class TeacherReadService:
                     for value in session.scalars(
                         select(
                             func.coalesce(
-                                TeacherMetricSnapshotRecord.employment_status,
                                 TeacherRecord.payload[
                                     "employment_status"
                                 ].as_string(),
@@ -416,15 +347,6 @@ class TeacherReadService:
                             )
                         )
                     .select_from(TeacherRecord)
-                    .outerjoin(
-                        TeacherMetricSnapshotRecord,
-                        and_(
-                            TeacherMetricSnapshotRecord.teacher_id
-                            == TeacherRecord.teacher_id,
-                            TeacherMetricSnapshotRecord.batch_id
-                            == TeacherRecord.source_batch_id,
-                        ),
-                    )
                     .distinct()
                     ).all()
                 },
@@ -455,10 +377,9 @@ class TeacherReadService:
         """Return a bounded scalar projection for remote-search selectors."""
 
         normalized_keyword = str(keyword or "").strip().casefold()
-        employment_status = func.coalesce(
-            TeacherMetricSnapshotRecord.employment_status,
-            TeacherRecord.payload["employment_status"].as_string(),
-        ).label("employment_status")
+        employment_status = TeacherRecord.payload[
+            "employment_status"
+        ].as_string().label("employment_status")
         timezone_source = TeacherRecord.payload[
             "timezone_source_mode"
         ].as_string().label("timezone_source")
@@ -474,15 +395,6 @@ class TeacherReadService:
                     timezone_source,
                 )
                 .select_from(TeacherRecord)
-                .outerjoin(
-                    TeacherMetricSnapshotRecord,
-                    and_(
-                        TeacherMetricSnapshotRecord.teacher_id
-                        == TeacherRecord.teacher_id,
-                        TeacherMetricSnapshotRecord.batch_id
-                        == TeacherRecord.source_batch_id,
-                    ),
-                )
             )
             if normalized_keyword:
                 pattern = f"%{normalized_keyword}%"
@@ -535,15 +447,14 @@ class TeacherReadService:
 
     def teacher_detail(self, teacher_id: str) -> dict[str, Any]:
         with session_scope(self.engine) as session:
-            row = session.execute(
+            teacher = session.scalar(
                 self._base_statement().where(
                     TeacherRecord.teacher_id == teacher_id
                 )
-            ).first()
-            if row is None:
+            )
+            if teacher is None:
                 raise LookupError(teacher_id)
-            teacher, snapshot = row
-            detail = _teacher_projection(teacher, snapshot)
+            detail = _teacher_projection(teacher)
             detail["ops_cases"] = [
                 _case_payload(item)
                 for item in session.scalars(
@@ -615,7 +526,6 @@ class DashboardReadService:
             employment_expression = func.lower(
                 func.trim(
                     func.coalesce(
-                        TeacherMetricSnapshotRecord.employment_status,
                         TeacherRecord.payload["employment_status"].as_string(),
                         "UNKNOWN",
                     )
@@ -624,11 +534,7 @@ class DashboardReadService:
             data_mode_expression = func.upper(
                 func.coalesce(TeacherRecord.data_mode, "UNKNOWN")
             )
-            raw_total_expression = func.coalesce(
-                TeacherMetricSnapshotRecord.raw_total_score,
-                TeacherRecord.total_score,
-                0,
-            )
+            raw_total_expression = func.coalesce(TeacherRecord.total_score, 0)
             graduation_qualified_expression = or_(
                 TeacherRecord.graduation_state == "GRADUATED",
                 func.coalesce(
@@ -707,15 +613,6 @@ class DashboardReadService:
                     ).label("gold_criteria_met_count"),
                 )
                 .select_from(TeacherRecord)
-                .outerjoin(
-                    TeacherMetricSnapshotRecord,
-                    and_(
-                        TeacherMetricSnapshotRecord.teacher_id
-                        == TeacherRecord.teacher_id,
-                        TeacherMetricSnapshotRecord.batch_id
-                        == TeacherRecord.source_batch_id,
-                    ),
-                )
                 .group_by(data_mode_expression, employment_expression)
             ).all()
 
@@ -832,15 +729,11 @@ class DashboardReadService:
                     "code": dimension,
                     "label": DIMENSION_LABELS.get(dimension, dimension),
                     "average": round(float(average or 0), 1),
-                    "minimum": float(minimum or 0),
-                    "weight": float(weight or 0),
                 }
-                for dimension, average, minimum, weight in session.execute(
+                for dimension, average in session.execute(
                     select(
                         ScoreAccountRecord.dimension,
                         func.avg(ScoreAccountRecord.current_score),
-                        func.max(ScoreAccountRecord.minimum_score),
-                        func.max(ScoreAccountRecord.weight),
                     )
                     .group_by(ScoreAccountRecord.dimension)
                     .order_by(

@@ -2,9 +2,7 @@ import { useState } from "react";
 import {
   ArrowClockwise,
   ArrowLeft,
-  ArrowRight,
   BookOpen,
-  Camera,
   Check,
   CheckCircle,
   CloudArrowUp,
@@ -14,9 +12,7 @@ import {
   Info,
   Lightbulb,
   Lock,
-  Pause,
   PaperPlaneTilt,
-  Play,
   SealCheck,
   ShieldCheck,
   Sparkle,
@@ -27,11 +23,9 @@ import {
 import { stageDescriptions } from "../live-catalog";
 import { getLearningTaskContent } from "../data/tasks/learning-task-content";
 import { useI18n } from "../i18n";
-import { publicAsset } from "../public-assets";
 import VideoQuizTask, { ChapterVideoLearning } from "../features/task-content/VideoQuizTask";
 import VideoOnlyTask from "../features/task-content/VideoOnlyTask";
 import KuozhiCourseTask from "../features/task-content/KuozhiCourseTask";
-import EnvironmentPhotoTask from "../features/task-content/EnvironmentPhotoTask";
 import ExternalStatusTask from "../features/task-content/ExternalStatusTask";
 import ReadinessPhotoTask from "../features/task-content/ReadinessPhotoTask";
 import DeviceCheckTask from "../features/task-content/DeviceCheckTask";
@@ -181,203 +175,6 @@ function LockedPreview({ task }) {
           </section>
         )}
       </div>
-    </div>
-  );
-}
-
-const sameAnswer = (answer, correct) => {
-  if (Array.isArray(correct)) {
-    return Array.isArray(answer)
-      && answer.length === correct.length
-      && [...answer].sort().every((value, index) => value === [...correct].sort()[index]);
-  }
-  return answer === correct;
-};
-
-function LearningQuizFlow({ task, onUpdate }) {
-  const { language } = useI18n();
-  const c = (en, zh) => language === "zh" ? zh : en;
-  const questions = task.quizQuestions || [];
-  const [videoProgress, setVideoProgress] = useState(task.videoProgress || 0);
-  const [playing, setPlaying] = useState(false);
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState(task.quizAnswers || {});
-  const [result, setResult] = useState(task.quizResult || null);
-
-  if (task.locked) return <LockedPreview task={task} />;
-  if (task.status === "completed" && !result) return <CompletedState task={task} />;
-
-  const advanceVideo = () => {
-    const next = Math.min(100, videoProgress + 25);
-    setVideoProgress(next);
-    setPlaying(next < 100);
-    onUpdate(task.id, "started", {
-      videoProgress: next,
-      learningState: next === 100 ? "TO_TEST" : "TO_LEARN",
-      progress: next === 100 ? 50 : Math.round(next / 2),
-    });
-  };
-
-  const selectAnswer = (question, optionIndex) => {
-    if (question.type === "multiple") {
-      const selected = answers[question.id] || [];
-      const next = selected.includes(optionIndex)
-        ? selected.filter((value) => value !== optionIndex)
-        : [...selected, optionIndex];
-      setAnswers((current) => ({ ...current, [question.id]: next }));
-      return;
-    }
-    setAnswers((current) => ({ ...current, [question.id]: optionIndex }));
-  };
-
-  const answeredCount = questions.filter((question) => {
-    const answer = answers[question.id];
-    return Array.isArray(answer) ? answer.length > 0 : answer !== undefined;
-  }).length;
-
-  const submitQuiz = () => {
-    const correct = questions.filter((question) => sameAnswer(answers[question.id], question.correct)).length;
-    const score = Math.round((correct / questions.length) * 100);
-    const passed = score >= 80;
-    const nextResult = { score, passed, correct };
-    setResult(nextResult);
-    onUpdate(task.id, passed ? "completed" : "retry_required", {
-      quizResult: nextResult,
-      quizAnswers: answers,
-      attemptNo: (task.attemptNo || 0) + 1,
-      learningState: passed ? "FINISHED" : "UNFINISHED",
-      progress: passed ? 100 : 50,
-    });
-  };
-
-  const retry = () => {
-    setAnswers({});
-    setResult(null);
-    setQuestionIndex(0);
-    onUpdate(task.id, "started", { quizResult: null, quizAnswers: null, learningState: "TO_TEST", progress: 50 });
-  };
-
-  const currentQuestion = questions[questionIndex];
-  const correctAnswerText = (question) => {
-    const indexes = Array.isArray(question.correct) ? question.correct : [question.correct];
-    return indexes.map((index) => question.options[index]).join(c(" and ", "、"));
-  };
-  const selectedAnswerText = (question) => {
-    const selected = answers[question.id];
-    const indexes = Array.isArray(selected) ? selected : [selected];
-    return indexes
-      .map((index) => question.options[index])
-      .filter(Boolean)
-      .join(c(" and ", "、")) || c("No answer", "未作答");
-  };
-  const isQuizOpen = videoProgress === 100;
-  const stateLabel = result
-    ? result.passed ? c("Finished", "已完成") : c("Review and retry", "待复习重试")
-    : isQuizOpen ? c("Ready for check", "待练习") : c("Learning", "学习中");
-
-  return (
-    <div className="native-learning-flow">
-      <div className="learning-state-row">
-        <span className="eyebrow">{c("IN-PLATFORM LEARNING", "站内学习")}</span>
-        <span className={`learning-state ${result && !result.passed ? "attention" : ""}`}>{stateLabel}</span>
-      </div>
-
-      <section className="mock-video-player" aria-label={c("Learning video", "学习视频")}>
-        <img src={publicAsset("/assets/illustrations/training-video-teacher.png")} alt={c("Teacher presenting the lesson", "教师讲解课程")} />
-        <div className="video-shade">
-          <span className="video-duration">{videoProgress}%</span>
-          <button type="button" onClick={() => { setPlaying((value) => !value); if (!playing) advanceVideo(); }} aria-label={playing ? c("Pause", "暂停") : c("Play", "播放")}>
-            {playing ? <Pause size={25} weight="fill" /> : <Play size={25} weight="fill" />}
-          </button>
-          <div>
-            <strong>{task.name}</strong>
-            <small>{c("1× only · Seeking opens after the first complete view", "首次观看需完整播放：不能倍速或拖动；看完后可自由回看")}</small>
-          </div>
-        </div>
-        <div className="video-progress" aria-label={c(`${videoProgress}% watched`, `已观看 ${videoProgress}%`)}><i style={{ width: `${videoProgress}%` }} /></div>
-      </section>
-      {videoProgress < 100 && (
-        <button className="primary-button wide-button" type="button" onClick={advanceVideo}>
-          <Play size={18} weight="fill" />{c("Continue video", "继续观看")}
-        </button>
-      )}
-
-      <section className={`native-quiz-shell ${isQuizOpen ? "" : "is-locked"}`} aria-disabled={!isQuizOpen}>
-        <header>
-          <span><ShieldCheck size={24} weight="duotone" /></span>
-          <div><h3>{c("Knowledge check", "课后练习")}</h3><p>{c("One question at a time · 80% to pass", "每次展示一题 · 正确率达到 80% 即可通过")}</p></div>
-          {!isQuizOpen && <Lock size={20} weight="fill" />}
-        </header>
-        {!isQuizOpen ? (
-          <p className="quiz-locked-copy">{c("Finish the first complete video view to open the check.", "完整看完视频后即可开始练习。")}</p>
-        ) : result ? (
-          <div className={`quiz-result-review ${result.passed ? "is-passed" : ""}`} role="status">
-            <span className="result-icon">{result.passed ? <CheckCircle size={25} weight="fill" /> : <Lightbulb size={25} weight="fill" />}</span>
-            <h3>{result.passed
-              ? c("You passed. Review your answers below.", "你已通过，可以在下方查看答题结果。")
-              : c("Review the incorrect answers, then try again.", "这次还未通过，先核对错题，再试一次。")}</h3>
-            <p>{c(`Score ${result.score}% · ${result.correct} of ${questions.length} correct`, `得分 ${result.score}% · 答对 ${result.correct} / ${questions.length}`)}</p>
-            {!result.passed && (
-              <div className="quiz-result-retry-toki">
-                <Toki
-                  mood="thumb"
-                  motion="encourage"
-                  alt={c("Toki encourages you to try again", "Toki 鼓励你再试一次")}
-                />
-                <span>
-                  <strong>{c("Almost there!", "差一点就通过了！")}</strong>
-                  <small>{c("The questions to review are ready below.", "需要复习的错题已经整理在下方。")}</small>
-                </span>
-              </div>
-            )}
-            <div className="answer-review-list">
-              {questions.map((question, index) => (
-                <article key={question.id}>
-                  <strong>{index + 1}. {question.question}</strong>
-                  <span>{sameAnswer(answers[question.id], question.correct) ? c("Correct", "回答正确") : c("Review needed", "回答有误")}</span>
-                  <p><strong>{c("Your answer: ", "你的答案：")}</strong>{selectedAnswerText(question)}</p>
-                  <p><strong>{c("Correct answer: ", "正确答案：")}</strong>{correctAnswerText(question)}</p>
-                </article>
-              ))}
-            </div>
-            {result.passed
-              ? <CompletedState task={task} />
-              : <button className="primary-button" type="button" onClick={retry}><ArrowClockwise size={18} />{c("Retry check", "再试一次")}</button>}
-          </div>
-        ) : (
-          <div className="single-question-flow">
-            <div className="quiz-progress"><span>{c(`Question ${questionIndex + 1} of ${questions.length}`, `第 ${questionIndex + 1} / ${questions.length} 题`)}</span><span>{c(`${answeredCount} answered`, `已作答 ${answeredCount} 题`)}</span></div>
-            <fieldset className="quiz-question">
-              <legend>{currentQuestion.question}</legend>
-              {currentQuestion.type === "multiple" && <p className="question-type-hint">{c("Select all that apply", "多选题：请选择所有正确选项")}</p>}
-              <div className="option-list">
-                {currentQuestion.options.map((option, optionIndex) => {
-                  const value = answers[currentQuestion.id];
-                  const selected = Array.isArray(value) ? value.includes(optionIndex) : value === optionIndex;
-                  return (
-                    <label key={option} className={selected ? "option-selected" : ""}>
-                      <input
-                        type={currentQuestion.type === "multiple" ? "checkbox" : "radio"}
-                        name={currentQuestion.id}
-                        checked={selected}
-                        onChange={() => selectAnswer(currentQuestion, optionIndex)}
-                      />
-                      <span className="radio-mark">{currentQuestion.type === "multiple" && selected && <Check size={14} weight="bold" />}</span>
-                      {option}
-                    </label>
-                  );
-                })}
-              </div>
-            </fieldset>
-            <div className="question-navigation">
-              <button className="secondary-button" type="button" disabled={questionIndex === 0} onClick={() => setQuestionIndex((value) => value - 1)}><ArrowLeft size={17} />{c("Previous", "上一题")}</button>
-              {questionIndex < questions.length - 1
-                ? <button className="primary-button" type="button" onClick={() => setQuestionIndex((value) => value + 1)}>{c("Next", "下一题")}<ArrowRight size={17} /></button>
-                : <button className="primary-button" type="button" disabled={answeredCount !== questions.length} onClick={submitQuiz}>{c("Submit answers", "提交练习")}</button>}
-            </div>
-          </div>
-        )}
-      </section>
     </div>
   );
 }
@@ -873,72 +670,6 @@ function UploadReviewFlow({ task, onUpdate }) {
   );
 }
 
-function EnvironmentPhotoFlow({ task, onUpdate }) {
-  const { language } = useI18n();
-  const c = (en, zh) => language === "zh" ? zh : en;
-  const [checked, setChecked] = useState(task.environmentChecks || []);
-  const [permission, setPermission] = useState("idle");
-  const [photo, setPhoto] = useState(false);
-  const [redo, setRedo] = useState(false);
-  if (task.locked) return <LockedPreview task={task} />;
-  if (task.status === "completed" && !redo) return <CompletedState task={task} onSecondary={() => setRedo(true)} secondaryLabel={c("Review setup again", "再次检查上课环境")} />;
-  const standards = [
-    c("Camera view is bright and keeps your face visible", "画面光线清晰，面部完整可见"),
-    c("Microphone and speakers are ready for class", "麦克风和扬声器已可正常使用"),
-    c("The teaching area is tidy and free from private information", "授课区域整洁，画面中没有个人隐私信息"),
-  ];
-  const toggle = (index) => {
-    const next = checked.includes(index) ? checked.filter((value) => value !== index) : [...checked, index];
-    setChecked(next);
-    onUpdate(task.id, "started", { environmentChecks: next, progress: Math.round((next.length / standards.length) * 45) });
-  };
-  return (
-    <div className="environment-photo-flow">
-      <div className="flow-note"><ShieldCheck size={22} weight="fill" /><span><strong>{c("Classroom setup standard", "授课环境标准")}</strong>{c("Confirm the visible setup, then submit one classroom photo. No hardware score is calculated here.", "先检查画面、声音和教学区域，再拍一张照片提交。")}</span></div>
-      <div className="environment-checks">
-        {standards.map((item, index) => (
-          <label key={item} className={checked.includes(index) ? "checked" : ""}><input type="checkbox" checked={checked.includes(index)} onChange={() => toggle(index)} /><span>{checked.includes(index) && <Check size={15} weight="bold" />}</span>{item}</label>
-        ))}
-      </div>
-      <section className="camera-permission-card">
-        <header><Camera size={24} weight="duotone" /><div><h3>{c("Classroom photo", "授课环境照片")}</h3><p>{c("Used to confirm the visible classroom setup.", "用于确认可见的授课环境。")}</p></div></header>
-        {permission === "idle" && <div className="camera-actions"><button className="primary-button" type="button" onClick={() => setPermission("allowed")}><VideoCamera size={18} />{c("Allow camera", "允许相机")}</button><button className="text-button" type="button" onClick={() => setPermission("help")}>{c("I can’t enable camera", "相机打不开？")}</button></div>}
-        {permission === "help" && <div className="camera-help" role="alert"><WarningCircle size={20} weight="fill" /><span><strong>{c("Camera permission is not enabled.", "相机权限尚未开启。")}</strong>{c("Open browser site settings, allow camera access, then return and try again. You can still review the standard above.", "请在浏览器站点设置中允许相机权限，再返回重试；你仍可先查看上方标准。")}</span><button className="secondary-button" type="button" onClick={() => setPermission("idle")}>{c("Try again", "重试")}</button></div>}
-        {permission === "allowed" && (
-          <div className="mock-camera-stage">
-            <img src={publicAsset("/assets/illustrations/training-video-teacher.png")} alt={c("Classroom camera preview", "授课环境相机预览")} />
-            <span>{c("CAMERA PREVIEW", "相机预览")}</span>
-            {!photo ? <button className="primary-button" type="button" onClick={() => setPhoto(true)}><Camera size={18} />{c("Take photo", "拍摄照片")}</button> : <div className="photo-confirm"><CheckCircle size={20} weight="fill" /><strong>{c("Photo ready", "照片已拍摄")}</strong><button className="secondary-button" type="button" onClick={() => setPhoto(false)}>{c("Retake", "重拍")}</button></div>}
-          </div>
-        )}
-      </section>
-      <button className="primary-button wide-button" type="button" disabled={checked.length !== standards.length || !photo} onClick={() => { setRedo(false); onUpdate(task.id, "completed", { environmentChecks: checked, photoSubmitted: true, progress: 100 }); }}>{c("Submit setup confirmation", "提交并完成任务")}</button>
-    </div>
-  );
-}
-
-function EmbeddedCourseFlow({ task, onUpdate }) {
-  const { language } = useI18n();
-  const c = (en, zh) => language === "zh" ? zh : en;
-  const [reviewed, setReviewed] = useState(task.courseSections || []);
-  if (task.locked) return <LockedPreview task={task} />;
-  if (task.status === "completed") return <CompletedState task={task} />;
-  const toggle = (index) => {
-    const next = reviewed.includes(index) ? reviewed.filter((value) => value !== index) : [...reviewed, index];
-    setReviewed(next);
-    onUpdate(task.id, "started", { courseSections: next, progress: Math.round((next.length / task.steps.length) * 90) });
-  };
-  return (
-    <div className="embedded-course-flow">
-      <div className="course-cover"><img src={publicAsset("/assets/illustrations/training-video-teacher.png")} alt="" aria-hidden="true" /><span><BookOpen size={24} weight="fill" />{c("IN-PLATFORM COURSE", "站内课程")}</span><h3>{task.name}</h3><p>{task.material}</p></div>
-      <div className="course-section-list">
-        {task.steps.map((step, index) => <button type="button" key={step} className={reviewed.includes(index) ? "completed" : ""} onClick={() => toggle(index)}><span>{reviewed.includes(index) ? <Check size={16} weight="bold" /> : index + 1}</span><strong>{step}</strong><small>{reviewed.includes(index) ? c("Reviewed", "已学习") : c("Open section", "开始学习")}</small></button>)}
-      </div>
-      <button className="primary-button wide-button" type="button" disabled={reviewed.length !== task.steps.length} onClick={() => onUpdate(task.id, "completed", { progress: 100 })}>{c("Confirm course completion", "完成课程")}</button>
-    </div>
-  );
-}
-
 const flowComponents = {
   content_pending: PendingContentFlow,
   learning_checklist: ChecklistFlow,
@@ -957,9 +688,6 @@ export default function TaskFlow({ task, onUpdate, onHelp }) {
   }
   if (task.method === "video_learning") {
     return <VideoOnlyTask task={task} onUpdate={onUpdate} />;
-  }
-  if (task.method === "environment_photo") {
-    return <EnvironmentPhotoTask task={task} onUpdate={onUpdate} />;
   }
   if (task.method === "readiness_photo") {
     return <ReadinessPhotoTask task={task} />;

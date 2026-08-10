@@ -18,7 +18,6 @@ from app.auth import OperatorIdentity, current_operator  # noqa: E402
 from app.auth_models import OperatorRole  # noqa: E402
 from app.database import Base, engine  # noqa: E402
 import pytest  # noqa: E402
-from sqlalchemy import delete  # noqa: E402
 
 
 # ``task_assignments`` deliberately uses PostgreSQL-only server defaults in
@@ -55,24 +54,19 @@ Base.metadata.create_all(engine)
 def _destructive_test_domain_reset():
     """Give every test a pristine disposable domain database.
 
-    The product's demo reset intentionally preserves operator-authored facts.
-    Tests that assert exact template version numbers need stronger isolation,
-    so only this disposable SQLite harness uses the explicit purge path.
+    Production code must not own a domain-wide deletion path.  This disposable
+    SQLite fixture does: clear every mapped table before rebuilding the small
+    test-only working set and task catalog.
     """
 
     from app.database import session_scope
-    from app.main import service
+    from app.store import store
     from app.task_seed import seed_task_catalog
 
-    service.state.reset(purge_imported=True)
     with session_scope(engine) as session:
-        # Current task facts/config are reset explicitly; no retired transport
-        # model participates in the test fixture.
-        for model in (
-            db_models.TaskAssignmentRecord,
-            db_models.TaskTemplateRecord,
-        ):
-            session.execute(delete(model))
+        for table in reversed(Base.metadata.sorted_tables):
+            session.execute(table.delete())
+    store.reset()
     first_seed = seed_task_catalog(engine)
     repeated_seed = seed_task_catalog(engine)
     assert first_seed["template_catalog_size"] == 14

@@ -19,7 +19,7 @@ TIDE_DB_USER="${TIDE_DB_USER:-${TIDE_ADMIN_DB_USER:-}}"
 TIDE_DB_PASSWORD="${TIDE_DB_PASSWORD:-${TIDE_ADMIN_DB_PASSWORD:-}}"
 
 export PGPASSWORD="${TIDE_DB_PASSWORD}"
-ADMIN_PSQL=(psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "${TIDE_DB_PORT}" -U "${TIDE_DB_USER}")
+ADMIN_PSQL=(psql -X -v ON_ERROR_STOP=1 -h "${TIDE_DB_HOST}" -p "${TIDE_DB_PORT}" -U "${TIDE_DB_USER}")
 TEST_DB="tide_rollback_test"
 
 "${ADMIN_PSQL[@]}" -d postgres -c "DROP DATABASE IF EXISTS ${TEST_DB}" >/dev/null
@@ -58,12 +58,96 @@ run_sql "${DB_DIR}/migrations/0017_task_assignment_teacher_response.up.sql"
 run_sql "${DB_DIR}/migrations/0018_remove_task_assignment_teacher_response.up.sql"
 run_sql "${DB_DIR}/migrations/0019_growth_stage_notification_state.up.sql"
 run_sql "${DB_DIR}/migrations/0020_product_analytics.up.sql"
+business_change_view_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
+  "select pg_get_viewdef('tide.analytics_task_business_change_v1'::regclass, true)")"
+[[ -n "${business_change_view_definition}" ]] || {
+  echo "0020 未建立待退役业务变化视图" >&2
+  exit 1
+}
 run_sql "${DB_DIR}/migrations/0021_teacher_support_tickets.up.sql"
 run_sql "${DB_DIR}/migrations/0022_performance_job_leases.up.sql"
 run_sql "${DB_DIR}/migrations/0023_teacher_support_operator_atomicity.up.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
 run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+run_sql "${DB_DIR}/migrations/0027_retire_task_business_change_view.up.sql"
+unused_view_definitions="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select string_agg(
+    view_name || ':' || pg_get_viewdef(format('tide.%I', view_name)::regclass, true),
+    E'\\n' order by view_name
+  )
+  from unnest(array[
+    'analytics_actor_task_journey_v1',
+    'analytics_task_assignment_funnel_v1',
+    'analytics_task_funnel_v1',
+    'analytics_task_step_funnel_v1',
+    'analytics_content_quality_v1'
+  ]::text[]) expected(view_name)
+")"
+unused_table_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  with target(table_name) as (
+    values
+      ('outcome_projections'),
+      ('camp_enrollment_projections'),
+      ('audit_events'),
+      ('task_template_files'),
+      ('file_migrations'),
+      ('teacher_photo_runs')
+  ), signature_parts as (
+    select
+      'column' as kind,
+      columns.table_name,
+      columns.column_name || ':' || columns.udt_name || ':' ||
+        columns.is_nullable || ':' ||
+        coalesce(columns.column_default, '') as definition
+    from information_schema.columns columns
+    join target using (table_name)
+    where columns.table_schema = 'tide'
+    union all
+    select
+      'constraint', target.table_name, constraint_row.conname || ':' ||
+        pg_get_constraintdef(constraint_row.oid, true)
+    from target
+    join pg_class relation
+      on relation.oid = format('tide.%I', target.table_name)::regclass
+    join pg_constraint constraint_row
+      on constraint_row.conrelid = relation.oid
+    union all
+    select 'index', indexes.tablename, indexes.indexname || ':' || indexes.indexdef
+    from pg_indexes indexes
+    join target on target.table_name = indexes.tablename
+    where indexes.schemaname = 'tide'
+  )
+  select md5(string_agg(
+    kind || ':' || table_name || ':' || definition,
+    E'\\n' order by kind, table_name, definition
+  ))
+  from signature_parts
+")"
+run_sql "${DB_DIR}/migrations/0028_remove_unused_tide_objects.up.sql"
+file_visibility_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select concat_ws('|',
+    columns.column_name,
+    columns.udt_name,
+    columns.is_nullable,
+    columns.column_default,
+    pg_get_constraintdef(constraint_row.oid, true)
+  )
+  from information_schema.columns columns
+  join pg_constraint constraint_row
+    on constraint_row.conrelid = 'tide.file_objects'::regclass
+   and constraint_row.conname = 'file_objects_visibility_check'
+  where columns.table_schema = 'tide'
+    and columns.table_name = 'file_objects'
+    and columns.column_name = 'visibility'
+")"
+orphan_function_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
+  "select pg_get_functiondef('tide.enforce_outbox_target()'::regprocedure)")"
+[[ -n "${file_visibility_signature}" && -n "${orphan_function_definition}" ]] || {
+  echo "0029 前置字段或函数结构缺失" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts >/dev/null
@@ -75,7 +159,14 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     to_regclass('public.task_assignments') is not null,
     to_regclass('tide.task_execution_versions') is not null,
     to_regclass('tide.app_events') is not null,
-    to_regclass('tide.teacher_photo_runs') is not null,
+    (
+      to_regclass('tide.outcome_projections') is null
+      and to_regclass('tide.camp_enrollment_projections') is null
+      and to_regclass('tide.audit_events') is null
+      and to_regclass('tide.task_template_files') is null
+      and to_regclass('tide.file_migrations') is null
+      and to_regclass('tide.teacher_photo_runs') is null
+    ),
     to_regclass('tide.task_quiz_banks') is not null,
     to_regclass('tide.kuozhi_course_syncs') is not null,
     (
@@ -87,20 +178,132 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     ),
     to_regclass('tide.system_notification_publications') is not null,
     to_regclass('tide.growth_stage_notification_states') is not null,
-    to_regclass('tide.analytics_task_funnel_v1') is not null,
+    (
+      to_regclass('tide.analytics_task_funnel_v1') is null
+      and to_regclass('tide.analytics_task_funnel_v2') is not null
+    ),
     to_regclass('public.teacher_support_tickets') is not null,
     to_regclass('tide.job_leases') is not null,
     to_regclass('tide.teacher_tasks') is null,
+    to_regclass('tide.analytics_task_business_change_v1') is null,
+    (
+      not exists (
+        select 1
+        from information_schema.columns
+        where table_schema = 'tide'
+          and table_name = 'file_objects'
+          and column_name = 'visibility'
+      )
+      and to_regprocedure('tide.enforce_outbox_target()') is null
+    ),
     (select count(*) from public.task_assignments where teacher_id = 'MOCK-TEACHER-001'),
     (select count(*) from tide.task_execution_versions),
     (select count(*) from public.task_templates where status = 'PUBLISHED')
   )
 ")"
-[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
+[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
   echo "空库升级后状态异常: ${final_state}" >&2
   exit 1
 }
 
+run_sql "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.down.sql"
+restored_file_visibility_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select concat_ws('|',
+    columns.column_name,
+    columns.udt_name,
+    columns.is_nullable,
+    columns.column_default,
+    pg_get_constraintdef(constraint_row.oid, true)
+  )
+  from information_schema.columns columns
+  join pg_constraint constraint_row
+    on constraint_row.conrelid = 'tide.file_objects'::regclass
+   and constraint_row.conname = 'file_objects_visibility_check'
+  where columns.table_schema = 'tide'
+    and columns.table_name = 'file_objects'
+    and columns.column_name = 'visibility'
+")"
+restored_orphan_function_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
+  "select pg_get_functiondef('tide.enforce_outbox_target()'::regprocedure)")"
+[[ "${restored_file_visibility_signature}" == "${file_visibility_signature}" ]] || {
+  echo "0029 回滚未精确恢复 file_objects.visibility" >&2
+  exit 1
+}
+[[ "${restored_orphan_function_definition}" == "${orphan_function_definition}" ]] || {
+  echo "0029 回滚未精确恢复 enforce_outbox_target()" >&2
+  exit 1
+}
+
+run_sql "${DB_DIR}/migrations/0028_remove_unused_tide_objects.down.sql"
+restored_unused_view_definitions="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select string_agg(
+    view_name || ':' || pg_get_viewdef(format('tide.%I', view_name)::regclass, true),
+    E'\\n' order by view_name
+  )
+  from unnest(array[
+    'analytics_actor_task_journey_v1',
+    'analytics_task_assignment_funnel_v1',
+    'analytics_task_funnel_v1',
+    'analytics_task_step_funnel_v1',
+    'analytics_content_quality_v1'
+  ]::text[]) expected(view_name)
+")"
+restored_unused_table_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  with target(table_name) as (
+    values
+      ('outcome_projections'),
+      ('camp_enrollment_projections'),
+      ('audit_events'),
+      ('task_template_files'),
+      ('file_migrations'),
+      ('teacher_photo_runs')
+  ), signature_parts as (
+    select
+      'column' as kind,
+      columns.table_name,
+      columns.column_name || ':' || columns.udt_name || ':' ||
+        columns.is_nullable || ':' ||
+        coalesce(columns.column_default, '') as definition
+    from information_schema.columns columns
+    join target using (table_name)
+    where columns.table_schema = 'tide'
+    union all
+    select
+      'constraint', target.table_name, constraint_row.conname || ':' ||
+        pg_get_constraintdef(constraint_row.oid, true)
+    from target
+    join pg_class relation
+      on relation.oid = format('tide.%I', target.table_name)::regclass
+    join pg_constraint constraint_row
+      on constraint_row.conrelid = relation.oid
+    union all
+    select 'index', indexes.tablename, indexes.indexname || ':' || indexes.indexdef
+    from pg_indexes indexes
+    join target on target.table_name = indexes.tablename
+    where indexes.schemaname = 'tide'
+  )
+  select md5(string_agg(
+    kind || ':' || table_name || ':' || definition,
+    E'\\n' order by kind, table_name, definition
+  ))
+  from signature_parts
+")"
+[[ "${restored_unused_view_definitions}" == "${unused_view_definitions}" ]] || {
+  echo "0028 回滚未精确恢复 v1 分析视图" >&2
+  exit 1
+}
+[[ "${restored_unused_table_signature}" == "${unused_table_signature}" ]] || {
+  echo "0028 回滚未精确恢复已清理表结构" >&2
+  exit 1
+}
+
+run_sql "${DB_DIR}/migrations/0027_retire_task_business_change_view.down.sql"
+restored_business_change_view_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
+  "select pg_get_viewdef('tide.analytics_task_business_change_v1'::regclass, true)")"
+[[ "${restored_business_change_view_definition}" == "${business_change_view_definition}" ]] || {
+  echo "0027 回滚未精确恢复原业务变化视图" >&2
+  exit 1
+}
 run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.down.sql"
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.down.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.down.sql"
@@ -135,4 +338,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0026 并逐级回滚验证通过。"
+echo "空库升级至 0029 并逐级回滚验证通过。"

@@ -15,7 +15,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import Engine, delete, func, literal_column, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -36,8 +35,9 @@ from .db_models import (
     ScoreEntryRecord,
     TaskAssignmentRecord,
     TaskTemplateRecord,
-    TeacherMetricSnapshotRecord,
+    TeacherQualificationRecord,
     TeacherRecord,
+    TeacherSourceWideRecord,
 )
 from .services import GrowthService
 from .task_catalog import MANDATORY_TASK_CODES
@@ -49,6 +49,7 @@ LEGACY_EVENT_TYPE = "task.assignment_changed.shared.v1"
 ACCOUNT_DIMENSION = "NEW_TEACHER_TASK"
 ENTRY_TYPE = "FIXED_TASK_AWARD"
 SYSTEM_SOURCE_MODE = "SYSTEM_TASK_STATUS"
+SOURCE_WIDE_SNAPSHOT_LABEL = "SOURCE_WIDE_CURRENT"
 MAXIMUM_FIXED_GROWTH_POINTS = 30.0
 FIXED_GROWTH_CODES = MANDATORY_TASK_CODES
 DIRECT_EXTERNAL_SCALE_POLICY_VERSIONS = frozenset(
@@ -391,7 +392,6 @@ class SharedTaskScoreSettlementWorker:
                         )
                     )
                     .order_by(TaskAssignmentRecord.assignment_id)
-                    .with_for_update()
                 ).all()
             }
             if assignment_ids
@@ -487,6 +487,7 @@ class SharedTaskScoreSettlementWorker:
         )
         if teacher is None:
             raise SettlementDataError("ASSIGNMENT_TEACHER_NOT_FOUND")
+        self._require_current_source_wide_teacher(session, teacher)
 
         baseline = list(
             session.scalars(
@@ -497,7 +498,6 @@ class SharedTaskScoreSettlementWorker:
                     TaskAssignmentRecord.creator_system == "TRIGGER_CENTER",
                 )
                 .order_by(TaskAssignmentRecord.task_code)
-                .with_for_update()
             ).all()
         )
         baseline_by_code = {
@@ -615,15 +615,14 @@ class SharedTaskScoreSettlementWorker:
             )
             .with_for_update()
         )
+        source_wide_previous_task_score = (
+            float(account.current_score) if account is not None else 0.0
+        )
         if account is None:
             account = ScoreAccountRecord(
-                account_id=f"{teacher.teacher_id}:{ACCOUNT_DIMENSION}",
                 teacher_id=teacher.teacher_id,
-                camp_enrollment_id=teacher.camp_enrollment_id,
                 dimension=ACCOUNT_DIMENSION,
                 current_score=ledger_score,
-                minimum_score=0,
-                weight=0,
                 score_rule_version=score_rule_version,
                 version=1,
                 updated_at=_utcnow(),
@@ -667,7 +666,16 @@ class SharedTaskScoreSettlementWorker:
             "ledger_entry_type": ENTRY_TYPE,
             "maximum_points": MAXIMUM_FIXED_GROWTH_POINTS,
             "ledger_score": ledger_score,
-            "last_settled_assignment_id": assignment.assignment_id,
+            "last_settled_assignment_id": (
+                assignment.assignment_id
+                if account in session.new
+                or not math.isclose(
+                    float(account.current_score),
+                    ledger_score,
+                    abs_tol=1e-9,
+                )
+                else old_payload.get("last_settled_assignment_id")
+            ),
             "score_config": config_snapshot,
         }
         if cutover_payload is not None:
@@ -675,26 +683,27 @@ class SharedTaskScoreSettlementWorker:
 
         account_changed = (
             not math.isclose(float(account.current_score), ledger_score, abs_tol=1e-9)
-            or account.camp_enrollment_id != teacher.camp_enrollment_id
             or account.score_rule_version != score_rule_version
             or account.payload != next_payload
         )
         account.current_score = ledger_score
-        account.camp_enrollment_id = teacher.camp_enrollment_id
         account.score_rule_version = score_rule_version
         account.payload = next_payload
-        if account_changed and account not in session.new:
-            account.version = int(account.version or 0) + 1
-        account.updated_at = _utcnow()
+        projection_time = _utcnow()
+        if account_changed:
+            if account not in session.new:
+                account.version = int(account.version or 0) + 1
+            account.updated_at = projection_time
         session.flush()
+        completed_count = sum(
+            item.status == "COMPLETED" for item in baseline_by_code.values()
+        )
         self._synchronize_current_score_projection(
             session,
             teacher=teacher,
             task_score=ledger_score,
             assignment_count=len(baseline_by_code),
-            completed_count=sum(
-                item.status == "COMPLETED" for item in baseline_by_code.values()
-            ),
+            completed_count=completed_count,
             expected_count=len(FIXED_GROWTH_CODES),
             score_rule_version=score_rule_version,
             config_snapshot=config_snapshot,
@@ -746,9 +755,34 @@ class SharedTaskScoreSettlementWorker:
                 }
                 for code in FIXED_GROWTH_CODES
             ],
-            trigger_ref=assignment.assignment_id,
+            occurred_at=projection_time,
+            previous_task_score_override=source_wide_previous_task_score,
         )
-        return _Outcome("SETTLED", score_entries_created=created, account_score=ledger_score)
+        self._synchronize_source_wide_qualification(
+            session,
+            teacher=teacher,
+            raw_total_score=float(teacher.total_score),
+            assignment_count=len(baseline_by_code),
+            completed_count=completed_count,
+            expected_count=len(FIXED_GROWTH_CODES),
+            config_snapshot=config_snapshot,
+            occurred_at=projection_time,
+        )
+        return _Outcome(
+            "SETTLED",
+            score_entries_created=created,
+            account_score=ledger_score,
+        )
+
+    @staticmethod
+    def _require_current_source_wide_teacher(
+        session: Session,
+        teacher: TeacherRecord,
+    ) -> None:
+        if teacher.source_snapshot_label != SOURCE_WIDE_SNAPSHOT_LABEL:
+            raise SettlementDataError("SOURCE_WIDE_TEACHER_EXPECTED")
+        if session.get(TeacherSourceWideRecord, teacher.teacher_id) is None:
+            raise SettlementDataError("SOURCE_WIDE_TEACHER_SOURCE_NOT_FOUND")
 
     @staticmethod
     def _public_score(
@@ -836,40 +870,26 @@ class SharedTaskScoreSettlementWorker:
         score_rule_version: str,
         config_snapshot: dict[str, Any],
         task_components: list[dict[str, Any]],
-        trigger_ref: str,
+        occurred_at: datetime,
+        previous_task_score_override: float | None,
     ) -> None:
-        """Persist the current task score into the current teacher projection.
+        """Persist task status into the current source-wide projection only."""
 
-        The imported teacher snapshot starts with zero mandatory-task points.
-        Once task status becomes authoritative, replace that historical task
-        component instead of leaving the database total behind the API view.
-        Historical non-current snapshots remain untouched.
-        """
+        now = occurred_at
 
-        now = _utcnow()
-        snapshot = None
-        if teacher.source_batch_id:
-            snapshot = session.scalar(
-                select(TeacherMetricSnapshotRecord)
-                .where(
-                    TeacherMetricSnapshotRecord.teacher_id == teacher.teacher_id,
-                    TeacherMetricSnapshotRecord.batch_id
-                    == teacher.source_batch_id,
-                )
-                .with_for_update()
-            )
-
-        teacher_payload = deepcopy(teacher.payload or {})
+        original_teacher_payload = deepcopy(teacher.payload or {})
+        original_total_score = float(teacher.total_score)
+        original_graduation_state = teacher.graduation_state
+        original_gold_qualified = bool(teacher.gold_qualified)
+        teacher_payload = deepcopy(original_teacher_payload)
         payload_inputs = deepcopy(teacher_payload.get("metric_inputs") or {})
         previous_task_score = float(
-            snapshot.new_teacher_task_score
-            if snapshot is not None
+            previous_task_score_override
+            if previous_task_score_override is not None
             else payload_inputs.get("new_teacher_task_score", 0)
         )
         previous_raw_total = float(
-            snapshot.raw_total_score
-            if snapshot is not None
-            else teacher_payload.get("raw_total_score", teacher.total_score)
+            teacher_payload.get("raw_total_score", teacher.total_score)
         )
         raw_total_score = round(
             previous_raw_total - previous_task_score + task_score,
@@ -887,9 +907,7 @@ class SharedTaskScoreSettlementWorker:
                 "task_assignments.template_version_id",
                 "task_templates.payload.score_value",
             ],
-            "batch_id": (
-                snapshot.batch_id if snapshot is not None else teacher.source_batch_id
-            ),
+            "batch_id": None,
             "note": (
                 "Mandatory-growth points are the configured values of current "
                 "COMPLETED assignments in the current mandatory catalog."
@@ -902,24 +920,6 @@ class SharedTaskScoreSettlementWorker:
             "mandatory_task_expected_count": expected_count,
         }
 
-        if snapshot is not None:
-            snapshot_inputs = deepcopy(snapshot.metric_inputs or {})
-            snapshot_inputs.update(input_updates)
-            snapshot_provenance = deepcopy(snapshot.metric_provenance or {})
-            snapshot_provenance.update(
-                {
-                    "new_teacher_task_score": deepcopy(task_provenance),
-                    "mandatory_task_assignment_count": deepcopy(task_provenance),
-                    "mandatory_task_completed_count": deepcopy(task_provenance),
-                }
-            )
-            snapshot.new_teacher_task_score = round(task_score, 2)
-            snapshot.raw_total_score = raw_total_score
-            snapshot.public_total_score = public_total_score
-            snapshot.metric_inputs = snapshot_inputs
-            snapshot.metric_provenance = snapshot_provenance
-            snapshot.updated_at = now
-
         payload_inputs.update(input_updates)
         payload_provenance = deepcopy(
             teacher_payload.get("metric_provenance") or {}
@@ -931,12 +931,7 @@ class SharedTaskScoreSettlementWorker:
                 "mandatory_task_completed_count": deepcopy(task_provenance),
             }
         )
-        capacity_score = float(
-            payload_inputs.get(
-                "capacity_score",
-                snapshot.capacity_score if snapshot is not None else 0,
-            )
-        )
+        capacity_score = float(payload_inputs.get("capacity_score", 0))
         teacher_payload.update(
             {
                 "metric_inputs": payload_inputs,
@@ -951,7 +946,6 @@ class SharedTaskScoreSettlementWorker:
                 "raw_total_score": raw_total_score,
                 "total_score": raw_total_score,
                 "external_display_score": public_total_score,
-                "updated_at": now.isoformat(),
             }
         )
         policy = ScoreGraduationConfig.model_validate(config_snapshot["payload"])
@@ -1001,8 +995,6 @@ class SharedTaskScoreSettlementWorker:
             quality_score = float(
                 quality_account.current_score
                 if quality_account is not None
-                else snapshot.class_quality_score
-                if snapshot is not None
                 else 0
             )
             score_overrides["CLASS_QUALITY"] = {
@@ -1091,7 +1083,17 @@ class SharedTaskScoreSettlementWorker:
                 or teacher.gold_qualified
             )
 
-        projection_id = f"SPR-{uuid4().hex}"
+        projection_state_hash = _canonical_hash(
+            {
+                "teacher_id": teacher.teacher_id,
+                "score_rule_version": score_rule_version,
+                "components": task_components,
+            }
+        )
+        projection_id = _deterministic_id(
+            "SPR",
+            projection_state_hash,
+        )
         task_component_by_code = {
             str(item["code"]): item for item in task_components
         }
@@ -1128,7 +1130,7 @@ class SharedTaskScoreSettlementWorker:
                 "projection_id": projection_id,
                 "projection_trigger": {
                     "type": "TASK_STATUS_UPDATED",
-                    "ref": trigger_ref,
+                    "ref": projection_state_hash,
                 },
                 "attribution_contract": (
                     "task-status-ledger-is-authoritative"
@@ -1136,7 +1138,6 @@ class SharedTaskScoreSettlementWorker:
             }
             component_record = existing_components.get(code)
             component_values = {
-                "camp_enrollment_id": teacher.camp_enrollment_id,
                 "dimension": ACCOUNT_DIMENSION,
                 "source_scope": "TASK",
                 "source_metric": "task_assignments.status",
@@ -1152,18 +1153,15 @@ class SharedTaskScoreSettlementWorker:
                 ),
                 "reconciliation_status": "NOT_APPLICABLE",
                 "score_rule_version": score_rule_version,
-                "source_teacher_batch_id": teacher.source_batch_id,
-                "source_lesson_batch_id": None,
-                "calculated_at": now,
                 "payload": component_payload,
             }
             if component_record is None:
                 session.add(
                     ScoreComponentAccountRecord(
-                        component_account_id=f"{teacher.teacher_id}:{code}",
                         teacher_id=teacher.teacher_id,
                         component_code=code,
                         projection_revision=1,
+                        calculated_at=now,
                         **component_values,
                     )
                 )
@@ -1178,9 +1176,220 @@ class SharedTaskScoreSettlementWorker:
                     component_record.projection_revision = (
                         int(component_record.projection_revision or 0) + 1
                     )
+                    component_record.calculated_at = now
+        previous_payload_for_compare = deepcopy(original_teacher_payload)
+        previous_payload_updated_at = previous_payload_for_compare.pop(
+            "updated_at",
+            None,
+        )
+        next_payload_for_compare = deepcopy(teacher_payload)
+        next_payload_for_compare.pop("updated_at", None)
+        teacher_changed = bool(
+            previous_payload_for_compare != next_payload_for_compare
+            or not math.isclose(
+                original_total_score,
+                raw_total_score,
+                abs_tol=1e-9,
+            )
+            or original_graduation_state != teacher.graduation_state
+            or original_gold_qualified != bool(teacher.gold_qualified)
+        )
+        if teacher_changed:
+            teacher_payload["updated_at"] = now.isoformat()
+            teacher.updated_at = now
+        elif previous_payload_updated_at is not None:
+            teacher_payload["updated_at"] = previous_payload_updated_at
+        else:
+            teacher_payload.pop("updated_at", None)
         teacher.total_score = raw_total_score
         teacher.payload = teacher_payload
-        teacher.updated_at = now
+        session.flush()
+
+    @staticmethod
+    def _synchronize_source_wide_qualification(
+        session: Session,
+        *,
+        teacher: TeacherRecord,
+        raw_total_score: float,
+        assignment_count: int,
+        completed_count: int,
+        expected_count: int,
+        config_snapshot: dict[str, Any],
+        occurred_at: datetime,
+    ) -> None:
+        """Refresh only task-dependent qualification state for a source teacher.
+
+        Source-wide changes have their own field-routed worker.  A task status
+        event must not rescan that teacher's lessons, so this path combines the
+        newly settled task total with the last persisted non-task gate evidence.
+        """
+
+        if teacher.source_snapshot_label != SOURCE_WIDE_SNAPSHOT_LABEL:
+            raise SettlementDataError("SOURCE_WIDE_TEACHER_EXPECTED")
+        qualification = session.get(
+            TeacherQualificationRecord,
+            teacher.teacher_id,
+        )
+        if qualification is None:
+            raise SettlementDataError(
+                "SOURCE_WIDE_QUALIFICATION_NOT_FOUND"
+            )
+        gate_results = deepcopy(qualification.gate_results or {})
+        required_gate_fields = {
+            "l0_complaint_count",
+            "l0_complaint_evidence_status",
+            "late_count",
+            "early_count",
+            "absent_count",
+            "attendance_evidence_status",
+        }
+        if not required_gate_fields.issubset(gate_results):
+            raise SettlementDataError(
+                "SOURCE_WIDE_QUALIFICATION_GATE_STATE_INCOMPLETE"
+            )
+
+        def persisted_count(field: str) -> int:
+            value = gate_results[field]
+            if isinstance(value, bool):
+                raise SettlementDataError(
+                    f"SOURCE_WIDE_QUALIFICATION_GATE_INVALID:{field}"
+                )
+            try:
+                normalized = int(value)
+            except (TypeError, ValueError) as exc:
+                raise SettlementDataError(
+                    f"SOURCE_WIDE_QUALIFICATION_GATE_INVALID:{field}"
+                ) from exc
+            if normalized < 0:
+                raise SettlementDataError(
+                    f"SOURCE_WIDE_QUALIFICATION_GATE_INVALID:{field}"
+                )
+            return normalized
+
+        policy = ScoreGraduationConfig.model_validate(
+            config_snapshot["payload"]
+        )
+        graduation_gate = policy.hard_gates.graduation
+        gold_gate = policy.hard_gates.gold
+        try:
+            required_task_count = int(
+                graduation_gate.required_mandatory_task_count
+            )
+            maximum_l0_count = int(
+                graduation_gate.maximum_l0_complaint_count
+            )
+            maximum_late_count = int(gold_gate.maximum_late_count)
+            maximum_early_count = int(gold_gate.maximum_early_count)
+            maximum_absent_count = int(gold_gate.maximum_absent_count)
+        except AttributeError as exc:
+            raise SettlementDataError(
+                "SOURCE_WIDE_POLICY_HARD_GATES_UNSUPPORTED"
+            ) from exc
+
+        if session.get(TeacherSourceWideRecord, teacher.teacher_id) is None:
+            raise SettlementDataError("SOURCE_WIDE_TEACHER_SOURCE_NOT_FOUND")
+        source_present = True
+        l0_count = persisted_count("l0_complaint_count")
+        late_count = persisted_count("late_count")
+        early_count = persisted_count("early_count")
+        absent_count = persisted_count("absent_count")
+        complaint_confirmed = (
+            str(gate_results["l0_complaint_evidence_status"])
+            == "CONFIRMED"
+        )
+        attendance_confirmed = (
+            str(gate_results["attendance_evidence_status"])
+            == "CONFIRMED"
+        )
+        graduation_current = bool(
+            source_present
+            and raw_total_score
+            >= float(policy.thresholds.graduation_raw_score)
+            and assignment_count == expected_count
+            and completed_count == required_task_count
+            and complaint_confirmed
+            and l0_count <= maximum_l0_count
+        )
+        gold_current = bool(
+            graduation_current
+            and raw_total_score >= float(policy.thresholds.gold_raw_score)
+            and attendance_confirmed
+            and late_count <= maximum_late_count
+            and early_count <= maximum_early_count
+            and absent_count <= maximum_absent_count
+        )
+        previous_graduation_earned = bool(
+            qualification.graduation_qualified
+        )
+        previous_gold_earned = bool(qualification.gold_qualified)
+        gold_earned = previous_gold_earned or gold_current
+        graduation_earned = (
+            previous_graduation_earned or graduation_current or gold_earned
+        )
+        graduation_qualified_at = qualification.graduation_qualified_at
+        gold_qualified_at = qualification.gold_qualified_at
+        if not previous_graduation_earned and graduation_earned:
+            graduation_qualified_at = occurred_at
+        if not previous_gold_earned and gold_earned:
+            gold_qualified_at = occurred_at
+
+        gate_results.update(
+            {
+                "source_teacher_present": source_present,
+                "mandatory_task_assignment_count": assignment_count,
+                "mandatory_task_completed_count": completed_count,
+                "mandatory_task_expected_count": expected_count,
+                "raw_total_score": raw_total_score,
+                "graduation_raw_score_threshold": float(
+                    policy.thresholds.graduation_raw_score
+                ),
+                "gold_raw_score_threshold": float(
+                    policy.thresholds.gold_raw_score
+                ),
+            }
+        )
+        qualification_values = {
+            "graduation_criteria_met": graduation_current,
+            "graduation_qualified": graduation_earned,
+            "graduation_qualified_at": graduation_qualified_at,
+            "gold_criteria_met": gold_current,
+            "gold_qualified": gold_earned,
+            "gold_qualified_at": gold_qualified_at,
+            "score_rule_version": policy.policy_version,
+            "gate_results": gate_results,
+        }
+        qualification_changed = any(
+            getattr(qualification, field) != value
+            for field, value in qualification_values.items()
+        )
+        if qualification_changed:
+            for field, value in qualification_values.items():
+                setattr(qualification, field, value)
+            qualification.revision = int(qualification.revision or 0) + 1
+            qualification.calculated_at = occurred_at
+
+        teacher_payload = deepcopy(teacher.payload or {})
+        teacher_payload.update(
+            {
+                "graduation_criteria_met": graduation_current,
+                "graduation_qualified": graduation_earned,
+                "gold_criteria_met": gold_current,
+                "gold_qualified": gold_earned,
+            }
+        )
+        teacher_values_changed = bool(
+            teacher.payload != teacher_payload
+            or teacher.graduation_state
+            != ("GRADUATED" if graduation_earned else "IN_PROGRESS")
+            or bool(teacher.gold_qualified) != gold_earned
+        )
+        teacher.payload = teacher_payload
+        teacher.graduation_state = (
+            "GRADUATED" if graduation_earned else "IN_PROGRESS"
+        )
+        teacher.gold_qualified = gold_earned
+        if teacher_values_changed:
+            teacher.updated_at = occurred_at
         session.flush()
 
     @staticmethod

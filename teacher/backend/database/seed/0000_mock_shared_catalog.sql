@@ -189,6 +189,18 @@ WHERE template.status = 'PUBLISHED'
   AND template.template_id ~ '^G0[1-9]$'
 ON CONFLICT (dedupe_key) DO NOTHING;
 
+INSERT INTO public.teacher_source_wide (
+    tchr_id, real_name, is_cpl_tesol, is_self_introduce
+) VALUES (
+    'MOCK-TEACHER-001',
+    '[Mock] Local Teacher',
+    false,
+    false
+)
+ON CONFLICT (tchr_id) DO UPDATE SET
+    is_cpl_tesol = EXCLUDED.is_cpl_tesol,
+    is_self_introduce = EXCLUDED.is_self_introduce;
+
 INSERT INTO public.teacher_metric_snapshots (
     snapshot_id, batch_id, teacher_id, snapshot_label, source_row_number,
     data_mode, is_cpl_tesol, is_self_introduce, raw_payload

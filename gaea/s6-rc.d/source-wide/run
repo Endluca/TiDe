@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -eu
+: "${TIT_SOURCE_WORKER_DATABASE_URL:?TIT_SOURCE_WORKER_DATABASE_URL is required}"
+
+cd /app/operations
+exec s6-setuidgid gaea env \
+  TIT_SOURCE_WORKER_DATABASE_URL="${TIT_SOURCE_WORKER_DATABASE_URL}" \
+  TIT_DB_POOL_SIZE="${TIT_SOURCE_WORKER_DB_POOL_SIZE:-1}" \
+  TIT_DB_MAX_OVERFLOW="${TIT_SOURCE_WORKER_DB_MAX_OVERFLOW:-0}" \
+  TIT_DB_STATEMENT_TIMEOUT_MS="${TIT_SOURCE_WORKER_DB_STATEMENT_TIMEOUT_MS:-60000}" \
+  TIT_DB_APPLICATION_NAME="${TIT_SOURCE_WORKER_DB_APPLICATION_NAME:-tit-growth-source-worker}" \
+  /opt/venv/bin/python /app/operations/scripts/run_source_wide_worker.py \
+  --watch --max-events 25 --interval-seconds 3 \
+  --heartbeat-path /tmp/tit-source-worker-heartbeat \
+  --readiness-path /tmp/tit-source-worker-readiness

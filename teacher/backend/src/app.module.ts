@@ -17,7 +17,6 @@ import { LoggingModule } from './platform/observability/logging.module';
 import { TideModule } from './tide/tide.module';
 import { TaskModule } from './tasks/task.module';
 import { AppEventModule } from './app-events/app-event.module';
-import { TeacherPhotoModule } from './teacher-photo/teacher-photo.module';
 import { SystemNotificationModule } from './notifications/system-notification.module';
 import { SupportTicketModule } from './support-tickets/support-ticket.module';
 
@@ -34,7 +33,6 @@ import { SupportTicketModule } from './support-tickets/support-ticket.module';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     TideModule,
     TaskModule,
-    TeacherPhotoModule,
     AppEventModule,
     SystemNotificationModule,
     SupportTicketModule,

@@ -19,8 +19,8 @@ from app.teacher_data_import import (  # noqa: E402
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Strictly validate and idempotently import the 61-column overseas "
-            "new-teacher metrics workbook."
+            "Retired compatibility command. Teacher source updates now enter "
+            "teacher_source_wide through the source-monitor consumer."
         )
     )
     parser.add_argument("source", type=Path, help="Path to the source .xlsx workbook")

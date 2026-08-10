@@ -55,17 +55,6 @@ const stableApiCodes = {
     "FAQ_FEEDBACK_CONFLICT",
     "FAQ_RESOURCE_NOT_FOUND",
   ],
-  teacherPhoto: [
-    "TEACHER_PHOTO_TASK_NOT_FOUND",
-    "IDEMPOTENCY_KEY_REUSED",
-    "TEACHER_PHOTO_STORAGE_FAILED",
-    "TEACHER_PHOTO_NOT_FOUND",
-    "TEACHER_PHOTO_FINAL_NOT_FOUND",
-    "INVALID_IDEMPOTENCY_KEY",
-    "TEACHER_PHOTO_REQUIRED",
-    "TEACHER_PHOTO_TOO_LARGE",
-    "TEACHER_PHOTO_TYPE_INVALID",
-  ],
 };
 
 for (const [area, codes] of Object.entries(stableApiCodes)) {

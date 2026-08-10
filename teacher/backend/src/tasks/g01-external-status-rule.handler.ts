@@ -13,17 +13,11 @@ export class G01ExternalStatusRuleHandler extends TaskRuleHandler {
     }>(
       `
         SELECT
-          snapshot.is_self_introduce AS "selfIntroduced",
-          snapshot.is_cpl_tesol AS "tesolCompleted"
+          source.is_self_introduce AS "selfIntroduced",
+          source.is_cpl_tesol AS "tesolCompleted"
         FROM public.task_assignments assignment
-        LEFT JOIN LATERAL (
-          SELECT metric.is_self_introduce, metric.is_cpl_tesol
-          FROM public.teacher_metric_snapshots metric
-          WHERE metric.teacher_id = assignment.teacher_id
-          ORDER BY metric.updated_at DESC, metric.created_at DESC,
-            metric.snapshot_id DESC
-          LIMIT 1
-        ) snapshot ON true
+        JOIN public.teacher_source_wide source
+          ON source.tchr_id = assignment.teacher_id
         WHERE assignment.assignment_id = $1
           AND assignment.task_code = 'G01'
         LIMIT 1
@@ -31,7 +25,11 @@ export class G01ExternalStatusRuleHandler extends TaskRuleHandler {
       [context.taskInstanceId],
     );
     const evidence = result.rows[0];
-    if (!evidence) {
+    if (
+      !evidence ||
+      evidence.selfIntroduced === null ||
+      evidence.tesolCompleted === null
+    ) {
       return {
         passed: false,
         deferred: true,

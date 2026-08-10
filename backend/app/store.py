@@ -8,36 +8,29 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Engine, case, delete, func, select
+from sqlalchemy import Engine, select
 
 from .database import engine as default_engine
 from .database import session_scope
 from .db_models import (
-    AgentDecisionRecord,
     AuditEventRecord,
     ComplaintCategoryRuleRecord,
-    DataImportBatchRecord,
     IdempotencyRecord,
-    LessonDimensionScoreRecord,
-    LessonFactRecord,
+    LessonSourceWideRecord,
     NotificationEventRecord,
     NotificationRecord,
     OpsCaseRecord,
     OpsDecisionRecord,
-    OutboundOutputRecord,
     OutboxEventRecord,
-    PersonalizedTriggerMatchRecord,
-    ProviderCallRecord,
     ScoreAccountRecord,
     ScoreComponentAccountRecord,
     ScoreEntryRecord,
-    SourceRecord,
     TaskAssignmentRecord,
     TaskTemplateRecord,
-    TeacherMetricSnapshotRecord,
     TeacherRecord,
 )
 from .mock_data import seed_teachers
+from .personalized_rules import normalize_text
 from .task_catalog import MANDATORY_TASK_CODE_SET
 
 
@@ -59,68 +52,8 @@ def _payload_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _references_any(value: Any, references: set[str]) -> bool:
-    """Conservatively identify a domain record belonging to a reset target."""
-
-    if value is None or not references:
-        return False
-    if isinstance(value, dict):
-        return any(
-            _references_any(key, references) or _references_any(item, references)
-            for key, item in value.items()
-        )
-    if isinstance(value, (list, tuple, set)):
-        return any(_references_any(item, references) for item in value)
-    normalized = str(value)
-    return normalized in references or any(reference in normalized for reference in references)
-
-
 def _camp_enrollment_id(teacher_id: str) -> str:
     return f"CAMP-{teacher_id}"
-
-
-def _normalize_outbound_record_payload(record: OutboundOutputRecord) -> dict[str, Any]:
-    """Hydrate old V2 output payloads for the legacy compatibility working set.
-
-    V2 records are written transactionally from their normalized columns. Early
-    V2 payload snapshots did not repeat every legacy dictionary field, so a
-    restart followed by a V1 command could otherwise fail while checkpointing
-    an unrelated output. Columns remain the source of truth for these defaults.
-    """
-
-    payload = deepcopy(record.payload or {})
-    defaults = {
-        "output_id": record.output_id,
-        "output_type": record.output_type,
-        "display_type": record.display_type,
-        "delivery_kind": record.delivery_kind,
-        "audience_type": record.audience_type,
-        "recipient_id": record.recipient_id,
-        "recipient_name": record.recipient_name,
-        "channel": record.channel,
-        "source_type": record.source_type,
-        "source_id": record.source_id,
-        "teacher_id": record.teacher_id,
-        "task_id": record.task_id,
-        "case_id": record.case_id,
-        "status": record.status,
-        "title": record.title,
-        "body": record.body,
-        "scheduled_at": record.scheduled_at.isoformat() if record.scheduled_at else None,
-        "created_at": record.created_at.isoformat(),
-        "sent_at": record.sent_at.isoformat() if record.sent_at else None,
-        "delivered_at": record.delivered_at.isoformat() if record.delivered_at else None,
-        "attempt_count": record.attempt_count,
-        "max_attempts": record.max_attempts,
-        "next_retry_at": record.next_retry_at.isoformat() if record.next_retry_at else None,
-        "last_error": record.last_error,
-        "retryable": record.retryable,
-        "requires_human_approval": record.requires_human_approval,
-        "idempotency_key": record.idempotency_key,
-    }
-    for field, value in defaults.items():
-        payload.setdefault(field, value)
-    return payload
 
 
 def _normalize_ops_case_payload(record: OpsCaseRecord) -> dict[str, Any]:
@@ -247,7 +180,6 @@ class DatabaseStore:
                 total_score=float(teacher.get("total_score", 0)),
                 graduation_threshold=float(teacher.get("graduation_threshold", 0)),
                 data_mode=teacher.get("data_mode", "MOCK"),
-                source_batch_id=teacher.get("source_batch_id"),
                 source_snapshot_label=teacher.get("source_snapshot_label"),
                 payload=deepcopy(teacher),
                 updated_at=_parse_datetime(teacher.get("updated_at")) or _now(),
@@ -259,13 +191,9 @@ class DatabaseStore:
             code = dimension["code"]
             session.merge(
                 ScoreAccountRecord(
-                    account_id=f"{teacher_id}:{code}",
                     teacher_id=teacher_id,
-                    camp_enrollment_id=camp_id,
                     dimension=code,
                     current_score=float(dimension.get("score", 0)),
-                    minimum_score=float(dimension.get("minimum", 0)),
-                    weight=float(dimension.get("weight", 0)),
                     score_rule_version=dimension.get(
                         "score_rule_version",
                         "mock_score_v1"
@@ -274,58 +202,6 @@ class DatabaseStore:
                     ),
                     version=1,
                     payload=deepcopy(dimension),
-                )
-            )
-        lesson_ids: set[str] = set()
-        for lesson in teacher.get("lesson_facts", []):
-            lesson_id = lesson["lesson_id"]
-            lesson_ids.add(lesson_id)
-            lifecycle = lesson.get("lesson_lifecycle_status") or lesson.get(
-                "lesson_status", "UNKNOWN"
-            )
-            session.merge(
-                LessonFactRecord(
-                    lesson_id=lesson_id,
-                    source_appoint_id=str(
-                        lesson.get("source_appoint_id")
-                        or lesson.get("appoint_id")
-                        or lesson_id
-                    ),
-                    camp_enrollment_id=camp_id,
-                    teacher_id=teacher_id,
-                    scheduled_start_at=_parse_datetime(lesson.get("scheduled_start_at")),
-                    scheduled_end_at=_parse_datetime(lesson.get("scheduled_end_at")),
-                    lesson_lifecycle_status=lifecycle,
-                    valid_for_scoring=bool(
-                        lesson.get("valid_for_scoring", lifecycle in {"ENDED", "COMPLETED"})
-                    ),
-                    evidence_status=lesson.get("evidence_status", "PENDING"),
-                    data_mode=lesson.get("data_mode", "MOCK"),
-                    payload=deepcopy(lesson),
-                )
-            )
-        for score in teacher.get("lesson_dimension_scores", []):
-            lesson_id = score["lesson_id"]
-            if lesson_id not in lesson_ids:
-                continue
-            dimension = score["dimension"]
-            session.merge(
-                LessonDimensionScoreRecord(
-                    score_state_id=f"{camp_id}:{lesson_id}:{dimension}",
-                    camp_enrollment_id=camp_id,
-                    lesson_id=lesson_id,
-                    teacher_id=teacher_id,
-                    dimension=dimension,
-                    current_score=float(score.get("current_score", score.get("score", 0))),
-                    evidence_status=score.get("evidence_status", "PENDING"),
-                    evidence_coverage=score.get("evidence_coverage"),
-                    score_rule_version=str(
-                        score.get("score_rule_version", score.get("rule_version", 1))
-                    ),
-                    current_revision=int(score.get("current_revision", 1)),
-                    score_as_of=_parse_datetime(score.get("score_as_of")),
-                    last_score_entry_id=score.get("last_score_entry_id"),
-                    payload=deepcopy(score),
                 )
             )
         for entry in teacher.get("score_entries", []):
@@ -359,216 +235,10 @@ class DatabaseStore:
         for teacher in seed_teachers():
             teacher = deepcopy(teacher)
             teacher.setdefault("data_mode", "MOCK")
-            teacher.setdefault("source_batch_id", None)
             teacher.setdefault("source_snapshot_label", "LOCAL_MOCK_DEMO")
             self._merge_teacher_graph(session, teacher)
 
-    @staticmethod
-    def _purge_domain_records(session: Any) -> None:
-        for model in (
-            ProviderCallRecord,
-            IdempotencyRecord,
-            AgentDecisionRecord,
-            AuditEventRecord,
-            OutboxEventRecord,
-            OutboundOutputRecord,
-            OpsDecisionRecord,
-            NotificationEventRecord,
-            OpsCaseRecord,
-            NotificationRecord,
-            ScoreEntryRecord,
-            TaskAssignmentRecord,
-            PersonalizedTriggerMatchRecord,
-            LessonDimensionScoreRecord,
-            LessonFactRecord,
-            ComplaintCategoryRuleRecord,
-            SourceRecord,
-            ScoreComponentAccountRecord,
-            ScoreAccountRecord,
-            TeacherMetricSnapshotRecord,
-            TeacherRecord,
-            DataImportBatchRecord,
-        ):
-            session.execute(delete(model))
-
-    @staticmethod
-    def _delete_mock_domain_records(session: Any) -> None:
-        mock_teacher_ids = set(
-            session.scalars(
-                select(TeacherRecord.teacher_id).where(
-                    TeacherRecord.data_mode == "MOCK",
-                    TeacherRecord.source_batch_id.is_(None),
-                )
-            ).all()
-        )
-        if not mock_teacher_ids:
-            return
-
-        task_ids = set(
-            session.scalars(
-                select(TaskAssignmentRecord.assignment_id).where(
-                    TaskAssignmentRecord.teacher_id.in_(mock_teacher_ids)
-                )
-            ).all()
-        )
-        case_ids = set(
-            session.scalars(
-                select(OpsCaseRecord.case_id).where(
-                    OpsCaseRecord.teacher_id.in_(mock_teacher_ids)
-                )
-            ).all()
-        )
-        notification_ids = set(
-            session.scalars(
-                select(NotificationRecord.notification_id).where(
-                    NotificationRecord.teacher_id.in_(mock_teacher_ids)
-                )
-            ).all()
-        )
-        lesson_ids = set(
-            session.scalars(
-                select(LessonFactRecord.lesson_id).where(
-                    LessonFactRecord.teacher_id.in_(mock_teacher_ids)
-                )
-            ).all()
-        )
-        references = mock_teacher_ids | task_ids | case_ids | notification_ids | lesson_ids
-
-        notification_event_ids = set(
-            session.scalars(
-                select(NotificationEventRecord.notification_event_id).where(
-                    NotificationEventRecord.notification_id.in_(notification_ids)
-                )
-            ).all()
-        ) if notification_ids else set()
-        decision_ids = set(
-            session.scalars(
-                select(OpsDecisionRecord.decision_id).where(
-                    OpsDecisionRecord.case_id.in_(case_ids)
-                )
-            ).all()
-        ) if case_ids else set()
-        score_entry_ids = set(
-            session.scalars(
-                select(ScoreEntryRecord.score_entry_id).where(
-                    ScoreEntryRecord.teacher_id.in_(mock_teacher_ids)
-                )
-            ).all()
-        )
-        score_state_ids = set(
-            session.scalars(
-                select(LessonDimensionScoreRecord.score_state_id).where(
-                    LessonDimensionScoreRecord.teacher_id.in_(mock_teacher_ids)
-                )
-            ).all()
-        )
-        agent_plan_ids = set(
-            session.scalars(
-                select(AgentDecisionRecord.plan_id).where(
-                    AgentDecisionRecord.teacher_id.in_(mock_teacher_ids)
-                )
-            ).all()
-        )
-        provider_records = (
-            session.scalars(
-                select(ProviderCallRecord).where(ProviderCallRecord.task_id.in_(task_ids))
-            ).all()
-            if task_ids
-            else []
-        )
-        references.update(
-            notification_event_ids
-            | decision_ids
-            | score_entry_ids
-            | score_state_ids
-            | agent_plan_ids
-            | {item.provider_call_id for item in provider_records}
-            | {
-                item.provider_event_id
-                for item in provider_records
-                if item.provider_event_id is not None
-            }
-        )
-
-        audit_records = [
-            item
-            for item in session.scalars(select(AuditEventRecord)).all()
-            if item.teacher_id in mock_teacher_ids
-            or item.task_id in task_ids
-            or item.case_id in case_ids
-            or _references_any(item.payload, references)
-        ]
-        audit_event_ids = {item.event_id for item in audit_records}
-        references.update(audit_event_ids)
-
-        output_records = [
-            item
-            for item in session.scalars(select(OutboundOutputRecord)).all()
-            if item.teacher_id in mock_teacher_ids
-            or item.task_id in task_ids
-            or item.case_id in case_ids
-            or _references_any(item.payload, references)
-        ]
-        output_ids = {item.output_id for item in output_records}
-        references.update(output_ids)
-
-        outbox_records = [
-            item
-            for item in session.scalars(select(OutboxEventRecord)).all()
-            if item.event_id in audit_event_ids
-            or item.aggregate_id in references
-            or _references_any(item.payload, references)
-        ]
-        outbox_ids = {item.outbox_id for item in outbox_records}
-        references.update(outbox_ids)
-
-        for record in session.scalars(select(IdempotencyRecord)).all():
-            if (
-                record.resource_id in references
-                or _references_any(record.idempotency_key, references)
-                or _references_any(record.response_payload, references)
-            ):
-                session.delete(record)
-
-        def delete_ids(model: Any, column: Any, values: set[str]) -> None:
-            if values:
-                session.execute(delete(model).where(column.in_(values)))
-
-        delete_ids(ProviderCallRecord, ProviderCallRecord.task_id, task_ids)
-        delete_ids(AgentDecisionRecord, AgentDecisionRecord.teacher_id, mock_teacher_ids)
-        delete_ids(OutboxEventRecord, OutboxEventRecord.outbox_id, outbox_ids)
-        delete_ids(OutboundOutputRecord, OutboundOutputRecord.output_id, output_ids)
-        delete_ids(OpsDecisionRecord, OpsDecisionRecord.case_id, case_ids)
-        delete_ids(
-            NotificationEventRecord,
-            NotificationEventRecord.notification_id,
-            notification_ids,
-        )
-        delete_ids(AuditEventRecord, AuditEventRecord.event_id, audit_event_ids)
-        delete_ids(OpsCaseRecord, OpsCaseRecord.teacher_id, mock_teacher_ids)
-        delete_ids(NotificationRecord, NotificationRecord.teacher_id, mock_teacher_ids)
-        delete_ids(TaskAssignmentRecord, TaskAssignmentRecord.teacher_id, mock_teacher_ids)
-        delete_ids(
-            PersonalizedTriggerMatchRecord,
-            PersonalizedTriggerMatchRecord.teacher_id,
-            mock_teacher_ids,
-        )
-        delete_ids(ScoreEntryRecord, ScoreEntryRecord.teacher_id, mock_teacher_ids)
-        delete_ids(
-            LessonDimensionScoreRecord,
-            LessonDimensionScoreRecord.teacher_id,
-            mock_teacher_ids,
-        )
-        delete_ids(LessonFactRecord, LessonFactRecord.teacher_id, mock_teacher_ids)
-        delete_ids(
-            ScoreComponentAccountRecord,
-            ScoreComponentAccountRecord.teacher_id,
-            mock_teacher_ids,
-        )
-        delete_ids(ScoreAccountRecord, ScoreAccountRecord.teacher_id, mock_teacher_ids)
-        delete_ids(TeacherRecord, TeacherRecord.teacher_id, mock_teacher_ids)
-
-    def reset(self, *, purge_imported: bool = False) -> None:
+    def reset(self) -> None:
         """Reset the disposable SQLite test harness only.
 
         Runtime PostgreSQL must never be populated with the historical Mock
@@ -585,8 +255,6 @@ class DatabaseStore:
             )
 
         with session_scope(self.engine) as session:
-            if purge_imported:
-                self._purge_domain_records(session)
             self._seed_reset_records(session)
         if not self.reload():
             raise RuntimeError("reset committed without the required Mock seed records")
@@ -597,23 +265,6 @@ class DatabaseStore:
             teachers = session.scalars(select(TeacherRecord)).all()
             if not teachers:
                 return False
-            profile_snapshots = session.scalars(
-                select(TeacherMetricSnapshotRecord).join(
-                    TeacherRecord,
-                    (
-                        TeacherMetricSnapshotRecord.teacher_id
-                        == TeacherRecord.teacher_id
-                    )
-                    & (
-                        TeacherMetricSnapshotRecord.batch_id
-                        == TeacherRecord.source_batch_id
-                    ),
-                )
-            ).all()
-            profile_snapshot_by_teacher_batch = {
-                (snapshot.teacher_id, snapshot.batch_id): snapshot
-                for snapshot in profile_snapshots
-            }
             self.teachers = {}
             for item in teachers:
                 payload = deepcopy(item.payload)
@@ -623,47 +274,11 @@ class DatabaseStore:
                 )
                 payload["gold_qualified"] = bool(item.gold_qualified)
                 payload.setdefault("data_mode", item.data_mode)
-                payload.setdefault("source_batch_id", item.source_batch_id)
                 payload.setdefault(
                     "source_snapshot_label",
                     item.source_snapshot_label
                     or ("LOCAL_MOCK_DEMO" if item.data_mode == "MOCK" else None),
                 )
-                profile_snapshot = profile_snapshot_by_teacher_batch.get(
-                    (item.teacher_id, item.source_batch_id)
-                )
-                if profile_snapshot is not None:
-                    typed_profile = {
-                        "first_booked_date": profile_snapshot.first_booked_date,
-                        "is_cpl_tesol": profile_snapshot.is_cpl_tesol,
-                        "is_self_introduce": profile_snapshot.is_self_introduce,
-                    }
-                    payload["first_booked_date"] = (
-                        profile_snapshot.first_booked_date.isoformat()
-                        if profile_snapshot.first_booked_date is not None
-                        else None
-                    )
-                    payload["is_cpl_tesol"] = profile_snapshot.is_cpl_tesol
-                    payload["is_self_introduce"] = (
-                        profile_snapshot.is_self_introduce
-                    )
-                    profile_provenance = deepcopy(
-                        payload.get("profile_provenance") or {}
-                    )
-                    for field, value in typed_profile.items():
-                        profile_provenance[field] = {
-                            "source_mode": (
-                                "REAL" if value is not None else "SOURCE_MISSING"
-                            ),
-                            "source_field": f"teacher_metric_snapshots.{field}",
-                            "batch_id": profile_snapshot.batch_id,
-                            "note": (
-                                "Typed teacher profile value from the teacher metric snapshot."
-                                if value is not None
-                                else "The teacher metric snapshot has no typed value for this field."
-                            ),
-                        }
-                    payload["profile_provenance"] = profile_provenance
                 self.teachers[item.teacher_id] = payload
             self._teacher_payload_hashes = {
                 teacher_id: _payload_hash(payload)
@@ -701,13 +316,6 @@ class DatabaseStore:
                 _normalize_audit_event_payload(item)
                 for item in session.scalars(select(AuditEventRecord).order_by(AuditEventRecord.sequence)).all()
             ]
-            decisions = session.scalars(select(AgentDecisionRecord)).all()
-            self.agent_plans = {item.plan_key: deepcopy(item.payload) for item in decisions}
-            outputs = session.scalars(select(OutboundOutputRecord)).all()
-            self.outbound_outputs = {
-                item.output_id: _normalize_outbound_record_payload(item)
-                for item in outputs
-            }
             outbox = session.scalars(select(OutboxEventRecord)).all()
             self.outbox_events = {
                 item.outbox_id: {
@@ -726,9 +334,6 @@ class DatabaseStore:
                 }
                 for item in outbox
             }
-            provider_calls = session.scalars(select(ProviderCallRecord)).all()
-            self.provider_calls = {item.provider_call_id: deepcopy(item.request_payload) for item in provider_calls}
-
             for record in session.scalars(select(IdempotencyRecord)).all():
                 if record.scope == "TASK_DEDUPE" and record.resource_id:
                     self.dedupe_keys[record.idempotency_key] = record.resource_id
@@ -838,48 +443,77 @@ class DatabaseStore:
                     "expected_count": len(fixed_codes),
                 }
 
-            complaint_rows = session.execute(
-                select(
-                    LessonFactRecord.teacher_id,
-                    func.count(LessonFactRecord.lesson_id),
-                    func.sum(
-                        case(
-                            (LessonFactRecord.complaint_level_rank == 0, 1),
-                            else_=0,
+            lessons = list(
+                session.scalars(
+                    select(LessonSourceWideRecord).where(
+                        LessonSourceWideRecord.teacher_id.in_(normalized_ids)
+                    )
+                ).all()
+            )
+            complaint_categories = {
+                normalize_text(lesson.complaint_category_l3)
+                for lesson in lessons
+                if normalize_text(lesson.complaint_category_l3)
+            }
+            complaint_rules: dict[str, ComplaintCategoryRuleRecord] = {}
+            if complaint_categories:
+                rule_rows = session.scalars(
+                    select(ComplaintCategoryRuleRecord)
+                    .where(
+                        ComplaintCategoryRuleRecord.category_l3_normalized.in_(
+                            complaint_categories
                         )
-                    ),
-                    func.sum(
-                        case(
-                            (
-                                (
-                                    LessonFactRecord.complaint_category_l1.is_not(None)
-                                    | LessonFactRecord.complaint_category_l2.is_not(None)
-                                    | LessonFactRecord.complaint_category_l3.is_not(None)
-                                )
-                                & LessonFactRecord.complaint_level_rank.is_(None),
-                                1,
-                            ),
-                            else_=0,
-                        )
-                    ),
+                    )
+                    .order_by(
+                        ComplaintCategoryRuleRecord.created_at.desc(),
+                        ComplaintCategoryRuleRecord.rule_id.desc(),
+                    )
+                ).all()
+                for rule in rule_rows:
+                    complaint_rules.setdefault(
+                        normalize_text(rule.category_l3_normalized),
+                        rule,
+                    )
+
+            complaint_counts: dict[str, dict[str, int]] = {}
+            for lesson in lessons:
+                counts = complaint_counts.setdefault(
+                    lesson.teacher_id,
+                    {"lesson_count": 0, "l0_count": 0, "unmapped_count": 0},
                 )
-                .where(
-                    LessonFactRecord.teacher_id.in_(normalized_ids),
-                    LessonFactRecord.data_mode.in_(("REAL", "DERIVED_REAL")),
+                counts["lesson_count"] += 1
+                categories = (
+                    lesson.complaint_category_l1,
+                    lesson.complaint_category_l2,
+                    lesson.complaint_category_l3,
                 )
-                .group_by(LessonFactRecord.teacher_id)
-            ).all()
-            for teacher_id, lesson_count, l0_count, unmapped_count in complaint_rows:
+                if not any(normalize_text(value) for value in categories):
+                    continue
+                key = normalize_text(lesson.complaint_category_l3)
+                rule = complaint_rules.get(key)
+                if rule is None:
+                    counts["unmapped_count"] += 1
+                    continue
+                if normalize_text(rule.source_level).upper() in {"P0", "L0"}:
+                    counts["l0_count"] += 1
+
+            for teacher_id, counts in complaint_counts.items():
+                lesson_count = counts["lesson_count"]
+                l0_count = counts["l0_count"]
+                unmapped_count = counts["unmapped_count"]
                 result.setdefault(teacher_id, {})["L0_COMPLAINT"] = {
-                    "count": int(l0_count or 0),
+                    "count": l0_count,
                     "source_mode": (
                         "DERIVED_REAL"
-                        if int(unmapped_count or 0) == 0
+                        if unmapped_count == 0
                         else "COMPLAINT_LEVEL_MAPPING_INCOMPLETE"
                     ),
-                    "source_field": "lesson_facts.complaint_level_rank",
-                    "lesson_count": int(lesson_count or 0),
-                    "unmapped_complaint_count": int(unmapped_count or 0),
+                    "source_field": (
+                        "lesson_source_wide.投诉三级分类+"
+                        "complaint_category_rules.source_level"
+                    ),
+                    "lesson_count": lesson_count,
+                    "unmapped_complaint_count": unmapped_count,
                 }
             return result
 
@@ -925,7 +559,6 @@ class DatabaseStore:
                         total_score=float(teacher.get("total_score", 0)),
                         graduation_threshold=float(teacher.get("graduation_threshold", 0)),
                         data_mode=teacher.get("data_mode", "MOCK"),
-                        source_batch_id=teacher.get("source_batch_id"),
                         source_snapshot_label=teacher.get("source_snapshot_label"),
                         payload=deepcopy(teacher),
                         updated_at=_parse_datetime(teacher.get("updated_at")) or _now(),
@@ -936,13 +569,9 @@ class DatabaseStore:
                     code = dimension["code"]
                     session.merge(
                         ScoreAccountRecord(
-                            account_id=f"{teacher_id}:{code}",
                             teacher_id=teacher_id,
-                            camp_enrollment_id=camp_id,
                             dimension=code,
                             current_score=float(dimension.get("score", 0)),
-                            minimum_score=float(dimension.get("minimum", 0)),
-                            weight=float(dimension.get("weight", 0)),
                             score_rule_version=dimension.get(
                                 "score_rule_version",
                                 "mock_score_v1" if teacher.get("data_mode", "MOCK") == "MOCK"
@@ -950,53 +579,6 @@ class DatabaseStore:
                             ),
                             version=1,
                             payload=deepcopy(dimension),
-                        )
-                    )
-                lesson_ids: set[str] = set()
-                for lesson in teacher.get("lesson_facts", []):
-                    lesson_id = lesson["lesson_id"]
-                    lesson_ids.add(lesson_id)
-                    lifecycle = lesson.get("lesson_lifecycle_status") or lesson.get("lesson_status", "UNKNOWN")
-                    session.merge(
-                        LessonFactRecord(
-                            lesson_id=lesson_id,
-                            source_appoint_id=str(
-                                lesson.get("source_appoint_id") or lesson.get("appoint_id") or lesson_id
-                            ),
-                            camp_enrollment_id=camp_id,
-                            teacher_id=teacher_id,
-                            scheduled_start_at=_parse_datetime(lesson.get("scheduled_start_at")),
-                            scheduled_end_at=_parse_datetime(lesson.get("scheduled_end_at")),
-                            lesson_lifecycle_status=lifecycle,
-                            valid_for_scoring=bool(
-                                lesson.get("valid_for_scoring", lifecycle in {"ENDED", "COMPLETED"})
-                            ),
-                            evidence_status=lesson.get("evidence_status", "PENDING"),
-                            data_mode=lesson.get("data_mode", "MOCK"),
-                            payload=deepcopy(lesson),
-                        )
-                    )
-                for score in teacher.get("lesson_dimension_scores", []):
-                    lesson_id = score["lesson_id"]
-                    if lesson_id not in lesson_ids:
-                        continue
-                    dimension = score["dimension"]
-                    state_id = f"{camp_id}:{lesson_id}:{dimension}"
-                    session.merge(
-                        LessonDimensionScoreRecord(
-                            score_state_id=state_id,
-                            camp_enrollment_id=camp_id,
-                            lesson_id=lesson_id,
-                            teacher_id=teacher_id,
-                            dimension=dimension,
-                            current_score=float(score.get("current_score", score.get("score", 0))),
-                            evidence_status=score.get("evidence_status", "PENDING"),
-                            evidence_coverage=score.get("evidence_coverage"),
-                            score_rule_version=str(score.get("score_rule_version", score.get("rule_version", 1))),
-                            current_revision=int(score.get("current_revision", 1)),
-                            score_as_of=_parse_datetime(score.get("score_as_of")),
-                            last_score_entry_id=score.get("last_score_entry_id"),
-                            payload=deepcopy(score),
                         )
                     )
                 for entry in teacher.get("score_entries", []):
@@ -1098,56 +680,6 @@ class DatabaseStore:
                             payload=deepcopy(event),
                         )
                     )
-            for plan_key, plan in self.agent_plans.items():
-                if not plan.get("plan_id"):
-                    continue
-                session.merge(
-                    AgentDecisionRecord(
-                        plan_id=plan["plan_id"],
-                        plan_key=plan_key,
-                        route=plan["route"],
-                        planner=plan["planner"],
-                        teacher_id=plan["teacher_id"],
-                        constraints=deepcopy(plan.get("constraints", [])),
-                        selected_template_ids=deepcopy(plan.get("selected_template_ids", [])),
-                        created_at=_parse_datetime(plan.get("created_at")) or _now(),
-                        payload=deepcopy(plan),
-                    )
-                )
-
-            for output in self.outbound_outputs.values():
-                session.merge(
-                    OutboundOutputRecord(
-                        output_id=output["output_id"],
-                        output_type=output["output_type"],
-                        display_type=output["display_type"],
-                        delivery_kind=output.get("delivery_kind"),
-                        audience_type=output["audience_type"],
-                        recipient_id=output.get("recipient_id"),
-                        recipient_name=output.get("recipient_name"),
-                        channel=output.get("channel"),
-                        source_type=output["source_type"],
-                        source_id=output["source_id"],
-                        teacher_id=output.get("teacher_id"),
-                        task_id=output.get("task_id"),
-                        case_id=output.get("case_id"),
-                        status=output["status"],
-                        title=output["title"],
-                        body=output.get("body", ""),
-                        scheduled_at=_parse_datetime(output.get("scheduled_at")),
-                        created_at=_parse_datetime(output["created_at"]) or _now(),
-                        sent_at=_parse_datetime(output.get("sent_at")),
-                        delivered_at=_parse_datetime(output.get("delivered_at")),
-                        attempt_count=int(output.get("attempt_count", 0)),
-                        max_attempts=int(output.get("max_attempts", 3)),
-                        next_retry_at=_parse_datetime(output.get("next_retry_at")),
-                        last_error=output.get("last_error"),
-                        retryable=bool(output.get("retryable", False)),
-                        requires_human_approval=bool(output.get("requires_human_approval", False)),
-                        payload=deepcopy(output),
-                        idempotency_key=output["idempotency_key"],
-                    )
-                )
             for outbox in self.outbox_events.values():
                 session.merge(
                     OutboxEventRecord(
@@ -1165,22 +697,6 @@ class DatabaseStore:
                         published_at=_parse_datetime(outbox.get("published_at")),
                     )
                 )
-            for call in self.provider_calls.values():
-                session.merge(
-                    ProviderCallRecord(
-                        provider_call_id=call["provider_call_id"],
-                        provider_event_id=call.get("provider_event_id"),
-                        task_id=call["task_id"],
-                        provider_id=call["provider_id"],
-                        call_type=call["call_type"],
-                        status=call["status"],
-                        request_payload=deepcopy(call),
-                        result_payload=deepcopy(call.get("result_payload")),
-                        created_at=_parse_datetime(call["created_at"]) or _now(),
-                        completed_at=_parse_datetime(call.get("completed_at")),
-                    )
-                )
-
             self._persist_idempotency(session)
         self._teacher_payload_hashes.update(
             {teacher_id: teacher_hashes[teacher_id] for teacher_id in changed_teacher_ids}

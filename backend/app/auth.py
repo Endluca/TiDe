@@ -358,7 +358,6 @@ def login(
             token_hash=hash_session_token(raw_token),
             created_at=current_time,
             expires_at=current_time + timedelta(seconds=ttl_seconds),
-            last_seen_at=current_time,
         )
     )
     db.commit()

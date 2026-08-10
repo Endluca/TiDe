@@ -6,8 +6,9 @@ ADMIN_DATABASE_URL="${TIDE_TEST_ADMIN_DATABASE_URL:-postgresql:///postgres}"
 TEST_SUFFIX="${$}_${RANDOM}"
 FRESH_DB="tide_prod_migration_fresh_${TEST_SUFFIX}"
 UPGRADE_DB="tide_prod_migration_upgrade_${TEST_SUFFIX}"
+PUBLIC_HEAD_FIRST_DB="tide_prod_public_head_first_${TEST_SUFFIX}"
 
-for database_name in "${FRESH_DB}" "${UPGRADE_DB}"; do
+for database_name in "${FRESH_DB}" "${UPGRADE_DB}" "${PUBLIC_HEAD_FIRST_DB}"; do
   if [[ ! "${database_name}" =~ ^[a-z0-9_]+$ ]]; then
     echo "非法测试数据库名：${database_name}" >&2
     exit 1
@@ -22,7 +23,7 @@ cleanup() {
       LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS
   " >/dev/null 2>&1 || true
-  for database_name in "${FRESH_DB}" "${UPGRADE_DB}"; do
+  for database_name in "${FRESH_DB}" "${UPGRADE_DB}" "${PUBLIC_HEAD_FIRST_DB}"; do
     "${ADMIN_PSQL[@]}" -c "DROP DATABASE IF EXISTS \"${database_name}\" WITH (FORCE)" >/dev/null 2>&1 || true
   done
 }
@@ -92,6 +93,34 @@ FROM (
 SQL
 }
 
+create_test_database "${PUBLIC_HEAD_FIRST_DB}"
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${PUBLIC_HEAD_FIRST_DB}" \
+  -c "DROP TABLE public.teacher_metric_snapshots" >/dev/null
+set +e
+public_head_first_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${PUBLIC_HEAD_FIRST_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${PUBLIC_HEAD_FIRST_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+public_head_first_status=$?
+set -e
+public_head_first_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${PUBLIC_HEAD_FIRST_DB}" <<'SQL'
+SELECT
+    to_regclass('public.teacher_metric_snapshots') IS NULL,
+    to_regnamespace('tide') IS NULL;
+SQL
+)"
+if [[ "${public_head_first_status}" == "0" \
+      || "${public_head_first_output}" != *"public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029"* \
+      || "${public_head_first_state}" != "t|t" ]]; then
+  echo "public head 49 先行时 teacher fresh 迁移未失败关闭：${public_head_first_state}" >&2
+  echo "${public_head_first_output}" >&2
+  exit 1
+fi
+
 create_test_database "${FRESH_DB}"
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
@@ -150,12 +179,121 @@ SELECT
     NOT EXISTS (SELECT 1 FROM tide.task_quiz_banks),
     NOT EXISTS (SELECT 1 FROM tide.knowledge_documents),
     to_regclass('tide.kuozhi_course_syncs') IS NOT NULL,
+    to_regclass('tide.analytics_task_business_change_v1') IS NULL,
+    EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0027_retire_task_business_change_view'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0028_remove_unused_tide_objects'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0029_remove_unused_columns_and_orphan_function'
+          AND migration_order = 27
+          AND filename = '0029_remove_unused_columns_and_orphan_function.up.sql'
+    ),
+    to_regclass('tide.outcome_projections') IS NULL
+        AND to_regclass('tide.camp_enrollment_projections') IS NULL
+        AND to_regclass('tide.audit_events') IS NULL
+        AND to_regclass('tide.task_template_files') IS NULL
+        AND to_regclass('tide.file_migrations') IS NULL
+        AND to_regclass('tide.teacher_photo_runs') IS NULL,
+    to_regclass('tide.analytics_actor_task_journey_v1') IS NULL
+        AND to_regclass('tide.analytics_task_assignment_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_task_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_task_step_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_content_quality_v1') IS NULL,
+    NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'tide'
+          AND table_name = 'file_objects'
+          AND column_name = 'visibility'
+    ) AND to_regprocedure('tide.enforce_outbox_target()') IS NULL,
     count(*)
 FROM tide.schema_migrations;
 SQL
 )"
-if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|24" ]]; then
+if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|27" ]]; then
   echo "生产 fresh 迁移状态异常：${fresh_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" \
+  -c "DROP TABLE public.teacher_metric_snapshots" >/dev/null
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+post_public_drop_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    to_regclass('public.teacher_metric_snapshots') IS NULL,
+    to_regclass('tide.analytics_task_business_change_v1') IS NULL,
+    (
+        SELECT migration_id
+        FROM tide.schema_migrations
+        ORDER BY migration_order DESC
+        LIMIT 1
+    ) = '0029_remove_unused_columns_and_orphan_function',
+    (SELECT count(*) FROM tide.schema_migrations) = 27;
+SQL
+)"
+if [[ "${post_public_drop_state}" != "t|t|t|t" ]]; then
+  echo "teacher 0029 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" >/dev/null <<'SQL'
+CREATE VIEW public.teacher_scorecard_current AS
+SELECT teacher_id FROM public.teachers WHERE false;
+CREATE VIEW public.teacher_lesson_score_current AS
+SELECT teacher_id FROM public.teachers WHERE false;
+ALTER TABLE public.lesson_dimension_scores
+  RENAME TO test_retired_lesson_dimension_scores;
+ALTER TABLE public.lesson_facts
+  RENAME TO test_retired_lesson_facts;
+SQL
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" \
+  -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql" >/dev/null
+legacy_acl_probe_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    coalesce(
+        has_table_privilege(
+            'tit_teacher_crud',
+            to_regclass('public.teacher_metric_snapshots'),
+            'SELECT'
+        ),
+        false
+    ) = false,
+    coalesce(
+        has_table_privilege(
+            'tit_teacher_crud',
+            to_regclass('public.lesson_facts'),
+            'SELECT'
+        ),
+        false
+    ) = false,
+    coalesce(
+        has_table_privilege(
+            'tit_teacher_crud',
+            to_regclass('public.lesson_dimension_scores'),
+            'SELECT'
+        ),
+        false
+    ) = false;
+SQL
+)"
+if [[ "${legacy_acl_probe_state}" != "t|t|t" ]]; then
+  echo "旧 public 表不存在时权限探测不安全：${legacy_acl_probe_state}" >&2
   exit 1
 fi
 
@@ -201,6 +339,14 @@ TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
 TIDE_MIGRATION_TARGET="0021_teacher_support_tickets" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+upgrade_business_change_view_definition="$(psql -X --no-password -Atqc \
+  "select pg_get_viewdef('tide.analytics_task_business_change_v1'::regclass, true)" \
+  "postgresql:///${UPGRADE_DB}")"
+if [[ -z "${upgrade_business_change_view_definition}" ]]; then
+  echo "0021 基线缺少待退役业务变化视图。" >&2
+  exit 1
+fi
 
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
@@ -464,8 +610,374 @@ SQL
 
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TARGET="0027_retire_task_business_change_view" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+retired_business_change_view_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    to_regclass('tide.analytics_task_business_change_v1') IS NULL,
+    EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0027_retire_task_business_change_view'
+    );
+SQL
+)"
+if [[ "${retired_business_change_view_state}" != "t|t" ]]; then
+  echo "0027 未退役旧业务变化视图：${retired_business_change_view_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "CREATE VIEW tide.test_0028_dependency_guard AS SELECT id FROM tide.audit_events" >/dev/null
+set +e
+unused_dependency_guard_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+unused_dependency_guard_status=$?
+set -e
+unused_dependency_guard_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    to_regclass('tide.test_0028_dependency_guard') IS NOT NULL,
+    to_regclass('tide.audit_events') IS NOT NULL,
+    NOT EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0028_remove_unused_tide_objects'
+    );
+SQL
+)"
+if [[ "${unused_dependency_guard_status}" == "0" \
+      || "${unused_dependency_guard_output}" != *"dependent views"* \
+      || "${unused_dependency_guard_state}" != "t|t|t" ]]; then
+  echo "0028 未原子阻断外部依赖：${unused_dependency_guard_state}" >&2
+  echo "${unused_dependency_guard_output}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DROP VIEW tide.test_0028_dependency_guard" >/dev/null
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+INSERT INTO tide.audit_events (
+    id,
+    actor_type,
+    action,
+    resource_type,
+    outcome
+)
+VALUES (
+    '28000000-0000-4000-8000-000000000001',
+    'SYSTEM',
+    'migration-0028-populated-guard',
+    'migration_test',
+    'SUCCESS'
+);
+SQL
+set +e
+unused_populated_guard_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+unused_populated_guard_status=$?
+set -e
+unused_populated_guard_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    (SELECT count(*) FROM tide.audit_events) = 1,
+    to_regclass('tide.analytics_actor_task_journey_v1') IS NOT NULL,
+    NOT EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0028_remove_unused_tide_objects'
+    );
+SQL
+)"
+if [[ "${unused_populated_guard_status}" == "0" \
+      || "${unused_populated_guard_output}" != *"populated unused tide tables: audit_events"* \
+      || "${unused_populated_guard_state}" != "t|t|t" ]]; then
+  echo "0028 未原子阻断非空废弃表：${unused_populated_guard_state}" >&2
+  echo "${unused_populated_guard_output}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DELETE FROM tide.audit_events WHERE id = '28000000-0000-4000-8000-000000000001'" >/dev/null
+
+upgrade_unused_view_definitions="$(psql -X --no-password -Atqc "
+  select string_agg(
+    view_name || ':' || pg_get_viewdef(format('tide.%I', view_name)::regclass, true),
+    E'\\n' order by view_name
+  )
+  from unnest(array[
+    'analytics_actor_task_journey_v1',
+    'analytics_task_assignment_funnel_v1',
+    'analytics_task_funnel_v1',
+    'analytics_task_step_funnel_v1',
+    'analytics_content_quality_v1'
+  ]::text[]) expected(view_name)
+" "postgresql:///${UPGRADE_DB}")"
+upgrade_unused_table_signature="$(psql -X --no-password -Atqc "
+  with target(table_name) as (
+    values
+      ('outcome_projections'),
+      ('camp_enrollment_projections'),
+      ('audit_events'),
+      ('task_template_files'),
+      ('file_migrations'),
+      ('teacher_photo_runs')
+  ), signature_parts as (
+    select
+      'column' as kind,
+      columns.table_name,
+      columns.column_name || ':' || columns.udt_name || ':' ||
+        columns.is_nullable || ':' ||
+        coalesce(columns.column_default, '') as definition
+    from information_schema.columns columns
+    join target using (table_name)
+    where columns.table_schema = 'tide'
+    union all
+    select
+      'constraint', target.table_name, constraint_row.conname || ':' ||
+        pg_get_constraintdef(constraint_row.oid, true)
+    from target
+    join pg_class relation
+      on relation.oid = format('tide.%I', target.table_name)::regclass
+    join pg_constraint constraint_row
+      on constraint_row.conrelid = relation.oid
+    union all
+    select 'index', indexes.tablename, indexes.indexname || ':' || indexes.indexdef
+    from pg_indexes indexes
+    join target on target.table_name = indexes.tablename
+    where indexes.schemaname = 'tide'
+  )
+  select md5(string_agg(
+    kind || ':' || table_name || ':' || definition,
+    E'\\n' order by kind, table_name, definition
+  ))
+  from signature_parts
+" "postgresql:///${UPGRADE_DB}")"
+
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TARGET="0028_remove_unused_tide_objects" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+unused_cleanup_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0028_remove_unused_tide_objects'
+    ),
+    to_regclass('tide.outcome_projections') IS NULL
+        AND to_regclass('tide.camp_enrollment_projections') IS NULL
+        AND to_regclass('tide.audit_events') IS NULL
+        AND to_regclass('tide.task_template_files') IS NULL
+        AND to_regclass('tide.file_migrations') IS NULL
+        AND to_regclass('tide.teacher_photo_runs') IS NULL,
+    to_regclass('tide.analytics_actor_task_journey_v1') IS NULL
+        AND to_regclass('tide.analytics_task_assignment_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_task_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_task_step_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_content_quality_v1') IS NULL,
+    to_regclass('tide.analytics_actor_task_journey_v2') IS NOT NULL,
+    to_regclass('tide.analytics_task_assignment_funnel_v2') IS NOT NULL;
+SQL
+)"
+if [[ "${unused_cleanup_state}" != "t|t|t|t|t" ]]; then
+  echo "0028 未完整清理无用 tide 对象：${unused_cleanup_state}" >&2
+  exit 1
+fi
+
+upgrade_file_visibility_signature="$(psql -X --no-password -Atqc "
+  select concat_ws('|',
+    columns.column_name,
+    columns.udt_name,
+    columns.is_nullable,
+    columns.column_default,
+    pg_get_constraintdef(constraint_row.oid, true)
+  )
+  from information_schema.columns columns
+  join pg_constraint constraint_row
+    on constraint_row.conrelid = 'tide.file_objects'::regclass
+   and constraint_row.conname = 'file_objects_visibility_check'
+  where columns.table_schema = 'tide'
+    and columns.table_name = 'file_objects'
+    and columns.column_name = 'visibility'
+" "postgresql:///${UPGRADE_DB}")"
+upgrade_orphan_function_definition="$(psql -X --no-password -Atqc \
+  "select pg_get_functiondef('tide.enforce_outbox_target()'::regprocedure)" \
+  "postgresql:///${UPGRADE_DB}")"
+if [[ -z "${upgrade_file_visibility_signature}" \
+      || -z "${upgrade_orphan_function_definition}" ]]; then
+  echo "0029 升级前置结构缺失。" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+INSERT INTO tide.file_objects (
+    id,
+    storage_provider,
+    object_key,
+    original_filename,
+    mime_type,
+    size_bytes,
+    sha256,
+    visibility,
+    status
+)
+VALUES (
+    '29000000-0000-4000-8000-000000000001',
+    'LOCAL',
+    'migration-0029-public-asset',
+    'migration-0029-public-asset.jpg',
+    'image/jpeg',
+    1,
+    repeat('a', 64),
+    'PUBLIC_ASSET',
+    'READY'
+);
+SQL
+set +e
+non_private_visibility_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+non_private_visibility_status=$?
+set -e
+non_private_visibility_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'tide'
+          AND table_name = 'file_objects'
+          AND column_name = 'visibility'
+    ),
+    to_regprocedure('tide.enforce_outbox_target()') IS NOT NULL,
+    NOT EXISTS (
+        SELECT 1
+        FROM tide.schema_migrations
+        WHERE migration_id = '0029_remove_unused_columns_and_orphan_function'
+    );
+SQL
+)"
+if [[ "${non_private_visibility_status}" == "0" \
+      || "${non_private_visibility_output}" != *"with non-PRIVATE rows"* \
+      || "${non_private_visibility_state}" != "t|t|t" ]]; then
+  echo "0029 未原子阻断非私有文件：${non_private_visibility_state}" >&2
+  echo "${non_private_visibility_output}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DELETE FROM tide.file_objects WHERE id = '29000000-0000-4000-8000-000000000001'" >/dev/null
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "CREATE VIEW tide.test_0029_visibility_dependency AS SELECT visibility FROM tide.file_objects" >/dev/null
+set +e
+visibility_dependency_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+visibility_dependency_status=$?
+set -e
+if [[ "${visibility_dependency_status}" == "0" \
+      || "${visibility_dependency_output}" != *"visibility with external dependencies"* ]]; then
+  echo "0029 未阻断 visibility 外部依赖。" >&2
+  echo "${visibility_dependency_output}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DROP VIEW tide.test_0029_visibility_dependency" >/dev/null
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+CREATE TABLE tide.test_0029_outbox_target_dependency (
+    integration_event_id uuid,
+    target_system text
+);
+CREATE TRIGGER test_0029_outbox_target_guard
+BEFORE INSERT OR UPDATE OF integration_event_id, target_system
+ON tide.test_0029_outbox_target_dependency
+FOR EACH ROW
+EXECUTE FUNCTION tide.enforce_outbox_target();
+SQL
+set +e
+orphan_function_dependency_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+orphan_function_dependency_status=$?
+set -e
+if [[ "${orphan_function_dependency_status}" == "0" \
+      || "${orphan_function_dependency_output}" != *"enforce_outbox_target() with dependent objects"* ]]; then
+  echo "0029 未阻断孤儿函数新增消费者。" >&2
+  echo "${orphan_function_dependency_output}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+DROP TRIGGER test_0029_outbox_target_guard
+ON tide.test_0029_outbox_target_dependency;
+DROP TABLE tide.test_0029_outbox_target_dependency;
+SQL
+
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+if command -v sha256sum >/dev/null 2>&1; then
+  expected_0029_sha="$(sha256sum "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql" | awk '{print $1}')"
+else
+  expected_0029_sha="$(shasum -a 256 "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql" | awk '{print $1}')"
+fi
+cleanup_0029_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'tide'
+          AND table_name = 'file_objects'
+          AND column_name = 'visibility'
+    ),
+    to_regprocedure('tide.enforce_outbox_target()') IS NULL,
+    migration_order,
+    filename,
+    sha256
+FROM tide.schema_migrations
+WHERE migration_id = '0029_remove_unused_columns_and_orphan_function';
+SQL
+)"
+if [[ "${cleanup_0029_state}" != "t|t|27|0029_remove_unused_columns_and_orphan_function.up.sql|${expected_0029_sha}" ]]; then
+  echo "0029 清理或生产账本异常：${cleanup_0029_state}" >&2
+  exit 1
+fi
 
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
@@ -589,24 +1101,6 @@ SELECT
     (
         SELECT
             count(*) = 2
-            AND count(*) FILTER (WHERE task_code = 'G02') = 1
-            AND count(*) FILTER (WHERE task_code = 'G04') = 1
-        FROM tide.analytics_actor_task_journey_v1
-        WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
-    ),
-    (
-        SELECT
-            count(*) = 1
-            AND bool_and(task_code = 'G02')
-            AND bool_and(viewed_at = '2026-07-30 00:00:00+00')
-            AND bool_and(started_at = '2026-07-30 00:01:00+00')
-            AND bool_and(start_delay_ms = 60000)
-        FROM tide.analytics_task_assignment_funnel_v1
-        WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
-    ),
-    (
-        SELECT
-            count(*) = 2
             AND bool_and(task_code = 'G04')
             AND bool_and(raw_task_code IN ('G02', 'G04'))
             AND count(*) FILTER (WHERE raw_task_code = 'G02') = 1
@@ -635,30 +1129,12 @@ SELECT
         WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
     ) = (
         SELECT count(*)
-        FROM tide.analytics_actor_task_journey_v1
-        WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
-    ),
-    (
-        SELECT count(*)
-        FROM tide.app_events
-        WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
-    ) = (
-        SELECT count(*)
         FROM tide.analytics_actor_task_journey_v2
         WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
     ),
     (
         SELECT count(DISTINCT task_assignment_id)
         FROM tide.app_events
-        WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
-    ) = (
-        SELECT count(*)
-        FROM tide.analytics_task_assignment_funnel_v1
-        WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
-    ),
-    (
-        SELECT count(*)
-        FROM tide.analytics_task_assignment_funnel_v1
         WHERE task_assignment_id = 'MIGRATION-SEMANTIC-G04'
     ) = (
         SELECT count(*)
@@ -679,18 +1155,16 @@ SELECT
         FROM tide.app_events
     ) = (
         SELECT count(*)
-        FROM tide.analytics_actor_task_journey_v1
-    )
-    AND (
-        SELECT count(*)
-        FROM tide.app_events
-    ) = (
-        SELECT count(*)
         FROM tide.analytics_actor_task_journey_v2
-    );
+    ),
+    to_regclass('tide.analytics_actor_task_journey_v1') IS NULL
+        AND to_regclass('tide.analytics_task_assignment_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_task_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_task_step_funnel_v1') IS NULL
+        AND to_regclass('tide.analytics_content_quality_v1') IS NULL;
 SQL
 )"
-if [[ "${analytics_semantics_state}" != "t|t|t|t|t|t|t|t|t|t|t" ]]; then
+if [[ "${analytics_semantics_state}" != "t|t|t|t|t|t|t|t" ]]; then
   echo "0025 analytics v2 未保留 raw 证据或稳定 assignment 语义：${analytics_semantics_state}" >&2
   exit 1
 fi
@@ -963,6 +1437,113 @@ fi
 
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.down.sql" >/dev/null
+restored_upgrade_file_visibility_signature="$(psql -X --no-password -Atqc "
+  select concat_ws('|',
+    columns.column_name,
+    columns.udt_name,
+    columns.is_nullable,
+    columns.column_default,
+    pg_get_constraintdef(constraint_row.oid, true)
+  )
+  from information_schema.columns columns
+  join pg_constraint constraint_row
+    on constraint_row.conrelid = 'tide.file_objects'::regclass
+   and constraint_row.conname = 'file_objects_visibility_check'
+  where columns.table_schema = 'tide'
+    and columns.table_name = 'file_objects'
+    and columns.column_name = 'visibility'
+" "postgresql:///${UPGRADE_DB}")"
+restored_upgrade_orphan_function_definition="$(psql -X --no-password -Atqc \
+  "select pg_get_functiondef('tide.enforce_outbox_target()'::regprocedure)" \
+  "postgresql:///${UPGRADE_DB}")"
+if [[ "${restored_upgrade_file_visibility_signature}" != "${upgrade_file_visibility_signature}" ]]; then
+  echo "0029 down 未精确恢复 file_objects.visibility。" >&2
+  exit 1
+fi
+if [[ "${restored_upgrade_orphan_function_definition}" != "${upgrade_orphan_function_definition}" ]]; then
+  echo "0029 down 未精确恢复 enforce_outbox_target()。" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0028_remove_unused_tide_objects.down.sql" >/dev/null
+restored_upgrade_unused_view_definitions="$(psql -X --no-password -Atqc "
+  select string_agg(
+    view_name || ':' || pg_get_viewdef(format('tide.%I', view_name)::regclass, true),
+    E'\\n' order by view_name
+  )
+  from unnest(array[
+    'analytics_actor_task_journey_v1',
+    'analytics_task_assignment_funnel_v1',
+    'analytics_task_funnel_v1',
+    'analytics_task_step_funnel_v1',
+    'analytics_content_quality_v1'
+  ]::text[]) expected(view_name)
+" "postgresql:///${UPGRADE_DB}")"
+restored_upgrade_unused_table_signature="$(psql -X --no-password -Atqc "
+  with target(table_name) as (
+    values
+      ('outcome_projections'),
+      ('camp_enrollment_projections'),
+      ('audit_events'),
+      ('task_template_files'),
+      ('file_migrations'),
+      ('teacher_photo_runs')
+  ), signature_parts as (
+    select
+      'column' as kind,
+      columns.table_name,
+      columns.column_name || ':' || columns.udt_name || ':' ||
+        columns.is_nullable || ':' ||
+        coalesce(columns.column_default, '') as definition
+    from information_schema.columns columns
+    join target using (table_name)
+    where columns.table_schema = 'tide'
+    union all
+    select
+      'constraint', target.table_name, constraint_row.conname || ':' ||
+        pg_get_constraintdef(constraint_row.oid, true)
+    from target
+    join pg_class relation
+      on relation.oid = format('tide.%I', target.table_name)::regclass
+    join pg_constraint constraint_row
+      on constraint_row.conrelid = relation.oid
+    union all
+    select 'index', indexes.tablename, indexes.indexname || ':' || indexes.indexdef
+    from pg_indexes indexes
+    join target on target.table_name = indexes.tablename
+    where indexes.schemaname = 'tide'
+  )
+  select md5(string_agg(
+    kind || ':' || table_name || ':' || definition,
+    E'\\n' order by kind, table_name, definition
+  ))
+  from signature_parts
+" "postgresql:///${UPGRADE_DB}")"
+if [[ "${restored_upgrade_unused_view_definitions}" != "${upgrade_unused_view_definitions}" ]]; then
+  echo "0028 down 未精确恢复 v1 分析视图。" >&2
+  exit 1
+fi
+if [[ "${restored_upgrade_unused_table_signature}" != "${upgrade_unused_table_signature}" ]]; then
+  echo "0028 down 未精确恢复已清理表结构。" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0027_retire_task_business_change_view.down.sql" >/dev/null
+restored_business_change_view_definition="$(psql -X --no-password -Atqc \
+  "select pg_get_viewdef('tide.analytics_task_business_change_v1'::regclass, true)" \
+  "postgresql:///${UPGRADE_DB}")"
+if [[ "${restored_business_change_view_definition}" != "${upgrade_business_change_view_definition}" ]]; then
+  echo "0027 down 未精确恢复原业务变化视图。" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
   -f "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.down.sql" >/dev/null
 semantic_down_state="$(psql -X --no-password -Atqc "
   SELECT count(*) = 10
@@ -1100,4 +1681,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、0022–0026、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"
+echo "生产 migrator fresh/upgrade、public46→teacher0027→public49→teacher0029 顺序门禁、旧表缺失权限探测、0022–0029、无用对象/字段/函数门禁与精确恢复、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"

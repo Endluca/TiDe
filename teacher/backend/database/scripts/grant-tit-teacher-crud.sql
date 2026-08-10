@@ -14,8 +14,21 @@ GRANT UPDATE (
 
 REVOKE ALL ON public.config_versions FROM tit_teacher_crud;
 REVOKE ALL ON public.score_entries FROM tit_teacher_crud;
-REVOKE ALL ON public.lesson_facts FROM tit_teacher_crud;
-REVOKE ALL ON public.lesson_dimension_scores FROM tit_teacher_crud;
+DO $legacy_acl$
+BEGIN
+    IF to_regclass('public.lesson_facts') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON public.lesson_facts FROM tit_teacher_crud';
+    END IF;
+    IF to_regclass('public.lesson_dimension_scores') IS NOT NULL THEN
+        EXECUTE
+            'REVOKE ALL ON public.lesson_dimension_scores FROM tit_teacher_crud';
+    END IF;
+    IF to_regclass('public.teacher_metric_snapshots') IS NOT NULL THEN
+        EXECUTE
+            'REVOKE ALL ON public.teacher_metric_snapshots FROM tit_teacher_crud';
+    END IF;
+END
+$legacy_acl$;
 DROP VIEW IF EXISTS public.tide_score_policy_versions_v1;
 
 REVOKE ALL ON public.teacher_scorecard_current FROM PUBLIC, tit_teacher_crud;
@@ -32,10 +45,14 @@ GRANT UPDATE (status, read_at, clicked_at) ON public.notifications TO tit_teache
 REVOKE ALL ON public.notification_events FROM tit_teacher_crud;
 GRANT SELECT, INSERT ON public.notification_events TO tit_teacher_crud;
 
-GRANT SELECT ON
-    public.teachers,
-    public.teacher_metric_snapshots
-TO tit_teacher_crud;
+GRANT SELECT ON public.teachers TO tit_teacher_crud;
+
+REVOKE ALL ON public.teacher_source_wide FROM tit_teacher_crud;
+GRANT SELECT (
+    tchr_id,
+    is_cpl_tesol,
+    is_self_introduce
+) ON public.teacher_source_wide TO tit_teacher_crud;
 
 REVOKE ALL ON public.teacher_support_tickets FROM tit_teacher_crud;
 GRANT SELECT ON public.teacher_support_tickets TO tit_teacher_crud;

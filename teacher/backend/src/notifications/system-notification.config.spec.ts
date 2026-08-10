@@ -51,6 +51,13 @@ describe('system notification configuration', () => {
     expect(() =>
       systemNotificationPublicationSchema.parse({
         ...validPublication,
+        audience: { campBatchIds: ['BATCH-1'] },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      systemNotificationPublicationSchema.parse({
+        ...validPublication,
         action: { type: 'MY_TIDE', target: 'https://example.com' },
       }),
     ).toThrow();

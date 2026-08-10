@@ -42,7 +42,6 @@ CREATE TABLE IF NOT EXISTS public.teachers (
     total_score double precision NOT NULL DEFAULT 0,
     graduation_threshold double precision NOT NULL DEFAULT 100,
     data_mode varchar NOT NULL DEFAULT 'MOCK',
-    source_batch_id varchar,
     source_snapshot_label varchar,
     payload jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -62,6 +61,15 @@ CREATE TABLE IF NOT EXISTS public.teacher_metric_snapshots (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT teacher_metric_snapshots_batch_teacher_key UNIQUE (batch_id, teacher_id)
+);
+
+-- Minimal local/test subset of the TiDe-owned 63-column teacher source table.
+-- Production structure is owned exclusively by the root Alembic chain.
+CREATE TABLE IF NOT EXISTS public.teacher_source_wide (
+    tchr_id varchar(64) PRIMARY KEY,
+    real_name text,
+    is_cpl_tesol boolean,
+    is_self_introduce boolean
 );
 
 CREATE TABLE IF NOT EXISTS public.lesson_facts (

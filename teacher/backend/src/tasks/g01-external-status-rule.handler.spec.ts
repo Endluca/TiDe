@@ -38,6 +38,11 @@ describe('G01ExternalStatusRuleHandler', () => {
       passed: true,
       resultCode: 'G01_EXTERNAL_STATUS_PASSED',
     });
+    const calls = fixture.query.mock.calls as unknown as Array<[unknown]>;
+    const sql = String(calls[0][0]);
+    expect(sql).toContain('public.teacher_source_wide');
+    expect(sql).toContain('source.tchr_id = assignment.teacher_id');
+    expect(sql).not.toContain('teacher_metric_snapshots');
   });
 
   it('does not complete G01 when either real status is incomplete', async () => {
@@ -58,4 +63,20 @@ describe('G01ExternalStatusRuleHandler', () => {
       resultCode: 'G01_EXTERNAL_STATUS_UNAVAILABLE',
     });
   });
+
+  it.each([
+    [null, false],
+    [true, null],
+    [null, null],
+  ])(
+    'defers when either source field is unavailable (%s, %s)',
+    async (selfIntroduced, tesolCompleted) => {
+      const fixture = contextWith(selfIntroduced, tesolCompleted);
+      await expect(handler.evaluate(fixture.context)).resolves.toMatchObject({
+        passed: false,
+        deferred: true,
+        resultCode: 'G01_EXTERNAL_STATUS_UNAVAILABLE',
+      });
+    },
+  );
 });

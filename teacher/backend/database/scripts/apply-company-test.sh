@@ -61,12 +61,36 @@ shared_tables_ready="$("${ADMIN_PSQL[@]}" -Atqc "
     to_regclass('public.task_templates') is not null
     and to_regclass('public.task_assignments') is not null
     and to_regclass('public.teachers') is not null
-    and to_regclass('public.teacher_metric_snapshots') is not null
+    and to_regclass('public.teacher_source_wide') is not null
+    and exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'teacher_source_wide'
+        and column_name = 'is_cpl_tesol'
+    )
+    and exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'teacher_source_wide'
+        and column_name = 'is_self_introduce'
+    )
     and to_regclass('public.teacher_scorecard_current') is not null
     and to_regclass('public.teacher_lesson_score_current') is not null
 ")"
 if [[ "${shared_tables_ready}" != "t" ]]; then
   echo "世文共享表尚未准备完成。" >&2
+  exit 1
+fi
+
+legacy_teacher_snapshot_exists="$("${ADMIN_PSQL[@]}" -Atqc "
+  select to_regclass('public.teacher_metric_snapshots') is not null
+")"
+product_analytics_exists="$("${ADMIN_PSQL[@]}" -Atqc "
+  select to_regclass('tide.analytics_task_funnel_v2') is not null
+")"
+if [[ "${legacy_teacher_snapshot_exists}" != "t" \
+      && "${product_analytics_exists}" != "t" ]]; then
+  echo "历史 0020 尚未应用且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029 分阶段迁移。" >&2
   exit 1
 fi
 
@@ -139,6 +163,9 @@ migration_files=(
   "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
   "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
   "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+  "${DB_DIR}/migrations/0027_retire_task_business_change_view.up.sql"
+  "${DB_DIR}/migrations/0028_remove_unused_tide_objects.up.sql"
+  "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
 )
 
 if [[ "${tide_schema_exists}" == "t" ]]; then
@@ -188,23 +215,30 @@ if [[ "${system_notification_owner_maintenance_ready}" != "t" ]]; then
   "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0013_system_notification_owner_maintenance.up.sql"
 fi
 
-teacher_photo_processing_ready="$("${ADMIN_PSQL[@]}" -Atqc "
-  select to_regclass('tide.teacher_photo_runs') is not null
+unused_tide_objects_removed="$("${ADMIN_PSQL[@]}" -Atqc "
+  select
+    to_regclass('tide.analytics_task_event_semantics_v2') is not null
+    and to_regclass('tide.teacher_photo_runs') is null
 ")"
-if [[ "${teacher_photo_processing_ready}" != "t" ]]; then
-  "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0014_teacher_photo_processing.up.sql"
-fi
+if [[ "${unused_tide_objects_removed}" != "t" ]]; then
+  teacher_photo_processing_ready="$("${ADMIN_PSQL[@]}" -Atqc "
+    select to_regclass('tide.teacher_photo_runs') is not null
+  ")"
+  if [[ "${teacher_photo_processing_ready}" != "t" ]]; then
+    "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0014_teacher_photo_processing.up.sql"
+  fi
 
-teacher_photo_full_strength_ready="$("${ADMIN_PSQL[@]}" -Atqc "
-  select position(
-    '1.000' in pg_get_constraintdef(oid)
-  ) > 0
-  from pg_constraint
-  where conrelid = 'tide.teacher_photo_runs'::regclass
-    and conname = 'teacher_photo_runs_strength_check'
-")"
-if [[ "${teacher_photo_full_strength_ready}" != "t" ]]; then
-  "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0015_teacher_photo_filter_strength.up.sql"
+  teacher_photo_full_strength_ready="$("${ADMIN_PSQL[@]}" -Atqc "
+    select position(
+      '1.000' in pg_get_constraintdef(oid)
+    ) > 0
+    from pg_constraint
+    where conrelid = 'tide.teacher_photo_runs'::regclass
+      and conname = 'teacher_photo_runs_strength_check'
+  ")"
+  if [[ "${teacher_photo_full_strength_ready}" != "t" ]]; then
+    "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0015_teacher_photo_filter_strength.up.sql"
+  fi
 fi
 
 quiz_banks_ready="$("${ADMIN_PSQL[@]}" -Atqc "
@@ -236,7 +270,7 @@ if [[ "${growth_stage_notification_state_ready}" != "t" ]]; then
 fi
 
 product_analytics_ready="$("${ADMIN_PSQL[@]}" -Atqc "
-  select to_regclass('tide.analytics_task_funnel_v1') is not null
+  select to_regclass('tide.analytics_task_funnel_v2') is not null
 ")"
 if [[ "${product_analytics_ready}" != "t" ]]; then
   "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0020_product_analytics.up.sql"
@@ -252,15 +286,22 @@ fi
 performance_job_leases_ready="$("${ADMIN_PSQL[@]}" -Atqc "
   select
     to_regclass('tide.job_leases') is not null
-    and exists (
-      select 1
-      from information_schema.columns
-      where table_schema = 'tide'
-        and table_name = 'teacher_photo_runs'
-        and column_name = 'processing_owner'
+    and (
+      to_regclass('tide.teacher_photo_runs') is null
+      or exists (
+        select 1
+        from information_schema.columns
+        where table_schema = 'tide'
+          and table_name = 'teacher_photo_runs'
+          and column_name = 'processing_owner'
+      )
     )
 ")"
 if [[ "${performance_job_leases_ready}" != "t" ]]; then
+  if [[ "${unused_tide_objects_removed}" == "t" ]]; then
+    echo "0028 已应用但 tide.job_leases 缺失，数据库处于不一致状态。" >&2
+    exit 1
+  fi
   "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0022_performance_job_leases.up.sql"
 fi
 
@@ -312,8 +353,35 @@ fi
 
 "${ADMIN_PSQL[@]}" --quiet \
   -f "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
+kuozhi_course_syncs_exists="$("${ADMIN_PSQL[@]}" -Atqc "
+  select to_regclass('tide.kuozhi_course_syncs') is not null
+")"
+if [[ "${kuozhi_course_syncs_exists}" != "t" ]]; then
+  "${ADMIN_PSQL[@]}" --quiet \
+    -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+fi
 "${ADMIN_PSQL[@]}" --quiet \
-  -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+  -f "${DB_DIR}/migrations/0027_retire_task_business_change_view.up.sql"
+"${ADMIN_PSQL[@]}" --quiet \
+  -f "${DB_DIR}/migrations/0028_remove_unused_tide_objects.up.sql"
+unused_column_cleanup_state="$("${ADMIN_PSQL[@]}" -AtF '|' -c "
+  select
+    exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'file_objects'
+        and column_name = 'visibility'
+    ),
+    to_regprocedure('tide.enforce_outbox_target()') is not null
+")"
+if [[ "${unused_column_cleanup_state}" == "t|t" ]]; then
+  "${ADMIN_PSQL[@]}" --quiet \
+    -f "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
+elif [[ "${unused_column_cleanup_state}" != "f|f" ]]; then
+  echo "0029 无用字段与孤儿函数处于不一致状态，初始化已停止。" >&2
+  exit 1
+fi
 
 template_snapshot_before="$("${ADMIN_PSQL[@]}" -Atqc "
   select md5(string_agg(row_to_json(template)::text, '' order by row_id))
@@ -364,6 +432,28 @@ SQL
 
 "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
+g01_source_acl="$("${ADMIN_PSQL[@]}" -Atqc "
+  select concat_ws('|',
+    has_table_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'SELECT'),
+    has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'tchr_id', 'SELECT'),
+    has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_cpl_tesol', 'SELECT'),
+    has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_self_introduce', 'SELECT'),
+    has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'real_name', 'SELECT'),
+    coalesce(
+      has_table_privilege(
+        'tit_teacher_crud',
+        to_regclass('public.teacher_metric_snapshots'),
+        'SELECT'
+      ),
+      false
+    )
+  )
+")"
+if [[ "${g01_source_acl}" != "f|t|t|t|f|f" ]]; then
+  echo "G01 教师源字段最小权限验收失败：${g01_source_acl}" >&2
+  exit 1
+fi
+
 unset PGPASSWORD
 export PGPASSWORD="${TIDE_APP_DB_PASSWORD}"
 APP_PSQL=(
@@ -382,9 +472,29 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     to_regclass('tide.task_execution_versions') is not null,
     to_regclass('tide.system_notification_publications') is not null,
     to_regclass('tide.growth_stage_notification_states') is not null,
-    to_regclass('tide.analytics_task_funnel_v1') is not null,
+    to_regclass('tide.analytics_task_funnel_v2') is not null,
     to_regclass('public.teacher_support_tickets') is not null,
-    to_regclass('tide.teacher_photo_runs') is not null,
+    (
+      to_regclass('tide.outcome_projections') is null
+      and to_regclass('tide.camp_enrollment_projections') is null
+      and to_regclass('tide.audit_events') is null
+      and to_regclass('tide.task_template_files') is null
+      and to_regclass('tide.file_migrations') is null
+      and to_regclass('tide.teacher_photo_runs') is null
+      and to_regclass('tide.analytics_actor_task_journey_v1') is null
+      and to_regclass('tide.analytics_task_assignment_funnel_v1') is null
+      and to_regclass('tide.analytics_task_funnel_v1') is null
+      and to_regclass('tide.analytics_task_step_funnel_v1') is null
+      and to_regclass('tide.analytics_content_quality_v1') is null
+      and not exists (
+        select 1
+        from information_schema.columns
+        where table_schema = 'tide'
+          and table_name = 'file_objects'
+          and column_name = 'visibility'
+      )
+      and to_regprocedure('tide.enforce_outbox_target()') is null
+    ),
     to_regclass('tide.task_quiz_banks') is not null,
     to_regclass('tide.kuozhi_course_syncs') is not null,
     has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'SELECT'),
@@ -403,8 +513,22 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     to_regclass('public.teacher_lesson_score_current') is not null,
     has_table_privilege(current_user, 'public.teacher_lesson_score_current', 'SELECT'),
     has_table_privilege(current_user, 'public.score_entries', 'SELECT'),
-    has_table_privilege(current_user, 'public.lesson_facts', 'SELECT'),
-    has_table_privilege(current_user, 'public.lesson_dimension_scores', 'SELECT'),
+    coalesce(
+      has_table_privilege(
+        current_user,
+        to_regclass('public.lesson_facts'),
+        'SELECT'
+      ),
+      false
+    ),
+    coalesce(
+      has_table_privilege(
+        current_user,
+        to_regclass('public.lesson_dimension_scores'),
+        'SELECT'
+      ),
+      false
+    ),
     has_table_privilege(current_user, 'public.config_versions', 'SELECT'),
     (select count(*) from tide.task_quiz_banks),
     has_table_privilege(current_user, 'tide.task_quiz_banks', 'INSERT'),
@@ -418,19 +542,6 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     (
       to_regclass('tide.job_leases') is not null
       and to_regclass('tide.job_leases_expiry_idx') is not null
-      and to_regclass('tide.teacher_photo_runs_pending_claim_idx') is not null
-      and (
-        select count(*) = 4
-        from information_schema.columns
-        where table_schema = 'tide'
-          and table_name = 'teacher_photo_runs'
-          and column_name in (
-            'processing_owner',
-            'lease_expires_at',
-            'attempt_count',
-            'next_attempt_at'
-          )
-      )
       and has_table_privilege(
         current_user,
         to_regclass('tide.job_leases'),
@@ -494,4 +605,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：tide Schema、多副本任务租约、0026 阔知课程同步、固定任务语义与分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、数据库题库、通知状态、共享事实说明字段清理、首课画面处理和应用账号权限均已验证。"
+echo "公司测试库初始化完成：tide Schema、多副本任务租约、0026 阔知课程同步、0027 旧业务变化视图退役、0028 无用对象清理、0029 无用字段与孤儿函数清理、固定任务语义与当前分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、数据库题库、通知状态、共享事实说明字段清理和应用账号权限均已验证。"

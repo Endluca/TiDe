@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,8 +20,6 @@ from .config_routes import router as config_router
 from .database import database_health, database_pool_status, engine
 from .errors import DomainError
 from .frontend_static import install_frontend_static
-from .output_service import OutputService
-from .services import GrowthService
 from .operations_routes import router as operations_router
 from .score_read_service import ScoreReadModelNotFound, ScoreReadService
 from .support_ticket_routes import router as support_ticket_router
@@ -77,28 +75,10 @@ app.include_router(task_router)
 app.include_router(operations_router)
 app.include_router(support_ticket_router)
 
-class _LazyLegacyService:
-    """Test-only compatibility; production routes no longer instantiate it."""
-
-    _instance: Any = None
-
-    def _get(self) -> Any:
-        if self._instance is None:
-            from .store import store
-
-            self._instance = GrowthService(store)
-        return self._instance
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._get(), name)
-
-
-service = _LazyLegacyService()
 score_read_service = ScoreReadService(engine)
 teacher_read_service = TeacherReadService(engine)
 dashboard_read_service = DashboardReadService(engine)
 audit_service = AuditService(engine)
-output_service = OutputService(engine)
 
 
 @app.middleware("http")
@@ -339,47 +319,6 @@ def list_events(
         teacher_id=teacher_id,
         keyword=keyword,
     )
-
-
-@app.get("/api/outputs")
-def list_outputs(
-    output_type: Optional[str] = Query(default=None, alias="type"),
-    status: Optional[str] = Query(default=None),
-    teacher_id: Optional[str] = Query(default=None),
-    keyword: Optional[str] = Query(default=None, max_length=200),
-    operational_only: bool = Query(default=True),
-    include_task_assignments: bool = Query(default=False),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=100, ge=1, le=500),
-    _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
-) -> dict:
-    return output_service.list_outputs(
-        type_filter=output_type,
-        status=status,
-        teacher_id=teacher_id,
-        keyword=keyword,
-        operational_only=operational_only,
-        include_task_assignments=include_task_assignments,
-        page=page,
-        page_size=page_size,
-    )
-
-
-@app.get("/api/outputs/summary")
-def output_summary(
-    _operator: OperatorIdentity = Depends(require_roles(OperatorRole.VIEWER)),
-) -> dict:
-    return output_service.summary()
-
-
-@app.post("/api/outputs/{output_id}/retry")
-def retry_output(
-    output_id: str,
-    operator: OperatorIdentity = Depends(
-        require_roles(OperatorRole.CASE_OPERATOR, OperatorRole.SENIOR_REVIEWER)
-    ),
-) -> dict:
-    return output_service.retry_output(output_id, actor_id=operator.operator_id)
 
 
 # Keep this last. Starlette matches routes in registration order, so the

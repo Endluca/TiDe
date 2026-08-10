@@ -24,7 +24,8 @@ G01 包含五项完成条件：
 4. TESOL Essay 已完成；
 5. 完成证明已提交。
 
-Self-intro 与 TESOL 状态读取世文 `teacher_metric_snapshots`。61 题、Essay 完成确认和完成证明提交在教师端系统内完成。
+Self-intro 与 TESOL 状态读取世文 `teacher_source_wide` 的两个可空状态字段。`NULL`
+表示上游尚未提供，不能当成未完成或完成；61 题、Essay 完成确认和完成证明提交在教师端系统内完成。
 
 本系统不接收 Self-intro 原视频，也不保存 TESOL Essay 原文。Essay 当前使用完成确认；完成证明支持清晰图片或 PDF。
 

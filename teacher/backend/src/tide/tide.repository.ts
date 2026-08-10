@@ -13,8 +13,7 @@ export interface TeacherBindingIdentity {
 export interface G01Evidence {
   selfIntroduced: boolean | null;
   tesolCompleted: boolean | null;
-  sourceUpdatedAt: string;
-  sourceVersion: string;
+  sourceUpdatedAt: null;
 }
 
 export interface FixedGrowthTask {
@@ -29,8 +28,6 @@ interface BindingRow extends QueryResultRow, TeacherBindingIdentity {}
 interface G01EvidenceRow extends QueryResultRow {
   selfIntroduced: boolean | null;
   tesolCompleted: boolean | null;
-  sourceUpdatedAt: Date;
-  sourceVersion: string;
 }
 
 interface NotificationRow extends QueryResultRow {
@@ -101,12 +98,9 @@ export class TideRepository {
       `
         SELECT
           is_self_introduce AS "selfIntroduced",
-          is_cpl_tesol AS "tesolCompleted",
-          updated_at AS "sourceUpdatedAt",
-          snapshot_id AS "sourceVersion"
-        FROM public.teacher_metric_snapshots
-        WHERE teacher_id = $1
-        ORDER BY updated_at DESC, created_at DESC, snapshot_id DESC
+          is_cpl_tesol AS "tesolCompleted"
+        FROM public.teacher_source_wide
+        WHERE tchr_id = $1
         LIMIT 1
       `,
       [teacherId],
@@ -116,8 +110,7 @@ export class TideRepository {
       ? {
           selfIntroduced: row.selfIntroduced,
           tesolCompleted: row.tesolCompleted,
-          sourceUpdatedAt: row.sourceUpdatedAt.toISOString(),
-          sourceVersion: row.sourceVersion,
+          sourceUpdatedAt: null,
         }
       : null;
   }

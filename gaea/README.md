@@ -5,7 +5,7 @@
 这是 Gaea 单模块、单项目、单镜像的受控 TEST 部署；同一整套 Pod 可以水平复制。Gaea
 直接读取根级 `gaea/Dockerfile`，不再使用 `gaea.yml` 或子模块 Dockerfile。
 
-镜像由 s6-overlay 管理四个常驻进程：
+镜像由 s6-overlay 管理五个常驻进程：
 
 | 进程 | 监听端口 | 职责 |
 |---|---:|---|
@@ -13,8 +13,10 @@
 | `teacher-web` | `8080` | Nginx 提供教师 React，并把 `/api/*` 代理到本 Pod 的 NestJS |
 | `teacher-api` | `3000` | NestJS 教师端 API；只在 Pod 内访问，不配置 Gaea Ingress |
 | `score-settlement` | 无 | 固定任务积分结算候选进程、数据库选主和本 Pod heartbeat |
+| `source-wide` | 无 | 字段级源事件消费候选进程、数据库选主和本 Pod heartbeat/readiness |
 
-运营端与教师端仍是两套独立 HTTP 服务，只是共享镜像和 Pod。两个数据库运行角色、两套
+运营端与教师端仍是两套独立 HTTP 服务，只是共享镜像和 Pod。运营、教师、SourceWide
+三个数据库运行角色以及两套
 API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker 任一非零退出，s6 都会
 终止整个容器，让 Kubernetes 重建完整 Pod。
 
@@ -25,13 +27,15 @@ API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker �
 
 ## 多副本执行模型
 
-每个 Pod 都启动相同的四个进程，不再为 Worker 新建 Gaea 项目，也不按副本注入不同配置：
+每个 Pod 都启动相同的五个进程，不再为 Worker 新建 Gaea 项目，也不按副本注入不同配置：
 
 - FastAPI、教师 Nginx 和 NestJS 都可以横向承接 HTTP 请求；登录会话、任务、积分和上传元数据
   的事实源在 PostgreSQL，不依赖某一 Pod 内存；
 - 每个 `score-settlement` 候选进程使用独立 PostgreSQL 会话竞争同一 session advisory lock。
   同一数据库同时只有持锁者结算，其他 Pod 是 standby；连接断开时锁自动释放，standby 在下一
   轮轮询接管；
+- 每个 `source-wide` 候选进程使用另一把 session advisory lock；leader 消费
+  `source_wide.changed.v1`，standby 只做数据库接管探测。两个 Worker 的执行权互不混用；
 - 教师端全局通知、工单清理等调度器通过 `tide.job_leases` 竞争有期限租约；照片处理使用数据库
   行级认领与处理租约。`BACKGROUND_JOBS_ENABLED=true` 可以在所有副本保持一致；
 - RollingUpdate 期间旧、新 Pod 可以短暂并存。数据库选主、租约、行锁、幂等键与唯一约束负责
@@ -69,9 +73,10 @@ PostgreSQL 或使用 session pooling；transaction pooling 不能承载 session 
 | 私有上传 `/var/lib/tide/uploads` | 首选 OSS；LOCAL 只允许所有 Pod 共享同一 RWX 卷 | 上传、下载、工单清理可能落到不同 Pod |
 | 视频预热账本 `/var/lib/tide/video-prefetch-runs` | 执行预热脚本时必须使用同一 RWX 卷 | 幂等记录和文件锁必须跨执行节点可见；OSS 对象存储不替代该账本 |
 | Worker heartbeat `/tmp/tit-score-worker-heartbeat` | 必须保持 Pod 本地，禁止放入共享卷 | 健康检查要证明本 Pod 的候选进程存活，不能借用 leader 的 heartbeat |
+| SourceWide heartbeat/readiness `/tmp/tit-source-worker-*` | 必须保持 Pod 本地，禁止放入共享卷 | 同时证明候选进程存活且能以预期专用账号访问数据库 |
 | Nginx 临时目录 `/tmp/tide-nginx` | Pod 本地临时空间 | 不承载业务事实 |
 
-当前四个常驻进程不会自动执行视频预热脚本；预热是受控发布动作。若从一次性 Job 或运维
+当前五个常驻进程不会自动执行视频预热脚本；预热是受控发布动作。若从一次性 Job 或运维
 终端执行，仍必须复用同一个持久化 RWX 状态目录。发布前至少用两个实际 Pod 做交叉验收：
 Pod A 上传、Pod B 下载，Pod B 删除、Pod A 读回失败；视频预热的相同幂等键只能创建一次。
 
@@ -112,10 +117,12 @@ Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两
 2. `8080/healthz`：教师 Nginx 与静态产物；
 3. `8080/health/ready`：经 Nginx 代理访问教师 API，并检查两条数据库读取链；
 4. 本 Pod 的 `/tmp/tit-score-worker-heartbeat`：积分候选进程持续刷新；leader 与 standby
-   使用相同的进程存活判定。
+   使用相同的进程存活判定；
+5. 本 Pod 的 SourceWide heartbeat 与 readiness：进程持续运行，且最近一次数据库身份校验、
+   选主或 leader ping 成功。
 
 未持有积分 advisory lock 或教师后台租约是正常 standby 状态，不得导致本 Pod 不健康。
-因此 Pod 显示健康只表示四个进程和对应数据库就绪，不表示该 Pod 当前持有后台执行权，也
+因此 Pod 显示健康只表示五个进程和对应数据库就绪，不表示该 Pod 当前持有后台执行权，也
 不代表教师登录、九项任务、积分回写、外部素材、真实通知或完整业务验收已经完成。
 
 ## 运营端运行变量
@@ -175,6 +182,25 @@ Worker 与运营 API 共用 `DATABASE_URL` 对应的受限运营运行角色，�
 `settle_shared_task_scores.py --watch --max-events 25 --interval-seconds 3`，由 PostgreSQL
 session advisory lock 选出当前 leader；standby 不执行结算，但继续刷新本 Pod heartbeat。
 
+## SourceWide Worker 进程级变量
+
+该 Worker 使用独立 LOGIN，启动时会核对目标库、角色成员关系、源表只读和派生表写权限；
+身份不符合即非零退出，由 s6 终止 Pod。真实密码只由 Gaea 密钥管理注入。
+收到 SIGTERM 后会完成当前事务再退出；若 25 秒内仍未结束，s6 强制终止连接，让 PostgreSQL
+回滚未提交事务，避免超过 Kubernetes 常见的 30 秒终止宽限期。
+
+| 变量名 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `TIT_SOURCE_WORKER_DATABASE_URL` | 是 | 无 | `tit_source_worker_runtime` 的 PostgreSQL URL；生产必须使用 `sslmode=verify-full` |
+| `TIT_SOURCE_WORKER_EXPECTED_DATABASE` | 是 | 无 | 固定目标库名，必须与 URL 一致 |
+| `TIT_SOURCE_WORKER_DB_POOL_SIZE` | 否 | `1` | Worker 连接池上限 |
+| `TIT_SOURCE_WORKER_DB_MAX_OVERFLOW` | 否 | `0` | Worker 溢出连接 |
+| `TIT_SOURCE_WORKER_DB_STATEMENT_TIMEOUT_MS` | 否 | `60000` | Worker SQL 超时 |
+| `TIT_SOURCE_WORKER_DB_APPLICATION_NAME` | 否 | `tit-growth-source-worker` | PostgreSQL 连接标识 |
+
+单镜像中的其他进程也能看到该环境变量，因此这是数据库权限分工，不是秘密隔离。生产级
+秘密隔离仍需把 SourceWide Worker 拆到独立 Pod。
+
 ## 教师端运行变量
 
 | 变量名 | 必填 | TEST 建议值/默认值 | 说明 |
@@ -222,8 +248,9 @@ Gaea 另行配置。教师 Nginx 只从 `TIDE_TRUSTED_PROXY_CIDRS`（未设时�
 `TIT_TRUSTED_PROXY_IPS`）指定的入口解析 `X-Forwarded-For`。仍需平台确认 Ingress 会覆盖
 或追加而不是原样透传客户端伪造头。
 
-按上述建议值，教师两条池最多 10 连接；再加运营 `2 × (5 + 2)` 和积分 Worker 复用的
-选主／结分连接 1 条，单 Pod 最坏约 25 条连接。`N` 个副本按 `N × 25` 预留并给迁移、
+按上述建议值，教师两条池最多 10 连接；再加运营 `2 × (5 + 2)`、积分 Worker 的
+选主／结分连接 1 条和 SourceWide Worker 1 条，单 Pod 最坏约 26 条连接。`N` 个副本按
+`N × 26` 预留并给迁移、
 人工诊断留余量；自动伸缩上限必须受公共 PG 连接额度约束，不能只看 Pod 是否运行。
 
 办公室公共 PG 若只能使用非严格 TLS，可以在 TEST 环境使用现有
@@ -231,7 +258,7 @@ Gaea 另行配置。教师 Nginx 只从 `TIDE_TRUSTED_PROXY_CIDRS`（未设时�
 `TIDE_APP_DB_USER/PASSWORD`、`TIDE_ADMIN_DB_SSLMODE`。该适配会让教师写入与来源读取暂时复用
 一个测试账号，只能用于受控 TEST；预发布和生产必须恢复独立 URL 与独立角色。
 
-其余可选邮件、OSS、CDN、通知调度、照片 Worker、AI Gateway 与文件限制变量，以
+其余可选邮件、OSS、CDN、通知调度、AI Gateway 与文件限制变量，以
 `teacher/backend/.env.example` 为完整字段表；启用某项能力时不得依赖代码默认值猜测密钥。
 
 TEST 示例验收完成后，先把 `KUOZHI_SAMPLE_MODE` 改回 `false`，再进入正式课程验收。关闭
@@ -270,24 +297,25 @@ docker inspect --format '{{.State.Health.Status}}' tide-camp-gaea-test
 docker stop tide-camp-gaea-test
 ```
 
-本地容器验证会真实启动积分 Worker，只能连接隔离测试库。多副本验收还需同时启动至少两个
-容器，确认只有一个 `score-settlement` leader，standby heartbeat 仍健康；LOCAL 文件模式
+本地容器验证会真实启动两个 Worker，只能连接隔离测试库。多副本验收还需同时启动至少两个
+容器，分别确认 `score-settlement` 和 `source-wide` 只有一个 leader，standby heartbeat/readiness 仍健康；LOCAL 文件模式
 必须让两个容器挂载同一个共享测试目录并完成跨容器上传、下载和删除，不得用两个独立目录
 冒充 RWX。
 
 ## 发布顺序
 
-1. 分别执行 TiDe Alembic 与教师端 migration；教师端至少到
-   `0025_fixed_task_semantic_alignment`，并确认其中的 `0022_performance_job_leases` 已落库，
-   随后执行只读契约探针。
-2. 配齐统一应用的运营、教师和 Worker 环境变量，确认密钥不在版本化配置中。
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0027 → public 49 → teacher 0029`；
+   确认 public head 为 `20260807_49_unused_columns`、teacher 账本 head 为
+   `0029_remove_unused_columns_and_orphan_function`，随后执行只读契约探针。
+2. 配齐统一应用的运营、教师和两个 Worker 环境变量，确认密钥不在版本化配置中；
+   `tit_source_worker_runtime` 必须是独立受限 LOGIN。
 3. 在 Gaea 将统一应用设置为至少 `2` 个副本并使用 `RollingUpdate`；若启用自动伸缩，设置
    `minReplicas >= 2`，并按最大副本数核对数据库连接预算。同时确认平台允许 root `/init`，
    配置 `8010` 运营域名、`8080` 教师域名，以及 OSS 或同一块 RWX 共享卷。
 4. 停止旧 `test-tide-camp-worker`，避免它与新镜像内的 Worker 同时常驻。
 5. 向现有 `tide-camp-api` 项目发布统一镜像，现场读回 replicas、自动伸缩、RollingUpdate、
-   两个端口、两个域名、共享存储权限和每个 Pod 的健康状态；确认一个积分 leader、其余
-   standby，并验证 leader 终止后有且仅有一个 standby 接管。
+   两个端口、两个域名、共享存储权限和每个 Pod 的健康状态；分别确认一个积分 leader 和
+   一个 SourceWide leader，其余 standby，并验证任一 leader 终止后有且仅有一个 standby 接管。
 6. 从两个外部 HTTPS 域名验证运营登录、教师登录、G01–G09、状态更新、幂等结分、
    积分/课程读取、工单往返，以及跨 Pod 文件读写。
 7. 业务验收完成后再下线旧 Worker 项目；不要用“Pod 运行中”代替端到端验收。
@@ -326,5 +354,6 @@ gaea/
     ├── teacher-api/
     ├── teacher-web/
     ├── score-settlement/
+    ├── source-wide/
     └── user/contents.d/
 ```

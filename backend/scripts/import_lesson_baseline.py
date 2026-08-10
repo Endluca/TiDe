@@ -18,8 +18,8 @@ from app.lesson_ingestion import (  # noqa: E402
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Strictly preflight and atomically import the 24-column real lesson "
-            "baseline, current complaint levels and personalized outputs."
+            "Retired compatibility command. Lesson source updates now enter "
+            "lesson_source_wide through the source-monitor consumer."
         )
     )
     parser.add_argument("lesson_source", type=Path)
@@ -32,14 +32,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Run full file/database preflight and output planning without writing",
+        help="Retained for command compatibility; the command always fails closed",
     )
     parser.add_argument(
         "--replace-current",
         action="store_true",
         help=(
-            "Replace the current manual lesson projection while retaining old raw "
-            "source batches and preserving consumed output history"
+            "Retained for command compatibility; the command always fails closed"
         ),
     )
     return parser

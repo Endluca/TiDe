@@ -168,7 +168,6 @@ def test_current_operator_releases_read_transaction_before_business_work(
                 token_hash=hash_session_token(raw_token),
                 created_at=now_utc(),
                 expires_at=now_utc() + timedelta(hours=1),
-                last_seen_at=now_utc(),
             )
         )
         db.commit()

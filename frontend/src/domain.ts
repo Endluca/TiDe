@@ -1,4 +1,4 @@
-import type { OutputDisplayType, OutputListResponse, OutputRecord, OutputStatus, OutputSummary, OutputType, SharedTaskAssignment, Task } from './types'
+import type { SharedTaskAssignment, Task } from './types'
 import type { AppLocale } from './i18n'
 
 const taskPriorityOrder: Record<string, number> = {
@@ -126,102 +126,6 @@ export function eventLabel(eventType: string, locale: AppLocale = 'zh-CN'): stri
   return (locale === 'en-US' ? eventLabelsEn : eventLabels)[eventType] ?? eventType
 }
 
-export const outputTypeLabels: Record<OutputType, string> = {
-  TEACHER_TASK: '教师任务',
-  OPS_REVIEW_CASE: '运营复核事项',
-  SYSTEM_ACTION_REQUEST: '外部动作请求',
-  DELIVERY_INTENT: '触达意图',
-}
-
-const outputTypeLabelsEn: Record<OutputType, string> = {
-  TEACHER_TASK: 'Teacher task',
-  OPS_REVIEW_CASE: 'Operations review',
-  SYSTEM_ACTION_REQUEST: 'External action request',
-  DELIVERY_INTENT: 'Delivery intent',
-}
-
-export function outputTypeLabel(type: OutputType, locale: AppLocale = 'zh-CN'): string {
-  return (locale === 'en-US' ? outputTypeLabelsEn : outputTypeLabels)[type] ?? type
-}
-
-export const outputDisplayTypeLabels: Record<OutputDisplayType, string> = {
-  TASK_ASSIGNMENT: '教师任务',
-  IN_APP_NOTIFICATION: '站内通知',
-  REMINDER: '小提醒 / 催办',
-  OPS_CASE: '运营事项',
-  EXTERNAL_ACTION_REQUEST: '人工审批请求',
-  PROVIDER_REQUEST: 'Agent 调试记录',
-}
-
-const outputDisplayTypeLabelsEn: Record<OutputDisplayType, string> = {
-  TASK_ASSIGNMENT: 'Teacher task',
-  IN_APP_NOTIFICATION: 'In-app notification',
-  REMINDER: 'Reminder',
-  OPS_CASE: 'Operations case',
-  EXTERNAL_ACTION_REQUEST: 'Manual approval request',
-  PROVIDER_REQUEST: 'Agent diagnostic record',
-}
-
-export function outputDisplayTypeLabel(type: OutputDisplayType, locale: AppLocale = 'zh-CN'): string {
-  return (locale === 'en-US' ? outputDisplayTypeLabelsEn : outputDisplayTypeLabels)[type] ?? type
-}
-
-export const outputStatusLabels: Record<OutputStatus, string> = {
-  PLANNED: '已计划',
-  REQUESTED: '已请求',
-  STORED: '已落盘',
-  DELIVERED: '已送达',
-  READ: '已读',
-  CLICKED: '已点击',
-  FAILED: '失败',
-  ACTION_PENDING: '待审批 / 未执行',
-  CANCELLED: '已取消',
-}
-
-const outputStatusLabelsEn: Record<OutputStatus, string> = {
-  PLANNED: 'Planned',
-  REQUESTED: 'Requested',
-  STORED: 'Stored',
-  DELIVERED: 'Delivered',
-  READ: 'Read',
-  CLICKED: 'Clicked',
-  FAILED: 'Failed',
-  ACTION_PENDING: 'Pending approval / not executed',
-  CANCELLED: 'Cancelled',
-}
-
-export function outputStatusLabel(status: OutputStatus, locale: AppLocale = 'zh-CN'): string {
-  return (locale === 'en-US' ? outputStatusLabelsEn : outputStatusLabels)[status] ?? status
-}
-
-export function normalizeOutputList(payload: OutputRecord[] | OutputListResponse): OutputListResponse {
-  if (Array.isArray(payload)) return { items: payload, total: payload.length }
-  return { items: payload.items ?? [], total: payload.total ?? payload.items?.length ?? 0 }
-}
-
 export function isOperationalTaskAssignment(item: SharedTaskAssignment): boolean {
   return !item.source_mode.startsWith('MOCK')
-}
-
-export function isOperationalOutput(item: OutputRecord): boolean {
-  if (item.non_business || item.display_type === 'PROVIDER_REQUEST') return false
-  const text = `${item.title} ${item.body ?? ''} ${item.content ?? ''}`.toLocaleLowerCase()
-  return !text.includes('mock') && !text.includes('模拟') && !text.includes('调试')
-}
-
-export function summarizeOutputs(outputs: OutputRecord[]): OutputSummary {
-  const by_type: OutputSummary['by_type'] = {}
-  const by_display_type: NonNullable<OutputSummary['by_display_type']> = {}
-  const by_status: OutputSummary['by_status'] = {}
-  outputs.forEach((item) => {
-    const nonBusiness = item.non_business || item.display_type === 'PROVIDER_REQUEST'
-    if (!nonBusiness && item.output_type) by_type[item.output_type] = (by_type[item.output_type] ?? 0) + 1
-    by_display_type[item.display_type] = (by_display_type[item.display_type] ?? 0) + 1
-    by_status[item.status] = (by_status[item.status] ?? 0) + 1
-  })
-  return { total: outputs.length, by_type, by_display_type, by_status }
-}
-
-export function canRetryOutput(output: Pick<OutputRecord, 'retryable' | 'status' | 'attempt_count' | 'max_attempts'>): boolean {
-  return output.retryable && output.status === 'FAILED' && output.attempt_count < output.max_attempts
 }

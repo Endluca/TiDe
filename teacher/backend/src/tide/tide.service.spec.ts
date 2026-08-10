@@ -203,18 +203,18 @@ function createFixture() {
     },
   ]);
   const recordSourceRead = jest.fn().mockResolvedValue(undefined);
+  const findLatestG01Evidence = jest.fn().mockResolvedValue({
+    selfIntroduced: true,
+    tesolCompleted: false,
+    sourceUpdatedAt: null,
+  });
   const repository = {
     findBinding: jest.fn().mockResolvedValue({
       bindingId: 'binding-001',
       teacherId: 'teacher-001',
       email: 'teacher@example.invalid',
     }),
-    findLatestG01Evidence: jest.fn().mockResolvedValue({
-      selfIntroduced: true,
-      tesolCompleted: false,
-      sourceUpdatedAt: '2026-07-27T08:05:00.000Z',
-      sourceVersion: 'snapshot-001',
-    }),
+    findLatestG01Evidence,
     listFixedGrowthTasks,
     recordSourceRead,
     listNotifications: jest.fn().mockResolvedValue({
@@ -244,6 +244,7 @@ function createFixture() {
   return {
     repository,
     teacherReader,
+    findLatestG01Evidence,
     findScorecard,
     listFixedGrowthTasks,
     listLessonScores,
@@ -267,6 +268,25 @@ describe('TideService', () => {
       selfIntroStatus: 'APPROVED',
       tesolStatus: 'WAITING',
       externalStatusesComplete: false,
+      freshness: { sourceUpdatedAt: null },
+    });
+  });
+
+  it('returns unavailable statuses when the new source fields are still null', async () => {
+    const fixture = createFixture();
+    fixture.findLatestG01Evidence.mockResolvedValue({
+      selfIntroduced: null,
+      tesolCompleted: null,
+      sourceUpdatedAt: null,
+    });
+
+    await expect(
+      fixture.service.getG01Review(principal),
+    ).resolves.toMatchObject({
+      selfIntroStatus: 'UNAVAILABLE',
+      tesolStatus: 'UNAVAILABLE',
+      externalStatusesComplete: false,
+      freshness: { sourceUpdatedAt: null },
     });
   });
 

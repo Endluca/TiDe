@@ -214,15 +214,12 @@ test("the policy check shows source answers without generated explanations and c
 });
 
 test("every quiz result view shows answers without explanations", async () => {
-  const taskFlow = await source("components/TaskFlow.jsx");
   const videoQuiz = await source("features/task-content/VideoQuizTask.jsx");
   const profileQuiz = await source("features/task-content/ProfileCredentialsTask.jsx");
 
-  for (const quizView of [taskFlow, videoQuiz, profileQuiz]) {
+  for (const quizView of [videoQuiz, profileQuiz]) {
     assert.doesNotMatch(quizView, /Explanation:|解析：|答案和解析|查看解析|看看解析/);
   }
-  assert.match(taskFlow, /Your answer:/);
-  assert.match(taskFlow, /Correct answer:/);
   assert.match(videoQuiz, /Your answer:/);
   assert.match(videoQuiz, /Correct answer:/);
   assert.match(profileQuiz, /Your answer:/);
