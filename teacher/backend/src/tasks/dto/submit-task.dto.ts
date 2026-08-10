@@ -12,7 +12,6 @@ import {
 import { MutationMetaDto } from './mutation-meta.dto';
 
 const outputTypes = [
-  'QUIZ',
   'CHECKLIST',
   'FILE',
   'DEVICE_CHECK',

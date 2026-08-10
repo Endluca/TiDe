@@ -28,10 +28,9 @@ const context = (overrides = {}) => ({
     language: "en",
   },
   display: { stageKey: "FOUNDATION", sequence: 2, points: 2, estimatedMinutes: 8 },
-  capabilities: ["VIDEO", "QUIZ"],
+  capabilities: ["VIDEO"],
   steps: [
     { stepKey: "video", type: "VIDEO", title: "Watch", config: { assetUrl: "/video.mp4", durationSeconds: 60 } },
-    { stepKey: "quiz", type: "QUIZ", title: "Quiz", config: { questions: [], passScore: 80 } },
   ],
   progress: { percent: 50, steps: [] },
   execution: { contentStatus: "READY", contentVersion: "1", pendingReason: null },
@@ -60,9 +59,9 @@ test("adapts live task state and capabilities instead of localStorage state", ()
   assert.equal(task.stateVersion, 2);
 });
 
-test("routes G02 to Kuozhi instead of the legacy native policy document", () => {
+test("routes G02 to Kuozhi instead of legacy native content", () => {
   const task = adaptTaskContext(context({
-    capabilities: ["DOCUMENT", "QUIZ"],
+    capabilities: ["DOCUMENT"],
     steps: [
       {
         stepKey: "g03-overseas-nt-policies",
@@ -71,21 +70,6 @@ test("routes G02 to Kuozhi instead of the legacy native policy document", () => 
         config: {
           sourceTitle: "Overseas NT Policies",
           sections: [{ key: "attendance", title: "Attendance", items: ["Monitor Attendance Report."] }],
-        },
-      },
-      {
-        stepKey: "g03-knowledge-check",
-        type: "QUIZ",
-        title: "Knowledge check",
-        config: {
-          passScore: 80,
-          questions: [{
-            key: "policy-q1",
-            type: "SINGLE",
-            text: "When should the memo be completed?",
-            options: ["After class", "Next month"],
-            explanation: "It is a post-lesson report.",
-          }],
         },
       },
     ],
@@ -125,7 +109,7 @@ test("maps the blacklist custom text step to the factual response flow", () => {
 test("routes G06 to the Kuozhi external course instead of the local player", () => {
   const task = adaptTaskContext(context({
     taskCode: "G06",
-    capabilities: ["VIDEO", "QUIZ"],
+    capabilities: ["VIDEO"],
     steps: [
       {
         stepKey: "g07-me-culture-video",
@@ -147,16 +131,9 @@ test("routes G06 to the Kuozhi external course instead of the local player", () 
           durationSeconds: 404,
         },
       },
-      {
-        stepKey: "g07-knowledge-check",
-        type: "QUIZ",
-        title: "Knowledge check",
-        config: { questions: [], passScore: 80 },
-      },
     ],
   }));
   assert.equal(task.method, "external_course");
-  assert.equal(task.quizQuestions.length, 0);
 });
 
 test("routes G05 to Kuozhi even while legacy checklist steps remain in the backend context", () => {
@@ -211,6 +188,46 @@ test("keeps G05 on Kuozhi when an older reference-video config is still present"
   assert.equal(task.method, "external_course");
 });
 
+test("routes G09 to Kuozhi when its official course mapping is ready", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "G09",
+    capabilities: ["VIDEO"],
+    steps: [
+      { stepKey: "legacy-video", type: "VIDEO", title: "Legacy video", config: {} },
+    ],
+  }));
+
+  assert.equal(task.method, "external_course");
+});
+
+test("keeps G09 pending while Kuozhi has not published a course id", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "G09",
+    capabilities: [],
+    steps: [],
+    execution: {
+      contentStatus: "PENDING",
+      contentVersion: "2026-08-05",
+      pendingReason: "KUOZHI_G09_COURSE_MAPPING_PENDING",
+    },
+  }));
+
+  assert.equal(task.method, "content_pending");
+});
+
+test("does not fall back to a local player for an unmapped training task", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "P-FUTURE-TRAINING",
+    kind: "PERSONALIZED_IMPROVEMENT",
+    capabilities: ["VIDEO"],
+    steps: [
+      { stepKey: "video", type: "VIDEO", title: "Video", config: {} },
+    ],
+  }));
+
+  assert.equal(task.method, "content_pending");
+});
+
 test("maps the backend ASSIGNED state to an available task", () => {
   const task = adaptTaskContext(context({ status: "ASSIGNED", stateVersion: 1 }));
   assert.equal(task.status, "available");
@@ -242,20 +259,8 @@ test("maps G01 as five-condition profile and credential work", () => {
   const task = adaptTaskContext(
     context({
       taskCode: "G01",
-      capabilities: ["QUIZ", "CHECKLIST", "UPLOAD"],
+      capabilities: ["CHECKLIST", "UPLOAD"],
       steps: [
-        {
-          stepKey: "g01-tesol-quiz",
-          type: "QUIZ",
-          title: "61-question check",
-          config: {
-            role: "TESOL_QUIZ",
-            passScore: 80,
-            questions: [
-              { key: "q1", type: "SINGLE", text: "Question", options: ["A", "B"] },
-            ],
-          },
-        },
         {
           stepKey: "g01-essay-confirmation",
           type: "CHECKLIST",
@@ -278,9 +283,8 @@ test("maps G01 as five-condition profile and credential work", () => {
   );
   assert.equal(task.method, "profile_credentials");
   assert.deepEqual(task.externalStatusItems.map((item) => item.status), ["approved", "reviewing"]);
-  assert.equal(task.backendContext.steps.length, 3);
+  assert.equal(task.backendContext.steps.length, 2);
   assert.equal(task.backendContext.capabilities.includes("UPLOAD"), true);
-  assert.equal(task.quizQuestions.length, 1);
 });
 
 test("does not fall back to Mock G01 review results when the trusted source is unavailable", () => {

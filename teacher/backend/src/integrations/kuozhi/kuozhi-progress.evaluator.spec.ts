@@ -2,34 +2,31 @@ import type { KuozhiResolvedMapping } from './kuozhi.models';
 import { evaluateKuozhiProgress } from './kuozhi-progress.evaluator';
 
 const resolved: KuozhiResolvedMapping = {
-  mappingVersion: 2,
+  mappingVersion: 5,
   taskCode: 'G06',
-  dataMode: 'SAMPLE_DRY_RUN',
-  queryTeacherId: '360107609',
+  dataMode: 'REAL',
+  queryTeacherId: 'TEACHER-001',
   mapping: {
     integrationStatus: 'ACTIVE',
     launchEnabled: true,
     completionEnabled: true,
+    autoCompleteAssignment: true,
     noHeader: true,
-    embedMode: 'NEW_WINDOW',
     courses: [
       {
-        courseId: '131',
-        title: 'Sample',
+        courseId: '520',
+        title: 'ME Culture and PARSNIP',
         tasks: [
           {
-            courseTaskId: '229',
+            courseTaskId: '2791',
             type: 'VIDEO',
             required: true,
             completionPercent: 100,
           },
           {
-            courseTaskId: '231',
+            courseTaskId: '2792',
             type: 'TESTPAPER',
             required: true,
-            scoreMode: 'RAW_POINTS',
-            fullScore: 5,
-            passScore: { kind: 'FIXED', percent: 80 },
           },
         ],
       },
@@ -38,18 +35,23 @@ const resolved: KuozhiResolvedMapping = {
 };
 
 describe('evaluateKuozhiProgress', () => {
-  it('normalizes raw exam points and completes all required tasks', () => {
+  it('uses 100 percent progress to complete an exam', () => {
     const result = evaluateKuozhiProgress(
       resolved,
       [
         {
-          id: '131',
-          title: 'PSO Training OVS',
+          id: '520',
+          title: 'ME Culture and PARSNIP',
           percent: '100',
           task_list: {
-            '229': { id: '229', title: 'Video', type: 'video', percent: 100 },
-            '231': {
-              id: '231',
+            '2791': {
+              id: '2791',
+              title: 'Video',
+              type: 'video',
+              percent: 100,
+            },
+            '2792': {
+              id: '2792',
               title: 'Exam',
               type: 'testpaper',
               percent: 100,
@@ -59,7 +61,6 @@ describe('evaluateKuozhiProgress', () => {
           },
         },
       ],
-      new Map(),
       '2026-08-04T10:00:00.000Z',
     );
 
@@ -71,8 +72,7 @@ describe('evaluateKuozhiProgress', () => {
     });
     expect(result.courses[0].tasks[1]).toMatchObject({
       score: 4,
-      normalizedScorePercent: 80,
-      passScorePercent: 80,
+      percent: 100,
       completed: true,
     });
   });
@@ -82,15 +82,14 @@ describe('evaluateKuozhiProgress', () => {
       resolved,
       [
         {
-          id: '131',
-          title: 'PSO Training OVS',
+          id: '520',
+          title: 'ME Culture and PARSNIP',
           percent: '50',
           task_list: {
-            '229': { id: '229', type: 'video', percent: 100 },
+            '2791': { id: '2791', type: 'video', percent: 100 },
           },
         },
       ],
-      new Map(),
       '2026-08-04T10:00:00.000Z',
     );
 
@@ -103,11 +102,71 @@ describe('evaluateKuozhiProgress', () => {
     const result = evaluateKuozhiProgress(
       resolved,
       [{ id: null, title: null, task_list: null }],
-      new Map(),
       '2026-08-04T10:00:00.000Z',
     );
 
     expect(result.syncStatus).toBe('NO_DATA');
     expect(result.completion.reasonCode).toBe('NO_DATA');
+  });
+
+  it('keeps score only as evidence and does not use it as a pass line', () => {
+    const result = evaluateKuozhiProgress(
+      resolved,
+      [
+        {
+          id: '520',
+          title: 'ME Culture and PARSNIP',
+          percent: 100,
+          task_list: {
+            '2791': { id: '2791', type: 'video', percent: 100 },
+            '2792': {
+              id: '2792',
+              type: 'testpaper',
+              percent: 99,
+              score: 10,
+              test_times: 1,
+            },
+          },
+        },
+      ],
+      '2026-08-04T10:00:00.000Z',
+    );
+
+    expect(result.courses[0].tasks[1]).toMatchObject({
+      score: 10,
+      percent: 99,
+      completed: false,
+    });
+    expect(result.completion.completed).toBe(false);
+  });
+
+  it('accepts an exam with percent 100 even when score is zero', () => {
+    const result = evaluateKuozhiProgress(
+      resolved,
+      [
+        {
+          id: '520',
+          title: 'ME Culture and PARSNIP',
+          percent: 100,
+          task_list: {
+            '2791': { id: '2791', type: 'video', percent: 100 },
+            '2792': {
+              id: '2792',
+              type: 'testpaper',
+              percent: 100,
+              score: 0,
+              test_times: 0,
+            },
+          },
+        },
+      ],
+      '2026-08-04T10:00:00.000Z',
+    );
+
+    expect(result.courses[0].tasks[1]).toMatchObject({
+      score: 0,
+      percent: 100,
+      completed: true,
+    });
   });
 });

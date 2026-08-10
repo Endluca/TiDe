@@ -42,9 +42,10 @@ EXPECTED_TEACHER_MIGRATIONS = (
     "0024_support_ticket_cas_and_function_owner",
     "0025_fixed_task_semantic_alignment",
     "0026_kuozhi_course_syncs",
-    "0027_retire_task_business_change_view",
-    "0028_remove_unused_tide_objects",
-    "0029_remove_unused_columns_and_orphan_function",
+    "0027_remove_local_quiz_runtime",
+    "0028_retire_task_business_change_view",
+    "0029_remove_unused_tide_objects",
+    "0030_remove_unused_columns_and_orphan_function",
 )
 EXPECTED_FIXED_TASKS = (
     ("G01", "Profile & Credentials Completion", 3),
@@ -230,10 +231,10 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0017_task_assignment_teacher_response" in preflight
     assert "0024_support_ticket_cas_and_function_owner" in preflight
     assert "0025_fixed_task_semantic_alignment" in preflight
-    assert "0027_retire_task_business_change_view" in preflight
-    assert "0028_remove_unused_tide_objects" in preflight
-    assert "0029_remove_unused_columns_and_orphan_function" in preflight
-    assert "public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029" in preflight
+    assert "0028_retire_task_business_change_view" in preflight
+    assert "0029_remove_unused_tide_objects" in preflight
+    assert "0030_remove_unused_columns_and_orphan_function" in preflight
+    assert "public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030" in preflight
     assert "product_analytics_recorded" in preflight
     assert "Lesson Preparation&Device Network Check" in preflight
     assert "is_loopback_or_rfc1918_ipv4" in preflight
@@ -262,9 +263,9 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "interval ''48 hours''" in probe
     assert "0024_support_ticket_cas_and_function_owner" in probe
     assert "0025_fixed_task_semantic_alignment" in probe
-    assert "0027_retire_task_business_change_view" in probe
-    assert "0028_remove_unused_tide_objects" in probe
-    assert "0029_remove_unused_columns_and_orphan_function" in probe
+    assert "0028_retire_task_business_change_view" in probe
+    assert "0029_remove_unused_tide_objects" in probe
+    assert "0030_remove_unused_columns_and_orphan_function" in probe
     assert "analytics_task_business_change_v1" in probe
     assert "teacher_metric_snapshots" in probe
     assert "teacher_photo_runs" in probe
@@ -282,11 +283,11 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "--no-password" in runner
 
 
-def test_tide_0029_accepts_only_its_own_postgresql_18_not_null_dependency() -> None:
+def test_tide_0030_accepts_only_its_own_postgresql_18_not_null_dependency() -> None:
     migration = (
         ROOT
         / "teacher/backend/database/migrations"
-        / "0029_remove_unused_columns_and_orphan_function.up.sql"
+        / "0030_remove_unused_columns_and_orphan_function.up.sql"
     ).read_text(encoding="utf-8")
 
     assert "attribute.attnotnull" in migration
@@ -323,7 +324,7 @@ def _teacher_migrator_fixture(
         f"  {migration_id}" for migration_id in migrations
     )
     cross_chain_gate = (
-        "# public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029\n"
+        "# public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030\n"
         "product_analytics_recorded=true\n"
         if include_cross_chain_gate
         else ""
@@ -360,11 +361,11 @@ def _make_preflight_environment(
         "backend/database/migrations/"
         "0025_fixed_task_semantic_alignment.up.sql": "BEGIN;\nCOMMIT;\n",
         "backend/database/migrations/"
-        "0027_retire_task_business_change_view.up.sql": "BEGIN;\nCOMMIT;\n",
+        "0028_retire_task_business_change_view.up.sql": "BEGIN;\nCOMMIT;\n",
         "backend/database/migrations/"
-        "0028_remove_unused_tide_objects.up.sql": "BEGIN;\nCOMMIT;\n",
+        "0029_remove_unused_tide_objects.up.sql": "BEGIN;\nCOMMIT;\n",
         "backend/database/migrations/"
-        "0029_remove_unused_columns_and_orphan_function.up.sql": (
+        "0030_remove_unused_columns_and_orphan_function.up.sql": (
             "BEGIN;\nCOMMIT;\n"
         ),
         "backend/Dockerfile": "FROM scratch\n",
@@ -480,7 +481,7 @@ def _run_preflight(environment: dict[str, str]) -> subprocess.CompletedProcess[s
     )
 
 
-def test_combined_preflight_rejects_teacher_chain_ending_before_0029(
+def test_combined_preflight_rejects_teacher_chain_ending_before_0030(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
@@ -493,7 +494,7 @@ def test_combined_preflight_rejects_teacher_chain_ending_before_0029(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0029 结尾的完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0030 结尾的完整有序生产链" in result.stderr
 
 
 def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
@@ -509,7 +510,7 @@ def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "public46→teacher0027→public49→teacher0029" in result.stderr
+    assert "public46→teacher0028→public49→teacher0030" in result.stderr
 
 
 def test_combined_preflight_accepts_teacher_source_inside_one_clean_repository(

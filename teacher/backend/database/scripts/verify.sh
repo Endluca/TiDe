@@ -150,17 +150,14 @@ step_distribution="$("${PSQL[@]}" -Atqc "
     group by execution.task_code
   ) current_steps
 ")"
-quiz_step_distribution="$("${PSQL[@]}" -Atqc "
-  select string_agg(task_code || ':' || quiz_step_count, ',' order by task_code)
-  from (
-    select execution.task_code, count(step.id)::text as quiz_step_count
-    from tide.task_execution_versions execution
-    join tide.task_step_definitions step
-      on step.execution_version_id = execution.id
-    where execution.status = 'ACTIVE'
-      and step.step_type = 'QUIZ'
-    group by execution.task_code
-  ) quiz_steps
+local_quiz_runtime_absent="$("${PSQL[@]}" -Atqc "
+  select
+    to_regclass('tide.task_quiz_banks') is null
+    and to_regclass('tide.quiz_attempts') is null
+    and to_regclass('tide.quiz_answers') is null
+    and not exists (
+      select 1 from tide.task_step_definitions where step_type = 'QUIZ'
+    )
 ")"
 rule_count="$("${PSQL[@]}" -Atqc "
   select count(*)
@@ -367,16 +364,16 @@ assert_equals "${personalized_pending_count}" "5" "待嘉荷配置的个性化�
 assert_equals "${authoritative_fixed_catalog_ready}" "t" "运营端 rev38 固定任务稳定映射异常"
 assert_equals "${fixed_execution_semantic_ready}" "t" "教师端固定任务执行语义未按稳定模板行对齐"
 assert_equals "${legacy_personalized_count}" "0" "旧个性化执行配置仍处于启用状态"
-assert_equals "${step_count}" "31" "当前可执行任务步骤总数异常"
-assert_equals "${fixed_step_count}" "30" "G01-G09 步骤总数异常"
+assert_equals "${step_count}" "5" "当前可执行任务步骤总数异常"
+assert_equals "${fixed_step_count}" "4" "G01-G09 步骤总数异常"
 assert_equals "${personalized_step_count}" "1" "已配置个性化任务步骤总数异常"
-assert_equals "${step_distribution}" "G01:3,G02:2,G03:0,G04:3,G05:2,G06:7,G07:3,G08:8,G09:2,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:0,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务步骤数量异常"
-assert_equals "${quiz_step_distribution}" "G01:1,G02:1,G06:1,G07:1,G08:1,G09:1" "QUIZ 步骤数量异常；题库题目不得展开为多个任务步骤"
-assert_equals "${rule_count}" "11" "当前验证规则总数异常"
-assert_equals "${rule_distribution}" "G01:2,G02:1,G03:0,G04:2,G05:1,G06:1,G07:1,G08:1,G09:1,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:0,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
+assert_equals "${step_distribution}" "G01:2,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:0,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务步骤数量异常"
+assert_equals "${local_quiz_runtime_absent}" "t" "TIDE 本地考试表或步骤仍然存在"
+assert_equals "${rule_count}" "6" "当前验证规则总数异常"
+assert_equals "${rule_distribution}" "G01:3,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:0,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
 assert_equals "${faq_count}" "3" "FAQ Mock 知识数异常"
-assert_equals "${unused_tide_objects_removed}" "t" "0028 无用 tide 表或 v1 分析视图仍然存在"
-assert_equals "${unused_file_metadata_removed}" "t" "0029 无用文件可见性字段或孤儿函数仍然存在"
+assert_equals "${unused_tide_objects_removed}" "t" "0029 无用 tide 表或 v1 分析视图仍然存在"
+assert_equals "${unused_file_metadata_removed}" "t" "0030 无用文件可见性字段或孤儿函数仍然存在"
 assert_equals "${current_analytics_ready}" "t" "当前 analytics v2 或保留的技术/帮助视图缺失"
 assert_equals "${system_notification_publication_ready}" "t" "系统通知发布表或发布时间字段缺失"
 assert_equals "${growth_stage_notification_state_ready}" "t" "成长阶段通知观察状态表缺失"

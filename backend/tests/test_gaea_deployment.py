@@ -424,8 +424,8 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "tit_growth_migrator" in readme
     assert "tide_migrator" in readme
     assert "20260807_49_unused_columns" in readme
-    assert "0029_remove_unused_columns_and_orphan_function" in readme
-    assert "public 46 → teacher 0027 → public 49 → teacher 0029" in readme
+    assert "0030_remove_unused_columns_and_orphan_function" in readme
+    assert "public 46 → teacher 0028 → public 49 → teacher 0030" in readme
     assert "settle_shared_task_scores.py --watch" in readme
     assert "TIT_SCORE_WORKER_HEARTBEAT" in readme
     assert "TIT_BOOTSTRAP_USERNAME" in readme

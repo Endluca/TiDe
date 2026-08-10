@@ -8,13 +8,10 @@ import type { AppEnvironment } from '../../platform/config/environment';
 import {
   loadKuozhiCourseConfiguration,
   type KuozhiCourseConfiguration,
-  type KuozhiCourseMapping,
 } from './kuozhi-course.config';
 import { KuozhiDetailClient } from './kuozhi-detail.client';
 import {
-  kuozhiPassScoreKey,
   type KuozhiLaunchResponse,
-  type KuozhiPassScoreReference,
   type KuozhiProgressCore,
   type KuozhiResolvedMapping,
 } from './kuozhi.models';
@@ -36,36 +33,6 @@ export class KuozhiService {
     teacherId: string,
   ): Promise<KuozhiResolvedMapping> {
     const configuration = await this.configuration();
-    const sampleMode = this.config.get('KUOZHI_SAMPLE_MODE', { infer: true });
-    if (sampleMode && configuration.sampleProfile.taskCode === taskCode) {
-      const queryTeacherId = this.config.get('KUOZHI_SAMPLE_TEACHER_ID', {
-        infer: true,
-      });
-      if (!queryTeacherId) {
-        throw new ServiceUnavailableException({
-          code: 'KUOZHI_SAMPLE_NOT_CONFIGURED',
-          message: '阔知示例账号尚未配置',
-          retryable: false,
-        });
-      }
-      const sample = configuration.sampleProfile;
-      const mapping: KuozhiCourseMapping = {
-        integrationStatus: sample.integrationStatus,
-        launchEnabled: sample.launchEnabled,
-        completionEnabled: sample.completionEnabled,
-        noHeader: sample.noHeader,
-        embedMode: sample.embedMode,
-        courses: sample.courses,
-      };
-      return {
-        mappingVersion: configuration.version,
-        taskCode,
-        dataMode: 'SAMPLE_DRY_RUN',
-        queryTeacherId,
-        mapping,
-      };
-    }
-
     const mapping = configuration.tasks[taskCode];
     if (!mapping) {
       throw new NotFoundException({
@@ -119,14 +86,11 @@ export class KuozhiService {
         return {
           courseId: course.courseId,
           title: course.title ?? null,
-          embedMode: resolved.mapping.embedMode,
+          embedMode: 'IFRAME',
           launchUrl: createKuozhiTicketUrl({
             loginUrl,
             appKey,
             secretKey,
-            // Sample mode may use a separate teacher only for read-only
-            // progress data. A login ticket must always represent the
-            // authenticated TIDE teacher.
             teacherId,
             targetUrl: target.toString(),
           }),
@@ -135,31 +99,8 @@ export class KuozhiService {
     };
   }
 
-  passScoreReferences(
-    mapping: KuozhiCourseMapping,
-  ): KuozhiPassScoreReference[] {
-    const references = mapping.courses.flatMap((course) =>
-      course.tasks.flatMap((task) => {
-        if (task.type !== 'TESTPAPER' || task.passScore.kind !== 'QUIZ_BANK') {
-          return [];
-        }
-        return [
-          {
-            key: kuozhiPassScoreKey(
-              task.passScore.bankKey,
-              task.passScore.questionSetVersion,
-            ),
-            source: task.passScore,
-          },
-        ];
-      }),
-    );
-    return [...new Map(references.map((item) => [item.key, item])).values()];
-  }
-
   async fetchProgress(
     resolved: KuozhiResolvedMapping,
-    publishedPassScores: ReadonlyMap<string, number>,
   ): Promise<KuozhiProgressCore> {
     const details = await Promise.all(
       resolved.mapping.courses.map((course) =>
@@ -169,12 +110,7 @@ export class KuozhiService {
         ),
       ),
     );
-    return evaluateKuozhiProgress(
-      resolved,
-      details,
-      publishedPassScores,
-      new Date().toISOString(),
-    );
+    return evaluateKuozhiProgress(resolved, details, new Date().toISOString());
   }
 
   emptyProgress(resolved: KuozhiResolvedMapping): KuozhiProgressCore {
@@ -199,11 +135,6 @@ export class KuozhiService {
           sourceStatus: 'MISSING',
           percent: null,
           score: null,
-          normalizedScorePercent: null,
-          passScorePercent:
-            task.type === 'TESTPAPER' && task.passScore.kind === 'FIXED'
-              ? task.passScore.percent
-              : null,
           testTimes: null,
           completed: false,
         })),

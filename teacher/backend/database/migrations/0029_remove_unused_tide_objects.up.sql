@@ -35,17 +35,17 @@ BEGIN
 
     IF present_table_count NOT IN (0, 6) THEN
         RAISE EXCEPTION
-            'migration 0028 found a partially removed table set (% of 6 present)',
+            'migration 0029 found a partially removed table set (% of 6 present)',
             present_table_count;
     END IF;
     IF present_view_count NOT IN (0, 5) THEN
         RAISE EXCEPTION
-            'migration 0028 found a partially removed view set (% of 5 present)',
+            'migration 0029 found a partially removed view set (% of 5 present)',
             present_view_count;
     END IF;
     IF (present_table_count = 0) <> (present_view_count = 0) THEN
         RAISE EXCEPTION
-            'migration 0028 found inconsistent table/view cleanup state';
+            'migration 0029 found inconsistent table/view cleanup state';
     END IF;
 
     IF present_table_count = 6 THEN

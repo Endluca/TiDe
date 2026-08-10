@@ -1,7 +1,5 @@
 import { fixedTaskCatalog } from "./live-catalog.js";
 import { personalizedTaskTemplates } from "./data/tasks/personalized-task-templates.js";
-import { platformPolicyDocument } from "./data/tasks/platform-policy-document.js";
-import { platformPolicyQuestions } from "./data/tasks/platform-policy-quiz.js";
 import { publicAsset } from "./public-assets.js";
 import { formatTaskDueAt } from "./task-due.js";
 
@@ -57,7 +55,7 @@ const growthStageIndex = {
   "Day 15-30": 2,
 };
 
-const externalCourseTaskCodes = new Set(["G02", "G05", "G06", "G07", "G08"]);
+const externalCourseTaskCodes = new Set(["G02", "G05", "G06", "G07", "G08", "G09"]);
 
 function currentGrowthStageIndex(campDay) {
   const day = Number(campDay);
@@ -75,9 +73,7 @@ function inferMethod(context) {
   ))) return "factual_response";
   const capabilities = new Set(context.capabilities);
   if (capabilities.has("DEVICE_CHECK") && capabilities.has("UPLOAD")) return "readiness_photo";
-  if (capabilities.has("VIDEO") && capabilities.has("QUIZ")) return "learning_quiz";
-  if (capabilities.has("VIDEO") && capabilities.has("CHECKLIST")) return "learning_checklist";
-  if (capabilities.has("VIDEO")) return "video_learning";
+  if (capabilities.has("VIDEO")) return "content_pending";
   if (capabilities.has("CHECKLIST")) return "learning_checklist";
   if (capabilities.has("DEVICE_CHECK")) return "device_check";
   if (capabilities.has("UPLOAD")) return "upload_review";
@@ -94,19 +90,6 @@ function localizedItems(step) {
       ? { key: item, label: item }
       : item
   ));
-}
-
-function quizQuestions(step) {
-  return (step?.config?.questions || []).map((question) => ({
-    id: question.key,
-    type: String(question.type || "single").toLowerCase(),
-    question: question.text,
-    questionZh: question.textZh || question.text,
-    options: question.options || [],
-    optionsZh: question.optionsZh || question.options || [],
-    explanation: "",
-    explanationZh: "",
-  }));
 }
 
 function reviewItem(type, status, sourceUpdatedAt) {
@@ -164,19 +147,11 @@ export function adaptTaskContext(context, g01Review) {
   const status = statusMap[context.status] || "available";
   const minutes = context.display.estimatedMinutes;
   const dueAt = context.dueAt || context.assignment?.dueAt || null;
-  const quizStep = context.steps.find((step) => step.type === "QUIZ");
   const documentStep = context.steps.find((step) => step.type === "DOCUMENT");
   const checklistStep = context.steps.find((step) => step.type === "CHECKLIST");
   const videoSteps = context.steps.filter((step) => step.type === "VIDEO");
   const referenceVideo = checklistStep?.config?.referenceVideo;
   const progressByStep = Object.fromEntries((context.progress.steps || []).map((step) => [step.stepKey, step]));
-  const backendQuizQuestions = quizStep
-    ? quizQuestions(quizStep)
-    : [];
-  const legacyPolicyQuiz = context.taskCode === "G02"
-    && backendQuizQuestions.some((question) => question.id.startsWith("course-499-"))
-    ? { questionIds: backendQuizQuestions.map((question) => question.id) }
-    : null;
   const externalStatusItems =
     context.taskCode === "G01"
       ? g01Review
@@ -240,18 +215,11 @@ export function adaptTaskContext(context, g01Review) {
         : [context.content.whatToDo],
     backendSteps: context.steps,
     backendProgressByStep: progressByStep,
-    quizQuestions: context.taskCode === "G02" ? platformPolicyQuestions : backendQuizQuestions,
-    legacyPolicyQuiz,
-    documentContent: context.taskCode === "G02"
-      ? { ...platformPolicyDocument, ...(documentStep?.config || {}) }
-      : documentStep?.config || null,
+    documentContent: documentStep?.config || null,
     documentStepKey: documentStep?.stepKey || null,
     documentCompleted: documentStep
       ? progressByStep[documentStep.stepKey]?.status === "COMPLETED"
       : false,
-    passScore: quizStep?.config?.passScore,
-    expectedQuestionCount: Number(quizStep?.config?.expectedQuestionCount) || undefined,
-    quizMock: context.taskCode === "G02" ? false : Boolean(quizStep?.config?.mock),
     videoChapters: videoSteps.length > 1
       ? videoSteps.map((step, index) => ({
           id: step.config.chapterId || step.stepKey,

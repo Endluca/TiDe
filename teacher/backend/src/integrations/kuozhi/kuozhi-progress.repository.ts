@@ -4,7 +4,6 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../../platform/database/database.service';
 import type { TaskStatus } from '../../tasks/task.models';
 import type {
-  KuozhiPassScoreReference,
   KuozhiProgressCore,
   KuozhiProgressResponse,
 } from './kuozhi.models';
@@ -46,55 +45,13 @@ export interface PersistKuozhiProgressInput {
   idempotencyKey: string;
   commandId: string;
   requestHash: string;
+  autoCompleteAssignment: boolean;
   progress: KuozhiProgressCore;
 }
 
 @Injectable()
 export class KuozhiProgressRepository {
   constructor(private readonly database: DatabaseService) {}
-
-  async loadPublishedPassScores(
-    references: readonly KuozhiPassScoreReference[],
-  ): Promise<Map<string, number>> {
-    if (references.length === 0) return new Map();
-    const result = await this.database.queryTide<
-      {
-        bankKey: string;
-        questionSetVersion: string;
-        passScore: string;
-      } & QueryResultRow
-    >(
-      `
-        WITH requested(bank_key, question_set_version) AS (
-          SELECT * FROM unnest($1::text[], $2::text[])
-        )
-        SELECT
-          bank.bank_key AS "bankKey",
-          bank.question_set_version AS "questionSetVersion",
-          bank.pass_score AS "passScore"
-        FROM tide.task_quiz_banks bank
-        JOIN requested
-          ON requested.bank_key = bank.bank_key
-         AND requested.question_set_version = bank.question_set_version
-        WHERE bank.status = 'PUBLISHED'
-      `,
-      [
-        references.map((reference) => reference.source.bankKey),
-        references.map((reference) => reference.source.questionSetVersion),
-      ],
-    );
-    const output = new Map<string, number>();
-    for (const row of result.rows) {
-      const reference = references.find(
-        (item) =>
-          item.source.bankKey === row.bankKey &&
-          item.source.questionSetVersion === row.questionSetVersion,
-      );
-      const score = Number(row.passScore);
-      if (reference && Number.isFinite(score)) output.set(reference.key, score);
-    }
-    return output;
-  }
 
   async getLatest(
     accountId: string,
@@ -143,6 +100,7 @@ export class KuozhiProgressRepository {
       let stateVersion = actualVersion;
       let stateUpdated = false;
       if (
+        input.autoCompleteAssignment &&
         input.progress.completion.completed &&
         ['ASSIGNED', 'VIEWED', 'IN_PROGRESS'].includes(status)
       ) {

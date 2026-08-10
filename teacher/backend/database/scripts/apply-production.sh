@@ -4,7 +4,7 @@ set -euo pipefail
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL:-}"
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0029_remove_unused_columns_and_orphan_function}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0030_remove_unused_columns_and_orphan_function}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 
 if [[ -z "${DATABASE_URL}" ]]; then
@@ -70,9 +70,10 @@ PRODUCTION_MIGRATIONS=(
   0024_support_ticket_cas_and_function_owner
   0025_fixed_task_semantic_alignment
   0026_kuozhi_course_syncs
-  0027_retire_task_business_change_view
-  0028_remove_unused_tide_objects
-  0029_remove_unused_columns_and_orphan_function
+  0027_remove_local_quiz_runtime
+  0028_retire_task_business_change_view
+  0029_remove_unused_tide_objects
+  0030_remove_unused_columns_and_orphan_function
 )
 
 target_found=false
@@ -92,10 +93,10 @@ if [[ "${target_found}" != "true" ]]; then
   echo "未知生产迁移目标：${TARGET_MIGRATION}" >&2
   exit 1
 fi
-if [[ "${TARGET_MIGRATION}" != "0027_retire_task_business_change_view" \
-      && "${TARGET_MIGRATION}" != "0029_remove_unused_columns_and_orphan_function" \
+if [[ "${TARGET_MIGRATION}" != "0028_retire_task_business_change_view" \
+      && "${TARGET_MIGRATION}" != "0030_remove_unused_columns_and_orphan_function" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  echo "生产只允许停在跨 Schema 切换点 0027 或最终版本 0029；其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
+  echo "生产只允许停在跨 Schema 切换点 0028 或最终版本 0030；其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1
 fi
 
@@ -340,7 +341,7 @@ fi
 if [[ "${target_includes_product_analytics}" == "true" \
       && "${product_analytics_recorded}" != "t" \
       && "${legacy_teacher_snapshot_exists}" != "t" ]]; then
-  echo "历史 0020 尚未记录且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029 分阶段迁移；禁止在 public head 49 空库回放历史 teacher 链。" >&2
+  echo "历史 0020 尚未记录且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030 分阶段迁移；禁止在 public head 49 空库回放历史 teacher 链。" >&2
   exit 1
 fi
 

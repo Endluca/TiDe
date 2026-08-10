@@ -1,8 +1,8 @@
 # 教师端与运营端同机部署
 
 状态：**部署骨架与技术加固已建立，联合门禁已固定到 public
-`20260807_49_unused_columns`、教师端 `0029_remove_unused_columns_and_orphan_function` 和唯一当前
-`G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0027 → public 49 → teacher 0029 执行；
+`20260807_49_unused_columns`、教师端 `0030_remove_unused_columns_and_orphan_function` 和唯一当前
+`G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0028 → public 49 → teacher 0030 执行；
 完整链和数据库契约探针未通过前禁止上线。**
 
 ## 结论
@@ -39,7 +39,7 @@ teacher-api ---/     public = shared/TiDe facts
 验收后再启用，不能只把监听值改成 `::`。
 生产 PostgreSQL 建议使用公司内网数据库；即使数据库也在同一主机，仍不得发布 `5432`。
 
-## 教师端 0025 任务语义与 0027–0029 清理迁移门
+## 教师端 0025 任务语义与 0027–0030 清理迁移门
 
 TiDe 的唯一当前目录是连续 `G01–G09`，其中 `G04` 为合并的首课备课与设备网络检测。
 教师端旧目录 `G01-G04,G06-G10` 的执行记录不能只改展示文案，否则会把教师执行流程、
@@ -69,9 +69,11 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
 当前工作树已经落地以下技术门禁：
 
 1. 教师端正式迁移器永久排除 `0017/0018` 对 `public.task_assignments` 的 DDL，并包含
-   从 `0001` 到 `0029` 的完整有序生产链、迁移账本、checksum 与 advisory lock。
-   `0027` 只退役依赖旧教师快照的 `tide.analytics_task_business_change_v1`；`0028` 在空表、G00 路由和外部依赖门禁后删除 6 张无消费者表与 5 个已被 v2 替代的视图，均不删除 public 表。
-   `0029` 在确认所有文件都为私有、无外部列依赖和无函数消费者后，无 `CASCADE`
+   从 `0001` 到 `0030` 的完整有序生产链、迁移账本、checksum 与 advisory lock。
+   `0027` 删除已退役的本地 Quiz 运行时；`0028` 只退役依赖旧教师快照的
+   `tide.analytics_task_business_change_v1`；`0029` 在空表、G00 路由和外部依赖门禁后删除
+   6 张无消费者表与 5 个已被 v2 替代的视图，均不删除 public 表。
+   `0030` 在确认所有文件都为私有、无外部列依赖和无函数消费者后，无 `CASCADE`
    删除 `tide.file_objects.visibility` 与孤儿 `tide.enforce_outbox_target()`。
 2. 运营回复工单函数在同一事务设置 `WAITING_TEACHER`、最后回复时间和 48 小时截止时间，
    `tit_growth_app` 只获得查询和函数执行的必要权限。
@@ -79,16 +81,16 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
    同时检查两条数据库连接。
 4. 教师端 API 的后台调度器虽然仍嵌在 HTTP 进程，但所有全局任务都通过
    `tide.job_leases` 竞争数据库租约；只有当前持租约副本执行，续租失败立即停止，其他副本
-   可接管。G04 图片走任务提交校验，不再有独立照片队列。联合部署固定完整升级到 0029。
+   可接管。G04 图片走任务提交校验，不再有独立照片队列。联合部署固定完整升级到 0030。
 
 切流前仍需关闭两项：
 
-1. 在目标库按跨 Schema 顺序执行到 public 49 / teacher 0029：验证 0025 保留 execution ID、步骤/规则 ID 和教师进度，
-   同时验证 rev47–49 与 0027–0029 已删除旧视图、空置对象、可还原冗余列和孤儿函数，且未改写业务事实。
+1. 在目标库按跨 Schema 顺序执行到 public 49 / teacher 0030：验证 0025 保留 execution ID、步骤/规则 ID 和教师进度，
+   同时验证 rev47–49 与 0027–0030 已完成本地 Quiz 退役、旧视图和空置对象清理，并删除可还原冗余列与孤儿函数，且未改写业务事实。
 2. 教师端主 PRD 仍描述“TIDE 刷新后再修改工单状态”，需要与已落地的原子回复函数同步，
    不能同时保留两套状态时序口径。
 
-`preflight.sh` 会正向核对固定提交中的完整 0029 迁移清单以及精确 G01–G09 标题/分值；
+`preflight.sh` 会正向核对固定提交中的完整 0030 迁移清单以及精确 G01–G09 标题/分值；
 `contract-probe.sql` 会在目标库正向核对完整迁移账本、共享目录、assignment 和 execution。
 任一通过都不替代另一个，也不替代备份恢复演练和真实压测。
 完整的发布前证据、主键级前后对照和停止条件见
@@ -178,12 +180,12 @@ bash deploy/combined/preflight.sh
 docker compose -f deploy/combined/docker-compose.yml config --quiet
 ```
 
-教师端未到 0029、目录缺项、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
+教师端未到 0030、目录缺项、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
 这是预期结果。
 
 ## 发布顺序
 
-1. 评审 public 49、教师端 0029、任务编码、读取过滤和执行配置；固定包含完整修复的新提交 SHA。
+1. 评审 public 49、教师端 0030、任务编码、读取过滤和执行配置；固定包含完整修复的新提交 SHA。
 2. 停止两端写流量、教师后台任务和积分结算 Worker。
 3. 创建一致性备份，记录 Alembic head、教师迁移账本和任务目录快照；验证恢复路径。
 4. DBA 预建或确认 `pg_trgm`。
@@ -198,7 +200,7 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    禁止在新库先升级到 public 49；否则旧快照表已删除，teacher 历史迁移 0020 无法建立原视图，
    teacher migrator 会失败关闭并提示正确分阶段顺序。
 
-6. 将 `TIDE_TEACHER_MIGRATION_TARGET` 临时设为 `0027_retire_task_business_change_view`，使用教师端独立迁移环境文件运行正式 migrator；迁移 `tide.*` 和共享工单例外，不得执行
+6. 将 `TIDE_TEACHER_MIGRATION_TARGET` 临时设为 `0028_retire_task_business_change_view`，使用教师端独立迁移环境文件运行正式 migrator；迁移 `tide.*` 和共享工单例外，不得执行
    `0017/0018` 的共享任务表 DDL。迁移器必须确认严格 SSL、目标库、固定非超级账号和受限
    SECURITY DEFINER owner：
 
@@ -207,7 +209,7 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
      --profile migration run --rm teacher-migrate
    ```
 
-7. 确认 teacher 账本完整到 0027 且
+7. 确认 teacher 账本完整到 0028 且
    `tide.analytics_task_business_change_v1` 不存在后，再把 TiDe Alembic 从 46 升到 public head 49：
 
    ```bash
@@ -219,9 +221,9 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    `lesson_dimension_scores`；rev48 继续收紧表结构，rev49 在可还原性核验后删除
    `complaint_category_rules.learning_title / learning_url` 与 `operator_sessions.last_seen_at`。
    随后把 `TIDE_TEACHER_MIGRATION_TARGET` 改回
-   `0029_remove_unused_columns_and_orphan_function` 并再次运行 `teacher-migrate`，确认账本 head 为 0029、
-   0028 删除的 6 张废弃表和 5 个旧分析视图均不存在，且 0029 删除的
-   `file_objects.visibility` 和 `enforce_outbox_target()` 也不存在。0027 down 只能在
+   `0030_remove_unused_columns_and_orphan_function` 并再次运行 `teacher-migrate`，确认账本 head 为 0030、
+   0029 删除的 6 张废弃表和 5 个旧分析视图均不存在，且 0030 删除的
+   `file_objects.visibility` 和 `enforce_outbox_target()` 也不存在。0028 down 只能在
    public 47 之前验证，生产回退使用备份或向前修复。
 
 8. 0025 完成旧执行编码迁移后，以只读共享目录模式同步/核对教师端执行内容，确认 execution

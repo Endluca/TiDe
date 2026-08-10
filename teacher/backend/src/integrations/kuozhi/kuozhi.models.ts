@@ -1,16 +1,12 @@
-import type {
-  KuozhiCourseMapping,
-  KuozhiPassScoreSource,
-} from './kuozhi-course.config';
+import type { KuozhiCourseMapping } from './kuozhi-course.config';
 
-export type KuozhiDataMode = 'REAL' | 'SAMPLE_DRY_RUN';
 export type KuozhiSyncStatus =
   'NOT_SYNCED' | 'AVAILABLE' | 'PARTIAL' | 'NO_DATA';
 
 export interface KuozhiResolvedMapping {
   mappingVersion: number;
   taskCode: string;
-  dataMode: KuozhiDataMode;
+  dataMode: 'REAL';
   queryTeacherId: string;
   mapping: KuozhiCourseMapping;
 }
@@ -18,13 +14,13 @@ export interface KuozhiResolvedMapping {
 export interface KuozhiLaunchCourse {
   courseId: string;
   title: string | null;
-  embedMode: 'IFRAME' | 'NEW_WINDOW';
+  embedMode: 'IFRAME';
   launchUrl: string;
 }
 
 export interface KuozhiLaunchResponse {
   provider: 'KUOZHI';
-  dataMode: KuozhiDataMode;
+  dataMode: 'REAL';
   integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
   mappingVersion: number;
   courses: KuozhiLaunchCourse[];
@@ -38,8 +34,6 @@ export interface KuozhiProgressTask {
   sourceStatus: 'AVAILABLE' | 'MISSING' | 'INVALID';
   percent: number | null;
   score: number | null;
-  normalizedScorePercent: number | null;
-  passScorePercent: number | null;
   testTimes: number | null;
   completed: boolean;
 }
@@ -55,7 +49,7 @@ export interface KuozhiProgressCourse {
 
 export interface KuozhiProgressCore {
   provider: 'KUOZHI';
-  dataMode: KuozhiDataMode;
+  dataMode: 'REAL';
   integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
   mappingVersion: number;
   syncStatus: KuozhiSyncStatus;
@@ -81,16 +75,4 @@ export interface KuozhiProgressResponse extends KuozhiProgressCore {
     stateVersion: number;
     stateUpdated: boolean;
   };
-}
-
-export interface KuozhiPassScoreReference {
-  key: string;
-  source: Extract<KuozhiPassScoreSource, { kind: 'QUIZ_BANK' }>;
-}
-
-export function kuozhiPassScoreKey(
-  bankKey: string,
-  questionSetVersion: string,
-): string {
-  return `${bankKey}\u0000${questionSetVersion}`;
 }

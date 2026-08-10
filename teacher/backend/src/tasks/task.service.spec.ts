@@ -51,7 +51,7 @@ function createFixture() {
     stateVersion: 4,
     validation: {
       status: 'FAILED',
-      resultCode: 'QUIZ_BELOW_PASS_LINE',
+      resultCode: 'STEPS_INCOMPLETE',
     },
   });
   const isRetryAllowed = jest.fn().mockResolvedValue(true);
@@ -252,7 +252,7 @@ describe('TaskService', () => {
           taskAssignmentId: 'assignment-001',
           properties: {
             result: expectedResult,
-            errorCode: 'QUIZ_BELOW_PASS_LINE',
+            errorCode: 'STEPS_INCOMPLETE',
           },
         }),
       );

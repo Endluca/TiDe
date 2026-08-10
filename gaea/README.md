@@ -226,8 +226,6 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 | `KUOZHI_APP_KEY` / `KUOZHI_SECRET_KEY` | 是 | 密钥管理注入 | 只允许教师后端持有，禁止进入前端和日志 |
 | `KUOZHI_DETAIL_URL` | 是 | `http://edu.51talk.me/api/me/TeacherCourseDetail` | 阔知课程进度详情接口 |
 | `KUOZHI_DETAIL_HOST_IP` | TEST 必填 | `172.16.0.54` | 仅后端覆盖详情域名解析；需验证 Gaea 网络可达 |
-| `KUOZHI_SAMPLE_MODE` | TEST 临时 | `true` | 把 G06 切到只读示例课程；正式发布前改回 `false` |
-| `KUOZHI_SAMPLE_TEACHER_ID` | 示例模式必填 | `360107609` | 仅用于示例课程进度查询，不用于免登身份 |
 | `DATA_HASH_SECRET` | 是 | 密钥管理注入 | 至少 32 字符 |
 | `AUTH_JWT_SECRET` | 是 | 密钥管理注入 | 至少 32 字符 |
 | `FILE_STORAGE_PROVIDER` | 是 | `OSS` | 多副本首选 OSS；LOCAL 仅在所有 Pod 共享同一 RWX 卷时允许 |
@@ -261,9 +259,8 @@ Gaea 另行配置。教师 Nginx 只从 `TIDE_TRUSTED_PROXY_CIDRS`（未设时�
 其余可选邮件、OSS、CDN、通知调度、AI Gateway 与文件限制变量，以
 `teacher/backend/.env.example` 为完整字段表；启用某项能力时不得依赖代码默认值猜测密钥。
 
-TEST 示例验收完成后，先把 `KUOZHI_SAMPLE_MODE` 改回 `false`，再进入正式课程验收。关闭
-示例模式即可恢复版本化 G06 映射，不需要改代码；`.test.51talk.biz` 与 `edu.51talk.com`
-仍是跨站，只能验证 iframe、票证跳转和参数传递，不能替代未来同站 Cookie 验收。
+TEST 只验收当前教师绑定的正式阔知课程；不存在示例账号或课程切换开关。若详情接口返回
+空课程对象，必须先补齐阔知侧账号课程数据，再继续进度同步验收。
 
 ## 构建与本地验证
 
@@ -304,9 +301,9 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-1. 按跨 Schema 顺序执行 `public 46 → teacher 0027 → public 49 → teacher 0029`；
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 49 → teacher 0030`；
    确认 public head 为 `20260807_49_unused_columns`、teacher 账本 head 为
-   `0029_remove_unused_columns_and_orphan_function`，随后执行只读契约探针。
+   `0030_remove_unused_columns_and_orphan_function`，随后执行只读契约探针。
 2. 配齐统一应用的运营、教师和两个 Worker 环境变量，确认密钥不在版本化配置中；
    `tit_source_worker_runtime` 必须是独立受限 LOGIN。
 3. 在 Gaea 将统一应用设置为至少 `2` 个副本并使用 `RollingUpdate`；若启用自动伸缩，设置

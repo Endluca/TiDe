@@ -70,7 +70,8 @@ run_sql "${DB_DIR}/migrations/0023_teacher_support_operator_atomicity.up.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
 run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
-run_sql "${DB_DIR}/migrations/0027_retire_task_business_change_view.up.sql"
+run_sql "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
+run_sql "${DB_DIR}/migrations/0028_retire_task_business_change_view.up.sql"
 unused_view_definitions="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select string_agg(
     view_name || ':' || pg_get_viewdef(format('tide.%I', view_name)::regclass, true),
@@ -124,7 +125,7 @@ unused_table_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   ))
   from signature_parts
 ")"
-run_sql "${DB_DIR}/migrations/0028_remove_unused_tide_objects.up.sql"
+run_sql "${DB_DIR}/migrations/0029_remove_unused_tide_objects.up.sql"
 file_visibility_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select concat_ws('|',
     columns.column_name,
@@ -144,13 +145,12 @@ file_visibility_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
 orphan_function_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
   "select pg_get_functiondef('tide.enforce_outbox_target()'::regprocedure)")"
 [[ -n "${file_visibility_signature}" && -n "${orphan_function_definition}" ]] || {
-  echo "0029 前置字段或函数结构缺失" >&2
+  echo "0030 前置字段或函数结构缺失" >&2
   exit 1
 }
-run_sql "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
+run_sql "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
-TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts >/dev/null
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
 run_sql "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
@@ -167,7 +167,7 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
       and to_regclass('tide.file_migrations') is null
       and to_regclass('tide.teacher_photo_runs') is null
     ),
-    to_regclass('tide.task_quiz_banks') is not null,
+    to_regclass('tide.task_quiz_banks') is null,
     to_regclass('tide.kuozhi_course_syncs') is not null,
     (
       select count(*) = 0
@@ -206,7 +206,7 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   exit 1
 }
 
-run_sql "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.down.sql"
+run_sql "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.down.sql"
 restored_file_visibility_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select concat_ws('|',
     columns.column_name,
@@ -226,15 +226,15 @@ restored_file_visibility_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
 restored_orphan_function_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
   "select pg_get_functiondef('tide.enforce_outbox_target()'::regprocedure)")"
 [[ "${restored_file_visibility_signature}" == "${file_visibility_signature}" ]] || {
-  echo "0029 回滚未精确恢复 file_objects.visibility" >&2
+  echo "0030 回滚未精确恢复 file_objects.visibility" >&2
   exit 1
 }
 [[ "${restored_orphan_function_definition}" == "${orphan_function_definition}" ]] || {
-  echo "0029 回滚未精确恢复 enforce_outbox_target()" >&2
+  echo "0030 回滚未精确恢复 enforce_outbox_target()" >&2
   exit 1
 }
 
-run_sql "${DB_DIR}/migrations/0028_remove_unused_tide_objects.down.sql"
+run_sql "${DB_DIR}/migrations/0029_remove_unused_tide_objects.down.sql"
 restored_unused_view_definitions="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select string_agg(
     view_name || ':' || pg_get_viewdef(format('tide.%I', view_name)::regclass, true),
@@ -289,21 +289,22 @@ restored_unused_table_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   from signature_parts
 ")"
 [[ "${restored_unused_view_definitions}" == "${unused_view_definitions}" ]] || {
-  echo "0028 回滚未精确恢复 v1 分析视图" >&2
+  echo "0029 回滚未精确恢复 v1 分析视图" >&2
   exit 1
 }
 [[ "${restored_unused_table_signature}" == "${unused_table_signature}" ]] || {
-  echo "0028 回滚未精确恢复已清理表结构" >&2
+  echo "0029 回滚未精确恢复已清理表结构" >&2
   exit 1
 }
 
-run_sql "${DB_DIR}/migrations/0027_retire_task_business_change_view.down.sql"
+run_sql "${DB_DIR}/migrations/0028_retire_task_business_change_view.down.sql"
 restored_business_change_view_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
   "select pg_get_viewdef('tide.analytics_task_business_change_v1'::regclass, true)")"
 [[ "${restored_business_change_view_definition}" == "${business_change_view_definition}" ]] || {
-  echo "0027 回滚未精确恢复原业务变化视图" >&2
+  echo "0028 回滚未精确恢复原业务变化视图" >&2
   exit 1
 }
+run_sql "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.down.sql"
 run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.down.sql"
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.down.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.down.sql"
@@ -338,4 +339,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0029 并逐级回滚验证通过。"
+echo "空库升级至 0030 并逐级回滚验证通过。"

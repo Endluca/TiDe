@@ -4,34 +4,33 @@ import test from "node:test";
 
 const repoRoot = new URL("../../", import.meta.url);
 
-test("question content never sends teachers to an external exam or form", async () => {
-  const source = JSON.parse(
-    await readFile(
-      new URL("backend/reference/task-quiz-banks.json", repoRoot),
-      "utf8",
-    ),
-  );
-  const externalInstructions = Object.entries(source.taskQuizBanks)
-    .flatMap(([bankKey, questions]) => questions.map((question) => ({
-      bankKey,
-      questionId: question.id,
-      text: `${question.question || ""} ${question.questionZh || ""}`,
-    })))
-    .filter(({ text }) => /https?:\/\/|forms\.gle/i.test(text));
+test("the active runtime contains no local quiz step or question bank", async () => {
+  const [catalog, models] = await Promise.all([
+    readFile(new URL("backend/scripts/sync-current-task-catalog.ts", repoRoot), "utf8"),
+    readFile(new URL("backend/src/tasks/task.models.ts", repoRoot), "utf8"),
+  ]);
 
-  assert.deepEqual(externalInstructions, []);
+  assert.doesNotMatch(catalog, /type: 'QUIZ'|quizBankKey|TESOL_QUIZ/);
+  assert.doesNotMatch(models, /\| 'QUIZ'/);
 });
 
-test("the active catalog has no pending quiz step and includes TTP and SET video slots", async () => {
+test("the active catalog no longer publishes local learning steps for Kuozhi tasks", async () => {
   const catalog = await readFile(
     new URL("backend/scripts/sync-current-task-catalog.ts", repoRoot),
     "utf8",
   );
+  const videoManifest = JSON.parse(
+    await readFile(
+      new URL("backend/config/public-videos-v2.json", repoRoot),
+      "utf8",
+    ),
+  );
 
   assert.equal(catalog.includes("pendingQuizStep("), false);
-  assert.match(catalog, /g06-ttp-orientation-video/);
-  assert.match(catalog, /g10-set-fundamentals-video/);
-  assert.match(catalog, /mock-set-fundamentals-2026-07-v1/);
+  assert.equal(catalog.includes("g06-ttp-orientation-video"), false);
+  assert.equal(catalog.includes("g10-set-fundamentals-video"), false);
+  assert.equal(catalog.includes("mock-set-fundamentals-2026-07-v1"), false);
+  assert.deepEqual(videoManifest.videos, []);
 });
 
 test("a video plus checklist task requires the video before completion", async () => {

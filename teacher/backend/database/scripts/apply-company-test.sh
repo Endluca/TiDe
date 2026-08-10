@@ -90,7 +90,7 @@ product_analytics_exists="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 if [[ "${legacy_teacher_snapshot_exists}" != "t" \
       && "${product_analytics_exists}" != "t" ]]; then
-  echo "历史 0020 尚未应用且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029 分阶段迁移。" >&2
+  echo "历史 0020 尚未应用且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030 分阶段迁移。" >&2
   exit 1
 fi
 
@@ -163,9 +163,10 @@ migration_files=(
   "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
   "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
   "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
-  "${DB_DIR}/migrations/0027_retire_task_business_change_view.up.sql"
-  "${DB_DIR}/migrations/0028_remove_unused_tide_objects.up.sql"
-  "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
+  "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
+  "${DB_DIR}/migrations/0028_retire_task_business_change_view.up.sql"
+  "${DB_DIR}/migrations/0029_remove_unused_tide_objects.up.sql"
+  "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
 )
 
 if [[ "${tide_schema_exists}" == "t" ]]; then
@@ -241,13 +242,6 @@ if [[ "${unused_tide_objects_removed}" != "t" ]]; then
   fi
 fi
 
-quiz_banks_ready="$("${ADMIN_PSQL[@]}" -Atqc "
-  select to_regclass('tide.task_quiz_banks') is not null
-")"
-if [[ "${quiz_banks_ready}" != "t" ]]; then
-  "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0016_database_quiz_banks.up.sql"
-fi
-
 assignment_teacher_response_column_count="$("${ADMIN_PSQL[@]}" -Atqc "
   select count(*)
   from information_schema.columns
@@ -299,7 +293,7 @@ performance_job_leases_ready="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 if [[ "${performance_job_leases_ready}" != "t" ]]; then
   if [[ "${unused_tide_objects_removed}" == "t" ]]; then
-    echo "0028 已应用但 tide.job_leases 缺失，数据库处于不一致状态。" >&2
+    echo "0029 已应用但 tide.job_leases 缺失，数据库处于不一致状态。" >&2
     exit 1
   fi
   "${ADMIN_PSQL[@]}" --quiet -f "${DB_DIR}/migrations/0022_performance_job_leases.up.sql"
@@ -359,11 +353,40 @@ kuozhi_course_syncs_exists="$("${ADMIN_PSQL[@]}" -Atqc "
 if [[ "${kuozhi_course_syncs_exists}" != "t" ]]; then
   "${ADMIN_PSQL[@]}" --quiet \
     -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+else
+  kuozhi_course_syncs_complete="$("${ADMIN_PSQL[@]}" -Atqc "
+    select
+      (
+        select count(*) = 11
+        from information_schema.columns
+        where table_schema = 'tide'
+          and table_name = 'kuozhi_course_syncs'
+          and column_name in (
+            'id', 'account_id', 'task_assignment_id', 'idempotency_key',
+            'command_id', 'request_hash', 'mapping_version', 'sync_status',
+            'completion_decision', 'response_body', 'created_at'
+          )
+      )
+      and exists (
+        select 1
+        from pg_constraint
+        where conrelid = 'tide.kuozhi_course_syncs'::regclass
+          and conname = 'kuozhi_course_syncs_real_mode_check'
+      )
+      and to_regclass('tide.kuozhi_course_syncs_assignment_time_idx') is not null
+  ")"
+  if [[ "${kuozhi_course_syncs_complete}" != "t" ]]; then
+    echo "现有 tide.kuozhi_course_syncs 结构不完整，迁移已停止。" >&2
+    exit 1
+  fi
 fi
+
 "${ADMIN_PSQL[@]}" --quiet \
-  -f "${DB_DIR}/migrations/0027_retire_task_business_change_view.up.sql"
+  -f "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
 "${ADMIN_PSQL[@]}" --quiet \
-  -f "${DB_DIR}/migrations/0028_remove_unused_tide_objects.up.sql"
+  -f "${DB_DIR}/migrations/0028_retire_task_business_change_view.up.sql"
+"${ADMIN_PSQL[@]}" --quiet \
+  -f "${DB_DIR}/migrations/0029_remove_unused_tide_objects.up.sql"
 unused_column_cleanup_state="$("${ADMIN_PSQL[@]}" -AtF '|' -c "
   select
     exists (
@@ -377,9 +400,9 @@ unused_column_cleanup_state="$("${ADMIN_PSQL[@]}" -AtF '|' -c "
 ")"
 if [[ "${unused_column_cleanup_state}" == "t|t" ]]; then
   "${ADMIN_PSQL[@]}" --quiet \
-    -f "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
+    -f "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
 elif [[ "${unused_column_cleanup_state}" != "f|f" ]]; then
-  echo "0029 无用字段与孤儿函数处于不一致状态，初始化已停止。" >&2
+  echo "0030 无用字段与孤儿函数处于不一致状态，初始化已停止。" >&2
   exit 1
 fi
 
@@ -387,13 +410,6 @@ template_snapshot_before="$("${ADMIN_PSQL[@]}" -Atqc "
   select md5(string_agg(row_to_json(template)::text, '' order by row_id))
   from public.task_templates template
 ")"
-
-TIDE_DB_HOST="${TIDE_ADMIN_DB_HOST}" \
-TIDE_DB_PORT="${TIDE_ADMIN_DB_PORT}" \
-TIDE_DB_USER="${TIDE_ADMIN_DB_USER}" \
-TIDE_DB_PASSWORD="${TIDE_ADMIN_DB_PASSWORD}" \
-TIDE_DB_NAME="${TIDE_ADMIN_DB_NAME}" \
-pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts
 
 TIDE_DB_HOST="${TIDE_ADMIN_DB_HOST}" \
 TIDE_DB_PORT="${TIDE_ADMIN_DB_PORT}" \
@@ -495,7 +511,7 @@ verification="$("${APP_PSQL[@]}" -Atqc "
       )
       and to_regprocedure('tide.enforce_outbox_target()') is null
     ),
-    to_regclass('tide.task_quiz_banks') is not null,
+    to_regclass('tide.task_quiz_banks') is null,
     to_regclass('tide.kuozhi_course_syncs') is not null,
     has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'SELECT'),
     has_table_privilege(current_user, 'tide.kuozhi_course_syncs', 'INSERT'),
@@ -530,8 +546,6 @@ verification="$("${APP_PSQL[@]}" -Atqc "
       false
     ),
     has_table_privilege(current_user, 'public.config_versions', 'SELECT'),
-    (select count(*) from tide.task_quiz_banks),
-    has_table_privilege(current_user, 'tide.task_quiz_banks', 'INSERT'),
     (select count(*) from tide.task_execution_versions where status = 'ACTIVE'),
     has_column_privilege(current_user, 'public.task_assignments', 'teacher_id', 'INSERT'),
     has_column_privilege(current_user, 'public.task_assignments', 'status', 'UPDATE'),
@@ -600,9 +614,9 @@ verification="$("${APP_PSQL[@]}" -Atqc "
     )
   )
 ")"
-if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|t|t|t|f|f|f|f|10|f|14|f|t|t|f|f|f|t" ]]; then
+if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|t|t|t|f|f|f|f|14|f|t|t|f|f|f|t" ]]; then
   echo "应用账号验收失败：${verification}" >&2
   exit 1
 fi
 
-echo "公司测试库初始化完成：tide Schema、多副本任务租约、0026 阔知课程同步、0027 旧业务变化视图退役、0028 无用对象清理、0029 无用字段与孤儿函数清理、固定任务语义与当前分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、数据库题库、通知状态、共享事实说明字段清理和应用账号权限均已验证。"
+echo "公司测试库初始化完成：tide Schema、多副本任务租约、0026 阔知课程同步、0027 本地考试清理、0028 旧业务变化视图退役、0029 无用对象清理、0030 无用字段与孤儿函数清理、固定任务语义与当前分析视图、教师工单共享表、当前成长任务与个性化任务执行配置、通知状态、共享事实说明字段清理和应用账号权限均已验证。"

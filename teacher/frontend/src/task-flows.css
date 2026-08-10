@@ -1,5 +1,4 @@
 .learning-flow,
-.quiz-flow,
 .checklist-flow,
 .upload-flow,
 .device-flow,
@@ -171,105 +170,6 @@
   color: var(--ink-soft);
   font-size: 10px;
   line-height: 1.5;
-}
-
-.quiz-progress {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 44px;
-  margin-bottom: 14px;
-  padding: 0 14px;
-  border-radius: 10px;
-  color: var(--ink-soft);
-  background: var(--surface-soft);
-  font-size: 9px;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.quiz-question {
-  min-width: 0;
-  margin: 0;
-  padding: 23px 0;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.quiz-question legend {
-  display: grid;
-  grid-template-columns: 30px 1fr;
-  align-items: start;
-  width: 100%;
-  gap: 10px;
-  font-size: 14px;
-  font-weight: 900;
-  line-height: 1.4;
-}
-
-.quiz-question legend span {
-  color: var(--blue);
-  font-size: 10px;
-  line-height: 1.9;
-}
-
-.option-list {
-  display: grid;
-  margin-top: 14px;
-  padding-left: 40px;
-  gap: 8px;
-}
-
-.option-list label {
-  display: grid;
-  grid-template-columns: 20px 1fr;
-  align-items: center;
-  min-height: 46px;
-  padding: 9px 12px;
-  gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  color: var(--ink-soft);
-  background: var(--surface);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 750;
-  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
-}
-
-.option-list label:hover {
-  border-color: var(--line-strong);
-}
-
-.option-list label.option-selected {
-  color: var(--ink);
-  border-color: var(--blue);
-  background: var(--blue-soft);
-}
-
-.option-list input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  opacity: 0;
-}
-
-.radio-mark {
-  display: block;
-  width: 16px;
-  height: 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  background: var(--surface);
-}
-
-.option-selected .radio-mark {
-  border: 5px solid var(--blue);
-}
-
-.quiz-flow > .wide-button {
-  margin-top: 24px;
 }
 
 .flow-note,
@@ -1470,7 +1370,6 @@
 
 @media (max-width: 760px) {
   .learning-flow,
-  .quiz-flow,
   .checklist-flow,
   .upload-flow,
   .device-flow,
@@ -1504,10 +1403,6 @@
     width: 105px;
     height: 120px;
     opacity: 0.65;
-  }
-
-  .option-list {
-    padding-left: 0;
   }
 
   .upload-grid {
@@ -1638,13 +1533,6 @@
 @media (max-width: 420px) {
   .mock-reviewer > div {
     grid-template-columns: 1fr;
-  }
-
-  .quiz-progress {
-    align-items: flex-start;
-    padding: 10px 12px;
-    flex-direction: column;
-    gap: 4px;
   }
 
   .device-item {

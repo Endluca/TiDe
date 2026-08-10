@@ -7,7 +7,7 @@
 - 两端共用同一 PostgreSQL。教师端自有表全部放在 `tide` Schema。
 - 任务模板与实例直接使用 `public.task_templates/task_assignments`，不再保留本地任务副本或 HTTP 下发/回传链路。
 - 任务步骤、进度、视频心跳、答案、文件和审核结果保存在 `tide`，通过 `task_assignment_id` 关联共享任务。
-- 版本化题库保存在 `tide.task_quiz_banks`；任务步骤只保存题库引用，前端只接收已发布题目和选项。
+- 所有考试均在阔知完成；TIDE 不保存题库、标准答案或作答记录，考试完成只依据阔知返回的 `percent=100`。
 - G01 直接读取 `public.teacher_source_wide.is_self_introduce / is_cpl_tesol`；
   源表没有更新时间时，接口的新鲜度时间明确返回 `null`，不使用其他表时间冒充。
   `public.notifications` 只按世文业务文字提醒读取，已读与点击可回写；TIDE 消息只写 `tide.system_notifications`。

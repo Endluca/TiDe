@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { buildTaskResultNotificationContent } from '../notifications/task-result-notification.policy';
 import { DatabaseService } from '../platform/database/database.service';
-import { BoundedTtlCache } from '../platform/cache/bounded-ttl-cache';
 import type { StepOutputDto } from './dto/submit-task.dto';
 import type {
   TaskContext,
@@ -131,17 +130,6 @@ interface StepDefinitionRow extends QueryResultRow {
   config: Record<string, unknown>;
 }
 
-interface PublicQuizBankRow extends QueryResultRow {
-  bankKey: string;
-  questionSetVersion: string;
-  passScore: string;
-  questions: Array<Record<string, unknown>>;
-}
-
-interface QuizBankRow extends PublicQuizBankRow {
-  answerKey: Record<string, unknown>;
-}
-
 interface VideoProgressRow extends QueryResultRow {
   durationSeconds: number;
   resumeSeconds: number;
@@ -196,11 +184,6 @@ interface VideoHeartbeatInput {
 
 @Injectable()
 export class TaskRepository {
-  private readonly publishedQuizCache = new BoundedTtlCache<PublicQuizBankRow>(
-    500,
-    10 * 60 * 1_000,
-  );
-
   constructor(
     private readonly database: DatabaseService,
     private readonly validationEngine: TaskValidationEngine,
@@ -256,9 +239,8 @@ export class TaskRepository {
       `,
       [taskInstanceIds],
     );
-    const steps = await this.attachPublishedQuizQuestions(stepResult.rows);
     const stepsByTask = new Map<string, BatchStepRow[]>();
-    for (const step of steps) {
+    for (const step of stepResult.rows) {
       const current = stepsByTask.get(step.taskInstanceId) ?? [];
       current.push(step);
       stepsByTask.set(step.taskInstanceId, current);
@@ -317,10 +299,7 @@ export class TaskRepository {
       `,
       [taskInstanceId],
     );
-    return this.toTaskContext(
-      task,
-      await this.attachPublishedQuizQuestions(steps.rows),
-    );
+    return this.toTaskContext(task, steps.rows);
   }
 
   startTask(input: TaskCommandInput): Promise<TaskMutationResponse> {
@@ -965,9 +944,6 @@ export class TaskRepository {
         summary: { acknowledged: completed },
       };
     }
-    if (step.stepType === 'QUIZ') {
-      return this.evaluateQuizProgress(client, step, progress);
-    }
     if (step.stepType === 'CHECKLIST') {
       return this.evaluateChecklistProgress(step, progress);
     }
@@ -1187,62 +1163,6 @@ export class TaskRepository {
     };
   }
 
-  private async evaluateQuizProgress(
-    client: PoolClient,
-    step: StepDefinitionRow,
-    progress: Record<string, unknown>,
-  ): Promise<EvaluatedStepProgress> {
-    const quizBank = await this.loadPublishedQuizBank(client, step.config);
-    const questions = quizBank?.questions ?? [];
-    const answerKey = quizBank?.answerKey ?? {};
-    const answers =
-      progress.answers && typeof progress.answers === 'object'
-        ? (progress.answers as Record<string, unknown>)
-        : {};
-    if (questions.length === 0 || Object.keys(answerKey).length === 0) {
-      throw new TaskCommandConflictError('OUTPUT_INVALID', {
-        stepKey: step.stepKey,
-        reason: 'QUIZ_NOT_CONFIGURED',
-      });
-    }
-    const answered = questions.filter(
-      (question) => typeof question.key === 'string' && question.key in answers,
-    );
-    const correct = answered.filter((question) => {
-      const key = String(question.key);
-      return this.quizAnswerMatches(answers[key], answerKey[key]);
-    }).length;
-    const score = Math.round((correct / questions.length) * 100);
-    const complete = answered.length === questions.length;
-    const passScore = Number(quizBank?.passScore);
-    if (!Number.isFinite(passScore) || passScore < 0 || passScore > 100) {
-      throw new TaskCommandConflictError('OUTPUT_INVALID', {
-        stepKey: step.stepKey,
-        reason: 'QUIZ_PASS_SCORE_NOT_CONFIGURED',
-      });
-    }
-    const passed = complete && score >= passScore;
-    return {
-      status: passed ? 'COMPLETED' : complete ? 'FAILED' : 'IN_PROGRESS',
-      percent: passed
-        ? 100
-        : Math.round((answered.length / questions.length) * 90),
-      summary: {
-        questionSetVersion: quizBank?.questionSetVersion,
-        answers,
-        score,
-        passed,
-      },
-      result: {
-        answered: answered.length,
-        total: questions.length,
-        correct,
-        score,
-        passed,
-      },
-    };
-  }
-
   private evaluateChecklistProgress(
     step: StepDefinitionRow,
     progress: Record<string, unknown>,
@@ -1372,7 +1292,6 @@ export class TaskRepository {
     definitions: StepDefinitionRow[],
   ): Promise<void> {
     const expectedOutput: Partial<Record<TaskStepType, string>> = {
-      QUIZ: 'QUIZ',
       CHECKLIST: 'CHECKLIST',
       UPLOAD: 'FILE',
       DEVICE_CHECK: 'DEVICE_CHECK',
@@ -1448,7 +1367,6 @@ export class TaskRepository {
     const outputType: Partial<
       Record<TaskStepType, StepOutputDto['outputType']>
     > = {
-      QUIZ: 'QUIZ',
       CHECKLIST: 'CHECKLIST',
       UPLOAD: 'FILE',
       DEVICE_CHECK: 'DEVICE_CHECK',
@@ -1570,9 +1488,7 @@ export class TaskRepository {
     for (const row of progress.rows) {
       const definition = definitionsByKey.get(row.stepKey);
       if (!definition) continue;
-      if (row.stepType === 'QUIZ') {
-        await this.persistQuizEvidence(client, attemptId, row);
-      } else if (row.stepType === 'CHECKLIST') {
+      if (row.stepType === 'CHECKLIST') {
         await this.persistChecklistEvidence(client, attemptId, row);
       } else if (row.stepType === 'DEVICE_CHECK') {
         await this.persistDeviceEvidence(client, attemptId, row);
@@ -1592,74 +1508,6 @@ export class TaskRepository {
         );
       }
     }
-  }
-
-  private async persistQuizEvidence(
-    client: PoolClient,
-    attemptId: string,
-    row: StepEvidenceRow,
-  ): Promise<void> {
-    const quizBank = await this.loadPublishedQuizBank(client, row.config);
-    if (!quizBank) {
-      throw new TaskCommandConflictError('OUTPUT_INVALID', {
-        stepKey: row.stepKey,
-        reason: 'QUIZ_NOT_CONFIGURED',
-      });
-    }
-    const quizAttemptId = randomUUID();
-    const score = Number(row.progressSummary.score);
-    const passed = row.progressSummary.passed === true;
-    await client.query(
-      `
-        INSERT INTO tide.quiz_attempts (
-          id, task_attempt_id, step_key, question_set_version,
-          score, passed, submitted_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, now())
-      `,
-      [
-        quizAttemptId,
-        attemptId,
-        row.stepKey,
-        quizBank.questionSetVersion,
-        Number.isFinite(score) ? score : null,
-        passed,
-      ],
-    );
-    const answers =
-      row.progressSummary.answers &&
-      typeof row.progressSummary.answers === 'object'
-        ? (row.progressSummary.answers as Record<string, unknown>)
-        : {};
-    const answerKey = quizBank.answerKey;
-    for (const [questionKey, answer] of Object.entries(answers)) {
-      await client.query(
-        `
-          INSERT INTO tide.quiz_answers (
-            id, quiz_attempt_id, question_key, answer_payload,
-            is_correct, evaluated_at
-          ) VALUES ($1, $2, $3, $4::jsonb, $5, now())
-        `,
-        [
-          randomUUID(),
-          quizAttemptId,
-          questionKey,
-          JSON.stringify(answer),
-          this.quizAnswerMatches(answer, answerKey[questionKey]),
-        ],
-      );
-    }
-  }
-
-  private quizAnswerMatches(actual: unknown, expected: unknown): boolean {
-    if (!Array.isArray(actual) || !Array.isArray(expected)) {
-      return JSON.stringify(actual) === JSON.stringify(expected);
-    }
-    const normalized = (values: unknown[]) =>
-      values.map((value) => JSON.stringify(value)).sort();
-    return (
-      JSON.stringify(normalized(actual)) ===
-      JSON.stringify(normalized(expected))
-    );
   }
 
   private async persistChecklistEvidence(
@@ -2210,121 +2058,6 @@ export class TaskRepository {
     if (typeof value !== 'string') return null;
     const text = value.trim();
     return text.length > 0 ? text.slice(0, 1_000) : null;
-  }
-
-  private async attachPublishedQuizQuestions<Step extends StepRow>(
-    steps: Step[],
-  ): Promise<Step[]> {
-    const references = steps.flatMap((step) => {
-      if (step.type !== 'QUIZ') return [];
-      const reference = this.quizBankReference(step.config);
-      return reference ? [reference] : [];
-    });
-    if (references.length === 0) return steps;
-
-    const uniqueReferences = [
-      ...new Map(
-        references.map((reference) => [
-          `${reference.bankKey}\u0000${reference.questionSetVersion}`,
-          reference,
-        ]),
-      ).values(),
-    ];
-    const banks = new Map<string, PublicQuizBankRow>();
-    const missing = uniqueReferences.filter((reference) => {
-      const key = `${reference.bankKey}\u0000${reference.questionSetVersion}`;
-      const cached = this.publishedQuizCache.get(key);
-      if (cached) banks.set(key, cached);
-      return !cached;
-    });
-    if (missing.length > 0) {
-      const result = await this.database.queryTide<PublicQuizBankRow>(
-        `
-        WITH requested(bank_key, question_set_version) AS (
-          SELECT *
-          FROM unnest($1::text[], $2::text[])
-        )
-        SELECT
-          bank.bank_key AS "bankKey",
-          bank.question_set_version AS "questionSetVersion",
-          bank.pass_score AS "passScore",
-          bank.questions
-        FROM tide.task_quiz_banks bank
-        JOIN requested
-          ON requested.bank_key = bank.bank_key
-         AND requested.question_set_version = bank.question_set_version
-        WHERE bank.status = 'PUBLISHED'
-      `,
-        [
-          missing.map((reference) => reference.bankKey),
-          missing.map((reference) => reference.questionSetVersion),
-        ],
-      );
-      result.rows.forEach((bank) => {
-        const key = `${bank.bankKey}\u0000${bank.questionSetVersion}`;
-        banks.set(key, bank);
-        this.publishedQuizCache.set(key, bank);
-      });
-    }
-    return steps.map((step) => {
-      const reference = this.quizBankReference(step.config);
-      const bank = reference
-        ? banks.get(`${reference.bankKey}\u0000${reference.questionSetVersion}`)
-        : null;
-      if (!bank) return step;
-      return {
-        ...step,
-        config: {
-          ...step.config,
-          questionSetVersion: bank.questionSetVersion,
-          passScore: Number(bank.passScore),
-          questions: bank.questions,
-        },
-      };
-    });
-  }
-
-  private async loadPublishedQuizBank(
-    client: PoolClient,
-    config: Record<string, unknown>,
-  ): Promise<QuizBankRow | null> {
-    const reference = this.quizBankReference(config);
-    if (!reference) return null;
-    const result = await client.query<QuizBankRow>(
-      `
-        SELECT
-          bank_key AS "bankKey",
-          question_set_version AS "questionSetVersion",
-          pass_score AS "passScore",
-          questions,
-          answer_key AS "answerKey"
-        FROM tide.task_quiz_banks
-        WHERE bank_key = $1
-          AND question_set_version = $2
-          AND status = 'PUBLISHED'
-        LIMIT 1
-      `,
-      [reference.bankKey, reference.questionSetVersion],
-    );
-    return result.rows[0] ?? null;
-  }
-
-  private quizBankReference(config: Record<string, unknown>): {
-    bankKey: string;
-    questionSetVersion: string;
-  } | null {
-    if (
-      typeof config.quizBankKey !== 'string' ||
-      !config.quizBankKey ||
-      typeof config.questionSetVersion !== 'string' ||
-      !config.questionSetVersion
-    ) {
-      return null;
-    }
-    return {
-      bankKey: config.quizBankKey,
-      questionSetVersion: config.questionSetVersion,
-    };
   }
 
   private publicStepConfig(config: Record<string, unknown>) {

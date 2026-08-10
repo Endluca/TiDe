@@ -14,7 +14,6 @@ function serviceFor(overrides: Partial<AppEnvironment> = {}) {
       process.cwd(),
       'config/kuozhi-courses.json',
     ),
-    KUOZHI_SAMPLE_MODE: false,
     ...overrides,
   };
   const config = {
@@ -42,6 +41,7 @@ describe('KuozhiService', () => {
           integrationStatus: mapping.integrationStatus,
           launchEnabled: mapping.launchEnabled,
           completionEnabled: mapping.completionEnabled,
+          autoCompleteAssignment: mapping.autoCompleteAssignment,
           courses: mapping.courses.map((course) => ({
             courseId: course.courseId,
             tasks: course.tasks.map((task) => ({
@@ -56,9 +56,10 @@ describe('KuozhiService', () => {
 
     expect(compact).toEqual({
       G01: {
-        integrationStatus: 'MAPPING_ONLY',
-        launchEnabled: false,
-        completionEnabled: false,
+        integrationStatus: 'ACTIVE',
+        launchEnabled: true,
+        completionEnabled: true,
+        autoCompleteAssignment: false,
         courses: [
           {
             courseId: '407',
@@ -70,6 +71,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '499',
@@ -84,6 +86,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '513',
@@ -95,6 +98,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '520',
@@ -124,6 +128,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'PARTIAL',
         launchEnabled: true,
         completionEnabled: false,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '595',
@@ -138,6 +143,7 @@ describe('KuozhiService', () => {
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
+        autoCompleteAssignment: true,
         courses: [
           {
             courseId: '630',
@@ -157,19 +163,22 @@ describe('KuozhiService', () => {
     });
   });
 
-  it('loads all formal G06 courses and creates new-window launch URLs', async () => {
+  it('loads all formal G06 courses as iframe-only launch URLs', async () => {
     const response = await serviceFor().createLaunch('G06', 'TEACHER-001');
 
     expect(response).toMatchObject({
       provider: 'KUOZHI',
       dataMode: 'REAL',
-      mappingVersion: 2,
+      mappingVersion: 5,
       integrationStatus: 'ACTIVE',
     });
     expect(response.courses.map((course) => course.courseId)).toEqual([
       '520',
       '398',
     ]);
+    expect(
+      response.courses.every((course) => course.embedMode === 'IFRAME'),
+    ).toBe(true);
     const launch = new URL(response.courses[0].launchUrl);
     expect(launch.searchParams.get('id')).toBe('TEACHER-001');
     expect(launch.searchParams.get('to')).toBe(
@@ -177,21 +186,13 @@ describe('KuozhiService', () => {
     );
   });
 
-  it('overrides only G06 with the isolated sample profile', async () => {
-    const service = serviceFor({
-      KUOZHI_SAMPLE_MODE: true,
-      KUOZHI_SAMPLE_TEACHER_ID: '360107609',
-    });
-    const response = await service.createLaunch('G06', 'REAL-TEACHER');
-    const launch = new URL(response.courses[0].launchUrl);
+  it('opens G01 course 407 as an embedded Kuozhi course', async () => {
+    const response = await serviceFor().createLaunch('G01', 'TEACHER-001');
 
-    expect(response.dataMode).toBe('SAMPLE_DRY_RUN');
-    expect(response.courses).toHaveLength(1);
-    expect(response.courses[0].courseId).toBe('131');
-    expect(response.courses[0].embedMode).toBe('IFRAME');
-    expect(launch.searchParams.get('id')).toBe('REAL-TEACHER');
-    expect(launch.searchParams.get('to')).toBe(
-      'https://edu.51talk.com/course/131?noheader=1',
-    );
+    expect(response).toMatchObject({
+      integrationStatus: 'ACTIVE',
+      mappingVersion: 5,
+      courses: [{ courseId: '407', embedMode: 'IFRAME' }],
+    });
   });
 });

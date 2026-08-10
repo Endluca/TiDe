@@ -253,9 +253,9 @@ teacher_catalog="${TIDE_TEACHER_REPO_PATH}/backend/scripts/sync-current-task-cat
 teacher_growth="${TIDE_TEACHER_REPO_PATH}/backend/src/notifications/growth-stage-notification.repository.ts"
 teacher_migrator="${TIDE_TEACHER_REPO_PATH}/backend/database/scripts/apply-production.sh"
 teacher_semantic_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0025_fixed_task_semantic_alignment.up.sql"
-teacher_legacy_view_retirement="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0027_retire_task_business_change_view.up.sql"
-teacher_unused_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0028_remove_unused_tide_objects.up.sql"
-teacher_unused_columns_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
+teacher_legacy_view_retirement="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0028_retire_task_business_change_view.up.sql"
+teacher_unused_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0029_remove_unused_tide_objects.up.sql"
+teacher_unused_columns_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
 
 [[ -f "${teacher_service}" ]] || fail "缺少教师端任务服务"
 [[ -f "${teacher_catalog}" ]] || fail "缺少教师端任务目录同步器"
@@ -263,11 +263,11 @@ teacher_unused_columns_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migra
 [[ -f "${teacher_semantic_migration}" ]] \
   || fail "缺少教师端 0025 固定任务语义迁移"
 [[ -f "${teacher_legacy_view_retirement}" ]] \
-  || fail "缺少教师端 0027 旧业务变化视图退役迁移"
+  || fail "缺少教师端 0028 旧业务变化视图退役迁移"
 [[ -f "${teacher_unused_cleanup}" ]] \
-  || fail "缺少教师端 0028 无用对象清理迁移"
+  || fail "缺少教师端 0029 无用对象清理迁移"
 [[ -f "${teacher_unused_columns_cleanup}" ]] \
-  || fail "缺少教师端 0029 冗余列与孤儿函数清理迁移"
+  || fail "缺少教师端 0030 冗余列与孤儿函数清理迁移"
 
 if grep -Eq "HIDDEN_FIXED_TASK_CODES.*G02|new Set\\(\\['G02'\\]\\)" "${teacher_service}"; then
   fail "教师端仍隐藏当前 G02 平台政策任务"
@@ -335,9 +335,9 @@ if sorted(declared_codes) != sorted(expected) or duplicate_codes or actual != ex
 PY
 
 [[ -f "${teacher_migrator}" ]] || fail "缺少教师端正式生产迁移器"
-grep -Fq "public Alembic 46 -> teacher 0027 -> public head 49 -> teacher 0029" \
+grep -Fq "public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030" \
   "${teacher_migrator}" \
-  || fail "教师端迁移器缺少 public46→teacher0027→public49→teacher0029 分阶段失败关闭门禁"
+  || fail "教师端迁移器缺少 public46→teacher0028→public49→teacher0030 分阶段失败关闭门禁"
 grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
   || fail "教师端迁移器未区分历史 0020 是否已经记录"
 [[ -f "${TIDE_TEACHER_REPO_PATH}/backend/Dockerfile" ]] \
@@ -345,7 +345,7 @@ grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
 [[ -f "${TIDE_TEACHER_REPO_PATH}/frontend/Dockerfile" ]] \
   || fail "缺少教师端 Web 生产镜像"
 python3 - "${teacher_migrator}" <<'PY' \
-  || fail "教师端生产迁移器不是以 0029 结尾的完整有序生产链"
+  || fail "教师端生产迁移器不是以 0030 结尾的完整有序生产链"
 from __future__ import annotations
 
 import re
@@ -378,9 +378,10 @@ expected = [
     "0024_support_ticket_cas_and_function_owner",
     "0025_fixed_task_semantic_alignment",
     "0026_kuozhi_course_syncs",
-    "0027_retire_task_business_change_view",
-    "0028_remove_unused_tide_objects",
-    "0029_remove_unused_columns_and_orphan_function",
+    "0027_remove_local_quiz_runtime",
+    "0028_retire_task_business_change_view",
+    "0029_remove_unused_tide_objects",
+    "0030_remove_unused_columns_and_orphan_function",
 ]
 target_match = re.search(
     r'TARGET_MIGRATION="\$\{TIDE_MIGRATION_TARGET:-([^}]+)\}"',
@@ -412,4 +413,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；数据库必须按 public46→teacher0027→public49→teacher0029 执行，随后仍需通过契约探针和发布门禁。\n'
+printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public49→teacher0030 执行，随后仍需通过契约探针和发布门禁。\n'

@@ -101,39 +101,7 @@ describe('current task catalog locale fields', () => {
     }
   });
 
-  it('keeps the migrated G05 TTP step keys stable for saved progress', () => {
-    const g05 = currentTaskCatalog.find((task) => task.code === 'G05');
-    const checklist = g05?.steps.find(
-      (step) => step.key === 'g06-learning-checklist',
-    );
-    const items = checklist?.config.items as ChecklistItem[];
-
-    expect(items).toHaveLength(5);
-    expect(items.map(({ key, labelZh }) => ({ key, labelZh }))).toEqual([
-      {
-        key: 'item-1',
-        labelZh: 'TTP 与固定学员、开放时段和排期承诺的关系',
-      },
-      {
-        key: 'item-2',
-        labelZh: 'Shift Management 与 Auto Open Slot 的使用场景',
-      },
-      {
-        key: 'item-3',
-        labelZh: '开放时段的承诺周期与成熟日',
-      },
-      {
-        key: 'item-4',
-        labelZh: '已预约时段的履约要求和排期变化处理',
-      },
-      {
-        key: 'item-5',
-        labelZh: '持续维护 MyPage 可授课时段并了解支持入口',
-      },
-    ]);
-  });
-
-  it('keeps pre-renumber step identities attached to their actual semantics', () => {
+  it('keeps local steps only for tasks that still execute inside TIDE', () => {
     const stepKeysByTask = Object.fromEntries(
       currentTaskCatalog
         .filter((task) => task.kind === 'FIXED_GROWTH')
@@ -141,36 +109,26 @@ describe('current task catalog locale fields', () => {
     );
 
     expect(stepKeysByTask).toMatchObject({
-      G01: ['g01-tesol-quiz', 'g01-essay-confirmation', 'g01-completion-proof'],
-      G02: ['g03-platform-policies-document', 'g03-knowledge-check'],
+      G01: ['g01-essay-confirmation', 'g01-completion-proof'],
+      G02: [],
       G03: [],
       G04: ['g02-courseware-confirmation', 'g02-environment-photo'],
-      G05: ['g06-ttp-orientation-video', 'g06-learning-checklist'],
-      G06: [
-        'g07-me-culture-video',
-        'g07-parsnip-thailand-1',
-        'g07-parsnip-thailand-2',
-        'g07-parsnip-saudi-1',
-        'g07-parsnip-saudi-2',
-        'g07-parsnip-malaysia',
-        'g07-knowledge-check',
-      ],
-      G07: [
-        'g08-attendance-policy',
-        'g08-reliability-guide',
-        'g08-knowledge-check',
-      ],
-      G08: [
-        'g09-cocos-overview',
-        'g09-cocos-alphabet',
-        'g09-cocos-dialogue',
-        'g09-cocos-phonics',
-        'g09-cocos-reading',
-        'g09-cocos-word-sentence',
-        'g09-cocos-review-carnival',
-        'g09-knowledge-check',
-      ],
-      G09: ['g10-set-fundamentals-video', 'g10-knowledge-check'],
+      G05: [],
+      G06: [],
+      G07: [],
+      G08: [],
+      G09: [],
+    });
+  });
+
+  it('keeps G09 pending until Kuozhi publishes its course mapping', () => {
+    const g09 = currentTaskCatalog.find((task) => task.code === 'G09');
+
+    expect(g09).toMatchObject({
+      contentStatus: 'PENDING',
+      pendingReason: 'KUOZHI_G09_COURSE_MAPPING_PENDING',
+      steps: [],
+      rules: [],
     });
   });
 

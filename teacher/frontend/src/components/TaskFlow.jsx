@@ -23,8 +23,7 @@ import {
 import { stageDescriptions } from "../live-catalog";
 import { getLearningTaskContent } from "../data/tasks/learning-task-content";
 import { useI18n } from "../i18n";
-import VideoQuizTask, { ChapterVideoLearning } from "../features/task-content/VideoQuizTask";
-import VideoOnlyTask from "../features/task-content/VideoOnlyTask";
+import { ChapterVideoLearning } from "../features/task-content/VideoLearningTask";
 import KuozhiCourseTask from "../features/task-content/KuozhiCourseTask";
 import ExternalStatusTask from "../features/task-content/ExternalStatusTask";
 import ReadinessPhotoTask from "../features/task-content/ReadinessPhotoTask";
@@ -55,7 +54,7 @@ function LockedPreview({ task }) {
   const { language } = useI18n();
   const c = (en, zh) => language === "zh" ? zh : en;
   const releaseDay = stageDescriptions.find((stage) => stage.range === (task.sourceStage || task.stage))?.releaseDay;
-  const isStatusOnly = ["external_status", "content_pending"].includes(task.method);
+  const isStatusOnly = ["external_status", "external_course", "content_pending"].includes(task.method);
   const isChecklist = task.method === "learning_checklist";
   const configuredLearningContent = getLearningTaskContent(task);
   const learningContent = isStatusOnly
@@ -70,11 +69,6 @@ function LockedPreview({ task }) {
     ? task.courseModules
     : (task.steps || []).map((step, index) => ({ title: `${c("Step", "步骤")} ${index + 1}`, titleZh: `步骤 ${index + 1}`, content: step, contentZh: step }));
   const resources = task.method === "external_status" ? task.resources || [] : [];
-  const questionCount = isStatusOnly
-    ? 0
-    : task.expectedQuestionCount
-      || task.quizQuestions?.length
-      || 0;
   const hasVideoPreview = Boolean(learningContent.videoSrc || chapters.length > 0);
   const previewTask = {
     ...task,
@@ -99,7 +93,7 @@ function LockedPreview({ task }) {
             ? c("You can review the available information and completion standard now. The latest result appears after this task is released.", "当前可查看已有信息和完成标准；任务开放后显示最新结果。")
             : isChecklist
               ? c("All checklist content is visible now. Confirmation actions open after this stage is released.", "现在可以查看完整清单；阶段开放后才能勾选确认并完成任务。")
-              : c("All course content is visible now. Playback progress, answers and submission stay locked until release.", "课程内容现在全部可见；开放前仅播放进度、答题和提交操作保持锁定。")}</p>
+              : c("All configured content is visible now. Progress and submission stay locked until release.", "当前可查看全部已配置内容；开放前进度和提交操作保持锁定。")}</p>
           <div className="preview-standard"><SealCheck size={18} /><span><strong>{c("Completion standard", "完成标准")}</strong>{task.standard}</span></div>
         </div>
       </div>
@@ -120,7 +114,7 @@ function LockedPreview({ task }) {
             />
             <div className="preview-only-note">
               <Lock size={16} weight="fill" />
-              <span><strong>{c("Preview only", "仅供预览")}</strong>{c("Playback does not count toward formal progress. The practice and submission open after this stage is released.", "观看不会计入正式进度；阶段解锁后才可进入练习并提交完成。")}</span>
+              <span><strong>{c("Preview only", "仅供预览")}</strong>{c("Playback does not count toward formal progress. Submission opens after this stage is released.", "观看不会计入正式进度；阶段解锁后才可提交完成。")}</span>
             </div>
           </section>
         )}
@@ -151,13 +145,6 @@ function LockedPreview({ task }) {
                 </article>
               ))}
             </div>
-          </section>
-        )}
-
-        {(questionCount > 0 || task.method === "learning_quiz") && (
-          <section className="preview-practice-card">
-            <div><strong>{c("Course practice", "课程练习")}</strong><p>{questionCount > 0 ? c(`${questionCount} questions · ${learningContent.passScore}% to pass`, `${questionCount} 道题 · 正确率达到 ${learningContent.passScore}% 通过`) : c("Complete the course practice after learning.", "完成课程学习后进入配套练习。")}</p></div>
-            <span><Lock size={15} weight="fill" />{c("Answers open after release", "开放后可作答")}</span>
           </section>
         )}
 
@@ -201,7 +188,7 @@ function ChecklistFlow({ task, onUpdate }) {
   }
   if (task.status === "completed" && reviewing) {
     return (
-      <div className="native-learning-flow video-quiz-task completed-video-review">
+      <div className="native-learning-flow video-learning-task completed-video-review">
         <div className="learning-state-row">
           <span className="eyebrow">{c("VIDEO REVIEW", "视频回看")}</span>
           <span className="learning-state">{c("Task complete", "任务已完成")}</span>
@@ -678,16 +665,15 @@ const flowComponents = {
   guidance_acknowledgement: GuidanceAcknowledgementFlow,
 };
 
-export default function TaskFlow({ task, onUpdate, onHelp }) {
+export default function TaskFlow({ task, onUpdate, onHelp, onKuozhiProgressStateChange }) {
   if (task.locked) return <LockedPreview task={task} />;
   if (task.method === "external_course") {
-    return <KuozhiCourseTask task={task} />;
-  }
-  if (["learning_quiz", "document_quiz"].includes(task.method) && !task.locked) {
-    return <VideoQuizTask task={task} onUpdate={onUpdate} />;
-  }
-  if (task.method === "video_learning") {
-    return <VideoOnlyTask task={task} onUpdate={onUpdate} />;
+    return (
+      <KuozhiCourseTask
+        task={task}
+        onProgressStateChange={onKuozhiProgressStateChange}
+      />
+    );
   }
   if (task.method === "readiness_photo") {
     return <ReadinessPhotoTask task={task} />;
@@ -702,7 +688,12 @@ export default function TaskFlow({ task, onUpdate, onHelp }) {
     return <ExternalStatusTask task={task} onHelp={onHelp} onUpdate={onUpdate} />;
   }
   if (task.method === "profile_credentials") {
-    return <ProfileCredentialsTask task={task} />;
+    return (
+      <ProfileCredentialsTask
+        task={task}
+        onProgressStateChange={onKuozhiProgressStateChange}
+      />
+    );
   }
   const Flow = flowComponents[task.method];
   if (!Flow) return null;

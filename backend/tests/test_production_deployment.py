@@ -317,5 +317,5 @@ def test_readme_runs_preflight_before_migration() -> None:
     )
     assert preflight < migration
     assert "20260807_49_unused_columns" in readme
-    assert "0029_remove_unused_columns_and_orphan_function" in readme
-    assert "public 46 → teacher 0027 → public 49 → teacher 0029" in readme
+    assert "0030_remove_unused_columns_and_orphan_function" in readme
+    assert "public 46 → teacher 0028 → public 49 → teacher 0030" in readme

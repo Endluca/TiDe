@@ -19,7 +19,7 @@ DECLARE
 BEGIN
     IF file_objects_oid IS NULL THEN
         RAISE EXCEPTION
-            'migration 0029 requires tide.file_objects';
+            'migration 0030 requires tide.file_objects';
     END IF;
 
     SELECT attribute.attnum, attribute.attnotnull
@@ -32,12 +32,12 @@ BEGIN
 
     IF visibility_attnum IS NULL THEN
         RAISE EXCEPTION
-            'migration 0029 requires tide.file_objects.visibility';
+            'migration 0030 requires tide.file_objects.visibility';
     END IF;
 
     IF visibility_is_not_null IS DISTINCT FROM true THEN
         RAISE EXCEPTION
-            'migration 0029 requires tide.file_objects.visibility to be NOT NULL';
+            'migration 0030 requires tide.file_objects.visibility to be NOT NULL';
     END IF;
 
     IF EXISTS (
@@ -60,7 +60,7 @@ BEGIN
 
     IF visibility_constraint_oid IS NULL THEN
         RAISE EXCEPTION
-            'migration 0029 requires the validated file_objects_visibility_check constraint';
+            'migration 0030 requires the validated file_objects_visibility_check constraint';
     END IF;
 
     -- PostgreSQL 18 represents NOT NULL as a pg_constraint dependency;
@@ -130,7 +130,7 @@ DECLARE
 BEGIN
     IF function_oid IS NULL THEN
         RAISE EXCEPTION
-            'migration 0029 requires tide.enforce_outbox_target()';
+            'migration 0030 requires tide.enforce_outbox_target()';
     END IF;
 
     IF NOT EXISTS (
@@ -141,7 +141,7 @@ BEGIN
           AND function_row.pronargs = 0
     ) THEN
         RAISE EXCEPTION
-            'migration 0029 found an unexpected enforce_outbox_target signature';
+            'migration 0030 found an unexpected enforce_outbox_target signature';
     END IF;
 
     SELECT string_agg(

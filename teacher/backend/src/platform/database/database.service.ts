@@ -51,9 +51,10 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0024_support_ticket_cas_and_function_owner',
   '0025_fixed_task_semantic_alignment',
   '0026_kuozhi_course_syncs',
-  '0027_retire_task_business_change_view',
-  '0028_remove_unused_tide_objects',
-  '0029_remove_unused_columns_and_orphan_function',
+  '0027_remove_local_quiz_runtime',
+  '0028_retire_task_business_change_view',
+  '0029_remove_unused_tide_objects',
+  '0030_remove_unused_columns_and_orphan_function',
 ] as const;
 
 @Injectable()
@@ -270,7 +271,7 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0029_remove_unused_columns_and_orphan_function'
+        ) = '0030_remove_unused_columns_and_orphan_function'
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
         AND to_regclass('tide.job_leases') IS NOT NULL

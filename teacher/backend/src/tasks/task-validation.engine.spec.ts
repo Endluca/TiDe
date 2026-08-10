@@ -2,6 +2,7 @@ import { AllStepsCompleteRuleHandler } from './all-steps-complete-rule.handler';
 import type { PoolClient } from 'pg';
 import type { AiImageReviewRuleHandler } from './ai-image-review-rule.handler';
 import type { G01ExternalStatusRuleHandler } from './g01-external-status-rule.handler';
+import type { KuozhiCourseCompleteRuleHandler } from './kuozhi-course-complete-rule.handler';
 import { TaskValidationEngine } from './task-validation.engine';
 
 const rule = {
@@ -22,10 +23,15 @@ describe('TaskValidationEngine', () => {
     ruleType: 'G01_EXTERNAL_STATUS',
     evaluate: jest.fn(),
   } as unknown as G01ExternalStatusRuleHandler;
+  const kuozhiCourseComplete = {
+    ruleType: 'KUOZHI_COURSE_COMPLETE',
+    evaluate: jest.fn(),
+  } as unknown as KuozhiCourseCompleteRuleHandler;
   const engine = new TaskValidationEngine(
     new AllStepsCompleteRuleHandler(),
     imageReview,
     g01ExternalStatus,
+    kuozhiCourseComplete,
   );
   const context = {
     client: {} as PoolClient,

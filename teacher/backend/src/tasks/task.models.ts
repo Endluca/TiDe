@@ -13,7 +13,6 @@ export type TaskStatus =
 export type TaskStepType =
   | 'VIDEO'
   | 'DOCUMENT'
-  | 'QUIZ'
   | 'CHECKLIST'
   | 'UPLOAD'
   | 'DEVICE_CHECK'

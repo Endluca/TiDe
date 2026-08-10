@@ -185,8 +185,6 @@ export const environmentSchema = z
       .max(30_000)
       .default(8_000),
     KUOZHI_DETAIL_RETRY_COUNT: z.coerce.number().int().min(0).max(2).default(1),
-    KUOZHI_SAMPLE_MODE: booleanFromEnvironment,
-    KUOZHI_SAMPLE_TEACHER_ID: optionalString,
     FILE_STORAGE_PROVIDER: z.enum(['LOCAL', 'OSS']).default('LOCAL'),
     LOCAL_FILE_STORAGE_DIR: z.string().min(1).default('./storage/private'),
     OSS_REGION: optionalString,
@@ -316,17 +314,6 @@ export const environmentSchema = z
           });
         }
       }
-    }
-
-    if (
-      environment.KUOZHI_SAMPLE_MODE &&
-      !environment.KUOZHI_SAMPLE_TEACHER_ID
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['KUOZHI_SAMPLE_TEACHER_ID'],
-        message: '启用阔知示例模式时不能为空',
-      });
     }
 
     const tideDatabaseRequired =

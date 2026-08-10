@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；新库 `tit_growth_test_v2` 与代码 head 均为 `20260807_49_unused_columns`，teacher 迁移账本为 `0029_remove_unused_columns_and_orphan_function`。这证明测试库结构和源数据计算链已落地，不代表外部监控服务或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260807_49_unused_columns`、teacher `0030_remove_unused_columns_and_orphan_function`。`tit_growth_test_v2` 的 public 已到 rev49，但 tide 仍是合并前旧编号的 `0029_remove_unused_columns_and_orphan_function`，尚未包含 release 新增的 0027 本地 Quiz 清理；部署本分支前必须受控重建或完成账本与实存结构对账。已有测试只证明旧链的结构和源数据计算链已落地，不代表 canonical 0030、外部监控服务或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -35,7 +35,7 @@
 - `tit_growth_test`：保留的旧测试库，不执行本轮迁移或清理；
 - `tit_growth_test_v2`：本轮新建的隔离测试库，`public` head 为
   `20260807_49_unused_columns`，`tide` 迁移账本 head 为
-  `0029_remove_unused_columns_and_orphan_function`；
+  合并前旧编号的 `0029_remove_unused_columns_and_orphan_function`；部署当前代码前需受控重建或对账；
 - `tit_growth_app`：Web App 受限运行角色，无超级用户、建库、建角色和 Schema DDL 权限；
 - `tit_teacher_crud`：教师端后端预留受限角色，只能按共享任务契约读取任务并更新已有任务的状态字段，不能创建或删除 assignment；
 - 密码只存入本机 macOS 钥匙串，服务启动时读取，不写入仓库、环境文件或日志；
@@ -58,7 +58,7 @@ export DATABASE_URL='postgresql+psycopg://tit_growth_app@127.0.0.1:5432/tit_grow
 ## 初始化空库
 
 如果该库同时承载 teacher 的 `tide` Schema，首次初始化不能直接把 public 升到 head：必须按
-public 46 → teacher 0027 → public 49 → teacher 0029 分阶段执行，详见
+public 46 → teacher 0028 → public 49 → teacher 0030 分阶段执行，详见
 [`deploy/combined/README.md`](../deploy/combined/README.md)。只有不初始化 teacher Schema 的
 独立 public 数据库才可直接执行以下 `upgrade head`。
 
@@ -117,7 +117,7 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
 - `20260806_44_source_reads` 将两个教师端积分视图切到源表与新结果表。
 - `20260807_46_teacher_g01_source` 在教师源表末尾追加两个可空 G01 状态字段，
   并把教师端角色收紧为只读教师键和这两个状态字段；旧快照不再是 G01 读取入口。
-- `20260807_47_legacy_drop` 要求 teacher 0027 已先退役旧分析视图，并在三张旧投影为空且
+- `20260807_47_legacy_drop` 要求 teacher 0028 已先退役旧分析视图，并在三张旧投影为空且
   不存在外部视图、外键、继承/分区或发布依赖时，无 `CASCADE` 删除它们。
 - `20260807_48_schema_cleanup` 将通用投诉批次与逐行来源合并为四字段
   `complaint_rule_imports`，原位保留并瘦身 `score_accounts`、`score_component_accounts`，
@@ -126,12 +126,12 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   被删积分列确实等于自然键、教师营期或零值，来源批次列确实为空；出现非冗余值时整笔停止。
   rev48 downgrade 不伪造已删除的投诉导入元数据：`complaint_rule_imports` 非空时会明确拒绝
   降级，必须先导出并按受控方案处理。
-- teacher `0028_remove_unused_tide_objects` 以相同的空表、G00 退役和依赖门禁删除 6 张无消费者
+- teacher `0029_remove_unused_tide_objects` 以相同的空表、G00 退役和依赖门禁删除 6 张无消费者
   表及 5 个被当前分析实现替代的视图；当前 G04 图片审核继续使用提交、文件和图片审核表。
 - `20260807_49_unused_columns` 在逐行可还原性门禁后删除
   `complaint_category_rules.learning_title / learning_url` 和未被独立维护的
   `operator_sessions.last_seen_at`；前两列的完整值仍保留在 `complaint_rule_imports.raw_rows`。
-- teacher `0029_remove_unused_columns_and_orphan_function` 在确认所有文件均为
+- teacher `0030_remove_unused_columns_and_orphan_function` 在确认所有文件均为
   `PRIVATE`、无外部列依赖且函数无消费者后，无 `CASCADE` 删除
   `tide.file_objects.visibility` 和孤儿 `tide.enforce_outbox_target()`。
 - 国内/海外两个业务库到宽表的字段查询 SQL 与影响映射尚未提供；

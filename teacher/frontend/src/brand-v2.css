@@ -207,7 +207,7 @@ h1, h2, h3, p { margin-top: 0; }
 .workspace-heading { padding: 22px 24px 0; }
 .workspace-heading h2 { margin: 0; font-size: 21px; }
 .workspace-heading p { margin: 7px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
-.task-workspace .learning-flow, .task-workspace .quiz-flow, .task-workspace .checklist-flow, .task-workspace .upload-flow, .task-workspace .device-flow, .task-workspace .external-flow, .task-workspace .review-state { padding-right: 24px; padding-left: 24px; }
+.task-workspace .learning-flow, .task-workspace .checklist-flow, .task-workspace .upload-flow, .task-workspace .device-flow, .task-workspace .external-flow, .task-workspace .review-state { padding-right: 24px; padding-left: 24px; }
 .task-aside { display: grid; align-content: start; gap: 22px; }
 .task-facts { padding: 10px 22px; }
 .task-facts > div { display: flex; align-items: center; min-height: 80px; margin: 0; gap: 15px; border-bottom: 1px solid #ddd; }
@@ -222,13 +222,6 @@ h1, h2, h3, p { margin-top: 0; }
 .help-links button { display: grid; grid-template-columns: auto 1fr auto; align-items: center; width: 100%; min-height: 80px; padding: 0 24px; gap: 14px; border: 0; border-bottom: 1px solid #ddd; color: var(--brand-blue); background: #fff; cursor: pointer; text-align: left; }
 .help-links button:last-child { border-bottom: 0; }
 .mobile-task-meta, .mobile-task-toki, .mobile-help-link { display: none; }
-.quiz-panel { padding: 18px; border: 1px solid #bcdcff; border-radius: 12px; background: #f6fbff; }
-.quiz-panel h2 { margin: 15px 0; font-size: 18px; }
-.quiz-panel label { display: flex; align-items: center; min-height: 48px; margin-top: 8px; padding: 10px 12px; gap: 10px; border: 1px solid #d8e0e8; border-radius: 9px; background: #fff; cursor: pointer; }
-.quiz-panel label.selected { border-color: var(--brand-blue); background: #edf6ff; }
-.quiz-panel input { position: absolute; opacity: 0; }
-.quiz-panel label > span { width: 18px; height: 18px; border: 2px solid #bbb; border-radius: 50%; }
-.quiz-panel label.selected > span { border: 5px solid var(--brand-blue); }
 .task-message { margin: 12px 0 0; color: #a66d00; }
 .task-message.success { color: #15824f; }
 
@@ -453,15 +446,12 @@ h1, h2, h3, p { margin-top: 0; }
   .task-workspace { margin-top: 18px; }
   .workspace-heading { padding: 18px 14px 0; }
   .workspace-heading h2 { font-size: 19px; }
-  .task-workspace .learning-flow, .task-workspace .quiz-flow, .task-workspace .checklist-flow, .task-workspace .upload-flow, .task-workspace .device-flow, .task-workspace .external-flow, .task-workspace .review-state { padding: 18px 14px; }
+  .task-workspace .learning-flow, .task-workspace .checklist-flow, .task-workspace .upload-flow, .task-workspace .device-flow, .task-workspace .external-flow, .task-workspace .review-state { padding: 18px 14px; }
   .task-aside { display: none; }
   .mobile-task-toki { display: flex; align-items: center; min-height: 72px; margin-top: 10px; padding: 0 12px; gap: 11px; overflow: hidden; border: 1px solid #b8ddff; border-radius: 10px; background: #eff8ff; font-size: 13px; }
   .mobile-task-toki .ref-toki { width: 80px; height: 78px; align-self: end; }
   .mobile-help-link { display: grid; grid-template-columns: auto 1fr auto; align-items: center; width: 100%; min-height: 45px; padding: 0 5px; gap: 10px; border: 0; color: var(--brand-blue); background: #fff; text-align: left; }
   .task-continue { position: fixed; z-index: 44; right: 15px; bottom: 12px; left: 15px; width: calc(100% - 30px); }
-  .quiz-panel h2 { font-size: 16px; }
-  .quiz-panel label { font-size: 13px; }
-
   /* My TIDE mobile */
   .tit-screen { padding-top: 22px; }
   .tit-heading { display: block; margin: 0 4px 10px; }

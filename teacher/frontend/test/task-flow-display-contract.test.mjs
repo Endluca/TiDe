@@ -4,17 +4,18 @@ import test from "node:test";
 
 const source = (path) => readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
 
-test("G01 reuses the shared status and single-question flow presentation", async () => {
+test("G01 keeps shared statuses and embeds its Kuozhi assessment", async () => {
   const profileTask = await source("features/task-content/ProfileCredentialsTask.jsx");
 
   assert.match(profileTask, /<ExternalStatusTask task=\{sourceStatusTask\} embedded \/>/);
-  assert.match(profileTask, /className="g01-quiz single-question-flow"/);
+  assert.match(profileTask, /<KuozhiCourseTask task=\{task\}/);
+  assert.doesNotMatch(profileTask, /TESOL_QUIZ|quizQuestions|Submit answers/);
 });
 
 test("task completion views use the configured task reward", async () => {
   const [taskFlow, videoQuiz] = await Promise.all([
     source("components/TaskFlow.jsx"),
-    source("features/task-content/VideoQuizTask.jsx"),
+    source("features/task-content/VideoLearningTask.jsx"),
   ]);
 
   assert.match(taskFlow, /task\.tagReward/);
@@ -24,7 +25,7 @@ test("task completion views use the configured task reward", async () => {
 });
 
 test("video tasks keep the player display contract and support fullscreen playback", async () => {
-  const videoQuiz = await source("features/task-content/VideoQuizTask.jsx");
+  const videoQuiz = await source("features/task-content/VideoLearningTask.jsx");
 
   assert.match(videoQuiz, /poster=\{content\.poster\}/);
   assert.match(videoQuiz, /preload="auto"/);
@@ -40,12 +41,11 @@ test("video tasks keep the player display contract and support fullscreen playba
   assert.match(videoQuiz, /"退出全屏"/);
 });
 
-test("completed video tasks keep a replay entry without changing completion status", async () => {
-  const [taskFlow, videoQuiz, videoOnly, videoStyles] = await Promise.all([
+test("completed video references keep a replay entry without changing completion status", async () => {
+  const [taskFlow, videoQuiz, videoStyles] = await Promise.all([
     source("components/TaskFlow.jsx"),
-    source("features/task-content/VideoQuizTask.jsx"),
-    source("features/task-content/VideoOnlyTask.jsx"),
-    source("features/task-content/video-quiz-task.css"),
+    source("features/task-content/VideoLearningTask.jsx"),
+    source("features/task-content/video-learning-task.css"),
   ]);
 
   assert.match(videoQuiz, /onReplayVideo/);
@@ -71,9 +71,6 @@ test("completed video tasks keep a replay entry without changing completion stat
   assert.match(videoStyles, /\.video-seek-control:disabled[\s\S]*opacity: 0/);
   assert.match(videoStyles, /\.chapter-strip button\.reviewable/);
   assert.match(videoQuiz, /setActiveIndex\(index\)/);
-  assert.match(videoOnly, /onReplayVideo=\{\(\) => setReviewing\(true\)\}/);
-  assert.match(videoOnly, /reviewMode=\{reviewing\}/);
-  assert.match(videoOnly, /"回看不会改变已经完成的任务状态。"/);
   assert.match(taskFlow, /task\.status === "completed" && !reviewing/);
   assert.match(taskFlow, /onSecondary=\{hasVideo \? \(\) => setReviewing\(true\) : null\}/);
   assert.match(taskFlow, /c\("Replay video", "回看视频"\)/);
@@ -81,33 +78,15 @@ test("completed video tasks keep a replay entry without changing completion stat
   assert.match(taskFlow, /<ChapterVideoLearning[\s\S]*reviewMode/);
 });
 
-test("the policy document stays in-platform and supports the legacy quiz-only backend", async () => {
-  const videoQuiz = await source("features/task-content/VideoQuizTask.jsx");
-
-  assert.doesNotMatch(videoQuiz, /Open original|查看原文|documentContent\.sourceUrl/);
-  assert.match(videoQuiz, /if \(!task\.documentStepKey\)/);
-  assert.match(videoQuiz, /setDocumentComplete\(true\)/);
-});
-
-test("a completed quiz step is not presented as a passed attempt without stored answers", async () => {
-  const integratedTaskFlow = await source("components/IntegratedTaskFlow.jsx");
-
-  assert.match(integratedTaskFlow, /const hasStoredAttempt =/);
-  assert.match(integratedTaskFlow, /Object\.keys\(quizDetails\.answers\)\.length > 0/);
-  assert.match(integratedTaskFlow, /next\.quizResult = hasStoredAttempt/);
-});
-
-test("video completion follows the saved backend step status before unlocking the quiz", async () => {
+test("video completion follows the saved backend step status", async () => {
   const [integratedTaskFlow, videoQuiz] = await Promise.all([
     source("components/IntegratedTaskFlow.jsx"),
-    source("features/task-content/VideoQuizTask.jsx"),
+    source("features/task-content/VideoLearningTask.jsx"),
   ]);
 
   assert.match(integratedTaskFlow, /refresh: refreshLatestContext/);
   assert.match(videoQuiz, /response\?\.step\?\.status !== "COMPLETED"/);
   assert.match(videoQuiz, /Math\.floor\(elapsed\) - 10/);
-  assert.match(videoQuiz, /caught\?\.code === "PREVIOUS_STEP_INCOMPLETE"/);
-  assert.match(videoQuiz, /task\.execution\.refresh\?\.\(\)/);
 });
 
 test("task details show the reason only once in the why-this-task section", async () => {
@@ -204,33 +183,20 @@ test("personalized task details show only Shiwen why copy without extra evidence
   assert.match(styles, /\.task-related-courses li/);
 });
 
-test("the policy check shows source answers without generated explanations and can retry only missed questions", async () => {
-  const videoQuiz = await source("features/task-content/VideoQuizTask.jsx");
-
-  assert.match(videoQuiz, /evaluatePlatformPolicyAnswers/);
-  assert.match(videoQuiz, /Retry incorrect answers/);
-  assert.match(videoQuiz, /重做错题/);
-  assert.doesNotMatch(videoQuiz, /Explanation:|解析：|答案和解析|错题解析/);
-});
-
-test("every quiz result view shows answers without explanations", async () => {
-  const videoQuiz = await source("features/task-content/VideoQuizTask.jsx");
+test("the task runtime no longer contains local exam views", async () => {
+  const taskFlow = await source("components/TaskFlow.jsx");
+  const videoQuiz = await source("features/task-content/VideoLearningTask.jsx");
   const profileQuiz = await source("features/task-content/ProfileCredentialsTask.jsx");
+  const integratedTaskFlow = await source("components/IntegratedTaskFlow.jsx");
 
-  for (const quizView of [videoQuiz, profileQuiz]) {
-    assert.doesNotMatch(quizView, /Explanation:|解析：|答案和解析|查看解析|看看解析/);
+  for (const runtime of [taskFlow, videoQuiz, profileQuiz, integratedTaskFlow]) {
+    assert.doesNotMatch(runtime, /QUIZ|quizQuestions|passScore|Correct answer:|Submit answers/);
   }
-  assert.match(videoQuiz, /Your answer:/);
-  assert.match(videoQuiz, /Correct answer:/);
-  assert.match(profileQuiz, /Your answer:/);
-  assert.match(profileQuiz, /Correct answer:/);
-  assert.match(profileQuiz, /Retry incorrect answers/);
-  assert.match(profileQuiz, /重做错题/);
 });
 
 test("teacher-facing task copy hides internal codes and prototype labels", async () => {
   const profileQuiz = await source("features/task-content/ProfileCredentialsTask.jsx");
-  const videoQuiz = await source("features/task-content/VideoQuizTask.jsx");
+  const videoQuiz = await source("features/task-content/VideoLearningTask.jsx");
   const taskFlow = await source("components/TaskFlow.jsx");
   const messages = await source("components/MessageCenter.jsx");
   const i18n = await source("i18n.jsx");

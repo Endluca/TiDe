@@ -94,7 +94,7 @@ docker build -t tide-teacher-api:reviewed .
 
 镜像只暴露 `3000`，其内置健康检查请求 `/health/ready`。生产环境中，容器进入
 healthy 不只代表 Node 进程存在：迁移账本必须是完整生产清单且唯一最新版本为
-`0029_remove_unused_columns_and_orphan_function`，运营端稳定模板行必须精确对应当前 G01–G09
+`0030_remove_unused_columns_and_orphan_function`，运营端稳定模板行必须精确对应当前 G01–G09
 和 retired G00，九条当前执行配置也必须按同一稳定行处于 ACTIVE。后台任务租约、
 共享工单表及固定 owner 函数必须完整，6 张废弃表和 5 个旧分析视图必须不存在，教师身份来源和两张积分读取视图
 也必须可查询。教师运行账号必须只能读取迁移账本。密钥和数据库连接只能由部署平台在
@@ -105,7 +105,7 @@ healthy 不只代表 Node 进程存在：迁移账本必须是完整生产清单
 保持默认值，除非用真实文件大小、并发和 RSS 压测证明可以调整。容量用尽返回可重试的
 `429 MULTIPART_UPLOAD_CAPACITY_EXHAUSTED` 和 `Retry-After`，不排队持有请求体。
 
-后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出或租约过期后接管。所有副本必须连接同一个已应用 `0029_remove_unused_columns_and_orphan_function` 的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后由其他副本读取失败。
+后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出或租约过期后接管。所有副本必须连接同一个已应用 `0030_remove_unused_columns_and_orphan_function` 的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后由其他副本读取失败。
 
 ## 4. 迁移与发布前检查
 

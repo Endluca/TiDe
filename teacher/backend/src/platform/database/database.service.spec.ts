@@ -224,7 +224,7 @@ describe('DatabaseService', () => {
       shiwenRead: 'not_configured',
     });
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('0029_remove_unused_columns_and_orphan_function'),
+      expect.stringContaining('0030_remove_unused_columns_and_orphan_function'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.schema_migrations'),

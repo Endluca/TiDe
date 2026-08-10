@@ -80,32 +80,6 @@ function hydratedTask(task, context, status, steps) {
     next.videoProgress = Math.round(videoSteps.reduce((sum, video) => sum + (steps[video.stepKey]?.percent || 0), 0) / videoSteps.length);
     next.videoCompleted = videoSteps.every((video) => steps[video.stepKey]?.status === "COMPLETED");
   }
-  const quiz = context?.steps?.find((step) => step.type === "QUIZ");
-  if (quiz) {
-    const quizProgress = steps[quiz.stepKey];
-    next.quizAnswers = quizProgress?.details?.answers || {};
-    const quizDetails = {
-      ...(quizProgress?.details || {}),
-      ...(quizProgress?.result || {}),
-    };
-    const hasStoredAttempt = (
-      Number.isFinite(Number(quizDetails.answered))
-      && Number(quizDetails.answered) > 0
-      && Number.isFinite(Number(quizDetails.correct))
-      && Number.isFinite(Number(quizDetails.total))
-      && quizDetails.answers
-      && typeof quizDetails.answers === "object"
-      && Object.keys(quizDetails.answers).length > 0
-    );
-    next.quizResult = hasStoredAttempt
-      && (steps[quiz.stepKey]?.status === "FAILED" || steps[quiz.stepKey]?.status === "COMPLETED")
-      ? {
-          ...quizDetails,
-          passed: quizProgress?.status === "COMPLETED",
-        }
-      : null;
-    next.attemptNo = hasStoredAttempt ? Math.max(Number(task.attemptNo) || 0, 1) : 0;
-  }
   const documentStep = context?.steps?.find((step) => step.type === "DOCUMENT");
   if (documentStep) {
     next.documentCompleted = steps[documentStep.stepKey]?.status === "COMPLETED";
@@ -131,7 +105,13 @@ function hydratedTask(task, context, status, steps) {
   return next;
 }
 
-export default function IntegratedTaskFlow({ task, onRefresh, onTaskSubmitted, onHelp }) {
+export default function IntegratedTaskFlow({
+  task,
+  onRefresh,
+  onTaskSubmitted,
+  onHelp,
+  onKuozhiProgressStateChange,
+}) {
   const { language } = useI18n();
   const context = task.backendContext;
   const [stateVersion, setStateVersion] = useState(context?.stateVersion || task.stateVersion);
@@ -235,7 +215,6 @@ export default function IntegratedTaskFlow({ task, onRefresh, onTaskSubmitted, o
       step.stepKey,
     );
     const specializedEvent = {
-      QUIZ: "QUIZ_STARTED",
       DOCUMENT: "DOCUMENT_READING_STARTED",
       CHECKLIST: "CHECKLIST_STARTED",
     }[step.type];
@@ -287,46 +266,7 @@ export default function IntegratedTaskFlow({ task, onRefresh, onTaskSubmitted, o
       const version = await ensureStarted();
       const response = await saveTaskProgress(task.backendId, version, step.stepKey, 0, progress);
       updateTaskState(response);
-      if (step.type === "QUIZ") {
-        const questionCount =
-          progress?.answers && typeof progress.answers === "object"
-            ? Object.keys(progress.answers).length
-            : undefined;
-        const score = Number(response?.step?.result?.score);
-        const scoreBand = Number.isFinite(score)
-          ? score === 100
-            ? "100"
-            : score >= 80
-              ? "80_99"
-              : score >= 60
-                ? "60_79"
-                : "0_59"
-          : undefined;
-        trackProductEvent("QUIZ_SUBMITTED", {
-          task,
-          properties: {
-            stepKey: step.stepKey,
-            stepType: step.type,
-            questionCount,
-            scoreBand,
-            result: response?.step?.status || "SUBMITTED",
-          },
-        });
-        trackProductEvent(
-          response?.step?.status === "COMPLETED" ? "QUIZ_PASSED" : "QUIZ_FAILED",
-          {
-            task,
-            properties: {
-              stepKey: step.stepKey,
-              stepType: step.type,
-              questionCount,
-              scoreBand,
-              passed: response?.step?.status === "COMPLETED",
-              result: response?.step?.status === "COMPLETED" ? "PASSED" : "FAILED",
-            },
-          },
-        );
-      } else if (step.type === "DOCUMENT" && response?.step?.status === "COMPLETED") {
+      if (step.type === "DOCUMENT" && response?.step?.status === "COMPLETED") {
         trackProductEventOnce(
           "DOCUMENT_COMPLETED",
           {
@@ -543,8 +483,13 @@ export default function IntegratedTaskFlow({ task, onRefresh, onTaskSubmitted, o
 
   return (
     <>
-      <TaskFlow task={presentationTask} onUpdate={legacyUpdate} onHelp={onHelp} />
-      {error && !["learning_quiz", "document_quiz"].includes(presentationTask.method) && (
+      <TaskFlow
+        task={presentationTask}
+        onUpdate={legacyUpdate}
+        onHelp={onHelp}
+        onKuozhiProgressStateChange={onKuozhiProgressStateChange}
+      />
+      {error && (
         <div className="auth-form-error" role="alert">
           <WarningCircle size={18} weight="fill" />{error}
         </div>

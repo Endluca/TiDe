@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TIDE Teacher API Contract
-  version: 0.12.0
+  version: 0.14.0
   description: >-
     教师端公共合同。包含教师端任务、文件和 My TIDE 安全读取；
     各模块实现状态见 contracts/README。任务、G01 状态和外部消息直接使用共享 PostgreSQL 契约表；
@@ -266,8 +266,7 @@ paths:
       tags: [Tasks]
       summary: 查询阔知并幂等刷新当前任务进度
       description: >-
-        teacher_id 和 course_id 均由后端认证绑定与版本化映射取得。示例模式只返回
-        SAMPLE_DRY_RUN 数据，不保存快照，也不更新当前老师的任务状态。
+        teacher_id 和 course_id 均由后端认证绑定与版本化映射取得；只查询并保存正式课程数据。
       operationId: refreshKuozhiCourseProgress
       security: [{ bearerAuth: [] }]
       parameters:
@@ -1086,7 +1085,7 @@ components:
       required: [provider, dataMode, integrationStatus, mappingVersion, courses]
       properties:
         provider: { type: string, const: KUOZHI }
-        dataMode: { type: string, enum: [REAL, SAMPLE_DRY_RUN] }
+        dataMode: { type: string, const: REAL }
         integrationStatus: { type: string, enum: [ACTIVE, PARTIAL, MAPPING_ONLY] }
         mappingVersion: { type: integer, minimum: 1 }
         courses:
@@ -1099,7 +1098,7 @@ components:
             properties:
               courseId: { type: string, pattern: '^\d+$' }
               title: { type: [string, 'null'] }
-              embedMode: { type: string, enum: [IFRAME, NEW_WINDOW] }
+              embedMode: { type: string, const: IFRAME }
               launchUrl: { type: string, format: uri }
     KuozhiProgressResponse:
       type: object
@@ -1107,7 +1106,7 @@ components:
       required: [provider, dataMode, integrationStatus, mappingVersion, syncStatus, refreshedAt, courses, completion, assignment]
       properties:
         provider: { type: string, const: KUOZHI }
-        dataMode: { type: string, enum: [REAL, SAMPLE_DRY_RUN] }
+        dataMode: { type: string, const: REAL }
         integrationStatus: { type: string, enum: [ACTIVE, PARTIAL, MAPPING_ONLY] }
         mappingVersion: { type: integer, minimum: 1 }
         syncStatus: { type: string, enum: [NOT_SYNCED, AVAILABLE, PARTIAL, NO_DATA] }
@@ -1149,7 +1148,7 @@ components:
     KuozhiProgressTask:
       type: object
       additionalProperties: false
-      required: [courseTaskId, title, type, required, sourceStatus, percent, score, normalizedScorePercent, passScorePercent, testTimes, completed]
+      required: [courseTaskId, title, type, required, sourceStatus, percent, score, testTimes, completed]
       properties:
         courseTaskId: { type: string, pattern: '^\d+$' }
         title: { type: string }
@@ -1158,8 +1157,6 @@ components:
         sourceStatus: { type: string, enum: [AVAILABLE, MISSING, INVALID] }
         percent: { type: [number, 'null'], minimum: 0, maximum: 100 }
         score: { type: [number, 'null'] }
-        normalizedScorePercent: { type: [number, 'null'], minimum: 0 }
-        passScorePercent: { type: [number, 'null'], minimum: 0, maximum: 100 }
         testTimes: { type: [number, 'null'], minimum: 0 }
         completed: { type: boolean }
     TaskContent:
@@ -1236,7 +1233,7 @@ components:
               percent: { type: integer, minimum: 0, maximum: 100 }
     StepType:
       type: string
-      enum: [VIDEO, DOCUMENT, QUIZ, CHECKLIST, UPLOAD, DEVICE_CHECK, EXTERNAL_TRAINING, CUSTOM]
+      enum: [VIDEO, DOCUMENT, CHECKLIST, UPLOAD, DEVICE_CHECK, EXTERNAL_TRAINING, CUSTOM]
     TaskStatus:
       type: string
       enum: [ASSIGNED, VIEWED, IN_PROGRESS, SUBMITTED, UNDER_REVIEW, COMPLETED, FAILED, EXPIRED, WAIVED, CANCELLED]
@@ -1268,7 +1265,7 @@ components:
       required: [stepKey, outputType, value]
       properties:
         stepKey: { type: string }
-        outputType: { type: string, enum: [QUIZ, CHECKLIST, FILE, DEVICE_CHECK, EXTERNAL_PROOF, CUSTOM] }
+        outputType: { type: string, enum: [CHECKLIST, FILE, DEVICE_CHECK, EXTERNAL_PROOF, CUSTOM] }
         value: { type: object, additionalProperties: true }
     RetryTaskRequest:
       type: object
@@ -1737,11 +1734,6 @@ components:
         - VIDEO_SEEK_BLOCKED
         - VIDEO_STALLED
         - VIDEO_FAILED
-        - QUIZ_UNLOCKED
-        - QUIZ_STARTED
-        - QUIZ_SUBMITTED
-        - QUIZ_PASSED
-        - QUIZ_FAILED
         - DOCUMENT_READING_STARTED
         - DOCUMENT_MODULE_EXPANDED
         - DOCUMENT_COMPLETED

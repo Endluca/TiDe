@@ -218,7 +218,7 @@ performance_job_leases_exists="$("${PSQL[@]}" -Atqc "
 ")"
 if [[ "${performance_job_leases_exists}" != "t" ]]; then
   if [[ "${unused_tide_objects_removed}" == "t" ]]; then
-    echo "0028 已应用但 tide.job_leases 缺失，数据库处于不一致状态。" >&2
+    echo "0029 已应用但 tide.job_leases 缺失，数据库处于不一致状态。" >&2
     exit 1
   fi
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0022_performance_job_leases.up.sql"
@@ -290,9 +290,15 @@ if [[ "${support_ticket_security_hardened}" != "t" ]]; then
 fi
 
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
-"${PSQL[@]}" -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
-"${PSQL[@]}" -f "${DB_DIR}/migrations/0027_retire_task_business_change_view.up.sql"
-"${PSQL[@]}" -f "${DB_DIR}/migrations/0028_remove_unused_tide_objects.up.sql"
+kuozhi_course_syncs_exists="$("${PSQL[@]}" -Atqc "
+  select to_regclass('tide.kuozhi_course_syncs') is not null
+")"
+if [[ "${kuozhi_course_syncs_exists}" != "t" ]]; then
+  "${PSQL[@]}" -f "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
+fi
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0028_retire_task_business_change_view.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0029_remove_unused_tide_objects.up.sql"
 unused_column_cleanup_state="$("${PSQL[@]}" -AtF '|' -c "
   select
     exists (
@@ -305,16 +311,15 @@ unused_column_cleanup_state="$("${PSQL[@]}" -AtF '|' -c "
     to_regprocedure('tide.enforce_outbox_target()') is not null
 ")"
 if [[ "${unused_column_cleanup_state}" == "t|t" ]]; then
-  "${PSQL[@]}" -f "${DB_DIR}/migrations/0029_remove_unused_columns_and_orphan_function.up.sql"
+  "${PSQL[@]}" -f "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
 elif [[ "${unused_column_cleanup_state}" != "f|f" ]]; then
-  echo "0029 无用字段与孤儿函数处于不一致状态，迁移已停止。" >&2
+  echo "0030 无用字段与孤儿函数处于不一致状态，迁移已停止。" >&2
   exit 1
 fi
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
-pnpm --dir "${DB_DIR}/.." exec ts-node scripts/import-task-quiz-banks.ts
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0029、共享表本地契约、题库和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0030、共享表本地契约和当前 Seeds 已检查并执行。"

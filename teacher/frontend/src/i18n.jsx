@@ -176,8 +176,6 @@ const messages = {
     "status.expired": "Ended",
     "status.preview": "Preview",
     "status.sync_pending": "Waiting for review result",
-    "method.learning_quiz": "Learn + knowledge check",
-    "method.video_learning": "In-platform video",
     "method.external_status": "External status",
     "method.readiness_photo": "Camera photo + readiness check",
     "method.learning_checklist": "Learn + checklist",
@@ -365,8 +363,6 @@ const messages = {
     "status.expired": "已结束",
     "status.preview": "可以先看",
     "status.sync_pending": "等待审核结果",
-    "method.learning_quiz": "学习 + 课后练习",
-    "method.video_learning": "站内视频培训",
     "method.external_status": "外部状态",
     "method.readiness_photo": "现场拍照 + 课前准备检测",
     "method.learning_checklist": "学习 + 清单",
@@ -393,11 +389,11 @@ const taskZh = {
     priority: "建议先做",
     reason: "完成教师档案状态与 TESOL 学习证明，为首课做好准备。",
     value: "一次看清并完成档案与资质的五项要求。",
-    result: "查看 Self-intro 与 TESOL 状态，在本页完成 61 题、Essay 确认和完成证明提交。",
-    standard: "两项来源状态通过，且站内 61 题、Essay 确认和完成证明三项全部完成。",
-    steps: ["查看 Self-intro 与 TESOL 状态", "在本页完成 61 题 TESOL 测验", "确认 Essay 已完成", "在本页提交完成证明"],
-    cautions: ["61 题全部在本页作答，不跳转外部考试", "题目更新后会自动使用最新版本"],
-    material: "两项状态与三项站内操作",
+    result: "查看 Self-intro 与 TESOL 状态，在本页通过阔知完成考试，并完成 Essay 确认和证明提交。",
+    standard: "两项来源状态通过，阔知考试完成，且 Essay 确认和完成证明均已提交。",
+    steps: ["查看 Self-intro 与 TESOL 状态", "在本页内嵌阔知课程完成考试", "确认 Essay 已完成", "在本页提交完成证明"],
+    cautions: ["考试只在本页内嵌阔知课程完成", "不提供阔知外跳按钮"],
+    material: "两项来源状态、一项阔知考试与两项站内操作",
   },
   "device-network": {
     name: "设备与网络检测",
@@ -421,13 +417,13 @@ const taskZh = {
     duration: "15 分钟",
     due: "首课前完成",
     priority: "建议先做",
-    reason: "阅读 Overseas NT Policies 中的平台规则与常见问题，并完成知识练习。",
+    reason: "在阔知学习平台规则与常见问题，并完成考试。",
     value: "熟悉排期、出席、账号解锁、Lesson Memo 和常见支持规则。",
-    result: "阅读站内规则文档，并完成 5 道知识练习。",
-    standard: "确认已阅读规则文档，并在练习中达到 80 分。",
-    steps: ["阅读 Overseas NT Policies 规则与 FAQ", "确认完成阅读", "完成 5 道知识题并达到 80 分"],
-    cautions: ["规则内容以最新版 Overseas NT Policies 文档为准", "未通过时可核对错题答案并重新作答"],
-    material: "站内规则文档与 5 道站内练习题",
+    result: "在本页内嵌的阔知课程中完成视频和考试。",
+    standard: "阔知必修视频完播，考试达到发布通过线。",
+    steps: ["在本页完成阔知课程", "返回进度区刷新学习结果"],
+    cautions: ["课程只在本页内嵌展示", "完成状态以阔知同步结果为准"],
+    material: "阔知课程视频与考试",
   },
   "student-types": {
     name: "不同类型学员应对",
@@ -468,11 +464,11 @@ const taskZh = {
     priority: "可以先看",
     reason: "了解 TTP 对排期、已预约课程和日常教学承诺的含义。",
     value: "更清楚地管理可授课时段，并知道排期变化时如何处理。",
-    result: "在本页看完 TTP 视频，并逐项确认 5 个重点业务场景。",
-    standard: "TTP 视频完整看完，且 5 项学习清单全部确认。",
-    steps: ["在本页完整观看 TTP 视频", "确认 TTP 与排期承诺的关系", "确认 Shift Management、Auto Open Slot、开放时段和履约处理", "确认会持续维护 MyPage 可授课时段"],
-    cautions: ["请按顺序完整观看视频", "视频与清单进度都会自动保留"],
-    material: "1 个站内 TTP 视频 · 5 个业务场景",
+    result: "在本页内嵌的阔知课程中完成 TTP 视频。",
+    standard: "阔知必修视频完整看完。",
+    steps: ["在本页完成阔知 TTP 课程", "刷新学习进度"],
+    cautions: ["课程只在本页内嵌展示", "完成状态以阔知同步结果为准"],
+    material: "阔知 TTP 视频课程",
   },
   "me-culture": {
     name: "ME 文化与 PARSNIP",
@@ -483,11 +479,11 @@ const taskZh = {
     priority: "可以先看",
     reason: "学习文化边界、地区差异和安全的课堂回应方式。",
     value: "创造更安全、友好的学习体验。",
-    result: "按顺序看完六章培训，并回答课程 520 与 398 的 30 道题。",
-    standard: "看完视频且 30 道题正确率达到 80% 或以上。",
-    steps: ["观看 ME Culture 与 Global PARSNIP 培训", "完成全部 30 道题", "查看结果，未通过时重新作答"],
-    cautions: ["请按顺序完成全部视频和题目", "未达到 80% 时可在本页回看并重新作答"],
-    material: "6 个站内视频章节与 30 道站内练习题",
+    result: "在本页内嵌的阔知课程中完成全部视频和考试。",
+    standard: "阔知全部必修视频完播，全部考试达到发布通过线。",
+    steps: ["完成 ME Culture 与 Global PARSNIP 阔知课程", "刷新学习进度"],
+    cautions: ["课程只在本页内嵌展示", "完成状态以阔知同步结果为准"],
+    material: "阔知多课程视频与考试",
   },
   "reliability-training": {
     name: "Reliability 培训",
@@ -498,11 +494,11 @@ const taskZh = {
     priority: "可以先看",
     reason: "建立稳定履约习惯，并在出勤风险发生前采取正确行动。",
     value: "建立稳定可靠的教学节奏。",
-    result: "按顺序看完 Reliability 两章培训，并完成课后练习。",
-    standard: "完成两章视频，且课后练习达到 80 分。",
-    steps: ["观看 Attendance Policy Primer", "继续观看 Attendance Reliability Guide", "完成课后练习"],
-    cautions: ["请完成两章视频和 5 道题", "未达到 80 分时可在本页回看并重新作答"],
-    material: "2 个站内视频 + 5 道站内练习题",
+    result: "在本页内嵌的阔知课程中完成 Reliability 培训。",
+    standard: "当前展示阔知视频进度；正式考试任务 ID 补齐前不自动完成。",
+    steps: ["完成阔知 Reliability 课程", "刷新学习进度"],
+    cautions: ["课程只在本页内嵌展示", "正式考试映射仍待发布"],
+    material: "阔知 Reliability 课程",
   },
   "free-trial-training": {
     name: "体验课培训",
@@ -525,27 +521,27 @@ const taskZh = {
     duration: "25 分钟",
     due: "完成前一阶段可提前解锁 · 第 15 天自动开放",
     priority: "可以先看",
-    reason: "通过 7 个站内短章节学习 Cocos 的核心教学流程。",
+    reason: "通过阔知课程学习 Cocos 的核心教学流程。",
     value: "为准备 Cocos 课程建立更清楚的教学思路。",
-    result: "看完全部 7 个章节，并通过页面内的 5 道练习。",
-    standard: "完成全部 7 章，且练习正确率达到 80%。",
-    steps: ["按顺序观看 7 个 Cocos 章节", "在本页完成 5 道练习", "查看结果，未通过时重新作答"],
-    cautions: ["请按顺序完成全部章节和题目", "不需要跳转任何外部课程页面"],
-    material: "7 个站内章节与 5 道练习题",
+    result: "在本页内嵌的阔知课程中完成全部视频和考试。",
+    standard: "阔知全部必修视频完播，考试达到发布通过线。",
+    steps: ["完成阔知 Cocos 课程", "刷新学习进度"],
+    cautions: ["课程只在本页内嵌展示", "完成状态以阔知同步结果为准"],
+    material: "阔知 Cocos 视频与考试",
   },
   "set-fundamentals": {
     name: "SET 教学基础",
     shortName: "SET 教学基础",
     duration: "25 分钟",
     due: "完成前一阶段可提前解锁 · 第 15 天自动开放",
-    priority: "可以先看",
-    reason: "在本页学习 SET 课堂的基础流程与教学动作。",
+    priority: "内容待配置",
+    reason: "SET 教学基础只通过阔知课程完成。",
     value: "为准备和完成 SET 课堂建立清楚的基础。",
-    result: "看完视频，并通过页面内的 5 道练习。",
-    standard: "完整看完视频，且练习正确率达到 80%。",
-    steps: ["观看 SET Teaching Fundamentals 视频", "在本页完成 5 道练习", "查看结果，未通过时重新作答"],
-    cautions: ["请完成视频和全部题目", "不需要跳转外部课程页面"],
-    material: "1 个站内视频与 5 道练习题",
+    result: "阔知发布正式课程映射后，在本页完成视频和考试。",
+    standard: "等待阔知课程、视频和考试任务 ID 发布。",
+    steps: [],
+    cautions: ["当前无需操作", "不会使用临时视频或题目兜底"],
+    material: "阔知 SET 课程待发布",
   },
   "classroom-environment-coaching": {
     name: "课堂环境优化",
@@ -756,7 +752,7 @@ const taskSignalZh = {
   },
   "platform-policies": {
     scoreReason: "这项必修学习任务当前可以完成。",
-    recoveryPath: "回顾学习内容，准备好后再次完成练习。",
+    recoveryPath: "在阔知课程中继续学习，完成后刷新进度。",
   },
   "student-types": {
     scoreReason: "这项必修任务已经确认，正式内容和完成方式仍待培训侧补充。",
@@ -768,15 +764,15 @@ const taskSignalZh = {
   },
   "ttp-orientation": {
     scoreReason: "完成当前阶段后，这项任务会自动开放。",
-    recoveryPath: "先完成第 1-7 天剩余基础任务，再返回查看。",
+    recoveryPath: "开放后在阔知课程中完成视频并刷新进度。",
   },
   "me-culture": {
     scoreReason: "这项学习任务预留在下一成长阶段。",
-    recoveryPath: "完成当前阶段后学习内容；如有需要，可重新作答。",
+    recoveryPath: "完成当前阶段后在阔知课程中学习并刷新进度。",
   },
   "reliability-training": {
     scoreReason: "这项培训后续可形成清楚的可靠性成长记录。",
-    recoveryPath: "完成当前阶段后参加培训；如未通过，可回顾内容并重新作答。",
+    recoveryPath: "完成当前阶段后参加阔知培训；考试映射补齐前不自动完成。",
   },
   "free-trial-training": {
     scoreReason: "下一阶段开放后，可以在系统内完成这项培训。",
@@ -784,11 +780,11 @@ const taskSignalZh = {
   },
   "cocos-training": {
     scoreReason: "完成最终阶段后可以获得对应课程准备标签。",
-    recoveryPath: "完成全部 7 个章节；练习未通过时可在本页重新作答。",
+    recoveryPath: "在阔知课程中完成全部视频和考试，再刷新进度。",
   },
   "set-fundamentals": {
-    scoreReason: "完成最终阶段后可以获得对应课程准备标签。",
-    recoveryPath: "回看课程内容，并在本页重新完成练习。",
+    scoreReason: "阔知正式课程映射仍待发布。",
+    recoveryPath: "当前无需操作；课程、视频和考试任务 ID 发布后再完成。",
   },
   "classroom-environment-coaching": {
     scoreReason: "这是一项改善入口，完成个性化任务本身不直接加分。",
@@ -891,43 +887,6 @@ const stageZh = {
 
 export function localizeStage(stage, language) {
   return language === "zh" ? { ...stage, ...stageZh[stage.id] } : stage;
-}
-
-const quizZh = {
-  "platform-policies": [
-    ["如果你可能迟到，应该怎么做？", ["尽早联系支持团队", "等课程结束再处理", "请学员改期"]],
-    ["课堂环境应在什么时候准备好？", ["首课结束后", "首课开始前", "第 30 天结束时"]],
-    ["哪些做法能够保护教师账号？", ["妥善保管登录信息", "使用独立密码", "与其他老师共享账号"]],
-    ["课堂工具出现故障时，先按照排障指南处理是合适的。", ["正确", "错误"]],
-    ["本任务达到多少分算完成？", ["60%", "70%", "80% 或以上"]],
-  ],
-  "me-culture": [
-    ["什么样的课堂示例更适合学员？", ["尊重且符合年龄", "无论如何都要出人意料", "包含私人信息"]],
-    ["敏感课堂话题应以什么为准？", ["个人好奇心", "培训指引", "社交媒体趋势"]],
-    ["如果不确定某个示例是否合适，应该怎么做？", ["快速使用", "让学员决定", "选择中性示例并查看指引"]],
-    ["文化指引的目标是什么？", ["创造友好的课堂", "评判教师", "增加手续"]],
-    ["最终课堂示例应来自哪里？", ["已确认的培训内容", "匿名帖子", "仅凭记忆"]],
-  ],
-  "reliability-training": [
-    ["什么做法有助于稳定开课？", ["提前进入课堂", "开课后再打开工具", "等待提醒"]],
-    ["遇到排期问题时，最合适的做法是什么？", ["隐藏问题", "尽早按照支持流程处理", "等待几天"]],
-    ["为什么要在课前准备？", ["保护课堂时间", "增加压力", "完全避免支持"]],
-    ["每节课前应该检查哪些内容？", ["排课、设备和课程材料", "只看课程名称", "开课后再准备"]],
-    ["什么能够建立可靠的教学节奏？", ["小而可重复的习惯", "临时变化", "跳过检测"]],
-  ],
-};
-
-export function localizeQuestions(taskId, questions, language) {
-  if (language !== "zh") return questions;
-  return questions.map((question, index) => {
-    const fallback = quizZh[taskId]?.[index];
-    return {
-      ...question,
-      question: question.questionZh || fallback?.[0] || question.question,
-      options: question.optionsZh || fallback?.[1] || question.options,
-      explanation: "",
-    };
-  });
 }
 
 const I18nContext = createContext({ language: "en", t: (key) => key });

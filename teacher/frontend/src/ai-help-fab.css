@@ -129,7 +129,8 @@
   height: calc(var(--ai-help-size) + 4px);
   object-fit: contain;
   pointer-events: none;
-  transform: translateY(2px);
+  /* The source PNG has extra transparent space on its right and bottom. */
+  transform: translate(8%, 2px);
 }
 
 .ai-help-fab-badge {
@@ -168,7 +169,7 @@
 
 @media (max-width: 720px) {
   .ai-help-fab {
-    --ai-help-size: 62px;
+    --ai-help-size: 50px;
     right: max(15px, env(safe-area-inset-right));
     bottom: calc(91px + env(safe-area-inset-bottom));
   }
@@ -178,12 +179,7 @@
   }
 
   .ai-help-fab-hint {
-    right: auto;
-    bottom: -10px;
-    left: 50%;
-    display: inline-grid;
-    padding: 4px 7px;
-    box-shadow: 0 6px 18px rgba(29, 71, 116, .12);
+    display: none;
   }
 
   .ai-help-fab.is-near-left .ai-help-fab-hint {
@@ -196,8 +192,13 @@
   }
 
   .ai-help-fab-badge {
-    width: 23px;
-    height: 23px;
+    width: 20px;
+    height: 20px;
+  }
+
+  .ai-help-fab > button {
+    cursor: pointer;
+    touch-action: manipulation;
   }
 }
 

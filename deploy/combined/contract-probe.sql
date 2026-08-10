@@ -185,12 +185,13 @@ BEGIN
             '0024_support_ticket_cas_and_function_owner',
             '0025_fixed_task_semantic_alignment',
             '0026_kuozhi_course_syncs',
-            '0027_retire_task_business_change_view',
-            '0028_remove_unused_tide_objects',
-            '0029_remove_unused_columns_and_orphan_function'
+            '0027_remove_local_quiz_runtime',
+            '0028_retire_task_business_change_view',
+            '0029_remove_unused_tide_objects',
+            '0030_remove_unused_columns_and_orphan_function'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0029';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0030';
     END IF;
 
     IF to_regclass('tide.analytics_task_business_change_v1') IS NOT NULL

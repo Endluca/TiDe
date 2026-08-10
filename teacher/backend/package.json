@@ -18,7 +18,6 @@
     "test:cov": "jest --coverage",
     "test:e2e": "jest --config test/jest-e2e.json",
     "import:faq": "ts-node scripts/import-canonical-faq.ts",
-    "import:quiz-banks": "ts-node scripts/import-task-quiz-banks.ts",
     "provision:internal-test": "ts-node scripts/provision-internal-test-accounts.ts",
     "sync:task-catalog": "ts-node scripts/sync-current-task-catalog.ts",
     "publish:system-notifications": "ts-node scripts/publish-system-notifications.ts",

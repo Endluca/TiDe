@@ -19,6 +19,7 @@ test("loads the floating AI helper styles before the lazy support dialog", () =>
 
   assert.match(mainSource, /import "\.\/ai-help-fab\.css";/);
   assert.match(helperStyles, /\.ai-help-fab > button > img/);
+  assert.match(helperStyles, /transform: translate\(8%, 2px\);/);
 });
 
 test("keeps the desktop AI helper below the top navigation", () => {
@@ -46,17 +47,33 @@ test("keeps the mobile AI helper above the bottom navigation", () => {
     viewportHeight: 844,
     headerBottom: 66,
     lowerBoundary: 768,
-    buttonSize: 62,
+    buttonSize: 50,
     edgeGap: 15,
   });
 
   assert.deepEqual(bounds, {
     minX: 15,
-    maxX: 313,
+    maxX: 325,
     minY: 81,
-    maxY: 691,
+    maxY: 703,
   });
-  assert.deepEqual(defaultAiHelpPosition(bounds, 18), { x: 313, y: 673 });
+  assert.deepEqual(defaultAiHelpPosition(bounds, 18), { x: 325, y: 685 });
+});
+
+test("pins the mobile AI helper instead of restoring a content-covering drag position", () => {
+  const appSource = readFileSync(
+    new URL("../src/App.jsx", import.meta.url),
+    "utf8",
+  );
+  const helperStyles = readFileSync(
+    new URL("../src/ai-help-fab.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(appSource, /layout\.mode === "mobile"\s*\? null/);
+  assert.match(appSource, /window\.innerWidth <= AI_HELP_MOBILE_BREAKPOINT\) return/);
+  assert.match(helperStyles, /--ai-help-size:\s*50px/);
+  assert.match(helperStyles, /\.ai-help-fab-hint\s*\{\s*display:\s*none/);
 });
 
 test("keeps a lifted default inside short viewports", () => {

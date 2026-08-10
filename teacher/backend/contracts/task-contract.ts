@@ -125,7 +125,6 @@ export type TaskStatus =
 export type StepType =
   | 'VIDEO'
   | 'DOCUMENT'
-  | 'QUIZ'
   | 'CHECKLIST'
   | 'UPLOAD'
   | 'DEVICE_CHECK'
@@ -229,20 +228,20 @@ export interface TaskContext {
 
 export interface KuozhiLaunchResponse {
   provider: 'KUOZHI';
-  dataMode: 'REAL' | 'SAMPLE_DRY_RUN';
+  dataMode: 'REAL';
   integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
   mappingVersion: number;
   courses: Array<{
     courseId: string;
     title: string | null;
-    embedMode: 'IFRAME' | 'NEW_WINDOW';
+    embedMode: 'IFRAME';
     launchUrl: string;
   }>;
 }
 
 export interface KuozhiProgressResponse {
   provider: 'KUOZHI';
-  dataMode: 'REAL' | 'SAMPLE_DRY_RUN';
+  dataMode: 'REAL';
   integrationStatus: 'ACTIVE' | 'PARTIAL' | 'MAPPING_ONLY';
   mappingVersion: number;
   syncStatus: 'NOT_SYNCED' | 'AVAILABLE' | 'PARTIAL' | 'NO_DATA';
@@ -261,8 +260,6 @@ export interface KuozhiProgressResponse {
       sourceStatus: 'AVAILABLE' | 'MISSING' | 'INVALID';
       percent: number | null;
       score: number | null;
-      normalizedScorePercent: number | null;
-      passScorePercent: number | null;
       testTimes: number | null;
       completed: boolean;
     }>;
@@ -297,12 +294,7 @@ export interface SaveProgressRequest extends MutationMeta {
 export interface StepOutput {
   stepKey: string;
   outputType:
-    | 'QUIZ'
-    | 'CHECKLIST'
-    | 'FILE'
-    | 'DEVICE_CHECK'
-    | 'EXTERNAL_PROOF'
-    | 'CUSTOM';
+    'CHECKLIST' | 'FILE' | 'DEVICE_CHECK' | 'EXTERNAL_PROOF' | 'CUSTOM';
   value: Record<string, unknown>;
 }
 

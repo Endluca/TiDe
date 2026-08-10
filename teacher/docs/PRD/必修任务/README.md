@@ -21,15 +21,15 @@
 
 | 编码 | 任务 ID | 任务名称 | 任务类型 | 文档状态 | 业务口径 | 负责人 | 任务 PRD | 开发状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `G01` | `profile-credentials` | Profile & Credentials Completion 教师档案与资质完善 | 固定必修 | 已确认 | 部分确认 | 嘉荷 | [任务 PRD](TASK-profile-credentials_教师档案与资质.md) | 五项完成条件，3 分；读取两项真实状态，站内完成 61 道 Mock 题、Essay 确认和完成证明提交 |
-| `G02` | `platform-policies` | Platform Policies 平台规则 | 固定必修 | 评审中 | 部分确认 | 嘉荷 | [任务 PRD](TASK-platform-policies_平台规则.md) | 站内原生文档＋5 道题，2 分 |
+| `G01` | `profile-credentials` | Profile & Credentials Completion 教师档案与资质完善 | 固定必修 | 已确认 | 部分确认 | 嘉荷 | [任务 PRD](TASK-profile-credentials_教师档案与资质.md) | 五项完成条件，3 分；读取两项真实状态，在阔知课程 407 完成考试，站内完成 Essay 确认和完成证明提交 |
+| `G02` | `platform-policies` | Platform Policies 平台规则 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-platform-policies_平台规则.md) | 阔知 iframe 视频＋考试，2 分 |
 | `G03` | `student-types` | How to handle different types of students 不同类型学员应对 | 固定必修 | 草稿 | 部分确认 | 嘉荷 | [任务 PRD](TASK-student-types_不同类型学员应对.md) | 2 分；内容待嘉荷配置，未配齐前显示内容准备中，不可 Mock 完成 |
 | `G04` | `lesson-preparation` | Lesson Preparation&Device Network Check 首课准备与设备网络检测 | 固定必修 | 评审中 | 部分确认 | 嘉荷 | [任务 PRD](TASK-lesson-preparation_首课准备.md) | 三部分课前准备，3 分；当前设备项仍需与运营契约对齐 |
-| `G05` | `ttp-orientation` | TTP Orientation TTP 入门培训 | 固定必修 | 评审中 | 部分确认 | 嘉荷 | [任务 PRD](TASK-ttp-orientation_TTP入门培训.md) | 站内视频＋5 项清单，3 分 |
-| `G06` | `me-culture` | ME Culture & PARSNIP | 固定必修 | 评审中 | 部分确认 | 嘉荷 | [任务 PRD](TASK-me-culture_ME文化与PARSNIP.md) | 站内 6 章视频＋30 道题，4 分 |
-| `G07` | `reliability-training` | Reliability Training | 固定必修 | 草稿 | Mock | 嘉荷 | [任务 PRD](TASK-reliability-training_Reliability培训.md) | 2 章正式视频可播放；5 道 Mock 题须在上线前替换，3 分 |
-| `G08` | `cocos-training` | Cocos Course Training | 固定必修 | 评审中 | 部分确认 | 嘉荷 | [任务 PRD](TASK-cocos-training_Cocos课程培训.md) | 站内 7 章视频＋5 道题，5 分 |
-| `G09` | `set-fundamentals` | SET Teaching Fundamentals | 固定必修 | 草稿 | Mock | 嘉荷 | [任务 PRD](TASK-set-fundamentals_SET教学基础.md) | Mock 播放槽＋5 道 Mock 题须在上线前替换，5 分 |
+| `G05` | `ttp-orientation` | TTP Orientation TTP 入门培训 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-ttp-orientation_TTP入门培训.md) | 阔知 iframe 视频，3 分 |
+| `G06` | `me-culture` | ME Culture & PARSNIP | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-me-culture_ME文化与PARSNIP.md) | 阔知 iframe 多课程视频＋考试，4 分 |
+| `G07` | `reliability-training` | Reliability Training | 固定必修 | 评审中 | 阔知部分映射 | 嘉荷 | [任务 PRD](TASK-reliability-training_Reliability培训.md) | 阔知 iframe 视频；考试 ID 待补，3 分 |
+| `G08` | `cocos-training` | Cocos Course Training | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-cocos-training_Cocos课程培训.md) | 阔知 iframe 视频＋考试，5 分 |
+| `G09` | `set-fundamentals` | SET Teaching Fundamentals | 固定必修 | 待配置 | 阔知待发布 | 嘉荷 | [任务 PRD](TASK-set-fundamentals_SET教学基础.md) | 不使用本地 Mock；等待阔知课程／视频／考试任务 ID，5 分 |
 
 ### 历史兼容与候选资料
 
@@ -37,7 +37,7 @@
 | --- | --- | --- | --- | --- |
 | 重排前 `G02` / `device-network` | Device & Network Check 设备与网络检测 | 已合并进当前 G04 | [历史任务 PRD](TASK-device-network_设备与网络检测.md) | 不再作为独立任务；仅保留历史设计资料 |
 | 重排前 `G05` / 当前 `G00` | Lesson Preparation 首课准备 | 已合并进当前 G04 | [当前 G04 PRD](TASK-lesson-preparation_首课准备.md) | 只读保留历史 assignment，不生成独立入口 |
-| `free-trial-training` | Free Trial Training 体验课培训 | Domestic pending，不计入当前 9 项必修 | [候选任务 PRD](TASK-free-trial-training_体验课培训.md) | 保留已有章节、题库和素材作为候选资料；业务确认前不展示、不计数、不计分 |
+| `free-trial-training` | Free Trial Training 体验课培训 | Domestic pending，不计入当前 9 项必修 | [候选任务 PRD](TASK-free-trial-training_体验课培训.md) | 仅保留候选课程资料；正式启用时必须配置阔知课程与考试任务，业务确认前不展示、不计数、不计分 |
 
 ### 个性化改善任务
 

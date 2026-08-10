@@ -1,6 +1,6 @@
 BEGIN;
 
--- Structural rollback only.  Migration 0028 refuses populated tables, so
+-- Structural rollback only.  Migration 0029 refuses populated tables, so
 -- there is intentionally no business data to restore.
 CREATE TABLE tide.outcome_projections (
     id uuid PRIMARY KEY,
@@ -441,12 +441,6 @@ SELECT
         AS video_completions,
     count(*) FILTER (WHERE event_name IN ('VIDEO_STALLED', 'VIDEO_FAILED'))
         AS video_failures,
-    count(*) FILTER (WHERE event_name = 'QUIZ_SUBMITTED')
-        AS quiz_submissions,
-    count(*) FILTER (WHERE event_name = 'QUIZ_PASSED')
-        AS quiz_passes,
-    count(*) FILTER (WHERE event_name = 'QUIZ_FAILED')
-        AS quiz_failures,
     count(*) FILTER (WHERE event_name = 'UPLOAD_STARTED')
         AS upload_starts,
     count(*) FILTER (WHERE event_name = 'UPLOAD_SUCCEEDED')
@@ -467,11 +461,6 @@ SELECT
         ),
         4
     ) AS video_completion_rate,
-    round(
-        count(*) FILTER (WHERE event_name = 'QUIZ_PASSED')::numeric
-        / NULLIF(count(*) FILTER (WHERE event_name = 'QUIZ_SUBMITTED'), 0),
-        4
-    ) AS quiz_pass_rate,
     round(
         count(*) FILTER (WHERE event_name = 'UPLOAD_FAILED')::numeric
         / NULLIF(
@@ -494,7 +483,6 @@ SELECT
     ) AS camera_failure_rate
 FROM tide.app_events
 WHERE event_name LIKE 'VIDEO_%'
-   OR event_name LIKE 'QUIZ_%'
    OR event_name LIKE 'UPLOAD_%'
    OR event_name LIKE 'CAMERA_%'
 GROUP BY

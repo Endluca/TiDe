@@ -23,6 +23,11 @@ import {
   saveFaqFeedback,
 } from "../api/faq-api";
 import { localizeApiError } from "../api-error-copy";
+import {
+  faqTicketContext,
+  shouldOfferFaqTicket,
+  teacherQuestionBefore,
+} from "../faq-ticket-escalation";
 import { toFaqDisplayMarkdown } from "../faq-message-format";
 import { trackProductEvent } from "../analytics/product-analytics";
 import SupportTicketForm from "./SupportTicketForm";
@@ -90,6 +95,25 @@ function Feedback({ message, language, saving, onFeedback, onEscalate }) {
   );
 }
 
+function TicketEscalation({ language, onEscalate }) {
+  return (
+    <div className="faq-ticket-escalation" role="note">
+      <span><Headset size={19} weight="duotone" /></span>
+      <div>
+        <strong>{copy(language, "Need more help?", "需要进一步帮助？")}</strong>
+        <p>{copy(
+          language,
+          "Submit a ticket and the operations team will follow up.",
+          "你可以提交工单，由运营同事进一步处理。",
+        )}</p>
+        <button type="button" onClick={onEscalate}>
+          {copy(language, "Submit a support ticket", "提交工单")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function FaqHelpDialog({
   open,
   onClose,
@@ -107,7 +131,10 @@ export default function FaqHelpDialog({
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState("");
+  const [answerErrorQuestion, setAnswerErrorQuestion] = useState("");
   const [feedbackSaving, setFeedbackSaving] = useState({});
+  const [ticketEscalationContext, setTicketEscalationContext] = useState(null);
+  const [ticketReturnMode, setTicketReturnMode] = useState("CHOICE");
   const conversationIdRef = useRef("");
   const pendingRequestRef = useRef(null);
   const endRef = useRef(null);
@@ -120,6 +147,9 @@ export default function FaqHelpDialog({
     if (!open) return undefined;
     setMode(previewTicket ? "TICKET" : "CHOICE");
     setTicketCreated(previewTicket ? { ticketCode: "TIDE-PREVIEW" } : null);
+    setAnswerErrorQuestion("");
+    setTicketEscalationContext(null);
+    setTicketReturnMode("CHOICE");
     const close = (event) => event.key === "Escape" && onClose();
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
@@ -172,6 +202,7 @@ export default function FaqHelpDialog({
     if (trimmed.length < 2 || loading || historyLoading) return;
     setLoading(true);
     setError("");
+    setAnswerErrorQuestion("");
     trackProductEvent("FAQ_QUESTION_SUBMITTED", {
       properties: {
         entrySource,
@@ -207,6 +238,7 @@ export default function FaqHelpDialog({
       pendingRequestRef.current = null;
       setQuestion("");
     } catch (caught) {
+      setAnswerErrorQuestion(trimmed);
       setError(localizeApiError(
         caught,
         language,
@@ -258,13 +290,21 @@ export default function FaqHelpDialog({
     trackProductEvent("HELP_ROUTE_SELECTED", {
       properties: { entrySource, interaction: "AI_FAQ", result: "OPENED" },
     });
+    setTicketEscalationContext(null);
     setMode("FAQ");
   };
-  const startTicket = (prefill = "") => {
+  const startTicket = (prefill = "", faqMessage = null) => {
     trackProductEvent("HELP_ROUTE_SELECTED", {
       properties: { entrySource, interaction: "SUPPORT_TICKET", result: "OPENED" },
     });
-    if (prefill) setQuestion(prefill);
+    setQuestion(prefill);
+    setAnswerErrorQuestion("");
+    setTicketReturnMode(mode === "FAQ" ? "FAQ" : "CHOICE");
+    setTicketEscalationContext(
+      faqMessage
+        ? faqTicketContext(conversationIdRef.current, faqMessage)
+        : null,
+    );
     setMode("TICKET");
   };
 
@@ -335,10 +375,13 @@ export default function FaqHelpDialog({
               language={language}
               entrySource={entrySource}
               initialDescription={question}
-              supportContext={supportContext}
+              supportContext={{
+                ...supportContext,
+                ...(ticketEscalationContext || {}),
+              }}
               taskOptions={taskOptions}
               lessonOptions={lessonOptions}
-              onBack={() => setMode("CHOICE")}
+              onBack={() => setMode(ticketReturnMode)}
               onCreated={(ticket) => {
                 setTicketCreated(ticket);
                 onTicketCreated?.(ticket);
@@ -376,7 +419,10 @@ export default function FaqHelpDialog({
             </div>
           ) : (
             <div className="faq-message-list">
-              {messages.map((message) => (
+              {messages.map((message, messageIndex) => {
+                const relatedQuestion = teacherQuestionBefore(messages, messageIndex);
+                const offerTicket = shouldOfferFaqTicket(message);
+                return (
                 <article key={message.id} className={`faq-message ${message.role === "TEACHER" ? "is-teacher" : "is-assistant"}`}>
                   <span className="faq-message-avatar">
                     {message.role === "TEACHER" ? <UserCircle size={20} /> : <Sparkle size={18} weight="duotone" />}
@@ -387,29 +433,48 @@ export default function FaqHelpDialog({
                       : <p>{message.body}</p>}
                     {message.role === "ASSISTANT" && (
                       <>
-                        {message.reasonCode !== "FAQ_CLARIFICATION_NEEDED" && (
+                        {offerTicket ? (
+                          <TicketEscalation
+                            language={language}
+                            onEscalate={() => startTicket(relatedQuestion, message)}
+                          />
+                        ) : message.reasonCode !== "FAQ_CLARIFICATION_NEEDED" && (
                           <Feedback
                             message={message}
                             language={language}
                             saving={feedbackSaving[message.id] === true}
                             onFeedback={submitFeedback}
-                            onEscalate={() => startTicket(
-                              [...messages].reverse().find((item) => item.role === "TEACHER")?.body || "",
-                            )}
+                            onEscalate={() => startTicket(relatedQuestion, message)}
                           />
                         )}
                       </>
                     )}
                   </div>
                 </article>
-              ))}
+                );
+              })}
             </div>
           )}
           <div ref={endRef} />
         </div>
 
         <form ref={formRef} className="faq-composer" onSubmit={ask}>
-          {error && <div className="faq-error" role="alert">{error}</div>}
+          {error && (
+            <div className="faq-error" role="alert">
+              <span>{error}</span>
+              {answerErrorQuestion && (
+                <button
+                  type="button"
+                  onClick={() => startTicket(answerErrorQuestion, {
+                    id: null,
+                    reasonCode: "FAQ_REQUEST_FAILED",
+                  })}
+                >
+                  {copy(language, "Submit a support ticket", "提交工单")}
+                </button>
+              )}
+            </div>
+          )}
           <label>
             <span className="sr-only">{copy(language, "Your FAQ question", "你的 FAQ 问题")}</span>
             <textarea
