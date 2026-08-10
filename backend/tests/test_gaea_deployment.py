@@ -26,6 +26,25 @@ TEACHER_COMPANY_TEST_MIGRATOR = (
     / "scripts"
     / "apply-company-test.sh"
 )
+TEACHER_PRODUCTION_MIGRATOR = (
+    ROOT
+    / "teacher"
+    / "backend"
+    / "database"
+    / "scripts"
+    / "apply-production.sh"
+)
+TEACHER_TASK_CATALOG_SYNC = (
+    ROOT / "teacher" / "backend" / "scripts" / "sync-current-task-catalog.ts"
+)
+TEACHER_CRUD_GRANT = (
+    ROOT
+    / "teacher"
+    / "backend"
+    / "database"
+    / "scripts"
+    / "grant-tit-teacher-crud.sql"
+)
 TEACHER_BACKEND_DOCKERFILE = ROOT / "teacher" / "backend" / "Dockerfile"
 TEACHER_BUILD_TSCONFIG = ROOT / "teacher" / "backend" / "tsconfig.build.json"
 TEACHER_MAIN = ROOT / "teacher" / "backend" / "src" / "main.ts"
@@ -42,7 +61,16 @@ def test_gaea_uses_one_project_and_one_image() -> None:
     assert list(GAEA_DIR.glob("*/Dockerfile")) == []
 
 
-def test_company_test_migrator_reads_back_multi_replica_contract() -> None:
+def _bash_array(script: str, name: str) -> tuple[str, ...]:
+    body = script.split(f"{name}=(", 1)[1].split("\n)", 1)[0]
+    return tuple(
+        line.strip()
+        for line in body.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+
+
+def test_company_test_initializer_reads_back_multi_replica_contract() -> None:
     script = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
     verification = script.split(
         'verification="$("${APP_PSQL[@]}" -Atqc "', 1
@@ -89,7 +117,6 @@ def test_company_test_migrator_reads_back_multi_replica_contract() -> None:
         "('G02:v1', 'G04', 'PUBLISHED', 'ACTIVE')",
         "('G03:v1', 'G02', 'PUBLISHED', 'ACTIVE')",
         "('G04:v1', 'G03', 'PUBLISHED', 'ACTIVE')",
-        "('G05:v1', 'G00', 'RETIRED', 'RETIRED')",
         "('G06:v1', 'G05', 'PUBLISHED', 'ACTIVE')",
         "('G07:v1', 'G06', 'PUBLISHED', 'ACTIVE')",
         "('G08:v1', 'G07', 'PUBLISHED', 'ACTIVE')",
@@ -97,11 +124,295 @@ def test_company_test_migrator_reads_back_multi_replica_contract() -> None:
         "('G10:v1', 'G09', 'PUBLISHED', 'ACTIVE')",
     ):
         assert mapping in verification
+    assert "execution.task_code = 'G00'" in verification
+    assert "execution.shared_template_row_id = 'G05:v1'" in verification
+    assert "execution.status <> 'RETIRED'" in verification
 
     expected = script.split('if [[ "${verification}" != "', 1)[1].split(
         '" ]]; then', 1
     )[0]
     assert expected.endswith("|t")
+
+
+def test_company_test_initializer_never_executes_schema_migrations() -> None:
+    script = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
+    grant_script = TEACHER_CRUD_GRANT.read_text(encoding="utf-8")
+
+    assert "migration_files=(" not in script
+    assert ' -f "${DB_DIR}/migrations/' not in script
+    assert 'awk \'$0 != "BEGIN;"' not in script
+    assert "apply-production.sh" not in script
+    assert 'APPROVED_TEST_DB_NAME="tit_growth_test_v2"' in script
+    assert (
+        'APPROVED_TEST_DB_HOST="ai-efficiency-postgresql-20260722194941.'
+        'pods.test.51talk.biz"'
+    ) in script
+    assert '-v app_password="${TIDE_APP_DB_PASSWORD}"' not in script
+    assert r"\getenv app_password TIDE_APP_DB_PASSWORD" in script
+    assert "DROP " not in grant_script.upper()
+    assert "REVOKE ALL ON public.teachers FROM tit_teacher_crud;" in grant_script
+    assert "GRANT SELECT ON public.teachers TO tit_teacher_crud;" in grant_script
+    assert "not has_table_privilege(current_user, 'public.teachers', 'INSERT')" in script
+    assert "not has_table_privilege(current_user, 'public.teachers', 'UPDATE')" in script
+    assert "not has_table_privilege(current_user, 'public.teachers', 'DELETE')" in script
+
+    first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
+    for guard in (
+        'EXPECTED_PUBLIC_HEAD="20260807_49_unused_columns"',
+        'CANONICAL_TIDE_MIGRATIONS=(',
+        'actual_tide_ledger_manifest=',
+        'canonical_schema_ready=',
+        'required_current_catalog_ready=',
+    ):
+        assert script.index(guard) < first_write
+    for required_object in (
+        "to_regclass('tide.file_objects') is not null",
+        "to_regclass('tide.task_validation_rules') is not null",
+        "to_regclass('tide.system_notifications') is not null",
+        "to_regclass('tide.job_leases_expiry_idx') is not null",
+        "to_regclass('public.teacher_metric_snapshots') is null",
+        "to_regclass('public.tide_score_policy_versions_v1') is null",
+    ):
+        assert required_object in script[:first_write]
+
+
+def test_company_test_initializer_requires_the_production_canonical_ledger() -> None:
+    initializer = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
+    production = TEACHER_PRODUCTION_MIGRATOR.read_text(encoding="utf-8")
+
+    assert _bash_array(initializer, "CANONICAL_TIDE_MIGRATIONS") == _bash_array(
+        production,
+        "PRODUCTION_MIGRATIONS",
+    )
+    for contract in (
+        "count(*) = 28",
+        "min(migration_order) = 1",
+        "max(migration_order) = 28",
+        "count(distinct migration_order) = 28",
+        "filename = migration_id || '.up.sql'",
+        "select migration_order, migration_id, filename, sha256",
+        '0030_remove_unused_columns_and_orphan_function',
+    ):
+        assert contract in initializer
+
+
+def test_company_test_catalog_sync_keeps_unchanged_executions_stable() -> None:
+    script = TEACHER_TASK_CATALOG_SYNC.read_text(encoding="utf-8")
+    execution_upsert = script.split(
+        "INSERT INTO tide.task_execution_versions",
+        1,
+    )[1].split("const actualExecution", 1)[0]
+
+    assert "updated_at = now()" in execution_upsert
+    assert ") IS DISTINCT FROM (" in execution_upsert
+    for field in (
+        "task_code",
+        "execution_contract_version",
+        "config",
+        "status",
+    ):
+        assert f"tide.task_execution_versions.{field}" in execution_upsert
+        assert f"EXCLUDED.{field}" in execution_upsert
+
+
+def _run_rejected_company_initializer(
+    tmp_path: Path,
+    *,
+    scenario: str,
+) -> tuple[subprocess.CompletedProcess[str], str, bool, int]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    state = tmp_path / "psql-count"
+    query_log = tmp_path / "psql.log"
+    pnpm_marker = tmp_path / "pnpm-called"
+    old_ids = tmp_path / "old-ledger-ids"
+    canonical_ids_file = tmp_path / "canonical-ledger-ids"
+    production = TEACHER_PRODUCTION_MIGRATOR.read_text(encoding="utf-8")
+    canonical_ids = _bash_array(production, "PRODUCTION_MIGRATIONS")
+    canonical_ids_file.write_text(
+        "\n".join(canonical_ids) + "\n",
+        encoding="utf-8",
+    )
+    old_ids.write_text(
+        "\n".join(
+            (
+                *canonical_ids[:-4],
+                "0027_retire_task_business_change_view",
+                "0028_remove_unused_tide_objects",
+                "0029_remove_unused_columns_and_orphan_function",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_psql = fake_bin / "psql"
+    fake_psql.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+count=0
+if [[ -f \"${FAKE_PSQL_STATE}\" ]]; then
+  count=\"$(cat \"${FAKE_PSQL_STATE}\")\"
+fi
+count=$((count + 1))
+printf '%s' \"${count}\" >\"${FAKE_PSQL_STATE}\"
+printf '%s\\n' \"$*\" >>\"${FAKE_PSQL_LOG}\"
+case \"${count}\" in
+  1) printf 'tit_growth_test_v2|postgres\\n' ;;
+  2) printf '180004\\n' ;;
+  3) printf 't\\n' ;;
+  4) printf 't\\n' ;;
+  5) printf 't\\n' ;;
+  6) printf '20260807_49_unused_columns\\n' ;;
+  7)
+    if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
+      printf 'f\\n'
+    else
+      printf 't\\n'
+    fi
+    ;;
+  8)
+    if [[ \"${FAKE_SCENARIO}\" == 'old-ledger' ]]; then
+      cat \"${FAKE_OLD_IDS}\"
+    else
+      cat \"${FAKE_CANONICAL_IDS}\"
+    fi
+    ;;
+  9) printf 't\\n' ;;
+  10)
+    if [[ \"${FAKE_SCENARIO}\" == 'old-ledger' ]]; then
+      printf '0029_remove_unused_columns_and_orphan_function\\n'
+    else
+      printf 'invalid-ledger-manifest\\n'
+    fi
+    ;;
+  *) printf 'unexpected psql call %s\\n' \"${count}\" >&2; exit 91 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_psql.chmod(0o755)
+    fake_pnpm = fake_bin / "pnpm"
+    fake_pnpm.write_text(
+        "#!/usr/bin/env bash\nprintf called >\"${FAKE_PNPM_MARKER}\"\n",
+        encoding="utf-8",
+    )
+    fake_pnpm.chmod(0o755)
+
+    env_file = tmp_path / "company-test.env"
+    env_file.write_text(
+        "\n".join(
+            (
+                "TIDE_ADMIN_DB_HOST="
+                + (
+                    "db.example"
+                    if scenario == "unapproved-target"
+                    else "ai-efficiency-postgresql-20260722194941."
+                    "pods.test.51talk.biz"
+                ),
+                "TIDE_ADMIN_DB_PORT=5432",
+                "TIDE_ADMIN_DB_USER=postgres",
+                "TIDE_ADMIN_DB_NAME=tit_growth_test_v2",
+                "TIDE_ADMIN_DB_PASSWORD=secret",
+                "TIDE_APP_DB_USER=tit_teacher_crud",
+                "TIDE_APP_DB_PASSWORD=app-secret",
+                "TIDE_ADMIN_DB_SSLMODE=disable",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
+    environment = os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_PSQL_STATE": str(state),
+        "FAKE_PSQL_LOG": str(query_log),
+        "FAKE_PNPM_MARKER": str(pnpm_marker),
+        "FAKE_OLD_IDS": str(old_ids),
+        "FAKE_CANONICAL_IDS": str(canonical_ids_file),
+        "FAKE_SCENARIO": scenario,
+    }
+    result = subprocess.run(
+        [str(TEACHER_COMPANY_TEST_MIGRATOR), str(env_file)],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+    return (
+        result,
+        query_log.read_text(encoding="utf-8") if query_log.exists() else "",
+        pnpm_marker.exists(),
+        int(state.read_text(encoding="utf-8")) if state.exists() else 0,
+    )
+
+
+def test_company_test_initializer_rejects_an_unapproved_target_before_connecting(
+    tmp_path: Path,
+) -> None:
+    result, queries, pnpm_called, psql_calls = _run_rejected_company_initializer(
+        tmp_path,
+        scenario="unapproved-target",
+    )
+
+    assert result.returncode != 0
+    assert "只允许连接已批准的 tit_growth_test_v2" in result.stderr
+    assert psql_calls == 0
+    assert not queries
+    assert not pnpm_called
+
+
+def test_company_test_initializer_rejects_a_missing_ledger_before_writes(
+    tmp_path: Path,
+) -> None:
+    result, queries, pnpm_called, psql_calls = _run_rejected_company_initializer(
+        tmp_path,
+        scenario="missing",
+    )
+
+    assert result.returncode != 0
+    assert "缺少 canonical Tide 迁移账本" in result.stderr
+    assert psql_calls == 7
+    assert not pnpm_called
+    assert not any(
+        statement in queries.upper()
+        for statement in ("ALTER ", "INSERT ", "UPDATE ", "DELETE ", "GRANT ")
+    )
+
+
+def test_company_test_initializer_rejects_the_precanonical_ledger_before_writes(
+    tmp_path: Path,
+) -> None:
+    result, queries, pnpm_called, psql_calls = _run_rejected_company_initializer(
+        tmp_path,
+        scenario="old-ledger",
+    )
+
+    assert result.returncode != 0
+    assert "不是精确 canonical 0030" in result.stderr
+    assert psql_calls == 10
+    assert not pnpm_called
+    assert not any(
+        statement in queries.upper()
+        for statement in ("ALTER ", "INSERT ", "UPDATE ", "DELETE ", "GRANT ")
+    )
+
+
+def test_company_test_initializer_rejects_checksum_drift_before_writes(
+    tmp_path: Path,
+) -> None:
+    result, queries, pnpm_called, psql_calls = _run_rejected_company_initializer(
+        tmp_path,
+        scenario="checksum",
+    )
+
+    assert result.returncode != 0
+    assert "顺序、文件名或 SHA-256" in result.stderr
+    assert psql_calls == 10
+    assert not pnpm_called
+    assert not any(
+        statement in queries.upper()
+        for statement in ("ALTER ", "INSERT ", "UPDATE ", "DELETE ", "GRANT ")
+    )
 
 
 def test_gaea_image_builds_both_frontends_and_both_backends() -> None:

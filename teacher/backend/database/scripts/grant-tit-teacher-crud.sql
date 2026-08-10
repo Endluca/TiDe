@@ -29,7 +29,6 @@ BEGIN
     END IF;
 END
 $legacy_acl$;
-DROP VIEW IF EXISTS public.tide_score_policy_versions_v1;
 
 REVOKE ALL ON public.teacher_scorecard_current FROM PUBLIC, tit_teacher_crud;
 REVOKE ALL ON public.teacher_lesson_score_current FROM PUBLIC, tit_teacher_crud;
@@ -45,6 +44,7 @@ GRANT UPDATE (status, read_at, clicked_at) ON public.notifications TO tit_teache
 REVOKE ALL ON public.notification_events FROM tit_teacher_crud;
 GRANT SELECT, INSERT ON public.notification_events TO tit_teacher_crud;
 
+REVOKE ALL ON public.teachers FROM tit_teacher_crud;
 GRANT SELECT ON public.teachers TO tit_teacher_crud;
 
 REVOKE ALL ON public.teacher_source_wide FROM tit_teacher_crud;

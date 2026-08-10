@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260807_49_unused_columns`、teacher `0030_remove_unused_columns_and_orphan_function`。`tit_growth_test_v2` 的 public 已到 rev49，但 tide 仍是合并前旧编号的 `0029_remove_unused_columns_and_orphan_function`，尚未包含 release 新增的 0027 本地 Quiz 清理；部署本分支前必须受控重建或完成账本与实存结构对账。已有测试只证明旧链的结构和源数据计算链已落地，不代表 canonical 0030、外部监控服务或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260807_49_unused_columns`、teacher `0030_remove_unused_columns_and_orphan_function`。`tit_growth_test_v2` 已于 2026-08-10 受控重建到同一 canonical head，Tide 为精确 28 条账本且 0027 本地 Quiz 与 0028–0030 退役对象均已清理；重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这只证明公司测试库结构和源数据计算链已落地，不代表外部监控服务或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -33,9 +33,10 @@
 当前测试环境：
 
 - `tit_growth_test`：保留的旧测试库，不执行本轮迁移或清理；
-- `tit_growth_test_v2`：本轮新建的隔离测试库，`public` head 为
-  `20260807_49_unused_columns`，`tide` 迁移账本 head 为
-  合并前旧编号的 `0029_remove_unused_columns_and_orphan_function`；部署当前代码前需受控重建或对账；
+- `tit_growth_test_v2`：本轮受控重建的隔离测试库，`public` head 为
+  `20260807_49_unused_columns`，`tide` 为精确 28 条 canonical 账本且 head 为
+  `0030_remove_unused_columns_and_orphan_function`；重建前旧库以仅 DBA 可连接的
+  `tit_growth_test_v2_pre0030_20260810` 保留为回滚点；
 - `tit_growth_app`：Web App 受限运行角色，无超级用户、建库、建角色和 Schema DDL 权限；
 - `tit_teacher_crud`：教师端后端预留受限角色，只能按共享任务契约读取任务并更新已有任务的状态字段，不能创建或删除 assignment；
 - 密码只存入本机 macOS 钥匙串，服务启动时读取，不写入仓库、环境文件或日志；

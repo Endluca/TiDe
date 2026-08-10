@@ -108,11 +108,11 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码迁移 head 为 public `20260807_49_unused_columns` 与 teacher
-  `0030_remove_unused_columns_and_orphan_function`。现有交接测试库的 public 已到 rev49，但
-  tide 仍记账为合并前旧编号的 `0029_remove_unused_columns_and_orphan_function`；它没有
-  release 新增的 0027 本地 Quiz 清理，不能冒充 canonical 0030。部署本分支前必须受控重建
-  或完成账本与实存结构对账。当前结构中
+- 当前代码与交接测试库迁移 head 均为 public `20260807_49_unused_columns` 与 teacher
+  `0030_remove_unused_columns_and_orphan_function`。`tit_growth_test_v2` 已于 2026-08-10
+  受控重建，Tide 为精确 28 条 canonical 账本，本地 Quiz 运行时与 0028–0030 退役对象均已
+  清理；重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`，仅保留 DBA 回滚连接。
+  当前结构中
   `teacher_source_wide` 为 CSV 教师 61 列加 2 个可空 G01 状态字段，
   `lesson_source_wide` 严格对应 CSV 课程 23 列（无“是否复约”）；两表均不增加
   更新时间、版本、哈希或同步批次字段。旧教师快照、旧课程事实、旧逐课三行积分表及其

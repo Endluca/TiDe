@@ -46,7 +46,7 @@ pnpm provision:internal-test
 ./scripts/deploy-internal-test-backend.sh
 ```
 
-- 先运行 `database/scripts/apply-company-test.sh` 初始化公司测试库中的 `tide` Schema 和受限账号。
+- 先按 `public 46 → teacher 0028 → public 49 → teacher 0030` 完成受控迁移并结束迁移窗口，再运行 `database/scripts/apply-company-test.sh` 只读核对 canonical 账本/结构并初始化 execution 和受限账号；两者禁止并发，该脚本不再创建或升级 `tide` Schema。
 - `provision:internal-test` 使用 `TIDE_DATABASE_URL` 连接公司测试库，只为库中真实存在的教师创建测试账号，不复制或改写 `public.teachers`，也不生成教师可见的站内通知。
 - 后端与隧道由 `com.aiec.tide-internal-backend`、`com.aiec.tide-internal-tunnel` 两个 LaunchAgent 常驻。
 - 源代码合并后重新运行部署脚本，会同步运行副本并重启后端。

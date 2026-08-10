@@ -711,6 +711,17 @@ async function syncTask(
         config = EXCLUDED.config,
         status = 'ACTIVE',
         updated_at = now()
+      WHERE (
+        tide.task_execution_versions.task_code,
+        tide.task_execution_versions.execution_contract_version,
+        tide.task_execution_versions.config,
+        tide.task_execution_versions.status
+      ) IS DISTINCT FROM (
+        EXCLUDED.task_code,
+        EXCLUDED.execution_contract_version,
+        EXCLUDED.config,
+        EXCLUDED.status
+      )
     `,
     [
       executionId,
