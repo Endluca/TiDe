@@ -5,19 +5,53 @@ const databaseFile = (relativePath: string) =>
   readFileSync(resolve(__dirname, '../../../database', relativePath), 'utf8');
 
 describe('teacher database migration chain', () => {
-  it('keeps every local and production entry point on the 0032 head', () => {
+  it('keeps every local and production entry point on the 0037 head', () => {
     const ddl = databaseFile('ddl.sql');
     const production = databaseFile('scripts/apply-production.sh');
 
     expect(ddl.trimEnd()).toMatch(
-      /\\ir migrations\/0032_first_login_onboarding\.up\.sql$/,
+      /\\ir migrations\/0037_g04_remove_device_check\.up\.sql$/,
+    );
+    expect(ddl).toContain('\\ir seed/0005_mock_g04_two_part_catalog.sql');
+    expect(ddl).toMatch(
+      /seed\/0000_mock_shared_catalog\.sql[\s\S]*0031_g04_independent_sections\.up\.sql[\s\S]*0033_g01_tesol_only\.up\.sql[\s\S]*seed\/0005_mock_g04_two_part_catalog\.sql[\s\S]*0037_g04_remove_device_check\.up\.sql/,
     );
     expect(production).toContain(
-      'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0032_first_login_onboarding}"',
+      'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0037_g04_remove_device_check}"',
     );
     expect(production).toMatch(
-      /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding/,
+      /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding\s+0033_g01_tesol_only\s+0037_g04_remove_device_check/,
     );
+  });
+
+  it('updates only the stable G01 external-status rule in 0033', () => {
+    const up = databaseFile('migrations/0033_g01_tesol_only.up.sql').trim();
+    const down = databaseFile('migrations/0033_g01_tesol_only.down.sql').trim();
+
+    expect(up.startsWith('BEGIN;')).toBe(true);
+    expect(up.endsWith('COMMIT;')).toBe(true);
+    expect(down.startsWith('BEGIN;')).toBe(true);
+    expect(down.endsWith('COMMIT;')).toBe(true);
+    for (const sql of [up, down]) {
+      expect(sql).toContain("shared_template_row_id = 'G01:v1'");
+      expect(sql).toContain("rule_key = 'g01-external-status'");
+      expect(sql).toContain("rule_type = 'G01_EXTERNAL_STATUS'");
+      expect(sql).toMatch(
+        /rule_key = 'g01-external-status'\s+OR rule_type = 'G01_EXTERNAL_STATUS'/,
+      );
+      expect(sql).toContain('OR NOT EXISTS (');
+      expect(sql).toContain('g01_execution_before');
+      expect(sql).toContain('g01_assignment_before');
+      expect(sql).toContain('g01_progress_before');
+      expect(sql).toContain('g01_steps_before');
+      expect(sql).toContain('g01_other_rules_before');
+      expect(sql).toContain('g01_external_rule_before');
+    }
+    expect(up).toContain("rule_version = '2026-08-11-tesol-only-v1'");
+    expect(up).toContain("teacher_failure_copy = 'TESOL 真实状态尚未通过。'");
+    expect(up).toContain('has an unreviewed shape before migration 0033');
+    expect(down).toContain("SET rule_version = '2026-07-22'");
+    expect(down).toContain('Self-intro 和 TESOL 真实状态尚未全部通过。');
   });
 
   it('keeps both directions of 0031 inside one explicit transaction', () => {
@@ -83,5 +117,72 @@ describe('teacher database migration chain', () => {
     expect(down).toContain(
       'DROP TABLE IF EXISTS tide.account_onboarding_states',
     );
+  });
+
+  it('removes only the active G04 device definition in forward-only 0037', () => {
+    const up = databaseFile(
+      'migrations/0037_g04_remove_device_check.up.sql',
+    ).trim();
+    const down = databaseFile(
+      'migrations/0037_g04_remove_device_check.down.sql',
+    ).trim();
+
+    expect(up.startsWith('BEGIN;')).toBe(true);
+    expect(up.endsWith('COMMIT;')).toBe(true);
+    expect(down.startsWith('BEGIN;')).toBe(true);
+    expect(down.endsWith('COMMIT;')).toBe(true);
+    expect(up).toContain("definition.step_key = 'g02-device-check'");
+    expect(up).toContain('DELETE FROM tide.task_step_definitions');
+    expect(up).toContain(
+      '{"requiredStepKeys":["g02-environment-photo","g02-courseware-confirmation"]}',
+    );
+    expect(up).toContain('g04_remaining_step_identity_before');
+    expect(up).toContain('g04_rule_identity_before');
+    expect(up).toContain('g04_assignment_before');
+    expect(up).toContain('g04_progress_before');
+    expect(up).toContain('g04_device_run_before');
+    expect(up).toContain('g04_device_item_before');
+    expect(up).toContain(
+      'G04 execution, steps and completion rule form an unreviewed mixed shape',
+    );
+    expect(down).toContain('is forward-only');
+    expect(down).not.toContain('INSERT INTO tide.task_step_definitions');
+  });
+
+  it('skips historical 0031 only when local G04 is already exact 0037', () => {
+    const apply = databaseFile('scripts/apply.sh');
+
+    expect(apply).toContain('g04_two_part_execution_ready');
+    expect(apply).toContain('exact 0037 two-part execution');
+    expect(apply).toMatch(
+      /if \[\[ "\$\{g04_two_part_execution_ready\}" == "t" \]\];[\s\S]*else[\s\S]*0031_g04_independent_sections\.up\.sql[\s\S]*fi/,
+    );
+    expect(apply).toMatch(
+      /0033_g01_tesol_only\.up\.sql[\s\S]*seed\/0005_mock_g04_two_part_catalog\.sql[\s\S]*0037_g04_remove_device_check\.up\.sql/,
+    );
+  });
+
+  it('checks every cross-schema stage before production migration writes', () => {
+    const production = databaseFile('scripts/apply-production.sh');
+
+    expect(production).toContain(
+      'teacher 0032 要求 public head 50 的精确 G04 三段副本',
+    );
+    expect(production).toContain(
+      "min(version_num) = '20260810_50_g04_sections'",
+    );
+    expect(production).toContain(
+      'teacher 0037 只能从 teacher 0032、0033 的连续状态继续',
+    );
+    expect(production).toContain(
+      'teacher 0037 要求 public head 54 中同时存在 rev51 G01 TESOL-only 精确副本与 G04 两段精确副本',
+    );
+    expect(production).toContain(
+      "min(version_num) = '20260811_54_g04_remove_device_check'",
+    );
+    expect(production.indexOf('current_tide_head=')).toBeLessThan(
+      production.indexOf('for migration_id in "${TARGET_MIGRATIONS[@]}"'),
+    );
+    expect(production).toContain("payload->>'ops_name_zh' = '首课准备'");
   });
 });

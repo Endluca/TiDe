@@ -197,14 +197,13 @@ function createFixture() {
     },
     {
       taskCode: 'G04',
-      title: 'Lesson Preparation&Device Network Check',
+      title: 'Lesson Preparation',
       status: 'COMPLETED',
       taskUpdatedAt: '2026-07-27T08:00:00.000Z',
     },
   ]);
   const recordSourceRead = jest.fn().mockResolvedValue(undefined);
   const findLatestG01Evidence = jest.fn().mockResolvedValue({
-    selfIntroduced: true,
     tesolCompleted: false,
     sourceUpdatedAt: null,
   });
@@ -262,20 +261,18 @@ describe('TideService', () => {
       name: 'Teacher',
       freshness: { source: 'LIVE', stale: false },
     });
-    await expect(
-      fixture.service.getG01Review(principal),
-    ).resolves.toMatchObject({
-      selfIntroStatus: 'APPROVED',
+    const review = await fixture.service.getG01Review(principal);
+    expect(review).toMatchObject({
       tesolStatus: 'WAITING',
       externalStatusesComplete: false,
       freshness: { sourceUpdatedAt: null },
     });
+    expect(review).not.toHaveProperty('selfIntroStatus');
   });
 
-  it('returns unavailable statuses when the new source fields are still null', async () => {
+  it('returns an unavailable status when the TESOL source field is still null', async () => {
     const fixture = createFixture();
     fixture.findLatestG01Evidence.mockResolvedValue({
-      selfIntroduced: null,
       tesolCompleted: null,
       sourceUpdatedAt: null,
     });
@@ -283,7 +280,6 @@ describe('TideService', () => {
     await expect(
       fixture.service.getG01Review(principal),
     ).resolves.toMatchObject({
-      selfIntroStatus: 'UNAVAILABLE',
       tesolStatus: 'UNAVAILABLE',
       externalStatusesComplete: false,
       freshness: { sourceUpdatedAt: null },

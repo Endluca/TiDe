@@ -38,6 +38,8 @@
 | `0030_remove_unused_columns_and_orphan_function` | 锁定 `file_objects` 并确认全部对象均为私有、无外部列依赖后，删除恒定 `visibility` 字段；确认无消费者后删除 `enforce_outbox_target()` 孤儿函数；全程不使用 `CASCADE`，down 精确恢复字段、约束和原函数定义 |
 | `0031_g04_independent_sections` | 将已有 `G02:v1` / `G04` execution 原位升级为设备网络预检、授课环境照片、备课须知确认三个互不阻塞的模块；只接受已评审的旧两步／旧三步结构，未知 step/rule 整笔拒绝；保留 execution、step/rule ID、assignment 和 progress；空 execution 目录 no-op，不代替显式 Seed；该业务内容迁移 forward-only |
 | `0032_first_login_onboarding` | 新增账号级多模块新手引导终态事实，白名单限于当前 8 个 guide code；只将迁移前已有 `LOGIN/SUCCESS` 安全事件的账号回填为 `FIRST_LOGIN` v1 / `MIGRATED_EXISTING`，从未成功登录的已注册账号不回填；down 只删除该表 |
+| `0033_g01_tesol_only` | 在稳定 `G01:v1` execution 上把既有外部状态规则原位收窄为 TESOL-only；只更新规则版本和失败提示，并用迁移前后快照确保 execution、step、其他 rule、assignment 与 progress 身份不变；down 只恢复这两个规则字段 |
+| `0037_g04_remove_device_check` | 在稳定 G04 execution 上原位删除当前设备检测步骤，将照片 AI 四项审核和课件准备确认排为两个任意顺序模块；保留旧设备进度、execution、assignment 和终态，未知结构 fail-closed，down 为 forward-only no-op |
 
 `0008` 在删除前会阻断任何未映射的过程数据或非 Mock 个性化任务，不会静默丢弃真实数据。
 
@@ -52,11 +54,11 @@
 | `scripts/sync-current-task-catalog.ts` | 当前 G01–G09 与已确认个性化任务的唯一执行配置同步脚本；按稳定共享模板行更新，不重建 execution |
 | `seed/0004_mock_faq_knowledge.sql` | 已确认规则的 FAQ Mock 知识 |
 | `content/faq/51Talk Teacher FAQ - Canonical.md` | 全量 Canonical FAQ 的唯一版本化内容源；运行时不直接读取该文件 |
-| `scripts/import-company-test-faq.sh` | 校验并将上述 124 条 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
-| `scripts/apply.sh` | 本地幂等升级至 0032，并应用当前 Seed/本地权限 |
-| `scripts/apply-company-test.sh` | 在 public rev50 + canonical Tide 0032 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
-| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；先校验运营 rev38 权威目录，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0032 |
-| `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 数据库显式构造 rev38 共享目录，验证 fresh、managed upgrade、public46→teacher0028→public49→teacher0032 顺序门禁、0022–0032、无用对象／字段／函数门禁与结构恢复、G04 未知结构 fail-closed、引导存量回填/未登录保留/down-up/幂等、execution ID 原位保留、checksum、工单函数 owner 和生产连接保护 |
+| `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
+| `scripts/apply.sh` | 本地幂等升级至 0037，并应用当前 Seed/本地权限 |
+| `scripts/apply-company-test.sh` | 在 public rev54 + canonical Tide 0037 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
+| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；先校验运营端已到 rev54 权威目录，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0037 |
+| `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 数据库显式构造共享目录，验证 fresh、managed upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037 六阶段顺序门禁、0022–0037、G01 TESOL-only 与稳定身份、G04 未知结构 fail-closed、历史设备进度和检测证据保留、引导存量回填/未登录保留/down-up/幂等、execution ID 原位保留、checksum、工单函数 owner 和生产连接保护 |
 | `scripts/verify.sh` | 验证共享表、过程关联、角色权限、乐观锁、审计/Outbox 和消息回写 |
 | `scripts/rollback-test.sh` | 在临时库验证空库升级和逐级回滚 |
 | `scripts/grant-tit-teacher-crud.sql` | 由共享表 Owner/DBA 执行的最小权限脚本 |
@@ -73,7 +75,7 @@ bash database/scripts/rollback-test.sh
 ```
 
 `.env` 不进入 Git。`apply.sh` 仅接受数据库名 `tide_dev`，且必须显式设置
-`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0032`，但仍是本地
+`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0037`，但仍是本地
 Mock 入口，不能用于公司或生产库。
 
 ## 生产迁移
@@ -90,21 +92,22 @@ Mock 入口，不能用于公司或生产库。
 写入原子提交。已执行文件的顺序、文件名或 checksum 改变时立即停止；发现已有 TIDE
 结构却没有账本时也停止，不根据表面对象自动伪造迁移历史。
 
-迁移器还要求运营端已经提供 rev38 权威固定任务目录：稳定行
+历史 0025 阶段要求运营端已经提供 rev38 权威固定任务目录：稳定行
 `G01:v1`–`G10:v1` 必须精确映射到当前 G01–G09 和 retired G00，且已发布
 `MANDATORY_GROWTH` 只能是 G01–G09。目录不一致时，即使是 fresh TIDE Schema 也
-停止；教师端不会替运营端改写共享目录。
+停止；教师端不会替运营端改写共享目录。后续到 teacher 0032 前必须是 public 50 的历史 G04 三模块文案，
+到 teacher 0037 前必须是 public 54 的当前两模块文案。
 
 `0020_product_analytics` 的历史定义依赖
 `public.teacher_metric_snapshots`，而 public 47 会删除该旧表，因此首次建库或尚未记录 0020
 的库必须严格按以下跨链顺序执行：
 
 ```text
-public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0030
+public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037
 ```
 
 若旧快照已经不存在且 0020 尚未记录，生产迁移器会在任何 DDL 前失败关闭。已有完整
-teacher 0028 账本的数据库允许在 public 47 删除旧快照后继续执行 teacher 0029–0030，
+teacher 0028 账本的数据库允许在 public 47 删除旧快照后继续执行 teacher 0029–0033，
 不会把已退役对象重新变成永久前置条件。历史 `0020` 文件和 checksum 保持不变。
 
 非测试模式还会同时校验：
@@ -115,7 +118,7 @@ teacher 0028 账本的数据库允许在 public 47 删除旧快照后继续执�
 - `tide_migrator` 可登录但不是 superuser，且没有建库、建角色、复制或绕过 RLS；
 - `current_database()` 精确等于 `TIDE_MIGRATION_EXPECTED_DATABASE`。
 
-生产迁移清单明确包含 `0022–0032`，并永久排除历史
+生产迁移清单明确包含 `0022–0037`，并永久排除历史
 `0017/0018`，因为这两项会修改世文持有的 `public.task_assignments`。迁移器不创建
 角色、不设置角色密码、不导入 Mock、不执行题库／FAQ／任务内容 Seed。DBA 必须事先
 创建 `tit_teacher_crud`、`tit_growth_app`、`tide_migrator` 与
@@ -130,9 +133,10 @@ teacher 0028 账本的数据库允许在 public 47 删除旧快照后继续执�
 迁移完成后必须重跑 `grant-tit-teacher-crud.sql`：教师运行账号只读
 `tide.schema_migrations`，不得插入、更新或删除迁移账本。
 
-`0024`、`0025` 和 `0028` 的 down 都是有意的 no-op：前两者不恢复
-安全绕过或旧任务路由；`0028` 不会把已有三模块进度重新解释为旧两步／三步结构。
-`0029` 是可回滚结构迁移，down 只删除 `tide.account_onboarding_states`；生产执行前仍需先验证恢复路径。
+`0024`、`0025`、`0031` 和 `0037` 的 down 都是有意的 no-op：前两者不恢复
+安全绕过或旧任务路由；`0031` 不会把已有三模块进度重新解释为旧结构，
+`0037` 不会把已完成或已有设备进度的 G04 退回三模块。`0032` 是可回滚结构迁移，
+down 只删除 `tide.account_onboarding_states`；生产执行前仍需先验证恢复路径。
 
 DBA 预置角色属性示例（密码或认证材料必须通过独立秘密管理流程配置）：
 
@@ -173,8 +177,8 @@ bash database/scripts/test-production-migrator.sh
 ## 公司测试库
 
 - 公司测试库配置放在本地 `database/.env.company-test`，该文件不进入 Git，权限必须为 `600`。
-- 目标库必须先按 `public 46 → teacher 0028 → public 50 → teacher 0032` 完成正式分阶段迁移；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。
-- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260810_50_g04_sections` 与精确 30 条 canonical Tide 0032 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL。
+- 代码侧初始化门禁面向 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037` 的完整六阶段升级结果；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。当前公司测试库仍停在 public 50 / teacher 0032，本次未执行升级。
+- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260811_54_g04_remove_device_check` 与精确 32 条 canonical Tide 0037 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL。
 - 初始化器不得与 public/Tide migrator 并发运行；受控部署必须先完成迁移并释放迁移窗口，再执行初始化器。
 - 日常应用账号固定为 `tit_teacher_crud`，只读教师身份资料和 `teacher_scorecard_current / teacher_lesson_score_current`，只获得契约允许的共享任务权限和 `tide` Schema 业务表权限；不读取原始积分、课程事实或评分配置表。
 - 内部测试后端的 `TIDE_DATABASE_URL` 和 `SHIWEN_READ_DATABASE_URL` 均由该配置生成并指向同一公司测试库；运行时不再使用本地 PostgreSQL 或本地数据回退。

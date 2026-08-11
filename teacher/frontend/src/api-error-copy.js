@@ -272,16 +272,16 @@ const validationCopy = {
     zh: "请根据检查结果调整照片后重新提交。",
   },
   G01_EXTERNAL_STATUS_UNAVAILABLE: {
-    en: "Self-intro and TESOL status are temporarily unavailable. Please try again later.",
-    zh: "暂时无法读取 Self-intro 和 TESOL 状态，请稍后重试。",
+    en: "TESOL status is temporarily unavailable. Please try again later.",
+    zh: "暂时无法读取 TESOL 状态，请稍后重试。",
   },
   G01_EXTERNAL_STATUS_PASSED: {
-    en: "Self-intro and TESOL status have passed.",
-    zh: "Self-intro 和 TESOL 状态已通过。",
+    en: "TESOL status has passed.",
+    zh: "TESOL 状态已通过。",
   },
   G01_EXTERNAL_STATUS_INCOMPLETE: {
-    en: "Self-intro and TESOL have not both passed yet. You can still review the learning materials.",
-    zh: "Self-intro 和 TESOL 尚未全部通过，你仍可查看相关学习资料。",
+    en: "TESOL has not passed yet. You can still review the learning materials.",
+    zh: "TESOL 尚未通过，你仍可查看相关学习资料。",
   },
 };
 

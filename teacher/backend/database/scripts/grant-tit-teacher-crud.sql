@@ -50,8 +50,7 @@ GRANT SELECT ON public.teachers TO tit_teacher_crud;
 REVOKE ALL ON public.teacher_source_wide FROM tit_teacher_crud;
 GRANT SELECT (
     tchr_id,
-    is_cpl_tesol,
-    is_self_introduce
+    is_cpl_tesol
 ) ON public.teacher_source_wide TO tit_teacher_crud;
 
 REVOKE ALL ON public.teacher_support_tickets FROM tit_teacher_crud;

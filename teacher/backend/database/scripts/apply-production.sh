@@ -4,7 +4,7 @@ set -euo pipefail
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL:-}"
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0032_first_login_onboarding}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0037_g04_remove_device_check}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 
 if [[ -z "${DATABASE_URL}" ]]; then
@@ -76,6 +76,8 @@ PRODUCTION_MIGRATIONS=(
   0030_remove_unused_columns_and_orphan_function
   0031_g04_independent_sections
   0032_first_login_onboarding
+  0033_g01_tesol_only
+  0037_g04_remove_device_check
 )
 
 target_found=false
@@ -97,8 +99,9 @@ if [[ "${target_found}" != "true" ]]; then
 fi
 if [[ "${TARGET_MIGRATION}" != "0028_retire_task_business_change_view" \
       && "${TARGET_MIGRATION}" != "0032_first_login_onboarding" \
+      && "${TARGET_MIGRATION}" != "0037_g04_remove_device_check" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  echo "生产只允许停在跨 Schema 切换点 0028 或最终版本 0032；其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
+  echo "生产只允许停在跨 Schema 切换点 0028、0032 或最终版本 0037；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1
 fi
 
@@ -343,11 +346,12 @@ fi
 if [[ "${target_includes_product_analytics}" == "true" \
       && "${product_analytics_recorded}" != "t" \
       && "${legacy_teacher_snapshot_exists}" != "t" ]]; then
-  echo "历史 0020 尚未记录且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0028 -> public head 49 -> teacher 0032 分阶段迁移；禁止在 public head 49 空库回放历史 teacher 链。" >&2
+  echo "历史 0020 尚未记录且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 分阶段迁移；禁止跳过中间契约回放历史 teacher 链。" >&2
   exit 1
 fi
 
 expected_ids="$(IFS=,; echo "${TARGET_MIGRATIONS[*]}")"
+actual_ids=""
 if [[ "${ledger_exists}" == "t" ]]; then
   actual_ids="$("${PSQL[@]}" -Atqc "
     SELECT string_agg(migration_id, ',' ORDER BY migration_order)
@@ -361,6 +365,116 @@ if [[ "${ledger_exists}" == "t" ]]; then
         && "${expected_ids}" != "${actual_ids}" \
         && "${expected_ids}" != "${actual_ids},"* ]]; then
     echo "迁移账本不是当前生产清单的连续前缀，生产迁移已停止。" >&2
+    exit 1
+  fi
+fi
+
+current_tide_head="${actual_ids##*,}"
+if [[ "${TARGET_MIGRATION}" == "0032_first_login_onboarding" ]]; then
+  if [[ "${current_tide_head}" != "0028_retire_task_business_change_view" \
+        && "${current_tide_head}" != "0029_remove_unused_tide_objects" \
+        && "${current_tide_head}" != "0030_remove_unused_columns_and_orphan_function" \
+        && "${current_tide_head}" != "0031_g04_independent_sections" \
+        && "${current_tide_head}" != "0032_first_login_onboarding" ]]; then
+    echo "teacher 0032 只能从 teacher 0028–0031 的连续中间状态继续；必须按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 分阶段执行。本次未写入任何 Tide 迁移。" >&2
+    exit 1
+  fi
+  public_g04_stage_ready="$("${PSQL[@]}" -Atqc "
+    select
+      to_regclass('public.teacher_metric_snapshots') is null
+      and to_regclass('public.alembic_version') is not null
+      and (
+        select count(*) = 1
+          and min(version_num) = '20260810_50_g04_sections'
+        from public.alembic_version
+      )
+      and (
+        select count(*)
+        from public.task_templates template
+        where template.row_id = 'G02:v1'
+          and template.template_id = 'G04'
+          and template.status = 'PUBLISHED'
+          and template.execution_owner = 'TEACHER_APP'
+          and template.payload->>'template_id' = 'G04'
+          and template.payload->>'category' = 'MANDATORY_GROWTH'
+          and template.payload->>'ops_name_zh' = '首课备课与设备网络检测'
+          and template.payload->>'title' =
+            'Lesson Preparation&Device Network Check'
+          and template.payload->>'why_template' =
+            'Complete lesson preparation and confirm that your teaching setup is ready before class.'
+          and template.payload->>'how_summary' =
+            'Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.'
+          and template.payload->>'completion_standard' =
+            'G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.'
+          and template.payload->>'benefit' =
+            'Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.'
+          and template.payload->>'content_status' = 'READY'
+          and (template.payload->>'score_value')::integer = 3
+      ) = 1
+  ")"
+  if [[ "${public_g04_stage_ready}" != "t" ]]; then
+    echo "teacher 0032 要求 public head 50 的精确 G04 三段副本且旧 teacher_metric_snapshots 已退役。本次未写入任何 Tide 迁移。" >&2
+    exit 1
+  fi
+elif [[ "${TARGET_MIGRATION}" == "0037_g04_remove_device_check" ]]; then
+  if [[ "${current_tide_head}" != "0032_first_login_onboarding" \
+        && "${current_tide_head}" != "0033_g01_tesol_only" \
+        && "${current_tide_head}" != "0037_g04_remove_device_check" ]]; then
+    echo "teacher 0037 只能从 teacher 0032、0033 的连续状态继续；必须按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 分阶段执行。本次未写入任何 Tide 迁移。" >&2
+    exit 1
+  fi
+  public_final_stage_ready="$("${PSQL[@]}" -Atqc "
+    select
+      to_regclass('public.teacher_metric_snapshots') is null
+      and to_regclass('public.alembic_version') is not null
+      and (
+        select count(*) = 1
+          and min(version_num) = '20260811_54_g04_remove_device_check'
+        from public.alembic_version
+      )
+      and (
+        select count(*)
+        from public.task_templates template
+        where template.row_id = 'G01:v1'
+          and template.template_id = 'G01'
+          and template.status = 'PUBLISHED'
+          and template.execution_owner = 'TEACHER_APP'
+          and template.payload->>'category' = 'MANDATORY_GROWTH'
+          and template.payload->>'title' =
+            'Profile & Credentials Completion'
+          and template.payload->>'why_template' =
+            'Complete the required TESOL status and learning evidence.'
+          and template.payload->>'how_summary' =
+            'Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.'
+          and template.payload->>'completion_standard' =
+            'TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.'
+          and (template.payload->>'score_value')::integer = 3
+      ) = 1
+      and (
+        select count(*)
+        from public.task_templates template
+        where template.row_id = 'G02:v1'
+          and template.template_id = 'G04'
+          and template.status = 'PUBLISHED'
+          and template.execution_owner = 'TEACHER_APP'
+          and template.payload->>'template_id' = 'G04'
+          and template.payload->>'category' = 'MANDATORY_GROWTH'
+          and template.payload->>'ops_name_zh' = '首课准备'
+          and template.payload->>'title' = 'Lesson Preparation'
+          and template.payload->>'why_template' =
+            'Complete the teaching-environment photo review and prepare the courseware before your first lesson.'
+          and template.payload->>'how_summary' =
+            'Complete two sections in any order: submit one teaching-environment photo for AI review and prepare the courseware for your first lesson. Each section keeps its own progress.'
+          and template.payload->>'completion_standard' =
+            'G04 is completed only after both sections pass: all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review, and the courseware preparation is confirmed. The sections may be completed in any order.'
+          and template.payload->>'benefit' =
+            'Your teaching environment and courseware are ready for your first lesson.'
+          and template.payload->>'content_status' = 'READY'
+          and (template.payload->>'score_value')::integer = 3
+      ) = 1
+  ")"
+  if [[ "${public_final_stage_ready}" != "t" ]]; then
+    echo "teacher 0037 要求 public head 54 中同时存在 rev51 G01 TESOL-only 精确副本与 G04 两段精确副本。本次未写入任何 Tide 迁移。" >&2
     exit 1
   fi
 fi

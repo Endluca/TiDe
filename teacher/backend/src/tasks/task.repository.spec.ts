@@ -8,11 +8,7 @@ describe('TaskRepository step ordering', () => {
     executionVersionId: 'execution-001',
     contentConfig: {
       independentModules: {
-        stepKeys: [
-          'g02-device-check',
-          'g02-environment-photo',
-          'g02-courseware-confirmation',
-        ],
+        stepKeys: ['g02-environment-photo', 'g02-courseware-confirmation'],
         allowOutOfOrderProgress: true,
         keepAssignmentInProgressUntilPassed: true,
       },
@@ -30,19 +26,18 @@ describe('TaskRepository step ordering', () => {
       }
     ).assertPreviousStepsComplete.bind(repository);
 
-  it.each([
-    'g02-device-check',
-    'g02-environment-photo',
-    'g02-courseware-confirmation',
-  ])('lets the configured G04 part %s save independently', async (stepKey) => {
-    const query = jest.fn();
-    const repository = new TaskRepository({} as never, {} as never);
+  it.each(['g02-environment-photo', 'g02-courseware-confirmation'])(
+    'lets the configured G04 part %s save independently',
+    async (stepKey) => {
+      const query = jest.fn();
+      const repository = new TaskRepository({} as never, {} as never);
 
-    await expect(
-      orderingCheck(repository)({ query }, progressTask('G04'), stepKey),
-    ).resolves.toBeUndefined();
-    expect(query).not.toHaveBeenCalled();
-  });
+      await expect(
+        orderingCheck(repository)({ query }, progressTask('G04'), stepKey),
+      ).resolves.toBeUndefined();
+      expect(query).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps previous-step enforcement scoped to tasks outside G04', async () => {
     const query = jest.fn().mockResolvedValue({
@@ -67,6 +62,111 @@ describe('TaskRepository step ordering', () => {
   });
 });
 
+describe('TaskRepository removed G04 device step compatibility', () => {
+  it('returns STEP_NOT_FOUND when an old client saves device progress', async () => {
+    const query = jest.fn().mockResolvedValue({ rowCount: 0, rows: [] });
+    const withTideTransaction = jest.fn(
+      async (callback: (client: { query: typeof query }) => Promise<unknown>) =>
+        callback({ query }),
+    );
+    const repository = new TaskRepository(
+      { withTideTransaction } as never,
+      {} as never,
+    );
+    Object.assign(repository as object, {
+      findCommandReplay: jest.fn().mockResolvedValue(null),
+      lockOwnedTask: jest.fn().mockResolvedValue({
+        taskInstanceId: 'assignment-001',
+        status: 'IN_PROGRESS',
+        stateVersion: '7',
+        executionVersionId: 'execution-001',
+        contentConfig: { contentStatus: 'READY' },
+        sourceType: 'FIXED_GROWTH',
+        taskCode: 'G04',
+        taskTitle: 'Lesson Preparation',
+        dataOrigin: 'REAL',
+        teacherId: 'teacher-001',
+        assignmentId: 'assignment-001',
+      }),
+    });
+
+    await expect(
+      repository.saveProgress({
+        accountId: 'account-001',
+        taskInstanceId: 'assignment-001',
+        idempotencyKey: 'old-client-device-progress',
+        commandId: 'command-001',
+        requestHash: 'request-hash-001',
+        expectedStateVersion: 7,
+        stepKey: 'g02-device-check',
+        percent: 100,
+        progress: {},
+      }),
+    ).rejects.toMatchObject({
+      reason: 'STEP_NOT_FOUND',
+      details: { stepKey: 'g02-device-check' },
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM tide.task_step_definitions'),
+      ['execution-001', 'g02-device-check'],
+    );
+  });
+
+  it('builds task context from current definitions, not historical progress rows', async () => {
+    const queryTide = jest
+      .fn<
+        Promise<{ rows: unknown[] }>,
+        [text: string, values?: readonly unknown[]]
+      >()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            taskInstanceId: 'assignment-001',
+            taskCode: 'G04',
+            kind: 'FIXED_GROWTH',
+            status: 'IN_PROGRESS',
+            stateVersion: '7',
+            templateVersion: 1,
+            executionContractVersion: 'task-contract-v3',
+            language: 'en',
+            title: 'Lesson Preparation',
+            why: 'Why',
+            whatToDo: 'How',
+            completionStandard: 'Done',
+            outcome: 'Benefit',
+            contentConfig: { contentStatus: 'READY' },
+            priority: 'P1',
+            assignmentId: 'assignment-001',
+            teacherSafeReason: 'Why',
+            evidenceSnapshot: {},
+            teacherSafeFacts: [],
+            relatedCourses: [],
+            reminderNotificationId: null,
+            availableAt: null,
+            dueAt: null,
+            completedAt: null,
+            dataOrigin: 'REAL',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+    const repository = new TaskRepository({ queryTide } as never, {} as never);
+
+    await expect(
+      repository.findTask('account-001', 'assignment-001'),
+    ).resolves.toMatchObject({ taskInstanceId: 'assignment-001', steps: [] });
+
+    const stepSql = String(queryTide.mock.calls[1]?.[0]);
+    expect(stepSql).toContain('FROM tide.task_step_definitions definition');
+    expect(stepSql).toContain('LEFT JOIN tide.task_step_progress progress');
+    expect(
+      stepSql.indexOf('FROM tide.task_step_definitions definition'),
+    ).toBeLessThan(
+      stepSql.indexOf('LEFT JOIN tide.task_step_progress progress'),
+    );
+  });
+});
+
 describe('TaskRepository independent G04 submission state', () => {
   const g04Task = {
     taskCode: 'G04',
@@ -74,11 +174,7 @@ describe('TaskRepository independent G04 submission state', () => {
     stateVersion: '7',
     contentConfig: {
       independentModules: {
-        stepKeys: [
-          'g02-device-check',
-          'g02-environment-photo',
-          'g02-courseware-confirmation',
-        ],
+        stepKeys: ['g02-environment-photo', 'g02-courseware-confirmation'],
         allowOutOfOrderProgress: true,
         keepAssignmentInProgressUntilPassed: true,
       },

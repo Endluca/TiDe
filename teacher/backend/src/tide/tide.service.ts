@@ -79,17 +79,14 @@ export class TideService {
       );
       if (!evidence) throw new Error('G01_EVIDENCE_NOT_FOUND');
 
-      const selfIntroStatus = this.mapEvidence(evidence.selfIntroduced);
       const tesolStatus = this.mapEvidence(evidence.tesolCompleted);
-      const externalStatusesComplete =
-        evidence.selfIntroduced === true && evidence.tesolCompleted === true;
+      const externalStatusesComplete = evidence.tesolCompleted === true;
       await this.repository.recordSourceRead(
         binding.bindingId,
         'G01_REVIEW',
         true,
       );
       return {
-        selfIntroStatus,
         tesolStatus,
         externalStatusesComplete,
         freshness: {

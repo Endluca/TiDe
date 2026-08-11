@@ -3,7 +3,6 @@ import { TaskRuleHandler } from './task-rule.handler';
 import type { TaskRuleContext, TaskRuleResult } from './task-validation.models';
 
 const currentG04StepKeys = [
-  'g02-device-check',
   'g02-environment-photo',
   'g02-courseware-confirmation',
 ];
@@ -36,9 +35,9 @@ export class AllStepsCompleteRuleHandler extends TaskRuleHandler {
         ? configuredRequiredStepKeys
         : context.steps.map((step) => step.stepKey),
     );
-    const isCurrentG04 = currentG04StepKeys.every((stepKey) =>
-      recognizedStepKeys.has(stepKey),
-    );
+    const isCurrentG04 =
+      recognizedStepKeys.size === currentG04StepKeys.length &&
+      currentG04StepKeys.every((stepKey) => recognizedStepKeys.has(stepKey));
     const passed =
       requiredSteps.length > 0 &&
       requiredSteps.every(
@@ -58,7 +57,7 @@ export class AllStepsCompleteRuleHandler extends TaskRuleHandler {
       teacherMessage: passed
         ? null
         : isCurrentG04
-          ? '请分别完成备课须知确认、设备网络检测和授课环境照片四项检查，三部分可任意顺序完成。'
+          ? '请分别完成授课环境照片检查和课件准备确认，两部分可任意顺序完成。'
           : context.rule.teacherFailureCopy,
     });
   }

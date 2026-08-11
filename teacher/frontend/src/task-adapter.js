@@ -92,15 +92,14 @@ function localizedItems(step) {
   ));
 }
 
-function reviewItem(type, status, sourceUpdatedAt) {
-  const credential = type === "credential";
+function tesolReviewItem(status, sourceUpdatedAt) {
   return {
-    id: credential ? "credential-status" : "self-intro-status",
-    type,
-    label: credential ? "TESOL / teaching credential" : "Self-intro video",
-    labelZh: credential ? "TESOL / 教学资质" : "自我介绍视频",
-    source: credential ? "Trusted external credential review" : "Trusted external Self-intro review",
-    sourceZh: credential ? "教学资质审核状态" : "自我介绍审核状态",
+    id: "credential-status",
+    type: "credential",
+    label: "TESOL / teaching credential",
+    labelZh: "TESOL / 教学资质",
+    source: "Trusted external credential review",
+    sourceZh: "教学资质审核状态",
     updatedAt: sourceUpdatedAt ? new Date(sourceUpdatedAt).toLocaleString("en-US") : "Updating",
     updatedAtZh: sourceUpdatedAt ? new Date(sourceUpdatedAt).toLocaleString("zh-CN") : "更新中",
     status: {
@@ -110,30 +109,6 @@ function reviewItem(type, status, sourceUpdatedAt) {
       WAITING: "waiting",
       UNAVAILABLE: "unavailable",
     }[status] || "unavailable",
-  };
-}
-
-function deviceStatusItem(context, progressByStep) {
-  const step = context.steps.find((item) => item.type === "DEVICE_CHECK");
-  const progress = progressByStep[step?.stepKey];
-  const status =
-    context.status === "COMPLETED" || progress?.status === "COMPLETED"
-      ? "approved"
-      : context.status === "FAILED" || progress?.status === "FAILED"
-        ? "update_required"
-        : "waiting";
-  const updatedAt = progress?.details?.updatedAt || context.completedAt || context.updatedAt;
-
-  return {
-    id: "ac-device-check-status",
-    type: "device_check",
-    label: "Device and network check",
-    labelZh: "设备与网络检测",
-    source: "Latest result recorded in this task",
-    sourceZh: "本任务记录的最新检测结果",
-    updatedAt: updatedAt ? new Date(updatedAt).toLocaleString("en-US") : "Waiting for check result",
-    updatedAtZh: updatedAt ? new Date(updatedAt).toLocaleString("zh-CN") : "等待检测结果",
-    status,
   };
 }
 
@@ -156,16 +131,12 @@ export function adaptTaskContext(context, g01Review) {
     context.taskCode === "G01"
       ? g01Review
         ? [
-            reviewItem("self_intro", g01Review.selfIntroStatus, g01Review.freshness?.sourceUpdatedAt),
-            reviewItem("credential", g01Review.tesolStatus, g01Review.freshness?.sourceUpdatedAt),
+            tesolReviewItem(g01Review.tesolStatus, g01Review.freshness?.sourceUpdatedAt),
           ]
         : [
-            reviewItem("self_intro", "UNAVAILABLE", null),
-            reviewItem("credential", "UNAVAILABLE", null),
+            tesolReviewItem("UNAVAILABLE", null),
           ]
-      : context.taskCode === "G04"
-        ? [deviceStatusItem(context, progressByStep)]
-        : [];
+      : [];
   const teacherSafeFacts = (context.assignment?.teacherSafeFacts || []).map((fact) => ({
     label: fact.label,
     labelZh: fact.labelZh || fact.label,

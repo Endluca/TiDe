@@ -5,7 +5,6 @@ import {
   Check,
   CheckCircle,
   ClockCounterClockwise,
-  Monitor,
   SealCheck,
   ShieldCheck,
   HourglassMedium,
@@ -17,7 +16,6 @@ import {
 } from "../../api-error-copy";
 import { useI18n } from "../../i18n";
 import { publicAsset } from "../../public-assets";
-import DeviceCheckTask from "./DeviceCheckTask";
 import ReadinessExampleGallery from "./ReadinessExampleGallery";
 import {
   normalizeReadinessAnalysis,
@@ -60,14 +58,6 @@ export default function ReadinessPhotoTask({ task }) {
   const finalizingRef = useRef(false);
   const executionReady = Boolean(task.execution?.live);
   const taskCompleted = task.status === "completed";
-  const deviceStep = task.execution?.findStep("DEVICE_CHECK");
-  const deviceProgress = task.execution?.steps?.[deviceStep?.stepKey];
-  const deviceRequired = Boolean(deviceStep);
-  const hasCurrentDeviceEvidence = Boolean(
-    deviceStep?.config?.version
-    && deviceProgress?.details?.checkVersion === deviceStep.config.version
-    && deviceProgress?.details?.source === "BROWSER_LOCAL",
-  );
   const photoStep = task.execution?.findStep("ENVIRONMENT_PHOTO")
     || task.execution?.findStep("UPLOAD");
   const photoProgress = task.execution?.steps?.[photoStep?.stepKey];
@@ -80,26 +70,21 @@ export default function ReadinessPhotoTask({ task }) {
     coursewareStep?.config?.version
     && coursewareProgress?.details?.checklistVersion === coursewareStep.config.version,
   );
-  const hasCurrentThreePartCompletion = Boolean(
+  const hasCurrentTwoPartCompletion = Boolean(
     taskCompleted
-    && hasCurrentDeviceEvidence
-    && deviceProgress?.status === "COMPLETED"
     && photoProgress?.status === "COMPLETED"
     && hasCurrentCoursewareEvidence
     && coursewareProgress?.status === "COMPLETED",
   );
-  const grandfatheredTaskCompleted = taskCompleted && !hasCurrentThreePartCompletion;
+  const grandfatheredTaskCompleted = taskCompleted && !hasCurrentTwoPartCompletion;
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [opening, setOpening] = useState(false);
   const [photo, setPhoto] = useState(task.readinessPhoto || "");
   const [photoFile, setPhotoFile] = useState(null);
-  const [photoApproved, setPhotoApproved] = useState(hasCurrentThreePartCompletion);
+  const [photoApproved, setPhotoApproved] = useState(hasCurrentTwoPartCompletion);
   const [reviewChecks, setReviewChecks] = useState(task.readinessChecks || []);
   const [analyzing, setAnalyzing] = useState(false);
-  const [devicePassed, setDevicePassed] = useState(
-    hasCurrentDeviceEvidence && deviceProgress?.status === "COMPLETED",
-  );
   const [coursewareConfirmed, setCoursewareConfirmed] = useState(
     hasCurrentCoursewareEvidence && coursewareProgress?.status === "COMPLETED",
   );
@@ -127,13 +112,8 @@ export default function ReadinessPhotoTask({ task }) {
     );
   }, [coursewareProgress?.status, hasCurrentCoursewareEvidence]);
   useEffect(() => {
-    setDevicePassed(
-      hasCurrentDeviceEvidence && deviceProgress?.status === "COMPLETED",
-    );
-  }, [deviceProgress?.status, hasCurrentDeviceEvidence]);
-  useEffect(() => {
-    if (hasCurrentThreePartCompletion) setPhotoApproved(true);
-  }, [hasCurrentThreePartCompletion]);
+    if (hasCurrentTwoPartCompletion) setPhotoApproved(true);
+  }, [hasCurrentTwoPartCompletion]);
 
   const applyValidation = (validation) => {
     const payload = readinessPayloadFromValidation(validation);
@@ -342,20 +322,20 @@ export default function ReadinessPhotoTask({ task }) {
         || response?.validation?.status === "PASSED";
       if (photoPassed) {
         setPhotoApproved(true);
-        if (devicePassed && coursewareConfirmed && response?.status !== "COMPLETED") {
+        if (coursewareConfirmed && response?.status !== "COMPLETED") {
           const completionValidation = persistedValidation ?? response?.validation;
           setCompletionError(
             completionValidation?.resultCode === "STEPS_INCOMPLETE"
               ? c(
-                  "The three parts are saved, but final completion is not confirmed yet. Please retry.",
-                  "三部分已经保存，但最终完成状态尚未确认，请重试。",
+                  "Both parts are saved, but final completion is not confirmed yet. Please retry.",
+                  "两部分已经保存，但最终完成状态尚未确认，请重试。",
                 )
               : localizedValidationMessage(
                   completionValidation,
                   language,
                   c(
-                    "The three parts are saved, but final completion is not confirmed yet. Please retry.",
-                    "三部分已经保存，但最终完成状态尚未确认，请重试。",
+                    "Both parts are saved, but final completion is not confirmed yet. Please retry.",
+                    "两部分已经保存，但最终完成状态尚未确认，请重试。",
                   ),
                 ),
           );
@@ -365,8 +345,8 @@ export default function ReadinessPhotoTask({ task }) {
         setPhotoError(analysis?.teacherMessage || (
           validation?.resultCode === "STEPS_INCOMPLETE"
             ? c(
-                "The photo check result has not returned yet. Retry this photo later; the other two parts remain available.",
-                "照片检测结果尚未返回，请稍后重试本部分；另外两部分仍可正常操作。",
+                "The photo check result has not returned yet. Retry this photo later; courseware preparation remains available.",
+                "照片检测结果尚未返回，请稍后重试本部分；课件准备仍可正常操作。",
               )
             : localizedValidationMessage(
                 validation,
@@ -392,15 +372,11 @@ export default function ReadinessPhotoTask({ task }) {
   const exampleFocusId = completedChecks.find((check) => (
     ["fail", "uncertain"].includes(check.status)
   ))?.id || "camera_angle";
-  const partStates = [devicePassed, photoApproved, coursewareConfirmed];
+  const partStates = [photoApproved, coursewareConfirmed];
   const completedPartCount = partStates.filter(Boolean).length;
-  const photoRemainingCount = Math.max(
-    0,
-    2 - Number(devicePassed) - Number(coursewareConfirmed),
-  );
+  const photoRemainingCount = Math.max(0, 1 - Number(coursewareConfirmed));
 
   const finalizeIfReady = async ({
-    nextDevicePassed = devicePassed,
     nextPhotoApproved = photoApproved,
     nextCoursewareConfirmed = coursewareConfirmed,
     reportTo,
@@ -408,7 +384,6 @@ export default function ReadinessPhotoTask({ task }) {
     if (
       taskCompleted
       || finalizingRef.current
-      || !nextDevicePassed
       || !nextPhotoApproved
       || !nextCoursewareConfirmed
     ) return null;
@@ -419,11 +394,11 @@ export default function ReadinessPhotoTask({ task }) {
       const completion = await task.execution.submit();
       if (completion?.status !== "COMPLETED") {
         const message = completion?.validation?.resultCode === "STEPS_INCOMPLETE"
-          ? c("The three parts are saved, but final completion is not confirmed yet. Please retry.", "三部分已经保存，但最终完成状态尚未确认，请重试。")
+          ? c("Both parts are saved, but final completion is not confirmed yet. Please retry.", "两部分已经保存，但最终完成状态尚未确认，请重试。")
           : localizedValidationMessage(
               completion?.validation,
               language,
-              c("The three parts are saved, but final completion is not confirmed yet. Please retry.", "三部分已经保存，但最终完成状态尚未确认，请重试。"),
+              c("Both parts are saved, but final completion is not confirmed yet. Please retry.", "两部分已经保存，但最终完成状态尚未确认，请重试。"),
             );
         setCompletionError(message);
         reportTo?.(message);
@@ -444,23 +419,14 @@ export default function ReadinessPhotoTask({ task }) {
     }
   };
 
-  const handleDevicePassed = async () => {
-    setDevicePassed(true);
-    await finalizeIfReady({
-      nextDevicePassed: true,
-      reportTo: setCompletionError,
-    });
-  };
-
   useEffect(() => {
     if (
       taskCompleted
-      || !devicePassed
       || !photoApproved
       || !coursewareConfirmed
     ) return;
     void finalizeIfReady({ reportTo: setCompletionError });
-  }, [coursewareConfirmed, devicePassed, photoApproved, taskCompleted]);
+  }, [coursewareConfirmed, photoApproved, taskCompleted]);
 
   return (
     <div className="readiness-photo-task g04-readiness-flow">
@@ -472,8 +438,8 @@ export default function ReadinessPhotoTask({ task }) {
                 <span className="eyebrow">{c("EARLIER VERSION COMPLETION", "早期版本完成记录")}</span>
                 <h3>{c("Your completed status is preserved", "已完成状态继续保留")}</h3>
                 <p>{c(
-                  "This task was completed before the current three-part flow was released. The current cards do not claim individual passes; your final status stays unchanged and no recheck is required.",
-                  "该任务完成于当前三段式流程上线前。当前三个模块不补写单项通过结果；任务终态保持不变，也无需重新操作。",
+                  "This task was completed before the current two-part flow was released. The current cards do not claim individual passes; your final status stays unchanged and no recheck is required.",
+                  "该任务完成于当前两模块流程上线前。当前模块不补写单项通过结果；任务终态保持不变，也无需重新操作。",
                 )}</p>
               </div>
               <strong className="g04-legacy-complete-badge"><ClockCounterClockwise size={20} weight="duotone" />{c("Completed", "已完成")}</strong>
@@ -481,11 +447,11 @@ export default function ReadinessPhotoTask({ task }) {
           ) : (
             <>
               <div>
-                <span className="eyebrow">{c("THREE INDEPENDENT PARTS", "三个独立部分")}</span>
-                <h3>{c("Complete all three in any order", "三部分可以任意顺序完成")}</h3>
-                <p>{c("A problem in one part will not lock the other two. G04 completes only after all three pass.", "某一部分遇到问题不会锁定另外两部分；全部通过后 G04 才会完成。")}</p>
+                <span className="eyebrow">{c("TWO INDEPENDENT PARTS", "两个独立部分")}</span>
+                <h3>{c("Complete both in any order", "两部分可以任意顺序完成")}</h3>
+                <p>{c("A problem in one part will not lock the other. G04 completes only after both pass.", "某一部分遇到问题不会锁定另一部分；两部分全部通过后 G04 才会完成。")}</p>
               </div>
-              <strong className="g04-progress-count">{completedPartCount}<small>/3</small></strong>
+              <strong className="g04-progress-count">{completedPartCount}<small>/2</small></strong>
             </>
           )}
         </div>
@@ -496,17 +462,16 @@ export default function ReadinessPhotoTask({ task }) {
               role="progressbar"
               aria-label={c("Completed G04 parts", "G04 已完成模块")}
               aria-valuemin="0"
-              aria-valuemax="3"
+              aria-valuemax="2"
               aria-valuenow={completedPartCount}
-              aria-valuetext={c(`${completedPartCount} of 3 parts completed`, `已完成 ${completedPartCount}/3 个模块`)}
+              aria-valuetext={c(`${completedPartCount} of 2 parts completed`, `已完成 ${completedPartCount}/2 个模块`)}
             >
-              <span style={{ width: `${(completedPartCount / 3) * 100}%` }} />
+              <span style={{ width: `${(completedPartCount / 2) * 100}%` }} />
             </div>
             <ol className="g04-stepper">
               {[
-                [c("Device & connection", "设备与连接"), devicePassed],
                 [c("Photo AI check", "照片 AI 检测"), photoApproved],
-                [c("Lesson preparation", "备课确认"), coursewareConfirmed],
+                [c("Courseware preparation", "课件准备"), coursewareConfirmed],
               ].map(([label, passed], index) => (
                 <li className={passed ? "is-complete" : ""} key={label}>
                   <span>{passed ? <Check size={15} weight="bold" /> : index + 1}</span>
@@ -518,37 +483,19 @@ export default function ReadinessPhotoTask({ task }) {
           </>
         )}
         {completionError && <div className="readiness-error g04-completion-error" role="alert"><WarningCircle size={20} weight="fill" />{completionError}</div>}
-        {completedPartCount === 3 && !taskCompleted && (
+        {completedPartCount === 2 && !taskCompleted && (
           <div className="g04-finalize-panel" role="status">
             <SealCheck size={24} weight="duotone" />
-            <span><strong>{c("All three parts are saved", "三部分已全部保存")}</strong><small>{c("If completion does not update automatically, retry the final submission here. Your three results will stay saved.", "如最终状态没有自动更新，可在此重试完成提交；三部分的已通过结果不会丢失。")}</small></span>
+            <span><strong>{c("Both parts are saved", "两部分已全部保存")}</strong><small>{c("If completion does not update automatically, retry the final submission here. Both results will stay saved.", "如最终状态没有自动更新，可在此重试完成提交；两部分的已通过结果不会丢失。")}</small></span>
             <button className="secondary-button" type="button" disabled={finalizing} onClick={() => finalizeIfReady({ reportTo: setCompletionError })}>{finalizing ? c("Submitting…", "提交中…") : c("Retry completion", "重试完成提交")}</button>
           </div>
         )}
       </section>
 
       <div className="g04-part-stack">
-        <section className={`g04-part-card g04-device-part ${grandfatheredTaskCompleted ? "is-legacy" : devicePassed ? "is-complete" : ""}`} data-g04-part="device">
-          <header className="g04-part-header">
-            <span className="g04-part-number">01</span>
-            <div>
-              <small>{c("DEVICE & CONNECTION", "设备与连接基础预检")}</small>
-              <h3>{c("Check the class camera, microphone and connection", "检查上课摄像头、麦克风与连接")}</h3>
-            </div>
-            <span className={`g04-part-status ${grandfatheredTaskCompleted ? "is-legacy" : devicePassed ? "is-complete" : ""}`}>
-              {grandfatheredTaskCompleted ? <ClockCounterClockwise size={17} /> : devicePassed ? <CheckCircle size={17} weight="fill" /> : <Monitor size={17} />}
-              {grandfatheredTaskCompleted ? c("Earlier version", "早期版本") : devicePassed ? c("Passed", "已通过") : c("To do", "待完成")}
-            </span>
-          </header>
-          <div className="g04-part-body">
-            {!deviceRequired && !taskCompleted && <div className="readiness-error" role="alert"><WarningCircle size={20} weight="fill" />{c("The device-check configuration is syncing. You may complete the other two parts now.", "设备检测配置正在同步，你可以先完成另外两部分。")}</div>}
-            <DeviceCheckTask task={task} embedded forceGrandfathered={grandfatheredTaskCompleted} onPassed={handleDevicePassed} />
-          </div>
-        </section>
-
         <section className={`g04-part-card g04-photo-part ${grandfatheredTaskCompleted ? "is-legacy" : photoApproved ? "is-complete" : ""}`} data-g04-part="photo">
           <header className="g04-part-header">
-            <span className="g04-part-number">02</span>
+            <span className="g04-part-number">01</span>
             <div>
               <small>{c("TEACHING VIEW PHOTO", "授课画面照片")}</small>
               <h3>{c("Take one photo for the four-item AI check", "拍一张照片完成四项 AI 检测")}</h3>
@@ -601,7 +548,7 @@ export default function ReadinessPhotoTask({ task }) {
                   ? c("The first qualified photo is saved as completion evidence.", "首次合格照片已作为完成证据保存。")
                   : photoRemainingCount > 0
                     ? c(`${photoRemainingCount} other part${photoRemainingCount > 1 ? "s" : ""} remain. You can complete them independently.`, `总任务还差 ${photoRemainingCount} 项；可继续独立完成。`)
-                    : c("All three parts are ready. Final completion is syncing.", "三部分已齐，正在同步最终完成状态。")}</p></div>
+                    : c("Both parts are ready. Final completion is syncing.", "两部分已齐，正在同步最终完成状态。")}</p></div>
               </div>
             )}
 
@@ -615,7 +562,7 @@ export default function ReadinessPhotoTask({ task }) {
             ) : task.status === "verifying" && !photoApproved ? (
               <div className="readiness-complete" role="status">
                 <HourglassMedium size={30} weight="fill" />
-                <div><strong>{c("AI review is in progress", "AI 正在审核")}</strong><p>{c("The photo is saved. The other two parts remain available while the result updates.", "照片已保存；结果更新期间，另外两部分仍可正常操作。")}</p></div>
+                <div><strong>{c("AI review is in progress", "AI 正在审核")}</strong><p>{c("The photo is saved. Courseware preparation remains available while the result updates.", "照片已保存；结果更新期间，课件准备仍可正常操作。")}</p></div>
               </div>
             ) : photoApproved ? null : (
               <>
@@ -678,7 +625,7 @@ export default function ReadinessPhotoTask({ task }) {
 
         <section className={`g04-part-card g04-courseware-part ${grandfatheredTaskCompleted ? "is-legacy" : coursewareConfirmed ? "is-complete" : ""}`} data-g04-part="courseware">
           <header className="g04-part-header">
-            <span className="g04-part-number">03</span>
+            <span className="g04-part-number">02</span>
             <div>
               <small>{c("LESSON PREPARATION", "首课备课须知")}</small>
               <h3>{c("Review the lesson slides, then confirm preparation", "浏览全部课件后确认备课完成")}</h3>
@@ -691,7 +638,7 @@ export default function ReadinessPhotoTask({ task }) {
           <div className="g04-part-body">
             <div className="g04-courseware-guidance">
               <BookOpen size={24} weight="duotone" />
-              <div><strong>{c("Before you confirm", "确认前请完成")}</strong><p>{c("Review every lesson slide and check the teaching aids, activity flow and timing. This confirmation is separate from the device and photo checks.", "浏览本节课的全部课件，检查教具、课堂环节和时间安排。该确认与设备检测、照片检测互相独立。")}</p></div>
+              <div><strong>{c("Before you confirm", "确认前请完成")}</strong><p>{c("Review every lesson slide and check the teaching aids, activity flow and timing. This confirmation is separate from the photo check.", "浏览本节课的全部课件，检查教具、课堂环节和时间安排。该确认与照片检测互相独立。")}</p></div>
             </div>
             {coursewareError && <div className="readiness-error" role="alert"><WarningCircle size={20} weight="fill" />{coursewareError}</div>}
             {grandfatheredTaskCompleted ? (
@@ -724,7 +671,7 @@ export default function ReadinessPhotoTask({ task }) {
                 </button>
               </section>
             ) : (
-              <div className="readiness-error" role="alert"><WarningCircle size={20} weight="fill" />{c("The preparation checklist is syncing. You may complete the first two parts now.", "备课确认内容正在同步，你可以先完成前两部分。")}</div>
+              <div className="readiness-error" role="alert"><WarningCircle size={20} weight="fill" />{c("The preparation checklist is syncing. You may complete the photo check now.", "备课确认内容正在同步，你可以先完成照片检测。")}</div>
             )}
           </div>
         </section>

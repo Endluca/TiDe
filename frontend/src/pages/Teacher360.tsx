@@ -804,7 +804,7 @@ export default function Teacher360({
                 <Descriptions.Item label="TESOL">{completionEvidenceLabel(readyDetail.is_cpl_tesol, locale)}</Descriptions.Item>
                 <Descriptions.Item label={t('自我介绍', 'Self-introduction')}>{completionEvidenceLabel(readyDetail.is_self_introduce, locale)}</Descriptions.Item>
               </Descriptions>
-              <Text type="secondary">{t('TESOL 和自我介绍只是 G01 的组成证据，任一单项完成都不等于 G01 已完成。', 'TESOL and self-introduction are evidence components of G01. Completing either one alone does not complete G01.')}</Text>
+              <Text type="secondary">{t('TESOL 是 G01 唯一读取的外部状态；自我介绍仅作为教师资料展示，不影响 G01。', 'TESOL is the only external status read by G01. Self-introduction is shown only as teacher profile information and does not affect G01.')}</Text>
             </Card>
 
             <Card size="small" title={t('五维积分与来源', 'Five-Dimension Scores & Sources')}>

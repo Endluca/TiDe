@@ -16,11 +16,7 @@ const rule = {
 const g04Rule = {
   ...rule,
   config: {
-    requiredStepKeys: [
-      'g02-device-check',
-      'g02-environment-photo',
-      'g02-courseware-confirmation',
-    ],
+    requiredStepKeys: ['g02-environment-photo', 'g02-courseware-confirmation'],
   },
 };
 
@@ -81,26 +77,21 @@ describe('TaskValidationEngine', () => {
     });
   });
 
-  it('requires the restored device step for the current three-part G04 flow', async () => {
+  it('requires the courseware step for the current two-part G04 flow', async () => {
     await expect(
       engine.evaluate({
         ...context,
         rules: [g04Rule],
         steps: [
           {
-            stepKey: 'g02-courseware-confirmation',
-            status: 'COMPLETED',
-            percent: 100,
-          },
-          {
-            stepKey: 'g02-device-check',
-            status: 'NOT_STARTED',
-            percent: 0,
-          },
-          {
             stepKey: 'g02-environment-photo',
             status: 'COMPLETED',
             percent: 100,
+          },
+          {
+            stepKey: 'g02-courseware-confirmation',
+            status: 'NOT_STARTED',
+            percent: 0,
           },
         ],
         outputs: [],
@@ -109,17 +100,36 @@ describe('TaskValidationEngine', () => {
       status: 'FAILED',
       resultCode: 'STEPS_INCOMPLETE',
       teacherMessage:
-        '请分别完成备课须知确认、设备网络检测和授课环境照片四项检查，三部分可任意顺序完成。',
+        '请分别完成授课环境照片检查和课件准备确认，两部分可任意顺序完成。',
       ruleVersion: 'all-steps:1',
     });
   });
 
-  it('fails closed when the G04 execution catalog is missing a required part', async () => {
+  it('keeps the configured failure copy for the legacy three-part G04 rule', async () => {
+    const legacyFailureCopy = '请完成备课、设备检测和授课环境照片。';
+
     await expect(
       engine.evaluate({
         ...context,
-        rules: [g04Rule],
+        rules: [
+          {
+            ...rule,
+            config: {
+              requiredStepKeys: [
+                'g02-device-check',
+                'g02-environment-photo',
+                'g02-courseware-confirmation',
+              ],
+            },
+            teacherFailureCopy: legacyFailureCopy,
+          },
+        ],
         steps: [
+          {
+            stepKey: 'g02-device-check',
+            status: 'NOT_STARTED',
+            percent: 0,
+          },
           {
             stepKey: 'g02-environment-photo',
             status: 'COMPLETED',
@@ -136,20 +146,36 @@ describe('TaskValidationEngine', () => {
     ).resolves.toMatchObject({
       status: 'FAILED',
       resultCode: 'STEPS_INCOMPLETE',
+      teacherMessage: legacyFailureCopy,
     });
   });
 
-  it('passes G04 only after all three independent parts reach 100%', async () => {
+  it('fails closed when the G04 execution catalog is missing a required part', async () => {
     await expect(
       engine.evaluate({
         ...context,
         rules: [g04Rule],
         steps: [
           {
-            stepKey: 'g02-device-check',
+            stepKey: 'g02-environment-photo',
             status: 'COMPLETED',
             percent: 100,
           },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toMatchObject({
+      status: 'FAILED',
+      resultCode: 'STEPS_INCOMPLETE',
+    });
+  });
+
+  it('passes G04 only after both independent parts reach 100%', async () => {
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [g04Rule],
+        steps: [
           {
             stepKey: 'g02-environment-photo',
             status: 'COMPLETED',
@@ -187,11 +213,6 @@ describe('TaskValidationEngine', () => {
         ...context,
         rules: [g04Rule, imageRule],
         steps: [
-          {
-            stepKey: 'g02-device-check',
-            status: 'COMPLETED',
-            percent: 100,
-          },
           {
             stepKey: 'g02-courseware-confirmation',
             status: 'NOT_STARTED',

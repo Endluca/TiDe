@@ -28,6 +28,7 @@ interface CatalogRule {
 interface CatalogTask {
   code: string;
   externalCode?: string;
+  opsNameZh?: string;
   title: string;
   why: string;
   whatToDo: string;
@@ -104,7 +105,6 @@ const environmentCriteria = [
 ];
 
 const g04IndependentStepKeys = [
-  'g02-device-check',
   'g02-environment-photo',
   'g02-courseware-confirmation',
 ];
@@ -127,11 +127,11 @@ export const currentTaskCatalog: CatalogTask[] = [
   {
     code: 'G01',
     title: 'Profile & Credentials Completion',
-    why: 'Complete the required profile statuses and TESOL learning evidence.',
+    why: 'Complete the required TESOL status and learning evidence.',
     whatToDo:
-      'Confirm Self-intro and TESOL, pass the assessment in Kuozhi, complete the Essay and submit the completion proof.',
+      'Confirm TESOL, pass the assessment in Kuozhi, complete the Essay and submit the completion proof.',
     completionStandard:
-      'Self-intro and TESOL are complete, the Kuozhi assessment reaches 100% progress, the Essay is complete and the completion proof is submitted.',
+      'TESOL is complete, the Kuozhi assessment reaches 100% progress, the Essay is complete and the completion proof is submitted.',
     benefit: 'Your profile and required TESOL learning evidence are complete.',
     priority: 'P1',
     score: 3,
@@ -183,28 +183,29 @@ export const currentTaskCatalog: CatalogTask[] = [
       {
         key: 'g01-external-status',
         type: 'G01_EXTERNAL_STATUS',
-        version: '2026-07-22',
+        version: '2026-08-11-tesol-only-v1',
         config: {},
-        teacherFailureCopy: 'Self-intro 和 TESOL 真实状态尚未全部通过。',
+        teacherFailureCopy: 'TESOL 真实状态尚未通过。',
       },
     ],
   },
   {
     code: 'G04',
-    title: 'Lesson Preparation&Device Network Check',
-    why: 'Complete lesson preparation and confirm that your teaching setup is ready before class.',
+    opsNameZh: '首课准备',
+    title: 'Lesson Preparation',
+    why: 'Complete the teaching-environment photo review and prepare the courseware before your first lesson.',
     whatToDo:
-      'Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.',
+      'Complete two sections in any order: submit one teaching-environment photo for AI review and prepare the courseware for your first lesson. Each section keeps its own progress.',
     completionStandard:
-      'G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.',
+      'G04 is completed only after both sections pass: all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review, and the courseware preparation is confirmed. The sections may be completed in any order.',
     benefit:
-      'Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.',
+      'Your teaching environment and courseware are ready for your first lesson.',
     priority: 'P1',
     score: 3,
     stage: 'FOUNDATION',
     sequence: 4,
     estimatedMinutes: 15,
-    contentVersion: '2026-08-05-g04-three-part',
+    contentVersion: '2026-08-11-g04-two-part',
     contentStatus: 'READY',
     independentModules: {
       stepKeys: g04IndependentStepKeys,
@@ -215,13 +216,15 @@ export const currentTaskCatalog: CatalogTask[] = [
     kind: 'FIXED_GROWTH',
     steps: [
       {
-        key: 'g02-device-check',
-        type: 'DEVICE_CHECK',
-        title: 'Check camera, microphone and network',
+        key: 'g02-environment-photo',
+        type: 'UPLOAD',
+        title: 'Take a teaching-environment photo',
         config: {
-          version: 'g02-device-2026-08-05-browser-preflight-v1',
-          role: 'DEVICE_CHECK',
-          items: ['camera', 'microphone', 'network'],
+          version: 'g02-photo-2026-07-22',
+          role: 'ENVIRONMENT_PHOTO',
+          accept: ['image/jpeg'],
+          captureOnly: true,
+          maxFiles: 1,
         },
       },
       {
@@ -241,24 +244,12 @@ export const currentTaskCatalog: CatalogTask[] = [
           ],
         },
       },
-      {
-        key: 'g02-environment-photo',
-        type: 'UPLOAD',
-        title: 'Take a teaching-environment photo',
-        config: {
-          version: 'g02-photo-2026-07-22',
-          role: 'ENVIRONMENT_PHOTO',
-          accept: ['image/jpeg'],
-          captureOnly: true,
-          maxFiles: 1,
-        },
-      },
     ],
     rules: [
       allStepsRule(
-        '请分别完成备课须知确认、设备网络检测和授课环境照片四项检查，三部分可任意顺序完成。',
+        '请分别完成授课环境照片检查和课件准备确认，两部分可任意顺序完成。',
         { requiredStepKeys: g04IndependentStepKeys },
-        '2026-08-05-g04-three-part-v1',
+        '2026-08-11-g04-two-part-v1',
       ),
       aiReviewRule({
         key: 'g02-environment-ai-review',
@@ -504,12 +495,14 @@ const currentFixedTasks = currentTaskCatalog.filter(
 async function assertCurrentSharedCatalog(client: Client): Promise<void> {
   const result = await client.query<{
     taskCode: string;
+    opsNameZh: string | null;
     title: string | null;
     score: string | null;
   }>(
     `
       SELECT
         template_id AS "taskCode",
+        payload->>'ops_name_zh' AS "opsNameZh",
         payload->>'title' AS title,
         payload->>'score_value' AS score
       FROM public.task_templates
@@ -522,12 +515,16 @@ async function assertCurrentSharedCatalog(client: Client): Promise<void> {
   const actualByCode = new Map(result.rows.map((row) => [row.taskCode, row]));
   const mismatches = currentFixedTasks.flatMap((task) => {
     const actual = actualByCode.get(task.code);
-    if (actual?.title === task.title && Number(actual.score) === task.score) {
+    if (
+      actual?.title === task.title &&
+      Number(actual.score) === task.score &&
+      (!task.opsNameZh || actual.opsNameZh === task.opsNameZh)
+    ) {
       return [];
     }
     return [
-      `${task.code}: expected ${task.title}/${task.score}, got ` +
-        `${actual?.title ?? 'missing'}/${actual?.score ?? 'missing'}`,
+      `${task.code}: expected ${task.opsNameZh ?? '-'}/${task.title}/${task.score}, got ` +
+        `${actual?.opsNameZh ?? '-'}/${actual?.title ?? 'missing'}/${actual?.score ?? 'missing'}`,
     ];
   });
   if (mismatches.length > 0) {
@@ -663,6 +660,7 @@ async function upsertTemplate(
   }
   const payload = {
     template_id: task.code,
+    ...(task.opsNameZh ? { ops_name_zh: task.opsNameZh } : {}),
     title: task.title,
     why_template: task.why,
     how_summary: task.whatToDo,

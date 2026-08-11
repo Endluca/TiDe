@@ -43,7 +43,7 @@ describe('current task catalog locale fields', () => {
       },
       {
         code: 'G04',
-        title: 'Lesson Preparation&Device Network Check',
+        title: 'Lesson Preparation',
         score: 3,
         stage: 'FOUNDATION',
         sequence: 4,
@@ -112,17 +112,32 @@ describe('current task catalog locale fields', () => {
       G01: ['g01-essay-confirmation', 'g01-completion-proof'],
       G02: [],
       G03: [],
-      G04: [
-        'g02-device-check',
-        'g02-courseware-confirmation',
-        'g02-environment-photo',
-      ],
+      G04: ['g02-environment-photo', 'g02-courseware-confirmation'],
       G05: [],
       G06: [],
       G07: [],
       G08: [],
       G09: [],
     });
+  });
+
+  it('keeps G01 external completion limited to TESOL', () => {
+    const g01 = currentTaskCatalog.find((task) => task.code === 'G01');
+    const externalStatusRule = g01?.rules.find(
+      (rule) => rule.type === 'G01_EXTERNAL_STATUS',
+    );
+
+    expect(g01).toMatchObject({
+      whatToDo:
+        'Confirm TESOL, pass the assessment in Kuozhi, complete the Essay and submit the completion proof.',
+      completionStandard:
+        'TESOL is complete, the Kuozhi assessment reaches 100% progress, the Essay is complete and the completion proof is submitted.',
+    });
+    expect(externalStatusRule).toMatchObject({
+      version: '2026-08-11-tesol-only-v1',
+      teacherFailureCopy: 'TESOL 真实状态尚未通过。',
+    });
+    expect(JSON.stringify(g01)).not.toMatch(/Self-intro|self_intro/i);
   });
 
   it('keeps G09 pending until Kuozhi publishes its course mapping', () => {
@@ -153,11 +168,8 @@ describe('current task catalog locale fields', () => {
     );
   });
 
-  it('configures G04 as three independent parts with the stable device step', () => {
+  it('configures G04 as two independent photo and courseware parts', () => {
     const g04 = currentTaskCatalog.find((task) => task.code === 'G04');
-    const deviceStep = g04?.steps.find(
-      (step) => step.key === 'g02-device-check',
-    );
     const guidanceStep = g04?.steps.find(
       (step) => step.key === 'g02-courseware-confirmation',
     );
@@ -166,26 +178,20 @@ describe('current task catalog locale fields', () => {
     );
 
     expect(g04?.independentModules).toEqual({
-      stepKeys: [
-        'g02-device-check',
-        'g02-environment-photo',
-        'g02-courseware-confirmation',
-      ],
+      stepKeys: ['g02-environment-photo', 'g02-courseware-confirmation'],
       allowOutOfOrderProgress: true,
       keepAssignmentInProgressUntilPassed: true,
     });
-    expect(deviceStep).toMatchObject({
-      type: 'DEVICE_CHECK',
-      config: {
-        version: 'g02-device-2026-08-05-browser-preflight-v1',
-        role: 'DEVICE_CHECK',
-        items: ['camera', 'microphone', 'network'],
-      },
-    });
+    expect(g04?.opsNameZh).toBe('首课准备');
+    expect(g04?.steps).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'g02-device-check' }),
+      ]),
+    );
     expect(guidanceStep?.config.version).toBe(
       'g02-courseware-2026-08-05-guidance-v1',
     );
-    expect(completionRule?.version).toBe('2026-08-05-g04-three-part-v1');
+    expect(completionRule?.version).toBe('2026-08-11-g04-two-part-v1');
     expect(completionRule?.config.requiredStepKeys).toEqual(
       g04?.independentModules?.stepKeys,
     );
@@ -195,12 +201,14 @@ describe('current task catalog locale fields', () => {
     const g04 = currentTaskCatalog.find((task) => task.code === 'G04');
 
     expect(g04).toMatchObject({
+      title: 'Lesson Preparation',
+      why: 'Complete the teaching-environment photo review and prepare the courseware before your first lesson.',
       whatToDo:
-        'Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.',
+        'Complete two sections in any order: submit one teaching-environment photo for AI review and prepare the courseware for your first lesson. Each section keeps its own progress.',
       completionStandard:
-        'G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.',
+        'G04 is completed only after both sections pass: all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review, and the courseware preparation is confirmed. The sections may be completed in any order.',
       benefit:
-        'Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.',
+        'Your teaching environment and courseware are ready for your first lesson.',
     });
   });
 });

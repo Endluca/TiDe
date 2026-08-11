@@ -8,12 +8,13 @@
 - 任务模板与实例直接使用 `public.task_templates/task_assignments`，不再保留本地任务副本或 HTTP 下发/回传链路。
 - 任务步骤、进度、视频心跳、答案、文件和审核结果保存在 `tide`，通过 `task_assignment_id` 关联共享任务。
 - 所有考试均在阔知完成；TIDE 不保存题库、标准答案或作答记录，考试完成只依据阔知返回的 `percent=100`。
-- G01 直接读取 `public.teacher_source_wide.is_self_introduce / is_cpl_tesol`；
+- G01 只读取 `public.teacher_source_wide.is_cpl_tesol`；Self-intro 状态继续保留在源表，
+  但不在 G01 中读取、展示或用于完成判断。
   源表没有更新时间时，接口的新鲜度时间明确返回 `null`，不使用其他表时间冒充。
   `public.notifications` 只按世文业务文字提醒读取，已读与点击可回写；TIDE 消息只写 `tide.system_notifications`。
 - 教师资料通过 `ShiwenTeacherReadAdapter` 读取；My TIDE 总览和逐课明细固定读取 `public.teacher_scorecard_current / public.teacher_lesson_score_current`。积分接口没有原始表重算、评分配置读取或本地快照兜底。
 - 教师端不写 `score_entries`。任务状态用共享 `row_version` 做乐观锁，并由数据库写审计与 Outbox。
-- 当前固定任务目录以世文库为准：G02 Platform Policies、G03 Student Types、G04 Lesson Preparation&Device Network Check、G05 TTP、G06 ME、G07 Reliability、G08 Cocos、G09 SET。个性化任务只读取任务触发中心已为当前老师创建的 assignment，教师端不自行触发或为所有老师预置全部模板。
+- 当前固定任务目录以世文库为准：G02 Platform Policies、G03 Student Types、G04 Lesson Preparation、G05 TTP、G06 ME、G07 Reliability、G08 Cocos、G09 SET。G04 只保留授课环境照片 AI 审核和课件准备确认两个模块，不包含设备网络检测。个性化任务只读取任务触发中心已为当前老师创建的 assignment，教师端不自行触发或为所有老师预置全部模板。
 - 个性化任务提醒调度器默认关闭。启用前必须设置明确 rollout 时间；调度器只读 assignment 的状态、截止时间和时区证据，生成的新任务／到期提醒通过唯一幂等键写入 `tide.system_notifications`。
 - 成长阶段提醒调度器默认关闭。首次启用只记录当前最高开放阶段，不补发历史消息；之后老师因在营天数或完成上一阶段而开放新阶段时，只生成一条阶段提醒。
 - G04 首课画面使用当前任务提交的 `AI_IMAGE_REVIEW` 校验，结果保存在 `image_reviews / image_review_items`；旧 G00 照片队列、滤镜产物和独立 Worker 已退役。

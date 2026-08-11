@@ -156,7 +156,7 @@ BEGIN
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260810_50_g04_sections' THEN
+    ) IS DISTINCT FROM '20260811_54_g04_remove_device_check' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -193,10 +193,12 @@ BEGIN
             '0029_remove_unused_tide_objects',
             '0030_remove_unused_columns_and_orphan_function',
             '0031_g04_independent_sections',
-            '0032_first_login_onboarding'
+            '0032_first_login_onboarding',
+            '0033_g01_tesol_only',
+            '0037_g04_remove_device_check'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0032';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0037';
     END IF;
 
     IF to_regclass('tide.analytics_task_business_change_v1') IS NOT NULL
@@ -300,7 +302,7 @@ BEGIN
            'Profile & Credentials Completion',
            'Platform Policies',
            'How to handle different types of students',
-           'Lesson Preparation&Device Network Check',
+           'Lesson Preparation',
            'TTP Orientation',
            'ME Culture & PARSNIP',
            'Reliability Training',
@@ -317,20 +319,44 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM public.task_templates
+        WHERE row_id = 'G01:v1'
+          AND template_id = 'G01'
+          AND status = 'PUBLISHED'
+          AND payload->>'why_template' =
+              'Complete the required TESOL status and learning evidence.'
+          AND payload->>'how_summary' =
+              'Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.'
+          AND payload->>'completion_standard' =
+              'TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.'
+          AND position('Self-intro' IN payload->>'why_template') = 0
+          AND position('Self-intro' IN payload->>'how_summary') = 0
+          AND position('Self-intro' IN payload->>'completion_standard') = 0
+    ) THEN
+        RAISE EXCEPTION
+            'stable G01:v1 row is not the reviewed TESOL-only catalog copy';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.task_templates
         WHERE row_id = 'G02:v1'
           AND template_id = 'G04'
           AND template_version = 1
           AND status = 'PUBLISHED'
           AND payload->>'template_id' = 'G04'
+          AND payload->>'ops_name_zh' = '首课准备'
+          AND payload->>'title' = 'Lesson Preparation'
+          AND payload->>'why_template' =
+              'Complete the teaching-environment photo review and prepare the courseware before your first lesson.'
           AND payload->>'how_summary' =
-              'Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.'
+              'Complete two sections in any order: submit one teaching-environment photo for AI review and prepare the courseware for your first lesson. Each section keeps its own progress.'
           AND payload->>'completion_standard' =
-              'G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.'
+              'G04 is completed only after both sections pass: all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review, and the courseware preparation is confirmed. The sections may be completed in any order.'
           AND payload->>'benefit' =
-              'Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.'
+              'Your teaching environment and courseware are ready for your first lesson.'
     ) THEN
         RAISE EXCEPTION
-            'stable G02:v1 row for current G04 does not expose the reviewed three independent sections';
+            'stable G02:v1 row for current G04 does not expose the reviewed two sections';
     END IF;
 
     IF EXISTS (
@@ -372,6 +398,37 @@ BEGIN
         RAISE EXCEPTION 'teacher execution catalog is not the current G01-G09 catalog';
     END IF;
 
+    IF (
+        SELECT count(*)
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_validation_rules AS rule
+          ON rule.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'G01:v1'
+          AND execution.task_code = 'G01'
+          AND execution.status = 'ACTIVE'
+          AND (
+              rule.rule_key = 'g01-external-status'
+              OR rule.rule_type = 'G01_EXTERNAL_STATUS'
+          )
+    ) <> 1 OR NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_validation_rules AS rule
+          ON rule.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'G01:v1'
+          AND execution.task_code = 'G01'
+          AND execution.status = 'ACTIVE'
+          AND rule.rule_key = 'g01-external-status'
+          AND rule.rule_type = 'G01_EXTERNAL_STATUS'
+          AND rule.rule_version = '2026-08-11-tesol-only-v1'
+          AND rule.position = 3
+          AND rule.config = '{}'::jsonb
+          AND rule.teacher_failure_copy = 'TESOL 真实状态尚未通过。'
+    ) THEN
+        RAISE EXCEPTION
+            'G01 external-status rule set is not exactly the reviewed TESOL-only rule';
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1
         FROM tide.task_execution_versions AS execution
@@ -379,10 +436,9 @@ BEGIN
           AND execution.task_code = 'G04'
           AND execution.status = 'ACTIVE'
           AND execution.config->>'contentVersion' =
-              '2026-08-05-g04-three-part'
+              '2026-08-11-g04-two-part'
           AND execution.config->'independentModules' = jsonb_build_object(
               'stepKeys', jsonb_build_array(
-                  'g02-device-check',
                   'g02-environment-photo',
                   'g02-courseware-confirmation'
               ),
@@ -403,15 +459,14 @@ BEGIN
           AND execution.task_code = 'G04'
           AND execution.status = 'ACTIVE'
     ) IS DISTINCT FROM ARRAY[
-        'g02-device-check',
-        'g02-courseware-confirmation',
-        'g02-environment-photo'
+        'g02-environment-photo',
+        'g02-courseware-confirmation'
     ]::text[] THEN
         RAISE EXCEPTION
-            'G04 teacher execution does not have exactly the reviewed three steps';
+            'G04 teacher execution does not have exactly the reviewed two steps';
     END IF;
 
-    IF NOT EXISTS (
+    IF EXISTS (
         SELECT 1
         FROM tide.task_execution_versions AS execution
         JOIN tide.task_step_definitions AS definition
@@ -420,14 +475,9 @@ BEGIN
           AND execution.task_code = 'G04'
           AND execution.status = 'ACTIVE'
           AND definition.step_key = 'g02-device-check'
-          AND definition.step_type = 'DEVICE_CHECK'
-          AND definition.config->>'version' =
-              'g02-device-2026-08-05-browser-preflight-v1'
-          AND definition.config->'items' =
-              '["camera", "microphone", "network"]'::jsonb
     ) THEN
         RAISE EXCEPTION
-            'G04 device step is not the reviewed browser preflight';
+            'G04 device step is still active';
     END IF;
 
     IF NOT EXISTS (
@@ -458,15 +508,14 @@ BEGIN
           AND execution.status = 'ACTIVE'
           AND rule.rule_key = 'all-steps-complete'
           AND rule.rule_type = 'ALL_STEPS_COMPLETE'
-          AND rule.rule_version = '2026-08-05-g04-three-part-v1'
+          AND rule.rule_version = '2026-08-11-g04-two-part-v1'
           AND rule.config->'requiredStepKeys' = jsonb_build_array(
-              'g02-device-check',
               'g02-environment-photo',
               'g02-courseware-confirmation'
           )
     ) THEN
         RAISE EXCEPTION
-            'G04 completion rule does not require all three independent steps';
+            'G04 completion rule does not require the two current steps';
     END IF;
 
     IF NOT EXISTS (
@@ -493,6 +542,35 @@ BEGIN
        OR to_regrole('tit_growth_app') IS NULL
        OR to_regrole('tide_support_ticket_owner') IS NULL THEN
         RAISE EXCEPTION 'required runtime roles are missing';
+    END IF;
+
+    IF has_table_privilege(
+        'tit_teacher_crud',
+        'public.teacher_source_wide',
+        'SELECT'
+    ) OR NOT has_column_privilege(
+        'tit_teacher_crud',
+        'public.teacher_source_wide',
+        'tchr_id',
+        'SELECT'
+    ) OR NOT has_column_privilege(
+        'tit_teacher_crud',
+        'public.teacher_source_wide',
+        'is_cpl_tesol',
+        'SELECT'
+    ) OR has_column_privilege(
+        'tit_teacher_crud',
+        'public.teacher_source_wide',
+        'is_self_introduce',
+        'SELECT'
+    ) OR has_column_privilege(
+        'tit_teacher_crud',
+        'public.teacher_source_wide',
+        'real_name',
+        'SELECT'
+    ) THEN
+        RAISE EXCEPTION
+            'teacher runtime role does not have the reviewed TESOL-only source ACL';
     END IF;
 
     IF EXISTS (

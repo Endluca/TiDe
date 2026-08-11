@@ -288,10 +288,10 @@ const statusLabels = {
   sync_pending: ["Waiting for review result", "等待审核结果"],
 };
 const workspaceMeta = {
-  profile_credentials: ["Profile and TESOL completion", "档案与 TESOL 完成", "Complete all five conditions in one place.", "在一个页面内完成全部五项条件。"],
+  profile_credentials: ["Profile and TESOL completion", "档案与 TESOL 完成", "Complete all four conditions in one place.", "在一个页面内完成全部四项条件。"],
   learning_checklist: ["Completion checklist", "完成步骤", "Tick every item, then confirm to record this task as complete.", "勾选全部步骤，再点击“完成任务”。"],
   external_status: ["Review status", "审核状态", "Check the latest available result.", "查看最新审核结果。"],
-  readiness_photo: ["Three-part first-class readiness", "首课三项准备", "Complete the device and connection check, use one photo for the four lesson-preparation checks, and confirm lesson preparation in any order.", "任意顺序完成设备与连接预检、照片四项 AI 检测和课件备课确认。"],
+  readiness_photo: ["Two-part lesson preparation", "首课两项准备", "Use one photo for the four AI checks and confirm courseware preparation in either order.", "任意顺序完成照片四项 AI 检测和课件准备确认。"],
   upload_review: ["Submit for review", "上传材料", "Follow the steps below to submit your material for review.", "按照下方要求提交材料并查看审核结果。"],
   embedded_course: ["In-platform course", "站内课程", "Complete every learning section inside this task page.", "在当前任务页内完成全部学习内容。"],
   guidance_acknowledgement: ["Result and next step", "结果与下一步", "Review the affected classes, complete the AC/ACE check and record the result.", "查看触发课程，完成 AC／ACE 检测并记录结果。"],
@@ -5796,8 +5796,8 @@ function buildOnboardingPreviewTasks(language) {
       standard: firstTask
         ? copy(
             language,
-            "All required profile and credential conditions are complete.",
-            "所有档案与资质条件均已完成。",
+            "All required TESOL learning conditions are complete.",
+            "所有 TESOL 学习条件均已完成。",
           )
         : copy(
             language,
@@ -5806,8 +5806,8 @@ function buildOnboardingPreviewTasks(language) {
           ),
       steps: firstTask
         ? [
-            copy(language, "Review profile status", "查看档案状态"),
-            copy(language, "Complete the credential check", "完成资质检查"),
+            copy(language, "Review TESOL status", "查看 TESOL 状态"),
+            copy(language, "Complete the required learning work", "完成必需学习任务"),
             copy(language, "Confirm the completion result", "确认完成结果"),
           ]
         : [copy(language, "Review the task instructions", "查看任务说明")],
@@ -5821,21 +5821,10 @@ function buildOnboardingPreviewTasks(language) {
       externalStatusItems: firstTask
         ? [
             {
-              id: "preview-self-intro",
-              type: "self_intro",
-              label: "Self-intro video",
-              labelZh: "自我介绍视频",
-              source: "Preview status",
-              sourceZh: "预览状态",
-              updatedAt: "Preview",
-              updatedAtZh: "预览",
-              status: "waiting",
-            },
-            {
               id: "preview-credential",
               type: "credential",
-              label: "Teaching credential",
-              labelZh: "教学资质",
+              label: "TESOL / teaching credential",
+              labelZh: "TESOL / 教学资质",
               source: "Preview status",
               sourceZh: "预览状态",
               updatedAt: "Preview",

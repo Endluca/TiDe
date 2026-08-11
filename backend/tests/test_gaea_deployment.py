@@ -158,7 +158,7 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260810_50_g04_sections"',
+        'EXPECTED_PUBLIC_HEAD="20260811_54_g04_remove_device_check"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -176,6 +176,34 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
     ):
         assert required_object in script[:first_write]
 
+    prewrite_guards = script[:first_write]
+    assert '"contentVersion":"2026-08-11-g04-two-part"' in prewrite_guards
+    assert (
+        '"stepKeys":["g02-environment-photo","g02-courseware-confirmation"]'
+        in prewrite_guards
+    )
+    device_guard = prewrite_guards.index(
+        "definition.step_key = 'g02-device-check'"
+    )
+    device_guard_start = prewrite_guards.rfind(
+        "not exists (",
+        0,
+        device_guard,
+    )
+    assert device_guard_start >= 0
+    assert "definition.execution_version_id = execution.id" in prewrite_guards[
+        device_guard_start:device_guard
+    ]
+    active_g04_guard = prewrite_guards.rfind(
+        "from tide.task_execution_versions execution",
+        0,
+        device_guard_start,
+    )
+    assert active_g04_guard >= 0
+    assert "execution.status = 'ACTIVE'" in prewrite_guards[
+        active_g04_guard:device_guard
+    ]
+
 
 def test_company_test_initializer_requires_the_production_canonical_ledger() -> None:
     initializer = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
@@ -186,15 +214,21 @@ def test_company_test_initializer_requires_the_production_canonical_ledger() -> 
         "PRODUCTION_MIGRATIONS",
     )
     for contract in (
-        "count(*) = 30",
+        "count(*) = 32",
         "min(migration_order) = 1",
-        "max(migration_order) = 30",
-        "count(distinct migration_order) = 30",
+        "max(migration_order) = 32",
+        "count(distinct migration_order) = 32",
         "filename = migration_id || '.up.sql'",
         "select migration_order, migration_id, filename, sha256",
         '0032_first_login_onboarding',
+        '0033_g01_tesol_only',
+        '0037_g04_remove_device_check',
     ):
         assert contract in initializer
+    assert (
+        "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
+        "-> public head 54 -> teacher 0037"
+    ) in initializer
 
 
 def test_company_test_catalog_sync_keeps_unchanged_executions_stable() -> None:
@@ -206,6 +240,9 @@ def test_company_test_catalog_sync_keeps_unchanged_executions_stable() -> None:
 
     assert "updated_at = now()" in execution_upsert
     assert ") IS DISTINCT FROM (" in execution_upsert
+    assert "code: 'G04'" in script
+    assert "title: 'Lesson Preparation'" in script
+    assert "Lesson Preparation&Device Network Check" not in script
     for field in (
         "task_code",
         "execution_contract_version",
@@ -263,7 +300,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260810_50_g04_sections\\n' ;;
+  6) printf '20260811_54_g04_remove_device_check\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -389,7 +426,7 @@ def test_company_test_initializer_rejects_the_precanonical_ledger_before_writes(
     )
 
     assert result.returncode != 0
-    assert "不是精确 canonical 0032" in result.stderr
+    assert "不是精确 canonical 0037" in result.stderr
     assert psql_calls == 10
     assert not pnpm_called
     assert not any(
@@ -735,9 +772,14 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "同一 UID" in readme
     assert "tit_growth_migrator" in readme
     assert "tide_migrator" in readme
-    assert "20260810_50_g04_sections" in readme
-    assert "0032_first_login_onboarding" in readme
-    assert "public 46 → teacher 0028 → public 50 → teacher 0032" in readme
+    assert "20260811_54_g04_remove_device_check" in readme
+    assert "0037_g04_remove_device_check" in readme
+    assert "20260811_51_g01_tesol_only" in readme
+    assert "0033_g01_tesol_only" in readme
+    assert (
+        "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
+        "teacher 0037"
+    ) in readme
     assert "settle_shared_task_scores.py --watch" in readme
     assert "TIT_SCORE_WORKER_HEARTBEAT" in readme
     assert "TIT_BOOTSTRAP_USERNAME" in readme

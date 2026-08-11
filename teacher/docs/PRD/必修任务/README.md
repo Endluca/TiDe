@@ -17,14 +17,14 @@
 
 ## 任务 PRD 清单
 
-2026-07-30 与当前共享目录对齐，教师端展示连续编号的 G01–G09 共 9 个固定任务。G04 是 `Lesson Preparation&Device Network Check`；重排前旧 G05 以隐藏 G00 只读保留，`free-trial-training` 不进入当前目录。
+2026-08-11 与当前共享目录对齐，教师端展示连续编号的 G01–G09 共 9 个固定任务。G04 是 `Lesson Preparation`；重排前旧 G05 以隐藏 G00 只读保留，`free-trial-training` 不进入当前目录。
 
 | 编码 | 任务 ID | 任务名称 | 任务类型 | 文档状态 | 业务口径 | 负责人 | 任务 PRD | 开发状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `G01` | `profile-credentials` | Profile & Credentials Completion 教师档案与资质完善 | 固定必修 | 已确认 | 部分确认 | 嘉荷 | [任务 PRD](TASK-profile-credentials_教师档案与资质.md) | 五项完成条件，3 分；读取两项真实状态，在阔知课程 407 完成考试，站内完成 Essay 确认和完成证明提交 |
+| `G01` | `profile-credentials` | Profile & Credentials Completion 教师档案与资质完善 | 固定必修 | 已确认 | 部分确认 | 嘉荷 | [任务 PRD](TASK-profile-credentials_教师档案与资质.md) | 四项完成条件，3 分；只读取 TESOL 真实状态，在阔知课程 407 完成考试，站内完成 Essay 确认和完成证明提交；不展示 Self-intro |
 | `G02` | `platform-policies` | Platform Policies 平台规则 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-platform-policies_平台规则.md) | 阔知 iframe 视频＋考试，2 分 |
 | `G03` | `student-types` | How to handle different types of students 不同类型学员应对 | 固定必修 | 草稿 | 部分确认 | 嘉荷 | [任务 PRD](TASK-student-types_不同类型学员应对.md) | 2 分；内容待嘉荷配置，未配齐前显示内容准备中，不可 Mock 完成 |
-| `G04` | `lesson-preparation` | Lesson Preparation&Device Network Check 首课准备与设备网络检测 | 固定必修 | 评审中 | 部分确认 | 嘉荷 | [任务 PRD](TASK-lesson-preparation_首课准备.md) | 同一任务内三个独立模块：设备网络基础预检、照片 AI 四项检查、备课须知确认；可任意顺序操作，三项全部通过后完成并获得 3 分；AC 权威设备检测后续接入 |
+| `G04` | `lesson-preparation` | Lesson Preparation 首课准备 | 固定必修 | 已确认 | 已确认 | 嘉荷 | [任务 PRD](TASK-lesson-preparation_首课准备.md) | 同一任务内两个独立模块：照片 AI 四项检查、课件准备确认；可任意顺序操作，两项全部通过后完成并获得 3 分；不包含设备网络检测 |
 | `G05` | `ttp-orientation` | TTP Orientation TTP 入门培训 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-ttp-orientation_TTP入门培训.md) | 阔知 iframe 视频，3 分 |
 | `G06` | `me-culture` | ME Culture & PARSNIP | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-me-culture_ME文化与PARSNIP.md) | 阔知 iframe 多课程视频＋考试，4 分 |
 | `G07` | `reliability-training` | Reliability Training | 固定必修 | 评审中 | 阔知部分映射 | 嘉荷 | [任务 PRD](TASK-reliability-training_Reliability培训.md) | 阔知 iframe 视频；考试 ID 待补，3 分 |

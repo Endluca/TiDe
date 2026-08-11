@@ -48,12 +48,14 @@ EXPECTED_TEACHER_MIGRATIONS = (
     "0030_remove_unused_columns_and_orphan_function",
     "0031_g04_independent_sections",
     "0032_first_login_onboarding",
+    "0033_g01_tesol_only",
+    "0037_g04_remove_device_check",
 )
 EXPECTED_FIXED_TASKS = (
     ("G01", "Profile & Credentials Completion", 3),
     ("G02", "Platform Policies", 2),
     ("G03", "How to handle different types of students", 2),
-    ("G04", "Lesson Preparation&Device Network Check", 3),
+    ("G04", "Lesson Preparation", 3),
     ("G05", "TTP Orientation", 3),
     ("G06", "ME Culture & PARSNIP", 4),
     ("G07", "Reliability Training", 3),
@@ -148,13 +150,13 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
         == "Dockerfile.migrate"
     )
     assert services["teacher-migrate"]["environment"]["TIDE_MIGRATION_TARGET"] == (
-        "${TIDE_TEACHER_MIGRATION_TARGET:-0032_first_login_onboarding}"
+        "${TIDE_TEACHER_MIGRATION_TARGET:-0037_g04_remove_device_check}"
     )
     combined_environment_example = (DEPLOY / ".env.example").read_text(
         encoding="utf-8"
     )
     assert (
-        "TIDE_TEACHER_MIGRATION_TARGET=0032_first_login_onboarding"
+        "TIDE_TEACHER_MIGRATION_TARGET=0037_g04_remove_device_check"
         in combined_environment_example
     )
     assert (
@@ -246,15 +248,28 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0028_retire_task_business_change_view" in preflight
     assert "0029_remove_unused_tide_objects" in preflight
     assert "0030_remove_unused_columns_and_orphan_function" in preflight
-    assert "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032" in preflight
+    assert (
+        "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
+        "-> public head 54 -> teacher 0037"
+    ) in preflight
     assert "product_analytics_recorded" in preflight
     assert "0031_g04_independent_sections" in preflight
     assert "0032_first_login_onboarding" in preflight
+    assert "0037_g04_remove_device_check" in preflight
+    assert "0033_g01_tesol_only" in preflight
+    assert "2026-08-11-tesol-only-v1" in preflight
+    assert "TESOL 真实状态尚未通过。" in preflight
     assert "tide.account_onboarding_states" in preflight
     assert "g02-device-2026-08-05-browser-preflight-v1" in preflight
     assert "g02-courseware-2026-08-05-guidance-v1" in preflight
     assert "2026-08-05-g04-three-part-v1" in preflight
-    assert "Lesson Preparation&Device Network Check" in preflight
+    assert "2026-08-11-g04-two-part" in preflight
+    assert "DELETE FROM tide.task_step_definitions" in preflight
+    assert (
+        '"requiredStepKeys":\\["g02-environment-photo",'
+        '"g02-courseware-confirmation"\\]'
+    ) in preflight
+    assert "Lesson Preparation" in preflight
     assert "is_loopback_or_rfc1918_ipv4" in preflight
     assert "TIDE_CONTRACT_PROBE_ENV_FILE" in preflight
     assert "TIDE_SOURCE_WORKER_ENV_FILE" in preflight
@@ -268,27 +283,47 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "pg_stat_ssl" in probe
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
-    assert "20260810_50_g04_sections" in probe
+    assert "20260811_54_g04_remove_device_check" in probe
+    assert "Complete the required TESOL status and learning evidence." in probe
+    assert "Confirm TESOL, pass all 61 questions" in probe
+    assert "TESOL is complete, the 61-question check reaches 80%" in probe
+    assert "position('Self-intro' IN payload->>'completion_standard') = 0" in probe
+    assert "2026-08-11-tesol-only-v1" in probe
+    assert "TESOL 真实状态尚未通过。" in probe
+    assert "G01 external-status rule set is not exactly" in probe
+    assert "rule.rule_key = 'g01-external-status'" in probe
+    assert "OR rule.rule_type = 'G01_EXTERNAL_STATUS'" in probe
     assert "actual_titles text[]" in probe
     assert (
         "ARRAY['G01','G02','G03','G04','G05','G06','G07','G08','G09']"
         in probe
     )
-    assert "Lesson Preparation&Device Network Check" in probe
+    assert "Lesson Preparation" in probe
     assert "WHERE row_id = 'G02:v1'" in probe
     assert "payload->>'template_id' = 'G04'" in probe
-    assert "Complete three independent sections in any order" in probe
+    assert "payload->>'ops_name_zh' = '首课准备'" in probe
+    assert (
+        "Complete the teaching-environment photo review and prepare the "
+        "courseware before your first lesson."
+    ) in probe
+    assert (
+        "Complete two sections in any order: submit one teaching-environment "
+        "photo for AI review and prepare the courseware for your first lesson."
+    ) in probe
     assert "Each section keeps its own progress" in probe
-    assert "only after all three independent sections pass" in probe
+    assert "G04 is completed only after both sections pass" in probe
     assert "camera angle, lighting, background and dressing" in probe
-    assert "2026-08-05-g04-three-part" in probe
+    assert "Your teaching environment and courseware are ready" in probe
+    assert "2026-08-11-g04-two-part" in probe
     assert "independentModules" in probe
-    assert "g02-device-2026-08-05-browser-preflight-v1" in probe
     assert "g02-courseware-2026-08-05-guidance-v1" in probe
-    assert "2026-08-05-g04-three-part-v1" in probe
+    assert "2026-08-11-g04-two-part-v1" in probe
     assert "lesson-preparation-camera-view-2026-08-v7-background-veto" in probe
     assert "G04 photo rule is not the reviewed four-criterion AI check" in probe
-    assert "G04 completion rule does not require all three" in probe
+    assert "G04 teacher execution does not have exactly the reviewed two steps" in probe
+    assert "definition.step_key = 'g02-device-check'" in probe
+    assert "G04 device step is still active" in probe
+    assert "G04 completion rule does not require the two current steps" in probe
     assert "tide.task_step_definitions" in probe
     assert "tide.task_validation_rules" in probe
     assert "ARRAY[3,2,2,3,3,4,3,5,5]" in probe
@@ -310,6 +345,12 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "tide.enforce_outbox_target()" in probe
     assert "0031_g04_independent_sections" in probe
     assert "0032_first_login_onboarding" in probe
+    assert "0033_g01_tesol_only" in probe
+    assert "0037_g04_remove_device_check" in probe
+    assert "'public.teacher_source_wide',\n        'tchr_id'" in probe
+    assert "'public.teacher_source_wide',\n        'is_cpl_tesol'" in probe
+    assert "'public.teacher_source_wide',\n        'is_self_introduce'" in probe
+    assert "'public.teacher_source_wide',\n        'real_name'" in probe
     assert "tide.account_onboarding_states" in probe
     assert "account_onboarding_states_request_hash_check" in probe
     assert "confdeltype = 'c'" in probe
@@ -366,7 +407,8 @@ def _teacher_migrator_fixture(
         f"  {migration_id}" for migration_id in migrations
     )
     cross_chain_gate = (
-        "# public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032\n"
+        "# public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
+        "-> public head 54 -> teacher 0037\n"
         "product_analytics_recorded=true\n"
         if include_cross_chain_gate
         else ""
@@ -426,6 +468,23 @@ def _make_preflight_environment(
             "SELECT security_event.event_type = 'LOGIN';\n"
             "SELECT security_event.outcome = 'SUCCESS';\n"
             "SELECT 'MIGRATED_EXISTING';\n"
+            "COMMIT;\n"
+        ),
+        "backend/database/migrations/"
+        "0033_g01_tesol_only.up.sql": (
+            "BEGIN;\n"
+            "SELECT '2026-08-11-tesol-only-v1';\n"
+            "SELECT \"teacher_failure_copy = 'TESOL 真实状态尚未通过。'\";\n"
+            "COMMIT;\n"
+        ),
+        "backend/database/migrations/"
+        "0037_g04_remove_device_check.up.sql": (
+            "BEGIN;\n"
+            "SELECT '2026-08-11-g04-two-part';\n"
+            "DELETE FROM tide.task_step_definitions "
+            "WHERE step_key = 'g02-device-check';\n"
+            "SELECT '{\"requiredStepKeys\":[\"g02-environment-photo\","
+            "\"g02-courseware-confirmation\"]}';\n"
             "COMMIT;\n"
         ),
         "backend/Dockerfile": "FROM scratch\n",
@@ -541,7 +600,7 @@ def _run_preflight(environment: dict[str, str]) -> subprocess.CompletedProcess[s
     )
 
 
-def test_combined_preflight_rejects_teacher_chain_ending_before_0032(
+def test_combined_preflight_rejects_teacher_chain_ending_before_0037(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
@@ -554,7 +613,7 @@ def test_combined_preflight_rejects_teacher_chain_ending_before_0032(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0032 结尾的完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0037 结尾的完整有序生产链" in result.stderr
 
 
 def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
@@ -570,7 +629,10 @@ def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "public46→teacher0028→public50→teacher0032" in result.stderr
+    assert (
+        "public46→teacher0028→public50→teacher0032→public54→teacher0037"
+        in result.stderr
+    )
 
 
 def test_combined_preflight_accepts_teacher_source_inside_one_clean_repository(

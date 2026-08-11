@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260810_50_g04_sections"
+EXPECTED_PUBLIC_HEAD="20260811_54_g04_remove_device_check"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -195,10 +195,12 @@ CANONICAL_TIDE_MIGRATIONS=(
   0030_remove_unused_columns_and_orphan_function
   0031_g04_independent_sections
   0032_first_login_onboarding
+  0033_g01_tesol_only
+  0037_g04_remove_device_check
 )
 
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('tide.schema_migrations') is not null")" != "t" ]]; then
-  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public 46 -> teacher 0028 -> public 50 -> teacher 0032 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
+  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
   exit 1
 fi
 
@@ -210,10 +212,10 @@ actual_tide_migration_ids="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 tide_ledger_shape_ready="$("${ADMIN_PSQL[@]}" -Atqc "
   select
-    count(*) = 30
+    count(*) = 32
     and min(migration_order) = 1
-    and max(migration_order) = 30
-    and count(distinct migration_order) = 30
+    and max(migration_order) = 32
+    and count(distinct migration_order) = 32
     and bool_and(filename = migration_id || '.up.sql')
   from tide.schema_migrations
 ")"
@@ -225,7 +227,7 @@ if [[ "${actual_tide_migration_ids}" != "${expected_tide_migration_ids}" \
       '未记账'
     )
   ")"
-  echo "公司测试库 Tide 账本不是精确 canonical 0032（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
+  echo "公司测试库 Tide 账本不是精确 canonical 0037（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
   exit 1
 fi
 
@@ -354,29 +356,150 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
     and to_regprocedure('tide.enforce_outbox_target()') is null
     and exists (
       select 1
+      from public.task_templates template
+      where template.row_id = 'G01:v1'
+        and template.template_id = 'G01'
+        and template.status = 'PUBLISHED'
+        and template.execution_owner = 'TEACHER_APP'
+        and template.payload->>'category' = 'MANDATORY_GROWTH'
+        and template.payload->>'title' = 'Profile & Credentials Completion'
+        and template.payload->>'why_template' =
+          'Complete the required TESOL status and learning evidence.'
+        and template.payload->>'how_summary' =
+          'Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.'
+        and template.payload->>'completion_standard' =
+          'TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.'
+        and (template.payload->>'score_value')::integer = 3
+    )
+    and exists (
+      select 1
+      from tide.task_validation_rules rule
+      join tide.task_execution_versions execution
+        on execution.id = rule.execution_version_id
+      where execution.shared_template_row_id = 'G01:v1'
+        and execution.task_code = 'G01'
+        and execution.status = 'ACTIVE'
+        and rule.rule_key = 'g01-external-status'
+        and rule.rule_type = 'G01_EXTERNAL_STATUS'
+        and rule.rule_version = '2026-08-11-tesol-only-v1'
+        and rule.position = 3
+        and rule.config = '{}'::jsonb
+        and rule.teacher_failure_copy = 'TESOL 真实状态尚未通过。'
+    )
+    and exists (
+      select 1
+      from public.task_templates template
+      where template.row_id = 'G02:v1'
+        and template.template_id = 'G04'
+        and template.status = 'PUBLISHED'
+        and template.payload->>'template_id' = 'G04'
+        and template.payload->>'ops_name_zh' = '首课准备'
+        and template.payload->>'title' = 'Lesson Preparation'
+        and template.payload->>'why_template' =
+          'Complete the teaching-environment photo review and prepare the courseware before your first lesson.'
+        and template.payload->>'how_summary' =
+          'Complete two sections in any order: submit one teaching-environment photo for AI review and prepare the courseware for your first lesson. Each section keeps its own progress.'
+        and template.payload->>'completion_standard' =
+          'G04 is completed only after both sections pass: all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review, and the courseware preparation is confirmed. The sections may be completed in any order.'
+        and template.payload->>'benefit' =
+          'Your teaching environment and courseware are ready for your first lesson.'
+        and template.payload->>'content_status' = 'READY'
+        and (template.payload->>'score_value')::integer = 3
+    )
+    and exists (
+      select 1
+      from tide.task_execution_versions execution
+      where execution.shared_template_row_id = 'G01:v1'
+        and execution.task_code = 'G01'
+        and execution.status = 'ACTIVE'
+        and (
+          select count(*)
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+            and (
+              rule.rule_key = 'g01-external-status'
+              or rule.rule_type = 'G01_EXTERNAL_STATUS'
+            )
+        ) = 1
+        and (
+          select count(*)
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+            and rule.rule_key = 'g01-external-status'
+            and rule.rule_type = 'G01_EXTERNAL_STATUS'
+            and rule.rule_version = '2026-08-11-tesol-only-v1'
+            and rule.position = 3
+            and rule.config = '{}'::jsonb
+            and rule.teacher_failure_copy = 'TESOL 真实状态尚未通过。'
+        ) = 1
+    )
+    and exists (
+      select 1
       from tide.task_execution_versions execution
       where execution.shared_template_row_id = 'G02:v1'
         and execution.task_code = 'G04'
         and execution.status = 'ACTIVE'
         and execution.execution_contract_version = 'task-contract-v3'
-        and execution.config->>'contentVersion' = '2026-08-05-g04-three-part'
-        and jsonb_array_length(
-          execution.config->'independentModules'->'stepKeys'
-        ) = 3
+        and execution.config =
+          '{"estimatedMinutes":15,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-11-g04-two-part","pendingReason":null,"independentModules":{"stepKeys":["g02-environment-photo","g02-courseware-confirmation"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
         and (
           select count(*)
           from tide.task_step_definitions definition
           where definition.execution_version_id = execution.id
-        ) = 3
+        ) = 2
+        and exists (
+          select 1
+          from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+            and definition.step_key = 'g02-environment-photo'
+            and definition.position = 1
+            and definition.step_type = 'UPLOAD'
+        )
+        and exists (
+          select 1
+          from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+            and definition.step_key = 'g02-courseware-confirmation'
+            and definition.position = 2
+            and definition.step_type = 'CHECKLIST'
+            and definition.config->>'version' =
+              'g02-courseware-2026-08-05-guidance-v1'
+        )
+        and not exists (
+          select 1
+          from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+            and definition.step_key = 'g02-device-check'
+        )
         and (
           select count(*)
           from tide.task_validation_rules rule
           where rule.execution_version_id = execution.id
         ) = 2
+        and exists (
+          select 1
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+            and rule.rule_key = 'all-steps-complete'
+            and rule.rule_version = '2026-08-11-g04-two-part-v1'
+            and rule.config =
+              '{"requiredStepKeys":["g02-environment-photo","g02-courseware-confirmation"]}'::jsonb
+        )
+        and exists (
+          select 1
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+            and rule.rule_key = 'g02-environment-ai-review'
+            and rule.rule_type = 'AI_IMAGE_REVIEW'
+            and rule.config->>'criteriaVersion' =
+              'lesson-preparation-camera-view-2026-08-v7-background-veto'
+            and rule.config->'criteriaKeys' =
+              '["camera_angle","lighting","background","dressing"]'::jsonb
+        )
     )
 ")"
 if [[ "${canonical_schema_ready}" != "t" ]]; then
-  echo "公司测试库虽已记账到 canonical 0032，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
+  echo "公司测试库虽已记账到 canonical 0037，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
   exit 1
 fi
 
@@ -463,7 +586,7 @@ g01_source_acl="$("${ADMIN_PSQL[@]}" -Atqc "
     )
   )
 ")"
-if [[ "${g01_source_acl}" != "f|t|t|t|f|f" ]]; then
+if [[ "${g01_source_acl}" != "f|t|t|f|f|f" ]]; then
   echo "G01 教师源字段最小权限验收失败：${g01_source_acl}" >&2
   exit 1
 fi
@@ -679,4 +802,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：public rev50 与 canonical Tide 0032 账本/checksum/实存结构只读门禁、G04 三模块、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public rev54 与 canonical Tide 0037 账本/checksum/实存结构只读门禁、G01 TESOL-only、G04 照片与课件两模块、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"

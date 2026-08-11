@@ -4,7 +4,7 @@ export const fixedTaskCatalog = [
   { taskCode: "G01", id: "profile-credentials", name: "Profile & Credentials Completion", stage: "Day 1-7" },
   { taskCode: "G02", id: "platform-policies", name: "Platform Policies", stage: "Day 1-7" },
   { taskCode: "G03", id: "student-types", name: "How to handle different types of students", stage: "Day 1-7" },
-  { taskCode: "G04", id: "lesson-preparation", name: "Lesson Preparation&Device Network Check", stage: "Day 1-7" },
+  { taskCode: "G04", id: "lesson-preparation", name: "Lesson Preparation", stage: "Day 1-7" },
   { taskCode: "G05", id: "ttp-orientation", name: "TTP Orientation", stage: "Day 8-14" },
   { taskCode: "G06", id: "me-culture", name: "ME Culture & PARSNIP", stage: "Day 8-14" },
   { taskCode: "G07", id: "reliability-training", name: "Reliability Training", stage: "Day 8-14" },

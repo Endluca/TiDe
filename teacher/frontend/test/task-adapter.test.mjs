@@ -10,6 +10,7 @@ import {
 import { localizePersonalizedTask } from "../src/task-localization.js";
 import { taskNeedsStart } from "../src/task-status.js";
 import { formatTaskDueAt } from "../src/task-due.js";
+import { fixedTaskCatalog } from "../src/live-catalog.js";
 
 const context = (overrides = {}) => ({
   taskInstanceId: "00000000-0000-4000-8000-000000000001",
@@ -45,6 +46,10 @@ test("maps every fixed task code to a stable frontend route", () => {
   assert.equal(taskCodeToRouteId.G02, "platform-policies");
   assert.equal(taskCodeToRouteId.G03, "student-types");
   assert.equal(taskCodeToRouteId.G04, "lesson-preparation");
+  assert.equal(
+    fixedTaskCatalog.find((task) => task.taskCode === "G04")?.name,
+    "Lesson Preparation",
+  );
   assert.equal(taskCodeToRouteId.G05, "ttp-orientation");
   assert.equal(taskCodeToRouteId.G06, "me-culture");
   assert.equal(taskCodeToRouteId.G07, "reliability-training");
@@ -255,7 +260,7 @@ test("starts newly assigned or viewed tasks before saving progress", () => {
   assert.equal(taskNeedsStart("AVAILABLE"), false);
 });
 
-test("maps G01 as five-condition profile and credential work", () => {
+test("maps G01 with TESOL as its only external status", () => {
   const task = adaptTaskContext(
     context({
       taskCode: "G01",
@@ -276,13 +281,15 @@ test("maps G01 as five-condition profile and credential work", () => {
       ],
     }),
     {
+      // Legacy callers may still send this field; the adapter must ignore it.
       selfIntroStatus: "APPROVED",
       tesolStatus: "IN_REVIEW",
       freshness: { sourceUpdatedAt: "2026-07-22T08:00:00.000Z" },
     },
   );
   assert.equal(task.method, "profile_credentials");
-  assert.deepEqual(task.externalStatusItems.map((item) => item.status), ["approved", "reviewing"]);
+  assert.deepEqual(task.externalStatusItems.map((item) => item.status), ["reviewing"]);
+  assert.deepEqual(task.externalStatusItems.map((item) => item.type), ["credential"]);
   assert.equal(task.backendContext.steps.length, 2);
   assert.equal(task.backendContext.capabilities.includes("UPLOAD"), true);
 });
@@ -290,7 +297,7 @@ test("maps G01 as five-condition profile and credential work", () => {
 test("does not fall back to Mock G01 review results when the trusted source is unavailable", () => {
   const task = adaptTaskContext(context({ taskCode: "G01" }));
 
-  assert.deepEqual(task.externalStatusItems.map((item) => item.status), ["unavailable", "unavailable"]);
+  assert.deepEqual(task.externalStatusItems.map((item) => item.status), ["unavailable"]);
   assert.equal(task.externalStatusItems.some((item) => item.actionGuideId), false);
 });
 
@@ -408,13 +415,14 @@ test("uses the backend personalized dueAt instead of local fixed due copy", () =
   assert.equal(task.due, formatTaskDueAt(dueAt));
 });
 
-test("renders the merged G04 as the in-browser device and environment check", () => {
+test("renders G04 as photo and courseware preparation without a device status item", () => {
   const task = adaptTaskContext(context({
     taskCode: "G04",
-    capabilities: ["DEVICE_CHECK", "UPLOAD"],
+    capabilities: ["DEVICE_CHECK", "UPLOAD", "CHECKLIST"],
     steps: [
       { stepKey: "device-check", type: "DEVICE_CHECK", title: "Check", config: {} },
       { stepKey: "environment-photo", type: "UPLOAD", title: "Photo", config: {} },
+      { stepKey: "courseware", type: "CHECKLIST", title: "Courseware", config: {} },
     ],
     progress: {
       percent: 0,
@@ -423,11 +431,7 @@ test("renders the merged G04 as the in-browser device and environment check", ()
   }));
 
   assert.equal(task.method, "readiness_photo");
-  assert.equal(task.externalStatusItems.length, 1);
-  assert.equal(task.externalStatusItems[0].type, "device_check");
-  assert.equal(task.externalStatusItems[0].status, "waiting");
-  assert.equal(task.externalStatusItems[0].source, "Latest result recorded in this task");
-  assert.equal(task.externalStatusItems[0].sourceZh, "本任务记录的最新检测结果");
+  assert.deepEqual(task.externalStatusItems, []);
 });
 
 test("keeps current tasks and removes retired G00 history from teacher-facing tasks", () => {

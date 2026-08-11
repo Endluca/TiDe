@@ -11,13 +11,14 @@
 当前口径：
 
 - 两端共用同一个 PostgreSQL，直接共享 `task_templates` 和 `task_assignments`。
-- 共享库的当前固定任务为连续编号的 `G01–G09`；G04 是 `Lesson Preparation&Device Network Check`，隐藏 G00 只读保留。教师端只更新契约允许的执行状态字段。
+- 共享库的当前固定任务为连续编号的 `G01–G09`；G04 是 `Lesson Preparation`，隐藏 G00 只读保留。教师端只更新契约允许的执行状态字段。
 - 世文任务触发中心读取合法 `COMPLETED`，并向 `score_entries` 幂等结分。
 - 教师端总览和逐课明细分别只读 `teacher_scorecard_current / teacher_lesson_score_current`，不读取原始积分表或评分配置自行计算。
 - 基础分上限 40，只由产能成长实际得分（最高 10）和必修任务实际得分（最高 30）组成；可获得积分只统计未完成 G 任务，合计为 0 时隐藏；不再展示待确认积分。
 - 不再建设任务 HTTP 下发／回传接口，不再保留第二套任务副本。
-- 当前教师可见固定任务为 G01–G09，其中 G02 为 Platform Policies、G03 为 Student Types、G04 为首课备课与设备网络检测、G05 为 TTP、G06 为 ME、G07 为 Reliability、G08 为 Cocos、G09 为 SET；隐藏 G00 和 Free Trial 不进入当前任务。当前 13 类个性化改善模板由任务触发中心根据真实数据创建 assignment，教师端不默认全量分配。
-- G01 读取 Self-intro／TESOL 两项真实状态，在阔知完成课程 407 的考试，并在站内完成 Essay 确认和完成证明提交；G04 在站内完成备课确认、设备网络检测和首课画面检查。G02、G05–G08 的视频／测试只使用阔知 iframe；G09 同样只允许阔知执行，但映射发布前保持内容待配置。
+- 当前教师可见固定任务为 G01–G09，其中 G02 为 Platform Policies、G03 为 Student Types、G04 为首课准备、G05 为 TTP、G06 为 ME、G07 为 Reliability、G08 为 Cocos、G09 为 SET；隐藏 G00 和 Free Trial 不进入当前任务。当前 13 类个性化改善模板由任务触发中心根据真实数据创建 assignment，教师端不默认全量分配。
+- G01 只读取 TESOL 真实状态，在阔知完成课程 407 的考试，并在站内完成 Essay 确认和完成证明提交；四项全部满足后完成，不展示 Self-intro。G04 在站内完成备课确认、设备网络检测和首课画面检查。G02、G05–G08 的视频／测试只使用阔知 iframe；G09 同样只允许阔知执行，但映射发布前保持内容待配置。
+- G01 只读取 TESOL 真实状态，在阔知完成课程 407 的考试，并在站内完成 Essay 确认和完成证明提交；四项全部满足后完成，不展示 Self-intro。G04 在站内完成课件准备确认和授课环境拍照 AI 检查，不包含设备网络检测。G02、G05–G08 的视频／测试只使用阔知 iframe；G09 同样只允许阔知执行，但映射发布前保持内容待配置。
 - 固定任务和个性化任务的 Why／How／完成标准／完成收益均直接读取世文共享 assignment 与模板字段，不使用本地固定文案覆盖。
 - 教师端自身产生的系统通知保存在 `tide.system_notifications`，不与外部业务提醒混表。
 

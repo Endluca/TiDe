@@ -38,7 +38,7 @@ EXPECTED_MANDATORY_CATALOG = {
     "G01": ("Profile & Credentials Completion", 3, "DAY_1_7"),
     "G02": ("Platform Policies", 2, "DAY_1_7"),
     "G03": ("How to handle different types of students", 2, "DAY_1_7"),
-    "G04": ("Lesson Preparation&Device Network Check", 3, "DAY_1_7"),
+    "G04": ("Lesson Preparation", 3, "DAY_1_7"),
     "G05": ("TTP Orientation", 3, "DAY_8_14"),
     "G06": ("ME Culture & PARSNIP", 4, "DAY_8_14"),
     "G07": ("Reliability Training", 3, "DAY_8_14"),
@@ -48,9 +48,9 @@ EXPECTED_MANDATORY_CATALOG = {
 
 EXPECTED_MANDATORY_COPY = {
     "G01": (
-        "Complete the required profile statuses and TESOL learning evidence.",
-        "Confirm Self-intro and TESOL, pass all 61 questions, complete the Essay and submit the completion proof.",
-        "Self-intro and TESOL are complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.",
+        "Complete the required TESOL status and learning evidence.",
+        "Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.",
+        "TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.",
         "Your profile and required TESOL learning evidence are complete.",
         "READY",
     ),
@@ -69,10 +69,10 @@ EXPECTED_MANDATORY_COPY = {
         "PENDING_JIAHE",
     ),
     "G04": (
-        "Complete lesson preparation and confirm that your teaching setup is ready before class.",
-        "Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.",
-        "G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.",
-        "Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.",
+        "Complete the teaching-environment photo review and prepare the courseware before your first lesson.",
+        "Complete two sections in any order: submit one teaching-environment photo for AI review and prepare the courseware for your first lesson. Each section keeps its own progress.",
+        "G04 is completed only after both sections pass: all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review, and the courseware preparation is confirmed. The sections may be completed in any order.",
+        "Your teaching environment and courseware are ready for your first lesson.",
         "READY",
     ),
     "G05": (
@@ -272,6 +272,31 @@ def test_seed_is_idempotent_and_contains_current_catalog() -> None:
         if item.template_id in EXPECTED_G_CODES
     }
     assert actual_catalog == EXPECTED_MANDATORY_CATALOG
+    g04_payload = next(
+        item.payload for item in templates if item.template_id == "G04"
+    )
+    assert g04_payload["ops_name_zh"] == "首课准备"
+    g04_teacher_copy = " ".join(
+        str(g04_payload[field])
+        for field in (
+            "why_template",
+            "how_summary",
+            "completion_standard",
+            "benefit",
+        )
+    ).lower()
+    assert "courseware" in g04_teacher_copy
+    assert "photo" in g04_teacher_copy
+    assert g04_payload["how_summary"].index("photo") < g04_payload[
+        "how_summary"
+    ].index("courseware")
+    assert g04_payload["completion_standard"].index("photo") < g04_payload[
+        "completion_standard"
+    ].index("courseware")
+    assert all(
+        removed_term not in g04_teacher_copy
+        for removed_term in ("device", "network", "microphone")
+    )
     actual_copy = {
         item.template_id: (
             item.payload["why_template"],

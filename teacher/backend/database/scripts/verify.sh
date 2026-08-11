@@ -177,6 +177,36 @@ rule_distribution="$("${PSQL[@]}" -Atqc "
     group by execution.task_code
   ) current_rules
 ")"
+g01_tesol_rule_ready="$("${PSQL[@]}" -Atqc "
+  select (
+    select count(*)
+    from tide.task_validation_rules rule
+    join tide.task_execution_versions execution
+      on execution.id = rule.execution_version_id
+    where execution.shared_template_row_id = 'G01:v1'
+      and execution.task_code = 'G01'
+      and execution.status = 'ACTIVE'
+      and (
+        rule.rule_key = 'g01-external-status'
+        or rule.rule_type = 'G01_EXTERNAL_STATUS'
+      )
+  ) = 1
+  and exists (
+    select 1
+    from tide.task_validation_rules rule
+    join tide.task_execution_versions execution
+      on execution.id = rule.execution_version_id
+    where execution.shared_template_row_id = 'G01:v1'
+      and execution.task_code = 'G01'
+      and execution.status = 'ACTIVE'
+      and rule.rule_key = 'g01-external-status'
+      and rule.rule_type = 'G01_EXTERNAL_STATUS'
+      and rule.rule_version = '2026-08-11-tesol-only-v1'
+      and rule.position = 3
+      and rule.config = '{}'::jsonb
+      and rule.teacher_failure_copy = 'TESOL 真实状态尚未通过。'
+  )
+")"
 faq_count="$("${PSQL[@]}" -Atqc "select count(*) from tide.knowledge_chunks chunk join tide.knowledge_documents document on document.id = chunk.document_id where document.document_key = 'mock-tide-confirmed-rules' and document.status = 'ACTIVE'")"
 unused_tide_objects_removed="$("${PSQL[@]}" -Atqc "
   select
@@ -382,6 +412,7 @@ assert_equals "${step_distribution}" "G01:2,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,
 assert_equals "${local_quiz_runtime_absent}" "t" "TIDE 本地考试表或步骤仍然存在"
 assert_equals "${rule_count}" "6" "当前验证规则总数异常"
 assert_equals "${rule_distribution}" "G01:3,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:0,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
+assert_equals "${g01_tesol_rule_ready}" "t" "G01 外部状态规则未收窄为 TESOL-only"
 assert_equals "${faq_count}" "3" "FAQ Mock 知识数异常"
 assert_equals "${unused_tide_objects_removed}" "t" "0029 无用 tide 表或 v1 分析视图仍然存在"
 assert_equals "${unused_file_metadata_removed}" "t" "0030 无用文件可见性字段或孤儿函数仍然存在"
@@ -418,7 +449,7 @@ assert_equals "$("${PSQL[@]}" -Atqc "select coalesce(has_table_privilege('tit_te
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'SELECT')")" "f" "教师角色不应读取整张教师宽表"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'tchr_id', 'SELECT')")" "t" "教师角色缺少 G01 教师关联键读取权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_cpl_tesol', 'SELECT')")" "t" "教师角色缺少 TESOL 状态读取权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_self_introduce', 'SELECT')")" "t" "教师角色缺少 Self-intro 状态读取权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_self_introduce', 'SELECT')")" "f" "教师角色不应读取 G01 已停用的 Self-intro 状态"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'real_name', 'SELECT')")" "f" "教师角色不应读取 G01 无关的宽表字段"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'SELECT')")" "t" "教师角色缺少引导状态读取权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'INSERT')")" "t" "教师角色缺少引导状态幂等写入权限"
@@ -450,12 +481,14 @@ assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tide_support_ti
 assert_equals "$("${PSQL[@]}" -Atqc "select rolcanlogin from pg_roles where rolname = 'tit_teacher_crud'")" "t" "本地教师应用角色尚未启用登录"
 assert_equals "$("${PSQL[@]}" -Atqc "select pg_get_constraintdef(oid) like '%VIEW%' from pg_constraint where conrelid = 'tide.task_command_receipts'::regclass and conname = 'task_command_receipts_type_check'")" "t" "VIEW 幂等命令约束未生效"
 assert_equals "$("${PSQL[@]}" -Atqc "select position('A-Z0-9' in pg_get_constraintdef(oid)) > 0 from pg_constraint where conrelid = 'tide.task_execution_versions'::regclass and conname = 'task_execution_versions_code_check'")" "t" "个性化任务执行代码约束未生效"
-assert_equals "$("${PSQL[@]}" -Atqc "select payload->>'title' from public.task_templates where template_id = 'G04' and status = 'PUBLISHED' order by template_version desc limit 1")" "Lesson Preparation&Device Network Check" "G04 未按运营 rev38 目录配置为备课与设备网络检查"
+assert_equals "$("${PSQL[@]}" -Atqc "select payload->>'title' from public.task_templates where template_id = 'G04' and status = 'PUBLISHED' order by template_version desc limit 1")" "Lesson Preparation" "G04 未配置为当前首课准备任务"
+assert_equals "$("${PSQL[@]}" -Atqc "select payload->>'ops_name_zh' from public.task_templates where template_id = 'G04' and status = 'PUBLISHED' order by template_version desc limit 1")" "首课准备" "G04 运营中文名称未保持为首课准备"
 assert_equals "$("${PSQL[@]}" -Atqc "
   select
-    execution.config->>'contentVersion' = '2026-08-05-g04-three-part'
+    execution.config =
+      '{\"estimatedMinutes\":15,\"allowRetry\":true,\"contentStatus\":\"READY\",\"contentVersion\":\"2026-08-11-g04-two-part\",\"pendingReason\":null,\"independentModules\":{\"stepKeys\":[\"g02-environment-photo\",\"g02-courseware-confirmation\"],\"allowOutOfOrderProgress\":true,\"keepAssignmentInProgressUntilPassed\":true}}'::jsonb
     and (
-      select count(*) = 3
+      select count(*) = 2
       from tide.task_step_definitions definition
       where definition.execution_version_id = execution.id
     )
@@ -463,9 +496,9 @@ assert_equals "$("${PSQL[@]}" -Atqc "
       select 1
       from tide.task_step_definitions definition
       where definition.execution_version_id = execution.id
-        and definition.step_key = 'g02-device-check'
+        and definition.step_key = 'g02-environment-photo'
         and definition.position = 1
-        and definition.config->>'version' = 'g02-device-2026-08-05-browser-preflight-v1'
+        and definition.step_type = 'UPLOAD'
     )
     and exists (
       select 1
@@ -475,17 +508,34 @@ assert_equals "$("${PSQL[@]}" -Atqc "
         and definition.position = 2
         and definition.config->>'version' = 'g02-courseware-2026-08-05-guidance-v1'
     )
+    and not exists (
+      select 1
+      from tide.task_step_definitions definition
+      where definition.execution_version_id = execution.id
+        and definition.step_key = 'g02-device-check'
+    )
     and exists (
       select 1
       from tide.task_validation_rules rule
       where rule.execution_version_id = execution.id
         and rule.rule_key = 'all-steps-complete'
-        and rule.rule_version = '2026-08-05-g04-three-part-v1'
-        and rule.config = '{\"requiredStepKeys\":[\"g02-device-check\",\"g02-environment-photo\",\"g02-courseware-confirmation\"]}'::jsonb
+        and rule.rule_version = '2026-08-11-g04-two-part-v1'
+        and rule.config = '{\"requiredStepKeys\":[\"g02-environment-photo\",\"g02-courseware-confirmation\"]}'::jsonb
+    )
+    and exists (
+      select 1
+      from tide.task_validation_rules rule
+      where rule.execution_version_id = execution.id
+        and rule.rule_key = 'g02-environment-ai-review'
+        and rule.rule_type = 'AI_IMAGE_REVIEW'
+        and rule.config->>'criteriaVersion' =
+          'lesson-preparation-camera-view-2026-08-v7-background-veto'
+        and rule.config->'criteriaKeys' =
+          '[\"camera_angle\",\"lighting\",\"background\",\"dressing\"]'::jsonb
     )
   from tide.task_execution_versions execution
   where execution.shared_template_row_id = 'G02:v1'
-")" "t" "G04 未配置为当前三个独立模块或规则版本异常"
+")" "t" "G04 未配置为当前照片与课件两个独立模块或规则版本异常"
 
 "${PSQL[@]}" >/dev/null <<'SQL'
 BEGIN;

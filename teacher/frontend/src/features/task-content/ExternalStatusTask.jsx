@@ -17,7 +17,6 @@ import { useI18n } from "../../i18n";
 import "./external-status-task.css";
 
 const itemIcons = {
-  self_intro: VideoCamera,
   credential: SealCheck,
   device_check: WifiHigh,
   tag_callback: Tag,
@@ -88,7 +87,7 @@ function ProfileLearningCenter({ guides }) {
         <span><BookOpenText size={22} weight="duotone" /></span>
         <div>
           <strong>{c("Optional learning resources", "相关学习资料")}</strong>
-          <small>{c("Review Self-intro guidance and TESOL learning content here", "可在这里查看自我介绍指南和 TESOL 学习内容")}</small>
+          <small>{c("Review TESOL learning content here", "可在这里查看 TESOL 学习内容")}</small>
         </div>
         <em>{open ? c("Collapse", "收起") : c("View learning", "查看学习内容")}</em>
         <CaretDown size={18} weight="bold" />
@@ -148,8 +147,8 @@ function ProfileLearningCenter({ guides }) {
           <p className="profile-learning-boundary">
             <Info size={17} weight="fill" />
             {c(
-              "Learning here does not change either review status. The latest review result appears automatically.",
-              "这里的学习进度不会改变两项审核状态；最新审核结果会自动更新。",
+              "Learning here does not change the TESOL review status. The latest review result appears automatically.",
+              "这里的学习进度不会改变 TESOL 审核状态；最新审核结果会自动更新。",
             )}
           </p>
         </div>
@@ -180,13 +179,13 @@ export default function ExternalStatusTask({ task, embedded = false }) {
         <span>
           <strong>
             {profileStatusOnly
-              ? c(copy.title || "Self-intro and TESOL status", copy.titleZh || "自我介绍与 TESOL 状态")
+              ? c(copy.title || "TESOL status", copy.titleZh || "TESOL 状态")
               : c(copy.title || "Your submission status", copy.titleZh || "你的资料状态")}
           </strong>
           {profileStatusOnly
             ? c(
-                copy.description || "Review the latest status of these two items. There is nothing to upload or submit on this page.",
-                copy.descriptionZh || "在这里查看这两项的最新状态，不需要上传或提交任何材料。",
+                copy.description || "Review the latest TESOL status. There is nothing to upload or submit in this status section.",
+                copy.descriptionZh || "在这里查看 TESOL 的最新状态，这个状态区无需上传或提交材料。",
               )
             : c(
                 copy.description || "Check the latest available status.",
@@ -213,7 +212,7 @@ export default function ExternalStatusTask({ task, embedded = false }) {
         </section>
       )}
 
-      <div className={`external-status-list ${profileStatusOnly ? "profile-status-pair" : ""}`.trim()}>
+      <div className={`external-status-list ${profileStatusOnly && items.length > 1 ? "profile-status-pair" : ""}`.trim()}>
         {items.map((item) => {
           const Icon = itemIcons[item.type] || ClipboardText;
           const status = statusMeta[item.status] || statusMeta.waiting;
@@ -245,8 +244,8 @@ export default function ExternalStatusTask({ task, embedded = false }) {
           </strong>
           {profileStatusOnly
             ? c(
-                copy.completion || "When both statuses show Approved, the task completes automatically. If a status has not updated, contact Training Support about the source record.",
-                copy.completionZh || "两项均显示“已通过”后任务会自动完成；状态长时间未更新时，请联系培训支持核对来源记录。",
+                copy.completion || "Approved TESOL satisfies this external-status condition. If it has not updated, contact Training Support about the source record.",
+                copy.completionZh || "TESOL 显示“已通过”后即满足这项外部状态条件；状态长时间未更新时，请联系培训支持核对来源记录。",
               )
             : c(
                 copy.completion || "The task completes when the required source status passes.",

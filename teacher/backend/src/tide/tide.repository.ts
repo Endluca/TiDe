@@ -11,7 +11,6 @@ export interface TeacherBindingIdentity {
 }
 
 export interface G01Evidence {
-  selfIntroduced: boolean | null;
   tesolCompleted: boolean | null;
   sourceUpdatedAt: null;
 }
@@ -26,7 +25,6 @@ export interface FixedGrowthTask {
 interface BindingRow extends QueryResultRow, TeacherBindingIdentity {}
 
 interface G01EvidenceRow extends QueryResultRow {
-  selfIntroduced: boolean | null;
   tesolCompleted: boolean | null;
 }
 
@@ -97,7 +95,6 @@ export class TideRepository {
     const result = await this.database.queryTide<G01EvidenceRow>(
       `
         SELECT
-          is_self_introduce AS "selfIntroduced",
           is_cpl_tesol AS "tesolCompleted"
         FROM public.teacher_source_wide
         WHERE tchr_id = $1
@@ -108,7 +105,6 @@ export class TideRepository {
     const row = result.rows[0];
     return row
       ? {
-          selfIntroduced: row.selfIntroduced,
           tesolCompleted: row.tesolCompleted,
           sourceUpdatedAt: null,
         }

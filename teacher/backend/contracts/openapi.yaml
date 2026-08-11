@@ -225,7 +225,7 @@ paths:
   /api/v1/me/g01-review:
     get:
       tags: [MyTIDE, Tasks]
-      summary: 获取 G01 Self-intro 和 TESOL 外部审核安全状态
+      summary: 获取 G01 TESOL 外部审核安全状态
       operationId: getG01Review
       security: [{ bearerAuth: [] }]
       responses:
@@ -1097,13 +1097,12 @@ components:
     G01Review:
       type: object
       additionalProperties: false
-      required: [selfIntroStatus, tesolStatus, externalStatusesComplete, freshness]
+      required: [tesolStatus, externalStatusesComplete, freshness]
       properties:
-        selfIntroStatus: { $ref: '#/components/schemas/ExternalReviewStatus' }
         tesolStatus: { $ref: '#/components/schemas/ExternalReviewStatus' }
         externalStatusesComplete:
           type: boolean
-          description: 仅表示 Self-intro 与 TESOL 两项外部状态均完成，不代表 G01 整体完成。
+          description: 仅表示 TESOL 外部状态完成，不代表 G01 整体完成。
         freshness: { $ref: '#/components/schemas/SourceFreshness' }
     MutationMeta:
       type: object

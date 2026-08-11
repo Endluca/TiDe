@@ -316,7 +316,93 @@ elif [[ "${unused_column_cleanup_state}" != "f|f" ]]; then
   echo "0030 无用字段与孤儿函数处于不一致状态，迁移已停止。" >&2
   exit 1
 fi
-"${PSQL[@]}" -f "${DB_DIR}/migrations/0031_g04_independent_sections.up.sql"
+g04_two_part_execution_ready="$("${PSQL[@]}" -Atqc "
+  with g04 as (
+    select id
+    from tide.task_execution_versions
+    where shared_template_row_id = 'G02:v1'
+      and task_code = 'G04'
+      and execution_contract_version = 'task-contract-v3'
+      and status = 'ACTIVE'
+      and config =
+        '{\"estimatedMinutes\":15,\"allowRetry\":true,\"contentStatus\":\"READY\",\"contentVersion\":\"2026-08-11-g04-two-part\",\"pendingReason\":null,\"independentModules\":{\"stepKeys\":[\"g02-environment-photo\",\"g02-courseware-confirmation\"],\"allowOutOfOrderProgress\":true,\"keepAssignmentInProgressUntilPassed\":true}}'::jsonb
+  )
+  select
+    (select count(*) from g04) = 1
+    and (
+      select count(*)
+      from tide.task_step_definitions definition
+      join g04 on g04.id = definition.execution_version_id
+    ) = 2
+    and exists (
+      select 1
+      from tide.task_step_definitions definition
+      join g04 on g04.id = definition.execution_version_id
+      where definition.step_key = 'g02-environment-photo'
+        and definition.position = 1
+        and definition.step_type = 'UPLOAD'
+        and definition.title = 'Take a teaching-environment photo'
+        and definition.config =
+          '{\"version\":\"g02-photo-2026-07-22\",\"role\":\"ENVIRONMENT_PHOTO\",\"accept\":[\"image/jpeg\"],\"captureOnly\":true,\"maxFiles\":1}'::jsonb
+    )
+    and exists (
+      select 1
+      from tide.task_step_definitions definition
+      join g04 on g04.id = definition.execution_version_id
+      where definition.step_key = 'g02-courseware-confirmation'
+        and definition.position = 2
+        and definition.step_type = 'CHECKLIST'
+        and definition.title = 'Review and confirm lesson-preparation guidance'
+        and definition.config =
+          '{\"version\":\"g02-courseware-2026-08-05-guidance-v1\",\"role\":\"COURSEWARE_CONFIRMATION\",\"items\":[{\"key\":\"courseware-prepared\",\"label\":\"I have reviewed the lesson-preparation guidance and all slides, and I am ready for this lesson.\",\"labelZh\":\"我已阅读备课须知并浏览全部课件，已完成本节课备课。\"}]}'::jsonb
+    )
+    and (
+      select count(*)
+      from tide.task_validation_rules rule
+      join g04 on g04.id = rule.execution_version_id
+    ) = 2
+    and exists (
+      select 1
+      from tide.task_validation_rules rule
+      join g04 on g04.id = rule.execution_version_id
+      where rule.rule_key = 'all-steps-complete'
+        and rule.rule_type = 'ALL_STEPS_COMPLETE'
+        and rule.position = 1
+        and rule.rule_version = '2026-08-11-g04-two-part-v1'
+        and rule.config =
+          '{\"requiredStepKeys\":[\"g02-environment-photo\",\"g02-courseware-confirmation\"]}'::jsonb
+        and rule.teacher_failure_copy =
+          '请分别完成授课环境照片检查和课件准备确认，两部分可任意顺序完成。'
+    )
+    and exists (
+      select 1
+      from tide.task_validation_rules rule
+      join g04 on g04.id = rule.execution_version_id
+      where rule.rule_key = 'g02-environment-ai-review'
+        and rule.rule_type = 'AI_IMAGE_REVIEW'
+        and rule.rule_version = '2026-07-27-strict'
+        and rule.position = 2
+        and rule.config->>'stepKey' = 'g02-environment-photo'
+        and rule.config->>'criteriaVersion' =
+          'lesson-preparation-camera-view-2026-08-v7-background-veto'
+        and rule.config->'criteriaKeys' =
+          '[\"camera_angle\",\"lighting\",\"background\",\"dressing\"]'::jsonb
+        and rule.config->'allowedMimeTypes' =
+          '[\"image/jpeg\",\"image/png\",\"image/webp\"]'::jsonb
+        and rule.config->>'systemPrompt' =
+          'You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {\"decision\":\"PASS|RETRY|ERROR\",\"teacherReason\":\"teacher-safe concise message\",\"confidenceSummary\":{},\"criteria\":[{\"criterionKey\":\"one configured key\",\"result\":\"PASS|FAIL|UNKNOWN\",\"teacherMessage\":\"teacher-safe message or null\"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.'
+        and rule.config->>'userText' =
+          'Review this real teaching-environment photo strictly against camera angle, lighting, background and dressing only.'
+        and jsonb_object_length(rule.config) = 6
+        and rule.teacher_failure_copy =
+          '已保留你完成的内容，请根据提示更新这份材料。'
+    )
+")"
+if [[ "${g04_two_part_execution_ready}" == "t" ]]; then
+  echo "G04 已是 exact 0037 two-part execution，跳过历史 0031 重放。"
+else
+  "${PSQL[@]}" -f "${DB_DIR}/migrations/0031_g04_independent_sections.up.sql"
+fi
 
 account_onboarding_states_exists="$("${PSQL[@]}" -Atqc "
   select to_regclass('tide.account_onboarding_states') is not null
@@ -324,10 +410,13 @@ account_onboarding_states_exists="$("${PSQL[@]}" -Atqc "
 if [[ "${account_onboarding_states_exists}" != "t" ]]; then
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0032_first_login_onboarding.up.sql"
 fi
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0032、共享表本地契约和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0037、共享表本地契约和当前 Seeds 已检查并执行。"

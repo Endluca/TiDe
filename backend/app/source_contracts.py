@@ -91,10 +91,12 @@ TEACHER_CSV_FIELDS: tuple[str, ...] = (
     "capacity_key_slot_day_rate",
 )
 
-# The confirmed upstream teacher extract contains the 61 fields above.  G01
-# additionally needs two source-owned, nullable status facts.  They are kept
-# outside the CSV tuple so schema checks continue to distinguish the supplied
-# extract from the current 63-column source table.
+# The confirmed upstream teacher extract contains the 61 fields above.  The
+# source table additionally keeps two source-owned, nullable profile facts.
+# G01 consumes only ``is_cpl_tesol``; ``is_self_introduce`` remains available
+# to operational profile views.  The established constant name is retained for
+# compatibility with schema checks that distinguish the supplied extract from
+# the current 63-column source table.
 TEACHER_G01_STATUS_FIELDS: tuple[str, ...] = (
     "is_cpl_tesol",
     "is_self_introduce",

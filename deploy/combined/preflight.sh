@@ -258,6 +258,8 @@ teacher_unused_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/00
 teacher_unused_columns_cleanup="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
 teacher_g04_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0031_g04_independent_sections.up.sql"
 teacher_onboarding_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0032_first_login_onboarding.up.sql"
+teacher_g01_tesol_only_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0033_g01_tesol_only.up.sql"
+teacher_g04_two_part_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0037_g04_remove_device_check.up.sql"
 
 [[ -f "${teacher_service}" ]] || fail "缺少教师端任务服务"
 [[ -f "${teacher_catalog}" ]] || fail "缺少教师端任务目录同步器"
@@ -274,6 +276,10 @@ teacher_onboarding_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrati
   || fail "缺少教师端 0031 G04 三模块迁移"
 [[ -f "${teacher_onboarding_migration}" ]] \
   || fail "缺少教师端 0032 首次登录引导迁移"
+[[ -f "${teacher_g01_tesol_only_migration}" ]] \
+  || fail "缺少教师端 0033 G01 TESOL-only 迁移"
+[[ -f "${teacher_g04_two_part_migration}" ]] \
+  || fail "缺少教师端 0037 G04 两模块迁移"
 grep -q "2026-08-05-g04-three-part" "${teacher_g04_migration}" \
   || fail "教师端 0031 未发布经评审的 G04 三模块版本"
 grep -q "g02-device-2026-08-05-browser-preflight-v1" "${teacher_g04_migration}" \
@@ -290,6 +296,17 @@ grep -q "security_event.outcome = 'SUCCESS'" "${teacher_onboarding_migration}" \
   || fail "教师端 0032 未限定成功登录结果"
 grep -q "'MIGRATED_EXISTING'" "${teacher_onboarding_migration}" \
   || fail "教师端 0032 未标记存量已登录账号"
+grep -q "2026-08-11-tesol-only-v1" "${teacher_g01_tesol_only_migration}" \
+  || fail "教师端 0033 未固定 G01 TESOL-only 规则版本"
+grep -q "teacher_failure_copy = 'TESOL 真实状态尚未通过。'" "${teacher_g01_tesol_only_migration}" \
+  || fail "教师端 0033 未发布经评审的 TESOL-only 失败文案"
+grep -q "2026-08-11-g04-two-part" "${teacher_g04_two_part_migration}" \
+  || fail "教师端 0037 未发布 G04 两模块版本"
+grep -q "DELETE FROM tide.task_step_definitions" "${teacher_g04_two_part_migration}" \
+  || fail "教师端 0037 未移除当前 G04 设备步骤定义"
+grep -q '"requiredStepKeys":\["g02-environment-photo","g02-courseware-confirmation"\]' \
+  "${teacher_g04_two_part_migration}" \
+  || fail "教师端 0037 完成规则不是照片与课件准备两项"
 
 if grep -Eq "HIDDEN_FIXED_TASK_CODES.*G02|new Set\\(\\['G02'\\]\\)" "${teacher_service}"; then
   fail "教师端仍隐藏当前 G02 平台政策任务"
@@ -315,7 +332,7 @@ expected = {
     "G01": ("Profile & Credentials Completion", 3),
     "G02": ("Platform Policies", 2),
     "G03": ("How to handle different types of students", 2),
-    "G04": ("Lesson Preparation&Device Network Check", 3),
+    "G04": ("Lesson Preparation", 3),
     "G05": ("TTP Orientation", 3),
     "G06": ("ME Culture & PARSNIP", 4),
     "G07": ("Reliability Training", 3),
@@ -357,9 +374,9 @@ if sorted(declared_codes) != sorted(expected) or duplicate_codes or actual != ex
 PY
 
 [[ -f "${teacher_migrator}" ]] || fail "缺少教师端正式生产迁移器"
-grep -Fq "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032" \
+grep -Fq "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037" \
   "${teacher_migrator}" \
-  || fail "教师端迁移器缺少 public46→teacher0028→public50→teacher0032 分阶段失败关闭门禁"
+  || fail "教师端迁移器缺少 public46→teacher0028→public50→teacher0032→public54→teacher0037 分阶段失败关闭门禁"
 grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
   || fail "教师端迁移器未区分历史 0020 是否已经记录"
 [[ -f "${TIDE_TEACHER_REPO_PATH}/backend/Dockerfile" ]] \
@@ -367,7 +384,7 @@ grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
 [[ -f "${TIDE_TEACHER_REPO_PATH}/frontend/Dockerfile" ]] \
   || fail "缺少教师端 Web 生产镜像"
 python3 - "${teacher_migrator}" <<'PY' \
-  || fail "教师端生产迁移器不是以 0032 结尾的完整有序生产链"
+  || fail "教师端生产迁移器不是以 0037 结尾的完整有序生产链"
 from __future__ import annotations
 
 import re
@@ -406,6 +423,8 @@ expected = [
     "0030_remove_unused_columns_and_orphan_function",
     "0031_g04_independent_sections",
     "0032_first_login_onboarding",
+    "0033_g01_tesol_only",
+    "0037_g04_remove_device_check",
 ]
 target_match = re.search(
     r'TARGET_MIGRATION="\$\{TIDE_MIGRATION_TARGET:-([^}]+)\}"',
@@ -437,4 +456,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032 执行，随后仍需通过契约探针和发布门禁。\n'
+printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032→public54→teacher0037 执行，随后仍需通过契约探针和发布门禁。\n'

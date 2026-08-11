@@ -316,6 +316,13 @@ def test_readme_runs_preflight_before_migration() -> None:
         "--profile migration run --rm migrate"
     )
     assert preflight < migration
+    assert "20260811_54_g04_remove_device_check" in readme
+    assert "0037_g04_remove_device_check" in readme
+    assert "20260811_51_g01_tesol_only" in readme
+    assert "0033_g01_tesol_only" in readme
     assert "20260810_50_g04_sections" in readme
     assert "0032_first_login_onboarding" in readme
-    assert "public 46 → teacher 0028 → public 50 → teacher 0032" in readme
+    assert (
+        "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
+        "teacher 0037"
+    ) in readme

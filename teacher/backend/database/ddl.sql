@@ -8,6 +8,7 @@
 \ir migrations/0004_task_command_receipts.up.sql
 \ir migrations/0005_faq_message_commands.up.sql
 \ir migrations/0006_teacher_profile_g01_support.up.sql
+\ir seed/0000_mock_shared_catalog.sql
 \ir migrations/0007_shared_task_assignment_links.up.sql
 \ir migrations/0008_remove_legacy_task_exchange.up.sql
 \ir migrations/0009_task_view_command.up.sql
@@ -34,3 +35,6 @@
 \ir migrations/0030_remove_unused_columns_and_orphan_function.up.sql
 \ir migrations/0031_g04_independent_sections.up.sql
 \ir migrations/0032_first_login_onboarding.up.sql
+\ir migrations/0033_g01_tesol_only.up.sql
+\ir seed/0005_mock_g04_two_part_catalog.sql
+\ir migrations/0037_g04_remove_device_check.up.sql

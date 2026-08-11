@@ -78,7 +78,6 @@ export type ExternalReviewStatus =
   'WAITING' | 'IN_REVIEW' | 'APPROVED' | 'NEEDS_CHANGES' | 'UNAVAILABLE';
 
 export interface G01Review {
-  selfIntroStatus: ExternalReviewStatus;
   tesolStatus: ExternalReviewStatus;
   externalStatusesComplete: boolean;
   freshness: SourceFreshness;

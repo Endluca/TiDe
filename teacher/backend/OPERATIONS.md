@@ -46,7 +46,11 @@ pnpm provision:internal-test
 ./scripts/deploy-internal-test-backend.sh
 ```
 
-- 先按 `public 46 → teacher 0028 → public 50 → teacher 0032` 完成受控迁移并结束迁移窗口，再运行 `database/scripts/apply-company-test.sh` 只读核对 canonical 账本/结构并初始化 execution 和受限账号；两者禁止并发，该脚本不再创建或升级 `tide` Schema。
+- 下一次明确授权的升级必须从当前 public 50 / teacher 0032 继续，并保持
+  `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037` 六阶段顺序；
+  public 54 包含 rev51，teacher 37 包含 0033。完成迁移并结束迁移窗口后，再运行
+  `database/scripts/apply-company-test.sh` 只读核对精确 32 条 canonical 账本/结构并初始化 execution
+  和受限账号；两者禁止并发，该脚本不再创建或升级 `tide` Schema。本次代码交付未执行数据库升级。
 - `provision:internal-test` 使用 `TIDE_DATABASE_URL` 连接公司测试库，只为库中真实存在的教师创建测试账号，不复制或改写 `public.teachers`，也不生成教师可见的站内通知。
 - 后端与隧道由 `com.aiec.tide-internal-backend`、`com.aiec.tide-internal-tunnel` 两个 LaunchAgent 常驻。
 - 源代码合并后重新运行部署脚本，会同步运行副本并重启后端。
@@ -94,7 +98,8 @@ docker build -t tide-teacher-api:reviewed .
 
 镜像只暴露 `3000`，其内置健康检查请求 `/health/ready`。生产环境中，容器进入
 healthy 不只代表 Node 进程存在：迁移账本必须是完整生产清单且唯一最新版本为
-`0032_first_login_onboarding`，运营端稳定模板行必须精确对应当前 G01–G09
+`0037_g04_remove_device_check`，运营端稳定模板行必须精确对应当前 G01–G09，
+teacher canonical 账本必须精确为 32 条且包含 `0033_g01_tesol_only`
 和 retired G00，九条当前执行配置也必须按同一稳定行处于 ACTIVE。后台任务租约、
 共享工单表、账号引导状态表及固定 owner 函数必须完整，6 张废弃表和 5 个旧分析视图必须不存在，教师身份来源和两张积分读取视图
 也必须可查询。教师运行账号必须只能读取迁移账本。密钥和数据库连接只能由部署平台在
@@ -105,7 +110,7 @@ healthy 不只代表 Node 进程存在：迁移账本必须是完整生产清单
 保持默认值，除非用真实文件大小、并发和 RSS 压测证明可以调整。容量用尽返回可重试的
 `429 MULTIPART_UPLOAD_CAPACITY_EXHAUSTED` 和 `Retry-After`，不排队持有请求体。
 
-后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出或租约过期后接管。所有副本必须连接同一个已应用 `0032_first_login_onboarding` 的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后由其他副本读取失败。
+后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出或租约过期后接管。所有副本必须连接同一个已应用 `0037_g04_remove_device_check`（包含前置 `0033_g01_tesol_only`）的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后由其他副本读取失败。
 
 ## 4. 迁移与发布前检查
 
@@ -124,15 +129,22 @@ bash database/scripts/rollback-test.sh
 ID、assignment ID 或历史过程记录；旧 G05 只退役为 G00，不搬迁到新 G04。
 该迁移 forward-only，生产回退使用发布前备份或后续受控修复，不执行语义反向编号。
 
-`0028` 在稳定 `G02:v1` / G04 execution 上原位发布设备网络基础预检、授课环境
+`0031` 在稳定 `G02:v1` / G04 execution 上原位发布设备网络基础预检、授课环境
 照片 AI 检查、备课须知确认三个独立模块。它只接受已评审的旧两步／旧三步结构，
 未知 step/rule 整笔拒绝，并用迁移前后快照确认 assignment 和 progress 原始行不变。
 空 execution 目录下它 no-op，不代替显式 Seed。`0028` 同样 forward-only；不用 down 把已记录的
 三模块进度重新解释为旧结构。
 
-`0029` 新增账号级新手引导终态事实。迁移只回填已有 `LOGIN/SUCCESS`
+`0032` 新增账号级新手引导终态事实。迁移只回填已有 `LOGIN/SUCCESS`
 安全事件的账号，从未成功登录的已注册账号保持无行，以便首次登录后展示引导。
 运行角色只得读取和幂等插入，不得更新或删除已确认的终态事实；0032 down 只删除该表。
+
+`0037` 在同一 G04 execution 上删除当前 `g02-device-check` 步骤定义，
+完成规则只保留授课环境照片 AI 审核和课件准备确认。它不删除旧设备步骤进度，
+不改 execution、assignment 或已有终态；未知结构整笔拒绝。该语义迁移同样 forward-only。
+
+`0033` 只在稳定 G01 execution 上把外部状态规则收窄为 TESOL-only，并保留
+execution、step、其他 rule、assignment 与 progress 身份；down 只恢复规则版本和失败提示。
 
 本地完整验收：
 

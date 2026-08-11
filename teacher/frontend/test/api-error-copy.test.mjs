@@ -115,6 +115,20 @@ test("stable task result codes have Chinese and English copy", () => {
   }
 });
 
+test("G01 validation copy refers only to TESOL status", () => {
+  for (const resultCode of [
+    "G01_EXTERNAL_STATUS_UNAVAILABLE",
+    "G01_EXTERNAL_STATUS_PASSED",
+    "G01_EXTERNAL_STATUS_INCOMPLETE",
+  ]) {
+    const validation = { resultCode, teacherMessage: "Self-intro 与 TESOL 状态" };
+    assert.doesNotMatch(localizedValidationMessage(validation, "en"), /Self-intro/i);
+    assert.doesNotMatch(localizedValidationMessage(validation, "zh"), /Self-intro/i);
+    assert.match(localizedValidationMessage(validation, "en"), /TESOL/);
+    assert.match(localizedValidationMessage(validation, "zh"), /TESOL/);
+  }
+});
+
 test("AI gateway validation failures use localized automatic-review copy", () => {
   assert.equal(
     localizedValidationMessage(

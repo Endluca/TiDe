@@ -47,7 +47,7 @@ services:
       - ${TIDE_TEACHER_MIGRATION_ENV_FILE:?Set TIDE_TEACHER_MIGRATION_ENV_FILE to a protected env file}
     environment:
       TIDE_MIGRATION_EXPECTED_DATABASE: ${TIDE_DATABASE_NAME:?Set TIDE_DATABASE_NAME}
-      TIDE_MIGRATION_TARGET: ${TIDE_TEACHER_MIGRATION_TARGET:-0032_first_login_onboarding}
+      TIDE_MIGRATION_TARGET: ${TIDE_TEACHER_MIGRATION_TARGET:-0037_g04_remove_device_check}
     read_only: true
     tmpfs:
       - /tmp:size=32m

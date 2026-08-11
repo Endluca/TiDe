@@ -344,7 +344,7 @@ runDatabaseIntegration('shared database backend flow (e2e)', () => {
     await database.query(
       `
         UPDATE public.teacher_source_wide
-        SET is_self_introduce = true, is_cpl_tesol = true
+        SET is_self_introduce = false, is_cpl_tesol = true
         WHERE tchr_id = $1
       `,
       [TEST_TEACHER_ID],
@@ -356,10 +356,10 @@ runDatabaseIntegration('shared database backend flow (e2e)', () => {
       .expect((response) => {
         const body = response.body as G01ReviewResponse;
         expect(body).toMatchObject({
-          selfIntroStatus: 'APPROVED',
           tesolStatus: 'APPROVED',
           externalStatusesComplete: true,
         });
+        expect(body).not.toHaveProperty('selfIntroStatus');
       });
     const g01 = await database.query<{
       status: string;
@@ -813,7 +813,6 @@ async function expectG01NotComplete(
     .expect(200)
     .expect((response) =>
       expect(response.body).toMatchObject({
-        selfIntroStatus: 'APPROVED',
         tesolStatus: 'WAITING',
         externalStatusesComplete: false,
       }),

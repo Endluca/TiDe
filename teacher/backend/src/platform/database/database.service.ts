@@ -57,6 +57,8 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0030_remove_unused_columns_and_orphan_function',
   '0031_g04_independent_sections',
   '0032_first_login_onboarding',
+  '0033_g01_tesol_only',
+  '0037_g04_remove_device_check',
 ] as const;
 
 @Injectable()
@@ -278,7 +280,7 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0032_first_login_onboarding'
+        ) = '0037_g04_remove_device_check'
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.account_onboarding_states') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
@@ -325,6 +327,39 @@ export class DatabaseService implements OnModuleDestroy {
             'G01', 'G02', 'G03', 'G04', 'G05',
             'G06', 'G07', 'G08', 'G09'
           ]::text[]
+        AND EXISTS (
+          SELECT 1
+          FROM public.task_templates AS template
+          WHERE template.row_id = 'G01:v1'
+            AND template.template_id = 'G01'
+            AND template.status = 'PUBLISHED'
+            AND template.payload->>'title' =
+              'Profile & Credentials Completion'
+            AND template.payload->>'why_template' =
+              'Complete the required TESOL status and learning evidence.'
+            AND template.payload->>'how_summary' =
+              'Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.'
+            AND template.payload->>'completion_standard' =
+              'TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM public.task_templates AS template
+          WHERE template.row_id = 'G02:v1'
+            AND template.template_id = 'G04'
+            AND template.status = 'PUBLISHED'
+            AND template.payload->>'template_id' = 'G04'
+            AND template.payload->>'ops_name_zh' = '首课准备'
+            AND template.payload->>'title' = 'Lesson Preparation'
+            AND template.payload->>'why_template' =
+              'Complete the teaching-environment photo review and prepare the courseware before your first lesson.'
+            AND template.payload->>'how_summary' =
+              'Complete two sections in any order: submit one teaching-environment photo for AI review and prepare the courseware for your first lesson. Each section keeps its own progress.'
+            AND template.payload->>'completion_standard' =
+              'G04 is completed only after both sections pass: all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review, and the courseware preparation is confirmed. The sections may be completed in any order.'
+            AND template.payload->>'benefit' =
+              'Your teaching environment and courseware are ready for your first lesson.'
+        )
         AND (
           SELECT count(*)
           FROM tide.task_execution_versions AS execution
@@ -335,6 +370,34 @@ export class DatabaseService implements OnModuleDestroy {
             AND execution.task_code = template.template_id
             AND execution.status = 'ACTIVE'
         ) = 9
+        AND (
+          SELECT count(*)
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'G01:v1'
+            AND execution.task_code = 'G01'
+            AND execution.status = 'ACTIVE'
+            AND (
+              rule.rule_key = 'g01-external-status'
+              OR rule.rule_type = 'G01_EXTERNAL_STATUS'
+            )
+        ) = 1
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'G01:v1'
+            AND execution.task_code = 'G01'
+            AND execution.status = 'ACTIVE'
+            AND rule.rule_key = 'g01-external-status'
+            AND rule.rule_type = 'G01_EXTERNAL_STATUS'
+            AND rule.rule_version = '2026-08-11-tesol-only-v1'
+            AND rule.position = 3
+            AND rule.config = '{}'::jsonb
+            AND rule.teacher_failure_copy = 'TESOL 真实状态尚未通过。'
+        )
         AND EXISTS (
           SELECT 1
           FROM tide.task_execution_versions AS execution
@@ -343,7 +406,7 @@ export class DatabaseService implements OnModuleDestroy {
             AND execution.status = 'ACTIVE'
             AND execution.execution_contract_version = 'task-contract-v3'
             AND execution.config =
-              '{"estimatedMinutes":15,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-05-g04-three-part","pendingReason":null,"independentModules":{"stepKeys":["g02-device-check","g02-environment-photo","g02-courseware-confirmation"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
+              '{"estimatedMinutes":15,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-11-g04-two-part","pendingReason":null,"independentModules":{"stepKeys":["g02-environment-photo","g02-courseware-confirmation"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
         )
         AND (
           SELECT count(*)
@@ -351,7 +414,7 @@ export class DatabaseService implements OnModuleDestroy {
           JOIN tide.task_execution_versions AS execution
             ON execution.id = definition.execution_version_id
           WHERE execution.shared_template_row_id = 'G02:v1'
-        ) = 3
+        ) = 2
         AND (
           SELECT count(*)
           FROM tide.task_step_definitions AS definition
@@ -360,11 +423,9 @@ export class DatabaseService implements OnModuleDestroy {
           WHERE execution.shared_template_row_id = 'G02:v1'
             AND (
               (
-                definition.step_key = 'g02-device-check'
+                definition.step_key = 'g02-environment-photo'
                 AND definition.position = 1
-                AND definition.step_type = 'DEVICE_CHECK'
-                AND definition.config->>'version' =
-                  'g02-device-2026-08-05-browser-preflight-v1'
+                AND definition.step_type = 'UPLOAD'
               )
               OR (
                 definition.step_key = 'g02-courseware-confirmation'
@@ -373,13 +434,8 @@ export class DatabaseService implements OnModuleDestroy {
                 AND definition.config->>'version' =
                   'g02-courseware-2026-08-05-guidance-v1'
               )
-              OR (
-                definition.step_key = 'g02-environment-photo'
-                AND definition.position = 3
-                AND definition.step_type = 'UPLOAD'
-              )
             )
-        ) = 3
+        ) = 2
         AND EXISTS (
           SELECT 1
           FROM tide.task_validation_rules AS rule
@@ -388,10 +444,10 @@ export class DatabaseService implements OnModuleDestroy {
           WHERE execution.shared_template_row_id = 'G02:v1'
             AND rule.rule_key = 'all-steps-complete'
             AND rule.rule_type = 'ALL_STEPS_COMPLETE'
-            AND rule.rule_version = '2026-08-05-g04-three-part-v1'
+            AND rule.rule_version = '2026-08-11-g04-two-part-v1'
             AND rule.position = 1
             AND rule.config =
-              '{"requiredStepKeys":["g02-device-check","g02-environment-photo","g02-courseware-confirmation"]}'::jsonb
+              '{"requiredStepKeys":["g02-environment-photo","g02-courseware-confirmation"]}'::jsonb
         )
         AND (
           SELECT count(*)

@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码与 `tit_growth_test_v2` 的 head 均为 public `20260810_50_g04_sections`、teacher `0032_first_login_onboarding`。Tide 为精确 30 条 canonical 账本，0027 本地 Quiz、0028–0030 退役对象、0031 G04 三模块与 0032 首次登录引导均已落库；重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这只证明公司测试库结构和源数据计算链已落地，不代表外部监控服务或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260811_54_g04_remove_device_check`、teacher `0037_g04_remove_device_check`，最终 teacher canonical 账本为 32 条；rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块。`tit_growth_test_v2` 实存 head 仍为 public `20260810_50_g04_sections`、teacher `0032_first_login_onboarding`，是精确 30 条 canonical 账本，尚未应用 rev51/0033 与 rev54/0037；远程 G04 仍为历史三模块形状。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这只证明公司测试库结构和源数据计算链已落地，不代表外部监控服务或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -59,7 +59,7 @@ export DATABASE_URL='postgresql+psycopg://tit_growth_app@127.0.0.1:5432/tit_grow
 ## 初始化空库
 
 如果该库同时承载 teacher 的 `tide` Schema，首次初始化不能直接把 public 升到 head：必须按
-public 46 → teacher 0028 → public 50 → teacher 0032 分阶段执行，详见
+public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 分阶段执行，详见
 [`deploy/combined/README.md`](../deploy/combined/README.md)。只有不初始化 teacher Schema 的
 独立 public 数据库才可直接执行以下 `upgrade head`。
 
@@ -116,7 +116,7 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
 - `20260806_43_source_results` 新增一课一行的 `lesson_score_results` 和保存当前门槛、
   不可逆获得事实的 `teacher_qualifications`，并将个性化触发课程 FK 指向课程源表。
 - `20260806_44_source_reads` 将两个教师端积分视图切到源表与新结果表。
-- `20260807_46_teacher_g01_source` 在教师源表末尾追加两个可空 G01 状态字段，
+- `20260807_46_teacher_g01_source` 在教师源表末尾追加两个可空教师资料状态字段；当前 G01 只消费 TESOL，
   并把教师端角色收紧为只读教师键和这两个状态字段；旧快照不再是 G01 读取入口。
 - `20260807_47_legacy_drop` 要求 teacher 0028 已先退役旧分析视图，并在三张旧投影为空且
   不存在外部视图、外键、继承/分区或发布依赖时，无 `CASCADE` 删除它们。
@@ -156,6 +156,16 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   benefit 文案：备课须知、设备网络基础检测和授课环境照片审核为三个任意
   顺序、独立保存进度的模块，三项全部通过才完成 G04。该迁移不修改编码、
   分值、assignment 或任务状态，发现旧文案漂移时失败关闭。
+- `20260811_51_g01_tesol_only` 以 rev50 为直接前驱，仅将稳定 `G01:v1`
+  的上游资料状态收窄为 TESOL，保留模板身份、分值、assignment 和原有完成事实；
+  同时撤销 `tit_teacher_crud` 对 `is_self_introduce` 的读取权，物理列仍保留给源数据 owner
+  和运营投影。发现旧文案或稳定身份漂移时迁移失败关闭。
+- teacher `0033_g01_tesol_only` 原位更新 G01 外部状态校验规则为 TESOL-only，
+  保留 execution、step/rule ID、assignment 与教师进度；未知规则结构失败关闭。
+- `20260811_54_g04_remove_device_check` 继续原位更新同一稳定 G04 模板的标题与四段文案，
+  只保留授课环境照片 AI 审核和课件准备确认。teacher `0037_g04_remove_device_check`
+  从当前 execution 删除设备步骤定义并把完成规则收窄为上述两项；既有设备检测进度仍保留
+  为历史审计事实，不修改任何 assignment、终态或分值。
 - `seed_database.py` 只幂等补齐 14 个当前任务模板，不创建教师或任何运行时业务事实，也不修改投诉规则导入或触发结果。G01–G09 assignment 由教师写入流程初始化；初始化不创建通知、提醒或投递意图。隔离测试中的 Mock fixture 不进入运营运行库。
 - `seed_config_center.py` 只创建本地默认配置版本；空库读取不会由 API 隐式补配置。
 - 两个 Seed 脚本都要求 `APP_ENV` 明确为 `local / dev / development / test`，否则拒绝执行。

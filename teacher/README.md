@@ -4,7 +4,7 @@
 
 本工作区用于建设教师端前后端一体系统，覆盖公司邮箱注册登录、My TIDE、成长路径、系统内任务、素材存储和数据回流。
 
-世文系统负责业务数据、积分和业务结果；本系统面向老师展示并执行连续编号的 `G01–G09` 共 9 个固定成长任务。`G04` 是合并后的 `Lesson Preparation&Device Network Check`，重排前旧 `G05` 以隐藏技术编码 `G00` 只读保留，不进入当前任务列表。两端共用同一个 PostgreSQL，直接共享 `task_templates` 和 `task_assignments`，教师端不写积分表。个性化任务以世文任务触发中心创建的真实 assignment 为准；TIDE 只读其状态与截止时间并将新任务／到期提醒写入 `tide.system_notifications`，不写 `public.notifications`。
+世文系统负责业务数据、积分和业务结果；本系统面向老师展示并执行连续编号的 `G01–G09` 共 9 个固定成长任务。`G04` 是 `Lesson Preparation`，只保留授课环境拍照 AI 检查和课件准备确认；重排前旧 `G05` 以隐藏技术编码 `G00` 只读保留，不进入当前任务列表。两端共用同一个 PostgreSQL，直接共享 `task_templates` 和 `task_assignments`，教师端不写积分表。个性化任务以世文任务触发中心创建的真实 assignment 为准；TIDE 只读其状态与截止时间并将新任务／到期提醒写入 `tide.system_notifications`，不写 `public.notifications`。
 
 ## 建议阅读顺序
 

@@ -4,7 +4,7 @@ import { TideRepository } from './tide.repository';
 describe('TideRepository G01 evidence', () => {
   it('reads the one-row teacher source without inventing freshness metadata', async () => {
     const queryTide = jest.fn().mockResolvedValue({
-      rows: [{ selfIntroduced: null, tesolCompleted: false }],
+      rows: [{ tesolCompleted: false }],
     });
     const repository = new TideRepository({
       queryTide,
@@ -13,7 +13,6 @@ describe('TideRepository G01 evidence', () => {
     await expect(
       repository.findLatestG01Evidence('teacher-001'),
     ).resolves.toEqual({
-      selfIntroduced: null,
       tesolCompleted: false,
       sourceUpdatedAt: null,
     });
@@ -24,6 +23,8 @@ describe('TideRepository G01 evidence', () => {
     const sql = String(calls[0][0]);
     expect(sql).toContain('FROM public.teacher_source_wide');
     expect(sql).toContain('WHERE tchr_id = $1');
+    expect(sql).toContain('is_cpl_tesol');
+    expect(sql).not.toContain('is_self_introduce');
     expect(sql).not.toContain('teacher_metric_snapshots');
     expect(sql).not.toContain('updated_at');
     expect(calls[0][1]).toEqual(['teacher-001']);

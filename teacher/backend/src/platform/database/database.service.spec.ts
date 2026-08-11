@@ -224,7 +224,19 @@ describe('DatabaseService', () => {
       shiwenRead: 'not_configured',
     });
     expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('0037_g04_remove_device_check'),
+    );
+    expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0032_first_login_onboarding'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('0033_g01_tesol_only'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('2026-08-11-tesol-only-v1'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("OR rule.rule_type = 'G01_EXTERNAL_STATUS'"),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0031_g04_independent_sections'),
@@ -255,10 +267,21 @@ describe('DatabaseService', () => {
       expect.stringContaining('tide.account_onboarding_states'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('g02-device-2026-08-05-browser-preflight-v1'),
+      expect.stringContaining('2026-08-11-g04-two-part'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('requiredStepKeys'),
+      expect.stringContaining(
+        'requiredStepKeys":["g02-environment-photo","g02-courseware-confirmation',
+      ),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("payload->>'title' = 'Lesson Preparation'"),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("payload->>'ops_name_zh' = '首课准备'"),
+    );
+    expect(query).not.toHaveBeenCalledWith(
+      expect.stringContaining('g02-device-2026-08-05-browser-preflight-v1'),
     );
     for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
       expect(query).toHaveBeenCalledWith(

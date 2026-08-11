@@ -151,6 +151,9 @@ orphan_function_definition="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc \
 run_sql "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.up.sql"
 run_sql "${DB_DIR}/migrations/0031_g04_independent_sections.up.sql"
 run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.up.sql"
+run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
+run_sql "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
+run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
@@ -199,16 +202,157 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
       )
       and to_regprocedure('tide.enforce_outbox_target()') is null
     ),
+    (
+      select count(*) = 2
+        and bool_and(
+          (definition.step_key = 'g02-environment-photo'
+            and definition.position = 1
+            and definition.step_type = 'UPLOAD')
+          or
+          (definition.step_key = 'g02-courseware-confirmation'
+            and definition.position = 2
+            and definition.step_type = 'CHECKLIST')
+        )
+      from tide.task_step_definitions definition
+      join tide.task_execution_versions execution
+        on execution.id = definition.execution_version_id
+      where execution.shared_template_row_id = 'G02:v1'
+    ),
+    not exists (
+      select 1
+      from tide.task_step_definitions definition
+      join tide.task_execution_versions execution
+        on execution.id = definition.execution_version_id
+      where execution.shared_template_row_id = 'G02:v1'
+        and definition.step_key = 'g02-device-check'
+    ),
+    exists (
+      select 1
+      from public.task_templates template
+      where template.row_id = 'G02:v1'
+        and template.template_id = 'G04'
+        and template.payload->>'ops_name_zh' = '首课准备'
+        and template.payload->>'title' = 'Lesson Preparation'
+    ),
     (select count(*) from public.task_assignments where teacher_id = 'MOCK-TEACHER-001'),
     (select count(*) from tide.task_execution_versions),
     (select count(*) from public.task_templates where status = 'PUBLISHED')
   )
 ")"
-[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
+[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
   echo "空库升级后状态异常: ${final_state}" >&2
   exit 1
 }
 
+# Mirror a second local apply.sh run: seed 0000 resets the shared Mock copy,
+# while the exact 0037 execution guard must skip historical 0031. The overlay
+# then restores public copy and 0037 must remain idempotent.
+run_sql "${DB_DIR}/seed/0000_mock_shared_catalog.sql"
+g04_second_apply_guard="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select exists (
+    select 1
+    from tide.task_execution_versions execution
+    where execution.shared_template_row_id = 'G02:v1'
+      and execution.task_code = 'G04'
+      and execution.config->>'contentVersion' = '2026-08-11-g04-two-part'
+      and (
+        select array_agg(definition.step_key order by definition.position) =
+          array['g02-environment-photo', 'g02-courseware-confirmation']::text[]
+        from tide.task_step_definitions definition
+        where definition.execution_version_id = execution.id
+      )
+      and not exists (
+        select 1
+        from tide.task_step_definitions definition
+        where definition.execution_version_id = execution.id
+          and definition.step_key = 'g02-device-check'
+      )
+      and exists (
+        select 1
+        from tide.task_validation_rules rule
+        where rule.execution_version_id = execution.id
+          and rule.rule_key = 'all-steps-complete'
+          and rule.rule_version = '2026-08-11-g04-two-part-v1'
+          and rule.config =
+            '{\"requiredStepKeys\":[\"g02-environment-photo\",\"g02-courseware-confirmation\"]}'::jsonb
+      )
+  )
+")"
+[[ "${g04_second_apply_guard}" == "t" ]] || {
+  echo "二次本地 apply 未识别 exact 0037 G04，历史 0031 将被错误重放" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
+run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
+run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
+g04_second_apply_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select exists (
+    select 1
+    from public.task_templates template
+    join tide.task_execution_versions execution
+      on execution.shared_template_row_id = template.row_id
+    where template.row_id = 'G02:v1'
+      and template.template_id = 'G04'
+      and template.payload->>'ops_name_zh' = '首课准备'
+      and template.payload->>'title' = 'Lesson Preparation'
+      and execution.config->>'contentVersion' = '2026-08-11-g04-two-part'
+      and (
+        select count(*) = 2
+        from tide.task_step_definitions definition
+        where definition.execution_version_id = execution.id
+      )
+      and not exists (
+        select 1
+        from tide.task_step_definitions definition
+        where definition.execution_version_id = execution.id
+          and definition.step_key = 'g02-device-check'
+      )
+  )
+")"
+[[ "${g04_second_apply_state}" == "t" ]] || {
+  echo "二次本地 apply 未恢复 public G04 文案或破坏两段执行形状" >&2
+  exit 1
+}
+
+run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.down.sql"
+g04_after_0037_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select concat_ws('|',
+    (
+      select array_agg(definition.step_key order by definition.position) =
+        array['g02-environment-photo', 'g02-courseware-confirmation']::text[]
+      from tide.task_step_definitions definition
+      join tide.task_execution_versions execution
+        on execution.id = definition.execution_version_id
+      where execution.shared_template_row_id = 'G02:v1'
+    ),
+    not exists (
+      select 1
+      from tide.task_step_definitions definition
+      join tide.task_execution_versions execution
+        on execution.id = definition.execution_version_id
+      where execution.shared_template_row_id = 'G02:v1'
+        and definition.step_key = 'g02-device-check'
+    )
+  )
+")"
+[[ "${g04_after_0037_down_state}" == "t|t" ]] || {
+  echo "0037 forward-only down 错误恢复了 G04 设备检测: ${g04_after_0037_down_state}" >&2
+  exit 1
+}
+
+run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.down.sql"
+g01_rule_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select concat_ws('|', rule_version, teacher_failure_copy)
+  from tide.task_validation_rules rule
+  join tide.task_execution_versions execution
+    on execution.id = rule.execution_version_id
+  where execution.shared_template_row_id = 'G01:v1'
+    and rule.rule_key = 'g01-external-status'
+")"
+[[ "${g01_rule_down_state}" == "2026-07-22|Self-intro 和 TESOL 真实状态尚未全部通过。" ]] || {
+  echo "0033 down 未精确恢复 G01 外部状态规则：${g01_rule_down_state}" >&2
+  exit 1
+}
 run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.down.sql"
 account_onboarding_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select to_regclass('tide.account_onboarding_states') is null
@@ -218,6 +362,19 @@ account_onboarding_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   exit 1
 }
 run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.up.sql"
+run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
+g01_rule_up_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select concat_ws('|', rule_version, teacher_failure_copy)
+  from tide.task_validation_rules rule
+  join tide.task_execution_versions execution
+    on execution.id = rule.execution_version_id
+  where execution.shared_template_row_id = 'G01:v1'
+    and rule.rule_key = 'g01-external-status'
+")"
+[[ "${g01_rule_up_state}" == "2026-08-11-tesol-only-v1|TESOL 真实状态尚未通过。" ]] || {
+  echo "0033 down-up 未精确恢复 TESOL-only 规则：${g01_rule_up_state}" >&2
+  exit 1
+}
 account_onboarding_up_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select to_regclass('tide.account_onboarding_states') is not null
 ")"
@@ -225,8 +382,33 @@ account_onboarding_up_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   echo "0032 down-up 未恢复新手引导状态表" >&2
   exit 1
 }
+run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.down.sql"
 run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.down.sql"
 run_sql "${DB_DIR}/migrations/0031_g04_independent_sections.down.sql"
+g04_after_0031_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select concat_ws('|',
+    (
+      select array_agg(definition.step_key order by definition.position) =
+        array['g02-environment-photo', 'g02-courseware-confirmation']::text[]
+      from tide.task_step_definitions definition
+      join tide.task_execution_versions execution
+        on execution.id = definition.execution_version_id
+      where execution.shared_template_row_id = 'G02:v1'
+    ),
+    not exists (
+      select 1
+      from tide.task_step_definitions definition
+      join tide.task_execution_versions execution
+        on execution.id = definition.execution_version_id
+      where execution.shared_template_row_id = 'G02:v1'
+        and definition.step_key = 'g02-device-check'
+    )
+  )
+")"
+[[ "${g04_after_0031_down_state}" == "t|t" ]] || {
+  echo "0031 forward-only down 错误改动了 0037 的 G04 两段结构: ${g04_after_0031_down_state}" >&2
+  exit 1
+}
 
 run_sql "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.down.sql"
 restored_file_visibility_signature="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
@@ -361,4 +543,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0032 并逐级回滚验证通过。"
+echo "空库升级至 0037，验证 G01 TESOL-only 与 G04 两段结构的 forward-only down 后逐级回滚通过。"

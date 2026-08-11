@@ -36,8 +36,8 @@ MANDATORY_TASKS = [
     ),
     (
         "G04",
-        "首课备课与设备网络检测",
-        "Lesson Preparation&Device Network Check",
+        "首课准备",
+        "Lesson Preparation",
         3,
         "DAY_1_7",
         "P1",
@@ -78,9 +78,9 @@ RETIRED_MANDATORY_TASK_CODES = frozenset({"G00"})
 # current G01-G09 catalog; G03 content is explicitly pending Jiahe's final input.
 TASK_COPY: dict[str, tuple[str, str, str, str]] = {
     "G01": (
-        "Complete the required profile statuses and TESOL learning evidence.",
-        "Confirm Self-intro and TESOL, pass all 61 questions, complete the Essay and submit the completion proof.",
-        "Self-intro and TESOL are complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.",
+        "Complete the required TESOL status and learning evidence.",
+        "Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.",
+        "TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.",
         "Your profile and required TESOL learning evidence are complete.",
     ),
     "G02": (
@@ -96,10 +96,10 @@ TASK_COPY: dict[str, tuple[str, str, str, str]] = {
         "You can adapt your teaching to different learner types.",
     ),
     "G04": (
-        "Complete lesson preparation and confirm that your teaching setup is ready before class.",
-        "Complete three independent sections in any order: review the lesson-preparation guidance; run the camera, microphone and network check; and submit one teaching-environment photo for AI review. Each section keeps its own progress.",
-        "G04 is completed only after all three independent sections pass: the lesson-preparation guidance is confirmed; the camera, microphone and network check passes; and all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review. The sections may be completed in any order.",
-        "Your lesson-preparation knowledge, device and network readiness, and teaching environment are independently verified for your first lesson.",
+        "Complete the teaching-environment photo review and prepare the courseware before your first lesson.",
+        "Complete two sections in any order: submit one teaching-environment photo for AI review and prepare the courseware for your first lesson. Each section keeps its own progress.",
+        "G04 is completed only after both sections pass: all four teaching-environment photo criteria—camera angle, lighting, background and dressing—pass AI review, and the courseware preparation is confirmed. The sections may be completed in any order.",
+        "Your teaching environment and courseware are ready for your first lesson.",
     ),
     "G05": (
         "Understand TTP and its key business scenarios.",

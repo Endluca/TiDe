@@ -38,11 +38,10 @@ export default function ProfileCredentialsTask({ task, onProgressStateChange }) 
   const [error, setError] = useState("");
 
   const statuses = task.externalStatusItems || [];
-  const selfIntroComplete = statuses.find((item) => item.type === "self_intro")?.status === "approved";
   const tesolComplete = statuses.find((item) => item.type === "credential")?.status === "approved";
   const essayComplete = essayProgress?.status === "COMPLETED";
   const proofComplete = proofProgress?.status === "COMPLETED";
-  const allComplete = selfIntroComplete && tesolComplete && kuozhiComplete && essayComplete && proofComplete;
+  const allComplete = tesolComplete && kuozhiComplete && essayComplete && proofComplete;
   const internalCompleteCount = [kuozhiComplete, essayComplete, proofComplete].filter(Boolean).length;
   const sourceStatusTask = {
     ...task,
@@ -50,12 +49,12 @@ export default function ProfileCredentialsTask({ task, onProgressStateChange }) 
     externalStatusCopy: {
       title: "Profile review status",
       titleZh: "档案审核状态",
-      description: "Review the latest Self-intro and TESOL status here.",
-      descriptionZh: "在这里查看 Self-intro 与 TESOL 的最新审核状态。",
-      completionTitle: "How these statuses count toward completion",
-      completionTitleZh: "这两项如何计入完成条件",
-      completion: "Approved Self-intro and TESOL satisfy the first two conditions. Complete the Kuozhi assessment, Essay confirmation and proof below.",
-      completionZh: "Self-intro 与 TESOL 通过后，即满足前两项条件；其余三项请在下方完成。",
+      description: "Review the latest TESOL status here.",
+      descriptionZh: "在这里查看 TESOL 的最新审核状态。",
+      completionTitle: "How this status counts toward completion",
+      completionTitleZh: "这项状态如何计入完成条件",
+      completion: "Approved TESOL satisfies the external-status condition. Complete the Kuozhi assessment, Essay confirmation and proof below.",
+      completionZh: "TESOL 通过后，即满足外部状态条件；其余三项请在下方完成。",
     },
   };
 
@@ -97,14 +96,14 @@ export default function ProfileCredentialsTask({ task, onProgressStateChange }) 
     <div className="profile-credentials-task">
       <section className="g01-overview">
         <div>
-          <span>{c("FIVE COMPLETION CONDITIONS", "五项完成条件")}</span>
-          <h3>{c("Complete all five items to finish this task", "完成全部五项后，这项任务才算完成")}</h3>
+          <span>{c("FOUR COMPLETION CONDITIONS", "四项完成条件")}</span>
+          <h3>{c("Complete all four items to finish this task", "完成全部四项后，这项任务才算完成")}</h3>
           <p>{c(
-            "Self-intro and TESOL statuses update automatically. Complete the assessment in Kuozhi, then confirm the Essay and submit proof here.",
-            "Self-intro 与 TESOL 状态会自动更新；考试在阔知完成，Essay 确认和完成证明在本页提交。",
+            "TESOL status updates automatically. Complete the assessment in Kuozhi, then confirm the Essay and submit proof here.",
+            "TESOL 状态会自动更新；考试在阔知完成，Essay 确认和完成证明在本页提交。",
           )}</p>
         </div>
-        <strong>{[selfIntroComplete, tesolComplete, kuozhiComplete, essayComplete, proofComplete].filter(Boolean).length} / 5</strong>
+        <strong>{[tesolComplete, kuozhiComplete, essayComplete, proofComplete].filter(Boolean).length} / 4</strong>
       </section>
 
       <ExternalStatusTask task={sourceStatusTask} embedded />
