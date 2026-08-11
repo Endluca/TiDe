@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -50,6 +52,7 @@ EXPECTED_TEACHER_MIGRATIONS = (
     "0032_first_login_onboarding",
     "0033_g01_tesol_only",
     "0037_g04_remove_device_check",
+    "0038_personalized_environment_photo",
 )
 EXPECTED_FIXED_TASKS = (
     ("G01", "Profile & Credentials Completion", 3),
@@ -150,13 +153,13 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
         == "Dockerfile.migrate"
     )
     assert services["teacher-migrate"]["environment"]["TIDE_MIGRATION_TARGET"] == (
-        "${TIDE_TEACHER_MIGRATION_TARGET:-0037_g04_remove_device_check}"
+        "${TIDE_TEACHER_MIGRATION_TARGET:-0038_personalized_environment_photo}"
     )
     combined_environment_example = (DEPLOY / ".env.example").read_text(
         encoding="utf-8"
     )
     assert (
-        "TIDE_TEACHER_MIGRATION_TARGET=0037_g04_remove_device_check"
+        "TIDE_TEACHER_MIGRATION_TARGET=0038_personalized_environment_photo"
         in combined_environment_example
     )
     assert (
@@ -250,7 +253,8 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0030_remove_unused_columns_and_orphan_function" in preflight
     assert (
         "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
-        "-> public head 54 -> teacher 0037"
+        "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
+        "-> teacher 0038"
     ) in preflight
     assert "product_analytics_recorded" in preflight
     assert "0031_g04_independent_sections" in preflight
@@ -259,6 +263,9 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0033_g01_tesol_only" in preflight
     assert "2026-08-11-tesol-only-v1" in preflight
     assert "TESOL 真实状态尚未通过。" in preflight
+    assert "0038_personalized_environment_photo" in preflight
+    assert "p-fb-negative-environment-photo" in preflight
+    assert "TEACHING_ENVIRONMENT_V1" in preflight
     assert "tide.account_onboarding_states" in preflight
     assert "g02-device-2026-08-05-browser-preflight-v1" in preflight
     assert "g02-courseware-2026-08-05-guidance-v1" in preflight
@@ -283,6 +290,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "pg_stat_ssl" in probe
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
+    assert "20260811_56_p_fb_negative_copy" in probe
     assert "20260811_55_source_wide_v12" in probe
     assert "Complete the required TESOL status and learning evidence." in probe
     assert "Confirm TESOL, pass all 61 questions" in probe
@@ -293,6 +301,23 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "G01 external-status rule set is not exactly" in probe
     assert "rule.rule_key = 'g01-external-status'" in probe
     assert "OR rule.rule_type = 'G01_EXTERNAL_STATUS'" in probe
+    assert "row_id = 'P-FB-NEGATIVE:v1'" in probe
+    assert (
+        "Complete the configured improvement activity for the feedback issue "
+        "shown in the task reason. Depending on the assigned activity, you may "
+        "need to submit a teaching-environment photo for review or complete "
+        "another guided action."
+        in probe
+    )
+    assert (
+        "The teacher app marks the task as completed after every requirement "
+        "for the assigned improvement activity, including any required photo "
+        "review, is satisfied."
+        in probe
+    )
+    assert "payload->>'score_type' = 'ZERO'" in probe
+    assert "(payload->>'score_value')::integer = 0" in probe
+    assert "stable P-FB-NEGATIVE:v1 row is not the reviewed zero-point" in probe
     assert "actual_titles text[]" in probe
     assert (
         "ARRAY['G01','G02','G03','G04','G05','G06','G07','G08','G09']"
@@ -351,6 +376,10 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "'public.teacher_source_wide',\n        'is_cpl_tesol'" in probe
     assert "'public.teacher_source_wide',\n        'is_self_introduce'" in probe
     assert "'public.teacher_source_wide',\n        'real_name'" in probe
+    assert "0038_personalized_environment_photo" in probe
+    assert "P-FB-NEGATIVE is not the exact pending personalized photo execution" in probe
+    assert "p-fb-negative-environment-photo" in probe
+    assert "TEACHING_ENVIRONMENT_V1" in probe
     assert "tide.account_onboarding_states" in probe
     assert "account_onboarding_states_request_hash_check" in probe
     assert "confdeltype = 'c'" in probe
@@ -364,6 +393,173 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "REVOKE ALL PRIVILEGES ON ALL TABLES" in grants
     assert "sslmode=verify-full" in runner
     assert "--no-password" in runner
+
+
+def test_personalized_photo_gates_reject_missing_or_extra_config_fields() -> None:
+    probe = (DEPLOY / "contract-probe.sql").read_text(encoding="utf-8")
+    readiness = (
+        ROOT
+        / "teacher/backend/src/platform/database/database.service.ts"
+    ).read_text(encoding="utf-8")
+    verifier = (
+        ROOT / "teacher/backend/database/scripts/verify.sh"
+    ).read_text(encoding="utf-8")
+    company_test = (
+        ROOT / "teacher/backend/database/scripts/apply-company-test.sh"
+    ).read_text(encoding="utf-8")
+    migration_up = (
+        ROOT
+        / "teacher/backend/database/migrations"
+        / "0038_personalized_environment_photo.up.sql"
+    ).read_text(encoding="utf-8")
+    migration_down = (
+        ROOT
+        / "teacher/backend/database/migrations"
+        / "0038_personalized_environment_photo.down.sql"
+    ).read_text(encoding="utf-8")
+
+    personalized_execution_error = probe.index(
+        "'P-FB-NEGATIVE is not the exact pending personalized photo execution'"
+    )
+    personalized_start = probe.rfind(
+        "IF NOT EXISTS (",
+        0,
+        personalized_execution_error,
+    )
+    personalized_end = probe.index(
+        "IF to_regrole('tit_teacher_crud')",
+        personalized_start,
+    )
+    probe_contract = probe[personalized_start:personalized_end]
+
+    step_match = re.search(
+        r"definition\.config\s*=\s*'([^']+)'::jsonb",
+        probe_contract,
+    )
+    rule_matches = re.findall(
+        r"rule\.config\s*=\s*'([^']+)'::jsonb",
+        probe_contract,
+    )
+    assert step_match is not None
+    assert len(rule_matches) == 2
+
+    expected_step = {
+        "version": "2026-08-11-personalized-environment-photo-v1",
+        "role": "ENVIRONMENT_PHOTO",
+        "reviewProfile": "TEACHING_ENVIRONMENT_V1",
+        "accept": ["image/jpeg"],
+        "captureOnly": True,
+        "maxFiles": 1,
+    }
+    expected_completion_rule = {
+        "requiredStepKeys": ["p-fb-negative-environment-photo"],
+    }
+    expected_ai_rule = {
+        "stepKey": "p-fb-negative-environment-photo",
+        "criteriaVersion": "personalized-teaching-environment-2026-08-v1",
+        "criteriaKeys": [
+            "camera_angle",
+            "lighting",
+            "background",
+            "dressing",
+        ],
+        "allowedMimeTypes": ["image/jpeg", "image/png", "image/webp"],
+        "reviewProfile": "TEACHING_ENVIRONMENT_V1",
+        "systemPrompt": (
+            "You strictly review teacher-submitted evidence. Return JSON only "
+            'with this exact shape: {"decision":"PASS|RETRY|ERROR",'
+            '"teacherReason":"teacher-safe concise message",'
+            '"confidenceSummary":{},"criteria":[{"criterionKey":"one '
+            'configured key","result":"PASS|FAIL|UNKNOWN","teacherMessage":'
+            '"teacher-safe message or null"}]}. Include every configured '
+            "criterion exactly once. Never infer a pass from the mere "
+            "presence of a person or object. Use UNKNOWN whenever the visual "
+            "evidence is unclear. PASS only when every configured criterion "
+            "is visibly and unambiguously PASS; any FAIL or UNKNOWN requires "
+            "RETRY. Use ERROR only when the file cannot be assessed. Do not "
+            "expose internal risk labels or private model reasoning."
+        ),
+        "userText": (
+            "Review this current teaching-environment photo strictly against "
+            "camera angle, lighting, background and dressing only."
+        ),
+    }
+
+    actual_step = json.loads(step_match.group(1))
+    actual_completion_rule = json.loads(rule_matches[0])
+    actual_ai_rule = json.loads(rule_matches[1])
+    assert actual_step == expected_step
+    assert actual_completion_rule == expected_completion_rule
+    assert actual_ai_rule == expected_ai_rule
+
+    missing_field = dict(expected_ai_rule)
+    missing_field.pop("systemPrompt")
+    extra_field = expected_ai_rule | {"unexpectedPolicy": True}
+    assert missing_field != actual_ai_rule
+    assert extra_field != actual_ai_rule
+
+    assert (
+        "definition.title = 'Take a teaching-environment photo'"
+        in probe_contract
+    )
+    assert "rule.rule_key = 'all-steps-complete'" in probe_contract
+    assert "rule.rule_version = '2026-07-27-strict'" in probe_contract
+    assert "rule.teacher_failure_copy =" in probe_contract
+    assert "definition.config->" not in probe_contract
+    assert "rule.config->" not in probe_contract
+
+    for source in (readiness, verifier):
+        contract_start = source.index(
+            "shared_template_row_id = 'P-FB-NEGATIVE:v1'"
+        )
+        contract_end = source.index(
+            "P-FB-NEGATIVE",
+            contract_start + len("shared_template_row_id = 'P-FB-NEGATIVE:v1'"),
+        )
+        contract_end = source.find("AND NOT EXISTS", contract_end)
+        if contract_end == -1:
+            contract_end = source.find('faq_count=', contract_start)
+        source_contract = source[contract_start:contract_end]
+        assert (
+            "definition.title = 'Take a teaching-environment photo'"
+            in source_contract
+        )
+        assert "criteriaVersion" in source_contract
+        assert "allowedMimeTypes" in source_contract
+        assert "systemPrompt" in source_contract
+        assert "userText" in source_contract
+        assert "teacher_failure_copy" in source_contract
+        assert "definition.config->" not in source_contract
+        assert "rule.config->" not in source_contract
+
+    exact_contract_sources = {
+        "migration up": migration_up,
+        "migration down": migration_down,
+        "company-test gate": company_test,
+    }
+    for label, source in exact_contract_sources.items():
+        exact_configs = [
+            json.loads(value)
+            for value in re.findall(
+                r"(?:(?:definition|rule)\.)?config\s*=\s*'([^']+)'::jsonb",
+                source,
+            )
+        ]
+        assert expected_step in exact_configs, label
+        assert expected_completion_rule in exact_configs, label
+        assert expected_ai_rule in exact_configs, label
+        assert missing_field not in exact_configs, label
+        assert extra_field not in exact_configs, label
+        assert "Take a teaching-environment photo" in source, label
+        assert "请拍摄并提交一张当前授课环境照片。" in source, label
+        assert "已保留你完成的内容，请根据提示更新这份材料。" in source, label
+
+    assert "config->" not in migration_up
+    assert "config->" not in migration_down
+    assert company_test.count(
+        "definition.title = 'Take a teaching-environment photo'"
+    ) >= 2
+    assert company_test.count("rule.teacher_failure_copy =") >= 4
 
 
 def test_tide_0030_accepts_only_its_own_postgresql_18_not_null_dependency() -> None:
@@ -408,7 +604,8 @@ def _teacher_migrator_fixture(
     )
     cross_chain_gate = (
         "# public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
-        "-> public head 54 -> teacher 0037\n"
+        "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
+        "-> teacher 0038\n"
         "product_analytics_recorded=true\n"
         if include_cross_chain_gate
         else ""
@@ -485,6 +682,14 @@ def _make_preflight_environment(
             "WHERE step_key = 'g02-device-check';\n"
             "SELECT '{\"requiredStepKeys\":[\"g02-environment-photo\","
             "\"g02-courseware-confirmation\"]}';\n"
+            "COMMIT;\n"
+        ),
+        "backend/database/migrations/"
+        "0038_personalized_environment_photo.up.sql": (
+            "BEGIN;\n"
+            "SELECT 'p-fb-negative-environment-photo';\n"
+            "SELECT 'TEACHING_ENVIRONMENT_V1';\n"
+            "SELECT '{\"contentStatus\":\"PENDING\"}';\n"
             "COMMIT;\n"
         ),
         "backend/Dockerfile": "FROM scratch\n",
@@ -600,7 +805,7 @@ def _run_preflight(environment: dict[str, str]) -> subprocess.CompletedProcess[s
     )
 
 
-def test_combined_preflight_rejects_teacher_chain_ending_before_0037(
+def test_combined_preflight_rejects_teacher_chain_ending_before_0038(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
@@ -613,7 +818,7 @@ def test_combined_preflight_rejects_teacher_chain_ending_before_0037(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0037 结尾的完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0038 结尾的完整有序生产链" in result.stderr
 
 
 def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
@@ -631,6 +836,7 @@ def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
     assert result.returncode != 0
     assert (
         "public46→teacher0028→public50→teacher0032→public54→teacher0037"
+        "→public55→public56→teacher0038"
         in result.stderr
     )
 

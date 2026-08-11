@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260811_55_source_wide_v12"
+EXPECTED_PUBLIC_HEAD="20260811_56_p_fb_negative_copy"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -197,10 +197,11 @@ CANONICAL_TIDE_MIGRATIONS=(
   0032_first_login_onboarding
   0033_g01_tesol_only
   0037_g04_remove_device_check
+  0038_personalized_environment_photo
 )
 
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('tide.schema_migrations') is not null")" != "t" ]]; then
-  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
+  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
   exit 1
 fi
 
@@ -212,10 +213,10 @@ actual_tide_migration_ids="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 tide_ledger_shape_ready="$("${ADMIN_PSQL[@]}" -Atqc "
   select
-    count(*) = 32
+    count(*) = 33
     and min(migration_order) = 1
-    and max(migration_order) = 32
-    and count(distinct migration_order) = 32
+    and max(migration_order) = 33
+    and count(distinct migration_order) = 33
     and bool_and(filename = migration_id || '.up.sql')
   from tide.schema_migrations
 ")"
@@ -227,7 +228,7 @@ if [[ "${actual_tide_migration_ids}" != "${expected_tide_migration_ids}" \
       '未记账'
     )
   ")"
-  echo "公司测试库 Tide 账本不是精确 canonical 0037（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
+  echo "公司测试库 Tide 账本不是精确 canonical 0038（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
   exit 1
 fi
 
@@ -497,9 +498,80 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
               '["camera_angle","lighting","background","dressing"]'::jsonb
         )
     )
+    and exists (
+      select 1
+      from tide.task_execution_versions execution
+      join public.task_templates template
+        on template.row_id = execution.shared_template_row_id
+      where execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+        and execution.task_code = 'P-FB-NEGATIVE'
+        and execution.status = 'ACTIVE'
+        and execution.execution_contract_version = 'task-contract-v3'
+        and execution.config =
+          '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-11-personalized-environment-photo-v1","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING","independentModules":{"stepKeys":["p-fb-negative-environment-photo"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
+        and template.template_id = 'P-FB-NEGATIVE'
+        and template.status = 'PUBLISHED'
+        and template.execution_owner = 'TEACHER_APP'
+        and template.integration_mode = 'OUTBOUND_MANAGED'
+        and template.source_mode = 'REAL'
+        and template.payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
+        and (template.payload->>'score_value')::integer = 0
+        and template.payload->>'how_summary' =
+          'Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.'
+        and template.payload->>'completion_standard' =
+          'The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.'
+        and (
+          select count(*)
+          from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+        ) = 1
+        and exists (
+          select 1
+          from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+            and definition.step_key = 'p-fb-negative-environment-photo'
+            and definition.position = 1
+            and definition.step_type = 'UPLOAD'
+            and definition.title = 'Take a teaching-environment photo'
+            and definition.config =
+              '{"version":"2026-08-11-personalized-environment-photo-v1","role":"ENVIRONMENT_PHOTO","reviewProfile":"TEACHING_ENVIRONMENT_V1","accept":["image/jpeg"],"captureOnly":true,"maxFiles":1}'::jsonb
+        )
+        and (
+          select count(*)
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+        ) = 2
+        and exists (
+          select 1
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+            and rule.rule_key = 'all-steps-complete'
+            and rule.rule_type = 'ALL_STEPS_COMPLETE'
+            and rule.rule_version =
+              '2026-08-11-personalized-environment-photo-v1'
+            and rule.position = 1
+            and rule.config =
+              '{"requiredStepKeys":["p-fb-negative-environment-photo"]}'::jsonb
+            and rule.teacher_failure_copy =
+              '请拍摄并提交一张当前授课环境照片。'
+        )
+        and exists (
+          select 1
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+            and rule.rule_key = 'p-fb-negative-environment-ai-review'
+            and rule.rule_type = 'AI_IMAGE_REVIEW'
+            and rule.rule_version = '2026-07-27-strict'
+            and rule.position = 2
+            and rule.config =
+              '{"stepKey":"p-fb-negative-environment-photo","criteriaVersion":"personalized-teaching-environment-2026-08-v1","criteriaKeys":["camera_angle","lighting","background","dressing"],"allowedMimeTypes":["image/jpeg","image/png","image/webp"],"reviewProfile":"TEACHING_ENVIRONMENT_V1","systemPrompt":"You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {\"decision\":\"PASS|RETRY|ERROR\",\"teacherReason\":\"teacher-safe concise message\",\"confidenceSummary\":{},\"criteria\":[{\"criterionKey\":\"one configured key\",\"result\":\"PASS|FAIL|UNKNOWN\",\"teacherMessage\":\"teacher-safe message or null\"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.","userText":"Review this current teaching-environment photo strictly against camera angle, lighting, background and dressing only."}'::jsonb
+            and rule.teacher_failure_copy =
+              '已保留你完成的内容，请根据提示更新这份材料。'
+        )
+    )
 ")"
 if [[ "${canonical_schema_ready}" != "t" ]]; then
-  echo "公司测试库虽已记账到 canonical 0037，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
+  echo "公司测试库虽已记账到 canonical 0038，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
   exit 1
 fi
 
@@ -788,6 +860,64 @@ verification="$("${APP_PSQL[@]}" -Atqc "
             or execution.status <> 'RETIRED'
           )
       )
+      and exists (
+        select 1
+        from tide.task_execution_versions execution
+        where execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          and execution.task_code = 'P-FB-NEGATIVE'
+          and execution.status = 'ACTIVE'
+          and execution.execution_contract_version = 'task-contract-v3'
+          and execution.config =
+            '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-11-personalized-environment-photo-v1","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING","independentModules":{"stepKeys":["p-fb-negative-environment-photo"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
+          and (
+            select count(*)
+            from tide.task_step_definitions definition
+            where definition.execution_version_id = execution.id
+          ) = 1
+          and exists (
+            select 1
+            from tide.task_step_definitions definition
+            where definition.execution_version_id = execution.id
+              and definition.step_key = 'p-fb-negative-environment-photo'
+              and definition.step_type = 'UPLOAD'
+              and definition.position = 1
+              and definition.title = 'Take a teaching-environment photo'
+              and definition.config =
+                '{"version":"2026-08-11-personalized-environment-photo-v1","role":"ENVIRONMENT_PHOTO","reviewProfile":"TEACHING_ENVIRONMENT_V1","accept":["image/jpeg"],"captureOnly":true,"maxFiles":1}'::jsonb
+          )
+          and (
+            select count(*)
+            from tide.task_validation_rules rule
+            where rule.execution_version_id = execution.id
+          ) = 2
+          and exists (
+            select 1
+            from tide.task_validation_rules rule
+            where rule.execution_version_id = execution.id
+              and rule.rule_key = 'p-fb-negative-environment-ai-review'
+              and rule.rule_type = 'AI_IMAGE_REVIEW'
+              and rule.rule_version = '2026-07-27-strict'
+              and rule.position = 2
+              and rule.config =
+                '{"stepKey":"p-fb-negative-environment-photo","criteriaVersion":"personalized-teaching-environment-2026-08-v1","criteriaKeys":["camera_angle","lighting","background","dressing"],"allowedMimeTypes":["image/jpeg","image/png","image/webp"],"reviewProfile":"TEACHING_ENVIRONMENT_V1","systemPrompt":"You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {\"decision\":\"PASS|RETRY|ERROR\",\"teacherReason\":\"teacher-safe concise message\",\"confidenceSummary\":{},\"criteria\":[{\"criterionKey\":\"one configured key\",\"result\":\"PASS|FAIL|UNKNOWN\",\"teacherMessage\":\"teacher-safe message or null\"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.","userText":"Review this current teaching-environment photo strictly against camera angle, lighting, background and dressing only."}'::jsonb
+              and rule.teacher_failure_copy =
+                '已保留你完成的内容，请根据提示更新这份材料。'
+          )
+          and exists (
+            select 1
+            from tide.task_validation_rules rule
+            where rule.execution_version_id = execution.id
+              and rule.rule_key = 'all-steps-complete'
+              and rule.rule_type = 'ALL_STEPS_COMPLETE'
+              and rule.rule_version =
+                '2026-08-11-personalized-environment-photo-v1'
+              and rule.position = 1
+              and rule.config =
+                '{"requiredStepKeys":["p-fb-negative-environment-photo"]}'::jsonb
+              and rule.teacher_failure_copy =
+                '请拍摄并提交一张当前授课环境照片。'
+          )
+      )
       and to_regclass('tide.analytics_task_event_semantics_v2') is not null
       and to_regclass('tide.analytics_actor_task_journey_v2') is not null
       and to_regclass('tide.analytics_task_assignment_funnel_v2') is not null
@@ -802,4 +932,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：public rev55 与 canonical Tide 0037 账本/checksum/实存结构只读门禁、G01 TESOL-only、G04 照片与课件两模块、源宽表 v1.2、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public rev56 与 canonical Tide 0038 账本/checksum/实存结构只读门禁、G01 TESOL-only、G04 照片与课件两模块、源宽表 v1.2、P-FB-NEGATIVE 环境拍照配置、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"

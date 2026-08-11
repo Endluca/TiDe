@@ -145,8 +145,8 @@ TASK_COPY: dict[str, tuple[str, str, str, str]] = {
     ),
     "P-FB-NEGATIVE": (
         "The same negative-feedback signal has appeared more than once for this teacher.",
-        "Complete the learning activity assigned for the feedback issue shown in the task reason.",
-        "The teacher app marks the matching learning activity as completed.",
+        "Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.",
+        "The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.",
         "This task carries no points. It targets a repeated learner-feedback issue.",
     ),
     "P-FB-COMPLAINT": (

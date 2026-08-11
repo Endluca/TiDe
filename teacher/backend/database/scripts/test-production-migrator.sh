@@ -195,8 +195,52 @@ WHERE row_id = 'G02:v1'
 SQL
 }
 
+set_public_head() {
+  local database_name="$1"
+  local public_head="$2"
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    -v public_head="${public_head}" \
+    "postgresql:///${database_name}" >/dev/null <<'SQL'
+CREATE TABLE IF NOT EXISTS public.alembic_version (
+    version_num varchar(64) PRIMARY KEY
+);
+TRUNCATE public.alembic_version;
+INSERT INTO public.alembic_version (version_num) VALUES (:'public_head');
+SQL
+}
+
+install_public_personalized_contract() {
+  local database_name="$1"
+  local integration_mode="$2"
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    -v integration_mode="${integration_mode}" \
+    "postgresql:///${database_name}" >/dev/null <<'SQL'
+INSERT INTO public.task_templates (
+    row_id, template_id, template_version, status, revision, output_type,
+    execution_owner, external_task_template_code, source_mode, payload,
+    created_by, updated_by, integration_mode
+) VALUES (
+    'P-FB-NEGATIVE:v1',
+    'P-FB-NEGATIVE',
+    1,
+    'PUBLISHED',
+    55,
+    'TEACHER_TASK',
+    'TEACHER_APP',
+    'TIT.P.FB.NEGATIVE',
+    'REAL',
+    '{"template_id":"P-FB-NEGATIVE","output_type":"TEACHER_TASK","audience":"TEACHER","owner":"TIT_GROWTH_OPS","execution_owner":"TEACHER_APP","integration_mode":"OUTBOUND_MANAGED","category":"PERSONALIZED_IMPROVEMENT","dimension":"USER_FEEDBACK","stage":"TRIGGERED","ops_name_zh":"差评改善","content_locale":"en","content_status":"READY","title":"Feedback Improvement","why_template":"The same negative-feedback signal has appeared more than once for this teacher.","how_summary":"Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.","completion_standard":"The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.","benefit":"This task carries no points. It targets a repeated learner-feedback issue.","priority":"P1","score_type":"ZERO","score_value":0,"source_mode":"REAL"}'::jsonb,
+    'production_migrator_test',
+    'production_migrator_test',
+    :'integration_mode'
+);
+SQL
+}
+
 create_test_database "${PUBLIC_HEAD_FIRST_DB}"
 advance_public_g04_to_rev54 "${PUBLIC_HEAD_FIRST_DB}"
+set_public_head "${PUBLIC_HEAD_FIRST_DB}" "20260811_56_p_fb_negative_copy"
+install_public_personalized_contract "${PUBLIC_HEAD_FIRST_DB}" "OUTBOUND_MANAGED"
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${PUBLIC_HEAD_FIRST_DB}" \
   -c "DROP TABLE public.teacher_metric_snapshots" >/dev/null
@@ -217,9 +261,9 @@ SELECT
 SQL
 )"
 if [[ "${public_head_first_status}" == "0" \
-      || "${public_head_first_output}" != *"public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037"* \
+      || "${public_head_first_output}" != *"public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038"* \
       || "${public_head_first_state}" != "t|t" ]]; then
-  echo "public head 54 跳过分阶段顺序时 teacher fresh 迁移未失败关闭：${public_head_first_state}" >&2
+  echo "public head 55 跳过分阶段顺序时 teacher fresh 迁移未失败关闭：${public_head_first_state}" >&2
   echo "${public_head_first_output}" >&2
   exit 1
 fi
@@ -240,6 +284,201 @@ TIDE_MIGRATION_TARGET="0032_first_login_onboarding" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
 advance_public_g04_to_rev54 "${FRESH_DB}"
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+TIDE_MIGRATION_TARGET="0037_g04_remove_device_check" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+set +e
+fresh_missing_template_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+fresh_missing_template_status=$?
+set -e
+fresh_missing_template_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    (
+        SELECT migration_id
+        FROM tide.schema_migrations
+        ORDER BY migration_order DESC
+        LIMIT 1
+    ) = '0037_g04_remove_device_check',
+    NOT EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0038_personalized_environment_photo'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'P-FB-NEGATIVE:v1'
+           OR task_code = 'P-FB-NEGATIVE'
+    );
+SQL
+)"
+if [[ "${fresh_missing_template_status}" == "0" \
+      || "${fresh_missing_template_output}" != *"当前为 20260811_54_g04_remove_device_check，未执行任何 0038 写入或记账"* \
+      || "${fresh_missing_template_state}" != "t|t|t" ]]; then
+  echo "0038 在 public head 仍为 rev54 时未于任何写入前失败关闭：${fresh_missing_template_state}" >&2
+  echo "${fresh_missing_template_output}" >&2
+  exit 1
+fi
+
+set_public_head "${FRESH_DB}" "20260811_56_p_fb_negative_copy"
+set +e
+fresh_missing_public_copy_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+fresh_missing_public_copy_status=$?
+set -e
+fresh_missing_public_copy_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    (
+        SELECT migration_id
+        FROM tide.schema_migrations
+        ORDER BY migration_order DESC
+        LIMIT 1
+    ) = '0037_g04_remove_device_check',
+    NOT EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0038_personalized_environment_photo'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'P-FB-NEGATIVE:v1'
+           OR task_code = 'P-FB-NEGATIVE'
+    );
+SQL
+)"
+if [[ "${fresh_missing_public_copy_status}" == "0" \
+      || "${fresh_missing_public_copy_output}" != *"public rev56 的 P-FB-NEGATIVE:v1 精确新文案与零分共享契约"* \
+      || "${fresh_missing_public_copy_state}" != "t|t|t" ]]; then
+  echo "0038 在 public rev55 新文案缺失时未于任何写入前失败关闭：${fresh_missing_public_copy_state}" >&2
+  echo "${fresh_missing_public_copy_output}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" >/dev/null <<'SQL'
+INSERT INTO public.task_templates (
+    row_id, template_id, template_version, status, revision, output_type,
+    execution_owner, external_task_template_code, source_mode, payload,
+    created_by, updated_by, integration_mode
+) VALUES (
+    'P-FB-NEGATIVE:v1',
+    'P-FB-NEGATIVE',
+    1,
+    'PUBLISHED',
+    55,
+    'TEACHER_TASK',
+    'TEACHER_APP',
+    'TIT.P.FB.NEGATIVE',
+    'REAL',
+    '{"template_id":"P-FB-NEGATIVE","output_type":"TEACHER_TASK","audience":"TEACHER","owner":"TIT_GROWTH_OPS","execution_owner":"TEACHER_APP","integration_mode":"OUTBOUND_MANAGED","category":"PERSONALIZED_IMPROVEMENT","dimension":"USER_FEEDBACK","stage":"TRIGGERED","ops_name_zh":"差评改善","content_locale":"en","content_status":"READY","title":"Feedback Improvement","why_template":"The same negative-feedback signal has appeared more than once for this teacher.","how_summary":"Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.","completion_standard":"The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.","benefit":"This task carries no points. It targets a repeated learner-feedback issue.","priority":"P1","score_type":"ZERO","score_value":0,"source_mode":"REAL"}'::jsonb,
+    'production_migrator_test',
+    'production_migrator_test',
+    'INBOUND_STATUS_ONLY'
+);
+SQL
+
+set +e
+fresh_illegal_template_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+fresh_illegal_template_status=$?
+set -e
+fresh_illegal_template_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    NOT EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0038_personalized_environment_photo'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'P-FB-NEGATIVE:v1'
+           OR task_code = 'P-FB-NEGATIVE'
+    );
+SQL
+)"
+if [[ "${fresh_illegal_template_status}" == "0" \
+      || "${fresh_illegal_template_output}" != *"public rev56 的 P-FB-NEGATIVE:v1 精确新文案与零分共享契约"* \
+      || "${fresh_illegal_template_state}" != "t|t" ]]; then
+  echo "0038 在 public rev56 P-FB-NEGATIVE 契约漂移时未于任何写入前失败关闭：${fresh_illegal_template_state}" >&2
+  echo "${fresh_illegal_template_output}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" >/dev/null <<'SQL'
+UPDATE public.task_templates
+SET integration_mode = 'OUTBOUND_MANAGED'
+WHERE row_id = 'P-FB-NEGATIVE:v1';
+
+INSERT INTO tide.task_execution_versions (
+    id, shared_template_row_id, task_code, execution_contract_version,
+    config, status
+) VALUES (
+    'a89b9f31-2a71-43da-846e-60c51e14f162',
+    'G01:v1',
+    'P-FB-ID-COLLISION',
+    'task-contract-v3',
+    '{}'::jsonb,
+    'ACTIVE'
+);
+SQL
+
+set +e
+fresh_identity_collision_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+fresh_identity_collision_status=$?
+set -e
+fresh_identity_collision_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    NOT EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0038_personalized_environment_photo'
+    ),
+    EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE id = 'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND shared_template_row_id = 'G01:v1'
+          AND task_code = 'P-FB-ID-COLLISION'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'P-FB-NEGATIVE:v1'
+           OR task_code = 'P-FB-NEGATIVE'
+    );
+SQL
+)"
+if [[ "${fresh_identity_collision_status}" == "0" \
+      || "${fresh_identity_collision_output}" != *"deterministic P-FB-NEGATIVE execution because its task code or ID is already occupied"* \
+      || "${fresh_identity_collision_state}" != "t|t|t" ]]; then
+  echo "0038 未原子拒绝确定性 execution ID 冲突：${fresh_identity_collision_state}" >&2
+  echo "${fresh_identity_collision_output}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" \
+  -c "DELETE FROM tide.task_execution_versions WHERE id = 'a89b9f31-2a71-43da-846e-60c51e14f162'" >/dev/null
+
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
 TIDE_MIGRATION_TEST_MODE="true" \
@@ -293,7 +532,31 @@ SELECT
         WHERE owner_role.rolname <> 'tide_support_ticket_owner'
            OR NOT procedure.prosecdef
     ),
-    NOT EXISTS (SELECT 1 FROM tide.task_execution_versions),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id = 'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND execution.task_code = 'P-FB-NEGATIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.status = 'ACTIVE'
+          AND execution.config->>'contentVersion' =
+              '2026-08-11-personalized-environment-photo-v1'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_step_definitions definition
+        WHERE definition.id = '8911e60c-012d-4e01-8ecc-1cb10de35c83'
+          AND definition.execution_version_id =
+              'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND definition.step_key = 'p-fb-negative-environment-photo'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules rule
+        WHERE rule.execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    ),
     to_regclass('tide.task_quiz_banks') IS NULL,
     NOT EXISTS (SELECT 1 FROM tide.knowledge_documents),
     to_regclass('tide.kuozhi_course_syncs') IS NOT NULL,
@@ -336,7 +599,7 @@ SELECT
     to_regclass('tide.account_onboarding_states') IS NOT NULL,
     NOT EXISTS (SELECT 1 FROM tide.account_onboarding_states),
     count(*) FILTER (
-        WHERE migration_id = '0032_first_login_onboarding'
+        WHERE migration_id = '0038_personalized_environment_photo'
     ) = 1,
     count(*) FILTER (
         WHERE migration_id = '0033_g01_tesol_only'
@@ -348,11 +611,271 @@ SELECT
 FROM tide.schema_migrations;
 SQL
 )"
-if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|32" ]]; then
+if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|33" ]]; then
   echo "生产 fresh 迁移状态异常：${fresh_state}" >&2
   exit 1
 fi
 
+fresh_ai_config_before_drift="$(psql -X --no-password -Atqc "
+  SELECT config
+  FROM tide.task_validation_rules
+  WHERE execution_version_id =
+      'a89b9f31-2a71-43da-846e-60c51e14f162'
+    AND rule_key = 'p-fb-negative-environment-ai-review'
+" "postgresql:///${FRESH_DB}")"
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" >/dev/null <<'SQL'
+UPDATE tide.task_validation_rules
+SET config = jsonb_set(
+        config,
+        '{systemPrompt}',
+        to_jsonb('migration-test-drifted-system-prompt'::text)
+    ) || '{"unexpectedPolicy":true}'::jsonb
+WHERE execution_version_id =
+    'a89b9f31-2a71-43da-846e-60c51e14f162'
+  AND rule_key = 'p-fb-negative-environment-ai-review';
+SQL
+set +e
+fresh_up_drift_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${FRESH_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql" 2>&1
+)"
+fresh_up_drift_status=$?
+set -e
+fresh_up_drift_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    (
+        SELECT config->>'systemPrompt' =
+            'migration-test-drifted-system-prompt'
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND rule_key = 'p-fb-negative-environment-ai-review'
+    ),
+    (
+        SELECT config @> '{"unexpectedPolicy":true}'::jsonb
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND rule_key = 'p-fb-negative-environment-ai-review'
+    ),
+    (SELECT count(*) FROM tide.task_execution_versions) = 1,
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    );
+SQL
+)"
+if [[ "${fresh_up_drift_status}" == "0" \
+      || "${fresh_up_drift_output}" != *"unreviewed validation rule"* \
+      || "${fresh_up_drift_state}" != "t|t|t|t|t" ]]; then
+  echo "0038 up 未拒绝带额外字段和 prompt 漂移的 AI 规则：${fresh_up_drift_state}" >&2
+  echo "${fresh_up_drift_output}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  -v original_ai_config="${fresh_ai_config_before_drift}" \
+  "postgresql:///${FRESH_DB}" >/dev/null <<'SQL'
+UPDATE tide.task_validation_rules
+SET config = :'original_ai_config'::jsonb
+WHERE execution_version_id =
+    'a89b9f31-2a71-43da-846e-60c51e14f162'
+  AND rule_key = 'p-fb-negative-environment-ai-review';
+SQL
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" \
+  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql" >/dev/null
+fresh_idempotent_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    (SELECT count(*) FROM tide.task_execution_versions) = 1,
+    (
+        SELECT count(*) = 1
+        FROM tide.task_execution_versions
+        WHERE id = 'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND task_code = 'P-FB-NEGATIVE'
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE id = '8911e60c-012d-4e01-8ecc-1cb10de35c83'
+          AND execution_version_id =
+              'a89b9f31-2a71-43da-846e-60c51e14f162'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    );
+SQL
+)"
+if [[ "${fresh_idempotent_state}" != "t|t|t|t" ]]; then
+  echo "0038 fresh execution 重跑不幂等：${fresh_idempotent_state}" >&2
+  exit 1
+fi
+
+fresh_ai_failure_copy_before_drift="$(psql -X --no-password -Atqc "
+  SELECT teacher_failure_copy
+  FROM tide.task_validation_rules
+  WHERE execution_version_id =
+      'a89b9f31-2a71-43da-846e-60c51e14f162'
+    AND rule_key = 'p-fb-negative-environment-ai-review'
+" "postgresql:///${FRESH_DB}")"
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" >/dev/null <<'SQL'
+UPDATE tide.task_validation_rules
+SET config = config || '{"unexpectedPolicy":true}'::jsonb,
+    teacher_failure_copy = 'migration-test-drifted-teacher-copy'
+WHERE execution_version_id =
+    'a89b9f31-2a71-43da-846e-60c51e14f162'
+  AND rule_key = 'p-fb-negative-environment-ai-review';
+SQL
+set +e
+fresh_down_drift_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${FRESH_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
+)"
+fresh_down_drift_status=$?
+set -e
+fresh_down_drift_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = 'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND config->>'contentVersion' =
+              '2026-08-11-personalized-environment-photo-v1'
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    ),
+    (
+        SELECT config @> '{"unexpectedPolicy":true}'::jsonb
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND rule_key = 'p-fb-negative-environment-ai-review'
+    ),
+    (
+        SELECT teacher_failure_copy =
+            'migration-test-drifted-teacher-copy'
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND rule_key = 'p-fb-negative-environment-ai-review'
+    );
+SQL
+)"
+if [[ "${fresh_down_drift_status}" == "0" \
+      || "${fresh_down_drift_output}" != *"down refused an unknown P-FB-NEGATIVE execution shape"* \
+      || "${fresh_down_drift_state}" != "t|t|t|t|t" ]]; then
+  echo "0038 down 未拒绝额外字段和教师提示漂移：${fresh_down_drift_state}" >&2
+  echo "${fresh_down_drift_output}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  -v original_ai_config="${fresh_ai_config_before_drift}" \
+  -v original_failure_copy="${fresh_ai_failure_copy_before_drift}" \
+  "postgresql:///${FRESH_DB}" >/dev/null <<'SQL'
+UPDATE tide.task_validation_rules
+SET config = :'original_ai_config'::jsonb,
+    teacher_failure_copy = :'original_failure_copy'
+WHERE execution_version_id =
+    'a89b9f31-2a71-43da-846e-60c51e14f162'
+  AND rule_key = 'p-fb-negative-environment-ai-review';
+SQL
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" \
+  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" >/dev/null
+fresh_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = 'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config =
+            '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-06","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING"}'::jsonb
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    );
+SQL
+)"
+if [[ "${fresh_down_state}" != "t|t|t" ]]; then
+  echo "0038 fresh down 未恢复确定性待配置 execution：${fresh_down_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" \
+  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql" >/dev/null
+fresh_down_up_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = 'a89b9f31-2a71-43da-846e-60c51e14f162'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config->>'contentVersion' =
+              '2026-08-11-personalized-environment-photo-v1'
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            'a89b9f31-2a71-43da-846e-60c51e14f162'
+    );
+SQL
+)"
+if [[ "${fresh_down_up_state}" != "t|t|t" ]]; then
+  echo "0038 fresh down/up 未恢复确定性拍照 execution：${fresh_down_up_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${FRESH_DB}" \
+  -c "DROP TABLE public.teacher_metric_snapshots" >/dev/null
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
 TIDE_MIGRATION_TEST_MODE="true" \
@@ -367,12 +890,12 @@ SELECT
         FROM tide.schema_migrations
         ORDER BY migration_order DESC
         LIMIT 1
-    ) = '0037_g04_remove_device_check',
-    (SELECT count(*) FROM tide.schema_migrations) = 32;
+    ) = '0038_personalized_environment_photo',
+    (SELECT count(*) FROM tide.schema_migrations) = 33;
 SQL
 )"
 if [[ "${post_public_drop_state}" != "t|t|t|t" ]]; then
-  echo "teacher 0037 迁移链二次执行不幂等：${post_public_drop_state}" >&2
+  echo "teacher 0038 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
   exit 1
 fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
@@ -1394,6 +1917,15 @@ ON tide.test_0030_outbox_target_dependency;
 DROP TABLE tide.test_0030_outbox_target_dependency;
 SQL
 
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TARGET="0033_g01_tesol_only" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+run_personalized_environment_upgrade_tests() {
+set_public_head "${UPGRADE_DB}" "20260811_56_p_fb_negative_copy"
+
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
 DO $optional_retired_g00$
@@ -1414,13 +1946,241 @@ BEGIN
       AND status = 'RETIRED';
 END
 $optional_retired_g00$;
+
+INSERT INTO public.task_templates (
+    row_id, template_id, template_version, status, revision, output_type,
+    execution_owner, external_task_template_code, source_mode, payload,
+    created_by, updated_by, integration_mode
+) VALUES (
+    'P-FB-NEGATIVE:v1',
+    'P-FB-NEGATIVE',
+    1,
+    'PUBLISHED',
+    55,
+    'TEACHER_TASK',
+    'TEACHER_APP',
+    'TIT.P.FB.NEGATIVE',
+    'REAL',
+    '{"template_id":"P-FB-NEGATIVE","output_type":"TEACHER_TASK","audience":"TEACHER","owner":"TIT_GROWTH_OPS","execution_owner":"TEACHER_APP","integration_mode":"OUTBOUND_MANAGED","category":"PERSONALIZED_IMPROVEMENT","dimension":"USER_FEEDBACK","stage":"TRIGGERED","ops_name_zh":"差评改善","content_locale":"en","content_status":"READY","title":"Feedback Improvement","why_template":"The same negative-feedback signal has appeared more than once for this teacher.","how_summary":"Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.","completion_standard":"The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.","benefit":"This task carries no points. It targets a repeated learner-feedback issue.","priority":"P1","score_type":"ZERO","score_value":0,"source_mode":"REAL"}'::jsonb,
+    'production_migrator_test',
+    'production_migrator_test',
+    'OUTBOUND_MANAGED'
+);
+
+INSERT INTO tide.task_execution_versions (
+    id, shared_template_row_id, task_code, execution_contract_version,
+    config, status
+) VALUES (
+    '25abcdef-0000-4000-8000-000000000011',
+    'P-FB-NEGATIVE:v1',
+    'P-FB-NEGATIVE',
+    'task-contract-v3',
+    '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-06","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING"}'::jsonb,
+    'ACTIVE'
+);
+
+INSERT INTO public.task_assignments (
+    assignment_id,
+    teacher_id,
+    task_code,
+    template_version_id,
+    task_kind,
+    creator_system,
+    status,
+    priority,
+    why,
+    source_mode,
+    dedupe_key
+)
+VALUES
+(
+    'MIGRATION-P-FB-NEGATIVE',
+    'MIGRATION-SEMANTIC-TEACHER',
+    'P-FB-NEGATIVE',
+    'P-FB-NEGATIVE:v1',
+    'PERSONALIZED_IMPROVEMENT',
+    'TRIGGER_CENTER',
+    'ASSIGNED',
+    'P1',
+    '[Verify] Preserve personalized assignment identity and progress.',
+    'MOCK',
+    'personalized:MIGRATION-SEMANTIC-TEACHER:P-FB-NEGATIVE'
+),
+(
+    'MIGRATION-P-FB-STARTED',
+    'MIGRATION-SEMANTIC-TEACHER',
+    'P-FB-NEGATIVE',
+    'P-FB-NEGATIVE:v1',
+    'PERSONALIZED_IMPROVEMENT',
+    'TRIGGER_CENTER',
+    'ASSIGNED',
+    'P1',
+    '[Verify] Started assignment must protect photo definitions on down.',
+    'MOCK',
+    'personalized:MIGRATION-SEMANTIC-TEACHER:P-FB-STARTED'
+);
+
+INSERT INTO tide.task_step_progress (
+    id,
+    task_assignment_id,
+    step_key,
+    status,
+    percent,
+    progress_summary,
+    first_started_at
+)
+VALUES (
+    '25abcdef-0000-4000-8000-000000000220',
+    'MIGRATION-P-FB-NEGATIVE',
+    'p-fb-negative-environment-photo',
+    'IN_PROGRESS',
+    60,
+    '{"checkpoint":"before-0038"}'::jsonb,
+    '2026-08-10 00:00:00+00'
+);
 SQL
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+INSERT INTO tide.task_step_definitions (
+    id, execution_version_id, step_key, position, step_type, title, config
+) VALUES (
+    '25abcdef-0000-4000-8000-000000000299',
+    '25abcdef-0000-4000-8000-000000000011',
+    'p-fb-negative-unreviewed-step',
+    1,
+    'CUSTOM',
+    '[Verify] Unknown personalized step must fail closed',
+    '{}'::jsonb
+);
+SQL
+
+set +e
+personalized_guard_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql" 2>&1
+)"
+personalized_guard_status=$?
+set -e
+personalized_guard_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1 FROM tide.task_step_definitions
+        WHERE step_key = 'p-fb-negative-unreviewed-step'
+    ),
+    EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config->>'contentVersion' = '2026-08-06'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_step_definitions
+        WHERE step_key = 'p-fb-negative-environment-photo'
+    );
+SQL
+)"
+if [[ "${personalized_guard_status}" == "0" \
+      || "${personalized_guard_output}" != *"unreviewed step"* \
+      || "${personalized_guard_state}" != "t|t|t" ]]; then
+  echo "0038 未原子拒绝未评审 P-FB-NEGATIVE step：${personalized_guard_state}" >&2
+  echo "${personalized_guard_output}" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DELETE FROM tide.task_step_definitions WHERE step_key = 'p-fb-negative-unreviewed-step'" >/dev/null
 
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
-TIDE_MIGRATION_TARGET="0032_first_login_onboarding" \
+TIDE_MIGRATION_TARGET="0038_personalized_environment_photo" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+personalized_photo_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id = '25abcdef-0000-4000-8000-000000000011'
+          AND execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND execution.task_code = 'P-FB-NEGATIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+            '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-11-personalized-environment-photo-v1","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING","independentModules":{"stepKeys":["p-fb-negative-environment-photo"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_step_definitions definition
+        WHERE definition.id = '8911e60c-012d-4e01-8ecc-1cb10de35c83'
+          AND definition.execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+          AND definition.step_key = 'p-fb-negative-environment-photo'
+          AND definition.step_type = 'UPLOAD'
+          AND definition.config->>'reviewProfile' = 'TEACHING_ENVIRONMENT_V1'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules rule
+        WHERE rule.execution_version_id =
+          '25abcdef-0000-4000-8000-000000000011'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_validation_rules rule
+        WHERE rule.id = 'b823d749-969d-4194-88d7-9ff8de9d2c51'
+          AND rule.execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+          AND rule.rule_key = 'p-fb-negative-environment-ai-review'
+          AND rule.config->>'reviewProfile' = 'TEACHING_ENVIRONMENT_V1'
+          AND rule.config->'criteriaKeys' =
+            '["camera_angle","lighting","background","dressing"]'::jsonb
+    ),
+    EXISTS (
+        SELECT 1
+        FROM public.task_assignments assignment
+        WHERE assignment.assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND assignment.teacher_id = 'MIGRATION-SEMANTIC-TEACHER'
+          AND assignment.task_code = 'P-FB-NEGATIVE'
+          AND assignment.template_version_id = 'P-FB-NEGATIVE:v1'
+          AND assignment.status = 'ASSIGNED'
+          AND assignment.row_version = 1
+    ),
+    EXISTS (
+        SELECT 1
+        FROM public.task_assignments assignment
+        WHERE assignment.assignment_id = 'MIGRATION-P-FB-STARTED'
+          AND assignment.teacher_id = 'MIGRATION-SEMANTIC-TEACHER'
+          AND assignment.task_code = 'P-FB-NEGATIVE'
+          AND assignment.template_version_id = 'P-FB-NEGATIVE:v1'
+          AND assignment.status = 'ASSIGNED'
+          AND assignment.row_version = 1
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_step_progress progress
+        WHERE progress.id = '25abcdef-0000-4000-8000-000000000220'
+          AND progress.task_assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND progress.step_key = 'p-fb-negative-environment-photo'
+          AND progress.status = 'IN_PROGRESS'
+          AND progress.percent = 60
+          AND progress.progress_summary =
+              '{"checkpoint":"before-0038"}'::jsonb
+    ),
+    EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0038_personalized_environment_photo'
+          AND migration_order = 33
+    );
+SQL
+)"
+if [[ "${personalized_photo_state}" != "t|t|t|t|t|t|t|t" ]]; then
+  echo "0038 P-FB-NEGATIVE 原位升级异常：${personalized_photo_state}" >&2
+  exit 1
+fi
+}
 
 if command -v sha256sum >/dev/null 2>&1; then
   expected_0030_sha="$(sha256sum "${DB_DIR}/migrations/0030_remove_unused_columns_and_orphan_function.up.sql" | awk '{print $1}')"
@@ -1899,10 +2659,12 @@ SQL
 
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TARGET="0037_g04_remove_device_check" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TARGET="0037_g04_remove_device_check" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
 
@@ -2002,6 +2764,8 @@ if [[ "${g04_two_part_state}" != "t|t|t|t|t|t|t|t|t|t|t|t|t" ]]; then
   echo "0037 未精确移除 G04 设备 step 或改动了历史证据：${g04_two_part_state}" >&2
   exit 1
 fi
+
+run_personalized_environment_upgrade_tests
 
 analytics_semantics_state="$(psql -X --no-password -AtF '|' "postgresql:///${UPGRADE_DB}" <<'SQL'
 SELECT
@@ -2347,6 +3111,270 @@ SQL
 )"
 if [[ "${atomic_state}" != "WAITING_TEACHER|t|t|t|2|2|t|f|t|f|t|t|f|f" ]]; then
   echo "运营回复原子性或最小权限异常：${atomic_state}" >&2
+  exit 1
+fi
+
+set +e
+personalized_evidence_down_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
+)"
+personalized_evidence_down_status=$?
+set -e
+personalized_evidence_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = '25abcdef-0000-4000-8000-000000000011'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config->>'contentVersion' =
+              '2026-08-11-personalized-environment-photo-v1'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_step_progress
+        WHERE id = '25abcdef-0000-4000-8000-000000000220'
+          AND task_assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND step_key = 'p-fb-negative-environment-photo'
+          AND status = 'IN_PROGRESS'
+          AND percent = 60
+          AND progress_summary = '{"checkpoint":"before-0038"}'::jsonb
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    );
+SQL
+)"
+if [[ "${personalized_evidence_down_status}" == "0" \
+      || "${personalized_evidence_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
+      || "${personalized_evidence_down_state}" != "t|t|t|t" ]]; then
+  echo "0038 down 未原子保护已有个性化拍照进度：${personalized_evidence_down_state}" >&2
+  echo "${personalized_evidence_down_output}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DELETE FROM tide.task_step_progress WHERE id = '25abcdef-0000-4000-8000-000000000220'" >/dev/null
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+INSERT INTO tide.task_command_receipts (
+    id,
+    account_id,
+    idempotency_key,
+    command_id,
+    command_type,
+    request_hash,
+    response_body,
+    task_assignment_id
+) VALUES (
+    '25abcdef-0000-4000-8000-000000000221',
+    '27000000-0000-4000-8000-000000000001',
+    'migration-0038-photo-start',
+    'migration-0038-photo-start-command',
+    'START',
+    repeat('b', 64),
+    '{"accepted":true}'::jsonb,
+    'MIGRATION-P-FB-NEGATIVE'
+);
+SQL
+
+set +e
+personalized_receipt_down_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
+)"
+personalized_receipt_down_status=$?
+set -e
+personalized_receipt_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_command_receipts
+        WHERE id = '25abcdef-0000-4000-8000-000000000221'
+          AND task_assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND command_type = 'START'
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    );
+SQL
+)"
+if [[ "${personalized_receipt_down_status}" == "0" \
+      || "${personalized_receipt_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
+      || "${personalized_receipt_down_state}" != "t|t|t" ]]; then
+  echo "0038 down 未原子保护个性化任务命令回执：${personalized_receipt_down_state}" >&2
+  echo "${personalized_receipt_down_output}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DELETE FROM tide.task_command_receipts WHERE id = '25abcdef-0000-4000-8000-000000000221'" >/dev/null
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" >/dev/null
+
+personalized_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config =
+            '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-06","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING"}'::jsonb
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_step_definitions definition
+        JOIN tide.task_execution_versions execution
+          ON execution.id = definition.execution_version_id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_validation_rules rule
+        JOIN tide.task_execution_versions execution
+          ON execution.id = rule.execution_version_id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = '25abcdef-0000-4000-8000-000000000011'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM public.task_assignments
+        WHERE assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND template_version_id = 'P-FB-NEGATIVE:v1'
+          AND status = 'ASSIGNED'
+          AND row_version = 1
+    );
+SQL
+)"
+if [[ "${personalized_down_state}" != "t|t|t|t|t" ]]; then
+  echo "0038 down 未恢复精确待配置执行形状：${personalized_down_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql" >/dev/null
+personalized_down_up_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = '25abcdef-0000-4000-8000-000000000011'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config->>'contentVersion' =
+              '2026-08-11-personalized-environment-photo-v1'
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM public.task_assignments
+        WHERE assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND status = 'ASSIGNED'
+          AND row_version = 1
+    );
+SQL
+)"
+if [[ "${personalized_down_up_state}" != "t|t|t|t" ]]; then
+  echo "0038 existing execution down/up 未保留身份和 assignment：${personalized_down_up_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+UPDATE public.task_assignments
+SET
+    status = 'VIEWED',
+    status_changed_at = status_changed_at + interval '1 second'
+WHERE assignment_id = 'MIGRATION-P-FB-STARTED';
+
+UPDATE public.task_assignments
+SET
+    status = 'IN_PROGRESS',
+    status_changed_at = status_changed_at + interval '1 second'
+WHERE assignment_id = 'MIGRATION-P-FB-STARTED';
+SQL
+
+set +e
+personalized_started_assignment_down_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
+)"
+personalized_started_assignment_down_status=$?
+set -e
+personalized_started_assignment_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM public.task_assignments
+        WHERE assignment_id = 'MIGRATION-P-FB-STARTED'
+          AND template_version_id = 'P-FB-NEGATIVE:v1'
+          AND status = 'IN_PROGRESS'
+          AND row_version = 3
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    );
+SQL
+)"
+if [[ "${personalized_started_assignment_down_status}" == "0" \
+      || "${personalized_started_assignment_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
+      || "${personalized_started_assignment_down_state}" != "t|t|t" ]]; then
+  echo "0038 down 未原子保护 IN_PROGRESS 个性化 assignment：${personalized_started_assignment_down_state}" >&2
+  echo "${personalized_started_assignment_down_output}" >&2
   exit 1
 fi
 
@@ -2752,4 +3780,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037 顺序门禁、旧表缺失权限探测、0022–0037、无用对象/字段/函数门禁与精确恢复、首次登录回填/down-up/幂等、G01 TESOL-only、G04 照片+课件两模块与历史设备证据保留、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"
+echo "生产 migrator fresh/upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→public56→teacher0038 顺序门禁、旧表缺失权限探测、0022–0038、无用对象/字段/函数门禁与精确恢复、首次登录回填/down-up/幂等、G01 TESOL-only、G04 照片+课件两模块与历史设备证据保留、P-FB-NEGATIVE 环境拍照与回滚执行证据保护、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"

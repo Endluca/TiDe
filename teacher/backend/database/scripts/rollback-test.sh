@@ -37,6 +37,7 @@ run_sql() {
 run_sql "${DB_DIR}/fixtures/0001_shared_contract.sql"
 run_sql "${DB_DIR}/fixtures/0002_score_entry_contract.sql"
 run_sql "${DB_DIR}/fixtures/0003_course_score_snapshot_contract.sql"
+run_sql "${DB_DIR}/fixtures/0004_p_fb_negative_contract.sql"
 run_sql "${DB_DIR}/migrations/0001_initial.up.sql"
 run_sql "${DB_DIR}/migrations/0002_shared_database_exchange.up.sql"
 run_sql "${DB_DIR}/migrations/0003_file_upload_intents.up.sql"
@@ -154,6 +155,7 @@ run_sql "${DB_DIR}/migrations/0032_first_login_onboarding.up.sql"
 run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
 run_sql "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
 run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
+run_sql "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
@@ -190,6 +192,23 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     to_regclass('public.teacher_support_tickets') is not null,
     to_regclass('tide.job_leases') is not null,
     to_regclass('tide.account_onboarding_states') is not null,
+    exists (
+      select 1
+      from tide.task_execution_versions execution
+      where execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+        and execution.task_code = 'P-FB-NEGATIVE'
+        and execution.status = 'ACTIVE'
+        and execution.config->>'contentVersion' =
+          '2026-08-11-personalized-environment-photo-v1'
+        and (
+          select count(*) from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+        ) = 1
+        and (
+          select count(*) from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+        ) = 2
+    ),
     to_regclass('tide.teacher_tasks') is null,
     to_regclass('tide.analytics_task_business_change_v1') is null,
     (
@@ -239,7 +258,7 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     (select count(*) from public.task_templates where status = 'PUBLISHED')
   )
 ")"
-[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
+[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
   echo "空库升级后状态异常: ${final_state}" >&2
   exit 1
 }
@@ -285,6 +304,7 @@ g04_second_apply_guard="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
 run_sql "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
 run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
 run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
+run_sql "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql"
 g04_second_apply_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select exists (
     select 1
@@ -314,6 +334,7 @@ g04_second_apply_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   exit 1
 }
 
+run_sql "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql"
 run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.down.sql"
 g04_after_0037_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select concat_ws('|',
@@ -543,4 +564,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0037，验证 G01 TESOL-only 与 G04 两段结构的 forward-only down 后逐级回滚通过。"
+echo "空库升级至 0038，验证 G01 TESOL-only、G04 两段结构与个性化拍照迁移后逐级回滚通过。"

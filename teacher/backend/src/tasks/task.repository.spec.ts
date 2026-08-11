@@ -887,3 +887,262 @@ describe('TaskRepository latest validation', () => {
     }
   });
 });
+
+describe('TaskRepository personalized environment photo activation', () => {
+  const pendingConfig = {
+    contentStatus: 'PENDING',
+    pendingReason: 'JIAHE_PERSONALIZED_CONTENT_PENDING',
+    contentVersion: 'personalized-photo-v1',
+  };
+  const evidence = (label: unknown) => ({
+    signal_samples: [
+      {
+        evidence: {
+          negative_feedback_label: label,
+        },
+      },
+    ],
+  });
+  const resolve = (repository: TaskRepository) =>
+    (
+      repository as unknown as {
+        resolveAssignmentContent<T extends Record<string, unknown>>(task: T): T;
+      }
+    ).resolveAssignmentContent.bind(repository);
+
+  it.each(['灯光过暗/亮', '环境乱/灯光差'])(
+    'resolves the exact %s signal to the teaching-environment photo variant',
+    (label) => {
+      const repository = new TaskRepository({} as never, {} as never);
+
+      expect(
+        resolve(repository)({
+          taskCode: 'P-FB-NEGATIVE',
+          contentConfig: pendingConfig,
+          evidenceSnapshot: evidence(label),
+        }),
+      ).toMatchObject({
+        contentConfig: {
+          contentStatus: 'READY',
+          pendingReason: null,
+          contentVersion: 'personalized-photo-v1',
+          contentVariant: 'TEACHING_ENVIRONMENT_PHOTO',
+        },
+      });
+    },
+  );
+
+  it('prefers the exact stable teacher execution variant', () => {
+    const repository = new TaskRepository({} as never, {} as never);
+
+    expect(
+      resolve(repository)({
+        taskCode: 'P-FB-NEGATIVE',
+        contentConfig: pendingConfig,
+        evidenceSnapshot: {
+          teacher_execution_variant: 'TEACHING_ENVIRONMENT_PHOTO',
+        },
+      }),
+    ).toMatchObject({
+      contentConfig: {
+        contentStatus: 'READY',
+        pendingReason: null,
+        contentVariant: 'TEACHING_ENVIRONMENT_PHOTO',
+      },
+    });
+  });
+
+  it.each(['TEACHING_ENVIRONMENT_PHOTO ', 'teaching_environment_photo', null])(
+    'fails closed for non-exact stable variant %p',
+    (variant) => {
+      const repository = new TaskRepository({} as never, {} as never);
+      const task = {
+        taskCode: 'P-FB-NEGATIVE',
+        contentConfig: pendingConfig,
+        evidenceSnapshot: {
+          teacher_execution_variant: variant,
+          signal_samples: [
+            { evidence: { negative_feedback_label: '灯光过暗/亮' } },
+          ],
+        },
+      };
+
+      expect(resolve(repository)(task)).toBe(task);
+      expect(task.contentConfig.contentStatus).toBe('PENDING');
+    },
+  );
+
+  it.each([
+    ['P-FB-COMPLAINT', 'PENDING'],
+    ['P-FB-NEGATIVE', 'READY'],
+  ])(
+    'does not activate the stable variant for task %s with base status %s',
+    (taskCode, contentStatus) => {
+      const repository = new TaskRepository({} as never, {} as never);
+      const task = {
+        taskCode,
+        contentConfig: { ...pendingConfig, contentStatus },
+        evidenceSnapshot: {
+          teacher_execution_variant: 'TEACHING_ENVIRONMENT_PHOTO',
+        },
+      };
+
+      expect(resolve(repository)(task)).toBe(task);
+      expect(task.contentConfig).not.toHaveProperty('contentVariant');
+    },
+  );
+
+  it.each([
+    ['P-FB-NEGATIVE', '灯光过暗'],
+    ['P-FB-NEGATIVE', ' 灯光过暗/亮 '],
+    ['P-FB-NEGATIVE', '环境杂乱/灯光差'],
+    ['P-FB-COMPLAINT', '灯光过暗/亮'],
+  ])('fails closed for task %s and non-exact label %s', (taskCode, label) => {
+    const repository = new TaskRepository({} as never, {} as never);
+    const task = {
+      taskCode,
+      contentConfig: pendingConfig,
+      evidenceSnapshot: evidence(label),
+    };
+
+    expect(resolve(repository)(task)).toBe(task);
+    expect(task.contentConfig.contentStatus).toBe('PENDING');
+  });
+
+  it('applies the resolver to normal task-list reads', async () => {
+    const queryTide = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          taskCode: 'P-FB-NEGATIVE',
+          contentConfig: pendingConfig,
+          evidenceSnapshot: evidence('灯光过暗/亮'),
+        },
+      ],
+    });
+    const repository = new TaskRepository({ queryTide } as never, {} as never);
+    const listRows = (
+      repository as unknown as {
+        listTaskRows(
+          teacherId: string,
+        ): Promise<Array<{ contentConfig: Record<string, unknown> }>>;
+      }
+    ).listTaskRows.bind(repository);
+
+    const rows = await listRows('TEACHER-001');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].contentConfig).toMatchObject({
+      contentStatus: 'READY',
+      contentVariant: 'TEACHING_ENVIRONMENT_PHOTO',
+    });
+  });
+
+  it('uses the same resolver for the locked command read', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          taskInstanceId: 'assignment-001',
+          status: 'IN_PROGRESS',
+          stateVersion: '7',
+          executionVersionId: 'execution-001',
+          contentConfig: pendingConfig,
+          sourceType: 'PERSONALIZED_IMPROVEMENT',
+          taskCode: 'P-FB-NEGATIVE',
+          taskTitle: 'Improve a Teaching Skill',
+          dataOrigin: 'REAL',
+          teacherId: 'TEACHER-001',
+          assignmentId: 'assignment-001',
+          evidenceSnapshot: evidence('环境乱/灯光差'),
+        },
+      ],
+    });
+    const repository = new TaskRepository({} as never, {} as never);
+    const lockOwnedTask = (
+      repository as unknown as {
+        lockOwnedTask(
+          client: { query: typeof query },
+          input: { accountId: string; taskInstanceId: string },
+        ): Promise<{ contentConfig: Record<string, unknown> }>;
+      }
+    ).lockOwnedTask.bind(repository);
+
+    await expect(
+      lockOwnedTask(
+        { query },
+        { accountId: 'account-001', taskInstanceId: 'assignment-001' },
+      ),
+    ).resolves.toMatchObject({
+      contentConfig: {
+        contentStatus: 'READY',
+        pendingReason: null,
+        contentVariant: 'TEACHING_ENVIRONMENT_PHOTO',
+      },
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('task.evidence_snapshot AS "evidenceSnapshot"'),
+      ['assignment-001', 'account-001'],
+    );
+  });
+
+  it.each(['FAILED', 'UNDER_REVIEW'] as const)(
+    'keeps a personalized photo %s result in progress so the teacher can retake it',
+    async (status) => {
+      const repository = new TaskRepository({} as never, {} as never);
+      const updateAssignmentStatus = jest.fn();
+      const createTaskResultNotification = jest.fn();
+      Object.assign(repository as object, {
+        updateAssignmentStatus,
+        createTaskResultNotification,
+      });
+      const apply = (
+        repository as unknown as {
+          applyAssignmentValidationResult(
+            client: Record<string, never>,
+            task: Record<string, unknown>,
+            input: {
+              taskInstanceId: string;
+              expectedStateVersion: number;
+              attemptId: string;
+            },
+            decision: {
+              status: 'FAILED' | 'UNDER_REVIEW';
+              resultCode: string;
+              teacherMessage: string;
+              ruleVersion: string;
+            },
+          ): Promise<{ nextStatus: string; stateVersion: number }>;
+        }
+      ).applyAssignmentValidationResult.bind(repository);
+
+      await expect(
+        apply(
+          {},
+          {
+            taskCode: 'P-FB-NEGATIVE',
+            sourceType: 'PERSONALIZED_IMPROVEMENT',
+            taskInstanceId: 'assignment-001',
+            stateVersion: '7',
+            contentConfig: {
+              contentVariant: 'TEACHING_ENVIRONMENT_PHOTO',
+            },
+          },
+          {
+            taskInstanceId: 'assignment-001',
+            expectedStateVersion: 7,
+            attemptId: 'attempt-001',
+          },
+          {
+            status,
+            resultCode:
+              status === 'FAILED'
+                ? 'IMAGE_REVIEW_RETRY'
+                : 'AI_GATEWAY_UNAVAILABLE',
+            teacherMessage: '请重新拍照。',
+            ruleVersion: 'photo-review:1',
+          },
+        ),
+      ).resolves.toEqual({ nextStatus: 'IN_PROGRESS', stateVersion: 7 });
+      expect(updateAssignmentStatus).not.toHaveBeenCalled();
+      expect(createTaskResultNotification).not.toHaveBeenCalled();
+    },
+  );
+});

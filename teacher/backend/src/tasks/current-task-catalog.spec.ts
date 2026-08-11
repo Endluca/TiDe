@@ -211,4 +211,41 @@ describe('current task catalog locale fields', () => {
         'Your teaching environment and courseware are ready for your first lesson.',
     });
   });
+
+  it('keeps P-FB-NEGATIVE pending by default with one reviewed photo variant', () => {
+    const task = currentTaskCatalog.find(
+      (candidate) => candidate.code === 'P-FB-NEGATIVE',
+    );
+
+    expect(task).toMatchObject({
+      contentStatus: 'PENDING',
+      pendingReason: 'JIAHE_PERSONALIZED_CONTENT_PENDING',
+      score: 0,
+      contentVersion: '2026-08-11-personalized-environment-photo-v1',
+      independentModules: {
+        stepKeys: ['p-fb-negative-environment-photo'],
+        allowOutOfOrderProgress: true,
+        keepAssignmentInProgressUntilPassed: true,
+      },
+    });
+    expect(task?.steps).toHaveLength(1);
+    expect(task?.steps[0]).toMatchObject({
+      key: 'p-fb-negative-environment-photo',
+      type: 'UPLOAD',
+      config: {
+        role: 'ENVIRONMENT_PHOTO',
+        reviewProfile: 'TEACHING_ENVIRONMENT_V1',
+        captureOnly: true,
+        accept: ['image/jpeg'],
+      },
+    });
+    const imageRule = task?.rules.find(
+      (candidate) => candidate.type === 'AI_IMAGE_REVIEW',
+    );
+    expect(imageRule?.config).toMatchObject({
+      stepKey: 'p-fb-negative-environment-photo',
+      reviewProfile: 'TEACHING_ENVIRONMENT_V1',
+      criteriaKeys: ['camera_angle', 'lighting', 'background', 'dressing'],
+    });
+  });
 });

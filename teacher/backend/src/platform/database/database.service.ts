@@ -59,6 +59,7 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0032_first_login_onboarding',
   '0033_g01_tesol_only',
   '0037_g04_remove_device_check',
+  '0038_personalized_environment_photo',
 ] as const;
 
 @Injectable()
@@ -262,6 +263,12 @@ export class DatabaseService implements OnModuleDestroy {
           count(*)::integer AS migration_count
         FROM tide.schema_migrations
       ),
+      public_migration_state AS (
+        SELECT
+          min(version_num) AS version_num,
+          count(*)::integer AS migration_count
+        FROM public.alembic_version
+      ),
       latest_migration AS (
         SELECT migration_id
         FROM tide.schema_migrations
@@ -280,7 +287,162 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0037_g04_remove_device_check'
+        ) = '0038_personalized_environment_photo'
+        AND public_migration_state.migration_count = 1
+        AND public_migration_state.version_num =
+          '20260811_56_p_fb_negative_copy'
+        AND has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          'SELECT'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          'INSERT'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          'UPDATE'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          'DELETE'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          'TRUNCATE'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          'REFERENCES'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          'TRIGGER'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute AS attribute
+          WHERE attribute.attrelid =
+              to_regclass('public.alembic_version')
+            AND attribute.attnum > 0
+            AND NOT attribute.attisdropped
+            AND (
+              has_column_privilege(
+                current_user,
+                attribute.attrelid,
+                attribute.attnum,
+                'INSERT'
+              )
+              OR has_column_privilege(
+                current_user,
+                attribute.attrelid,
+                attribute.attnum,
+                'UPDATE'
+              )
+              OR has_column_privilege(
+                current_user,
+                attribute.attrelid,
+                attribute.attnum,
+                'REFERENCES'
+              )
+            )
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'SELECT'
+        )
+        AND has_column_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'tchr_id',
+          'SELECT'
+        )
+        AND has_column_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'is_cpl_tesol',
+          'SELECT'
+        )
+        AND NOT has_column_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'is_self_introduce',
+          'SELECT'
+        )
+        AND NOT has_column_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'real_name',
+          'SELECT'
+        )
+        AND (
+          SELECT array_agg(
+            attribute.attname::text ORDER BY attribute.attname
+          )
+          FROM pg_attribute AS attribute
+          WHERE attribute.attrelid =
+              to_regclass('public.teacher_source_wide')
+            AND attribute.attnum > 0
+            AND NOT attribute.attisdropped
+            AND has_column_privilege(
+              current_user,
+              attribute.attrelid,
+              attribute.attnum,
+              'SELECT'
+            )
+        ) IS NOT DISTINCT FROM
+          ARRAY['is_cpl_tesol', 'tchr_id']::text[]
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute AS attribute
+          WHERE attribute.attrelid =
+              to_regclass('public.teacher_source_wide')
+            AND attribute.attnum > 0
+            AND NOT attribute.attisdropped
+            AND (
+              has_column_privilege(
+                current_user,
+                attribute.attrelid,
+                attribute.attnum,
+                'INSERT'
+              )
+              OR has_column_privilege(
+                current_user,
+                attribute.attrelid,
+                attribute.attnum,
+                'UPDATE'
+              )
+              OR has_column_privilege(
+                current_user,
+                attribute.attrelid,
+                attribute.attnum,
+                'REFERENCES'
+              )
+            )
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'DELETE'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'TRUNCATE'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'TRIGGER'
+        )
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.account_onboarding_states') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
@@ -469,6 +631,81 @@ export class DatabaseService implements OnModuleDestroy {
               'lesson-preparation-camera-view-2026-08-v7-background-veto'
             AND rule.config->'criteriaKeys' =
               '["camera_angle","lighting","background","dressing"]'::jsonb
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_execution_versions AS execution
+          JOIN public.task_templates AS template
+            ON template.row_id = execution.shared_template_row_id
+          WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+            AND execution.task_code = 'P-FB-NEGATIVE'
+            AND execution.status = 'ACTIVE'
+            AND execution.execution_contract_version = 'task-contract-v3'
+            AND execution.config =
+              '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-11-personalized-environment-photo-v1","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING","independentModules":{"stepKeys":["p-fb-negative-environment-photo"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
+            AND template.template_id = 'P-FB-NEGATIVE'
+            AND template.status = 'PUBLISHED'
+            AND template.execution_owner = 'TEACHER_APP'
+            AND template.payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
+            AND (template.payload->>'score_value')::integer = 0
+        )
+        AND (
+          SELECT count(*)
+          FROM tide.task_step_definitions AS definition
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = definition.execution_version_id
+          WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+        ) = 1
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_step_definitions AS definition
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = definition.execution_version_id
+          WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+            AND definition.step_key = 'p-fb-negative-environment-photo'
+            AND definition.position = 1
+            AND definition.step_type = 'UPLOAD'
+            AND definition.title = 'Take a teaching-environment photo'
+            AND definition.config =
+              '{"version":"2026-08-11-personalized-environment-photo-v1","role":"ENVIRONMENT_PHOTO","reviewProfile":"TEACHING_ENVIRONMENT_V1","accept":["image/jpeg"],"captureOnly":true,"maxFiles":1}'::jsonb
+        )
+        AND (
+          SELECT count(*)
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+        ) = 2
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+            AND rule.rule_key = 'all-steps-complete'
+            AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+            AND rule.rule_version =
+              '2026-08-11-personalized-environment-photo-v1'
+            AND rule.position = 1
+            AND rule.config =
+              '{"requiredStepKeys":["p-fb-negative-environment-photo"]}'::jsonb
+            AND rule.teacher_failure_copy =
+              '请拍摄并提交一张当前授课环境照片。'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+            AND rule.rule_key = 'p-fb-negative-environment-ai-review'
+            AND rule.rule_type = 'AI_IMAGE_REVIEW'
+            AND rule.rule_version = '2026-07-27-strict'
+            AND rule.position = 2
+            AND rule.config =
+              '{"stepKey":"p-fb-negative-environment-photo","criteriaVersion":"personalized-teaching-environment-2026-08-v1","criteriaKeys":["camera_angle","lighting","background","dressing"],"allowedMimeTypes":["image/jpeg","image/png","image/webp"],"reviewProfile":"TEACHING_ENVIRONMENT_V1","systemPrompt":"You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {\\"decision\\":\\"PASS|RETRY|ERROR\\",\\"teacherReason\\":\\"teacher-safe concise message\\",\\"confidenceSummary\\":{},\\"criteria\\":[{\\"criterionKey\\":\\"one configured key\\",\\"result\\":\\"PASS|FAIL|UNKNOWN\\",\\"teacherMessage\\":\\"teacher-safe message or null\\"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.","userText":"Review this current teaching-environment photo strictly against camera angle, lighting, background and dressing only."}'::jsonb
+            AND rule.teacher_failure_copy =
+              '已保留你完成的内容，请根据提示更新这份材料。'
         )
         AND NOT EXISTS (
           SELECT 1
@@ -714,6 +951,7 @@ export class DatabaseService implements OnModuleDestroy {
         )
       ) AS ready
       FROM migration_state
+      CROSS JOIN public_migration_state
     `;
   }
 

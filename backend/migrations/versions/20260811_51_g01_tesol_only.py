@@ -88,6 +88,11 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_roles WHERE rolname = 'tit_teacher_crud'
     ) THEN
+        REVOKE ALL PRIVILEGES ON TABLE public.alembic_version
+        FROM tit_teacher_crud;
+        GRANT SELECT ON TABLE public.alembic_version
+        TO tit_teacher_crud;
+
         REVOKE ALL PRIVILEGES ON TABLE public.teacher_source_wide
         FROM tit_teacher_crud;
         REVOKE SELECT (
@@ -101,6 +106,54 @@ BEGIN
             is_cpl_tesol
         ) ON TABLE public.teacher_source_wide
         TO tit_teacher_crud;
+
+        IF NOT has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'SELECT'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'INSERT'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'UPDATE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'DELETE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'TRUNCATE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'REFERENCES'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'TRIGGER'
+        ) OR has_column_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'version_num',
+            'INSERT'
+        ) OR has_column_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'version_num',
+            'UPDATE'
+        ) OR has_column_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'version_num',
+            'REFERENCES'
+        ) THEN
+            RAISE EXCEPTION
+                'tit_teacher_crud Alembic ledger privileges are invalid';
+        END IF;
 
         IF has_table_privilege(
             'tit_teacher_crud',
@@ -126,6 +179,59 @@ BEGIN
             'public.teacher_source_wide',
             'real_name',
             'SELECT'
+        ) OR (
+            SELECT array_agg(attribute.attname::text ORDER BY attribute.attname)
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid =
+                to_regclass('public.teacher_source_wide')
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND has_column_privilege(
+                  'tit_teacher_crud',
+                  attribute.attrelid,
+                  attribute.attnum,
+                  'SELECT'
+              )
+        ) IS DISTINCT FROM ARRAY['is_cpl_tesol', 'tchr_id']::text[]
+        OR EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid =
+                to_regclass('public.teacher_source_wide')
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND (
+                  has_column_privilege(
+                      'tit_teacher_crud',
+                      attribute.attrelid,
+                      attribute.attnum,
+                      'INSERT'
+                  )
+                  OR has_column_privilege(
+                      'tit_teacher_crud',
+                      attribute.attrelid,
+                      attribute.attnum,
+                      'UPDATE'
+                  )
+                  OR has_column_privilege(
+                      'tit_teacher_crud',
+                      attribute.attrelid,
+                      attribute.attnum,
+                      'REFERENCES'
+                  )
+              )
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.teacher_source_wide',
+            'DELETE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.teacher_source_wide',
+            'TRUNCATE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.teacher_source_wide',
+            'TRIGGER'
         ) THEN
             RAISE EXCEPTION
                 'tit_teacher_crud TESOL-only source privileges are invalid';
@@ -142,6 +248,9 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_roles WHERE rolname = 'tit_teacher_crud'
     ) THEN
+        REVOKE ALL PRIVILEGES ON TABLE public.alembic_version
+        FROM tit_teacher_crud;
+
         REVOKE ALL PRIVILEGES ON TABLE public.teacher_source_wide
         FROM tit_teacher_crud;
         REVOKE SELECT (
@@ -156,6 +265,54 @@ BEGIN
             is_self_introduce
         ) ON TABLE public.teacher_source_wide
         TO tit_teacher_crud;
+
+        IF has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'SELECT'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'INSERT'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'UPDATE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'DELETE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'TRUNCATE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'REFERENCES'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'TRIGGER'
+        ) OR has_column_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'version_num',
+            'INSERT'
+        ) OR has_column_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'version_num',
+            'UPDATE'
+        ) OR has_column_privilege(
+            'tit_teacher_crud',
+            'public.alembic_version',
+            'version_num',
+            'REFERENCES'
+        ) THEN
+            RAISE EXCEPTION
+                'tit_teacher_crud Alembic ledger privileges were not revoked';
+        END IF;
 
         IF has_table_privilege(
             'tit_teacher_crud',
@@ -181,6 +338,60 @@ BEGIN
             'public.teacher_source_wide',
             'real_name',
             'SELECT'
+        ) OR (
+            SELECT array_agg(attribute.attname::text ORDER BY attribute.attname)
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid =
+                to_regclass('public.teacher_source_wide')
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND has_column_privilege(
+                  'tit_teacher_crud',
+                  attribute.attrelid,
+                  attribute.attnum,
+                  'SELECT'
+              )
+        ) IS DISTINCT FROM
+            ARRAY['is_cpl_tesol', 'is_self_introduce', 'tchr_id']::text[]
+        OR EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid =
+                to_regclass('public.teacher_source_wide')
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND (
+                  has_column_privilege(
+                      'tit_teacher_crud',
+                      attribute.attrelid,
+                      attribute.attnum,
+                      'INSERT'
+                  )
+                  OR has_column_privilege(
+                      'tit_teacher_crud',
+                      attribute.attrelid,
+                      attribute.attnum,
+                      'UPDATE'
+                  )
+                  OR has_column_privilege(
+                      'tit_teacher_crud',
+                      attribute.attrelid,
+                      attribute.attnum,
+                      'REFERENCES'
+                  )
+              )
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.teacher_source_wide',
+            'DELETE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.teacher_source_wide',
+            'TRUNCATE'
+        ) OR has_table_privilege(
+            'tit_teacher_crud',
+            'public.teacher_source_wide',
+            'TRIGGER'
         ) THEN
             RAISE EXCEPTION
                 'tit_teacher_crud restored G01 source privileges are invalid';

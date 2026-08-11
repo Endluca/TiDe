@@ -48,6 +48,14 @@ PERSONALIZED_TEMPLATE_CODES = {
     "P-FB-BLACKLIST",
 }
 
+TEACHING_ENVIRONMENT_PHOTO_VARIANT = "TEACHING_ENVIRONMENT_PHOTO"
+TEACHING_ENVIRONMENT_PHOTO_LABELS = frozenset(
+    {
+        "灯光过暗/亮",
+        "环境乱/灯光差",
+    }
+)
+
 
 class LessonTriggerProjectionError(ValueError):
     """A normalized lesson cannot be evaluated or materialized safely."""
@@ -352,6 +360,15 @@ def build_output_specs(
                         "threshold": 2,
                         "threshold_crossing_lesson_id": threshold_row.lesson_id,
                         "lesson_ids": [item.lesson_id for item in ordered],
+                        **(
+                            {
+                                "teacher_execution_variant": (
+                                    TEACHING_ENVIRONMENT_PHOTO_VARIANT
+                                )
+                            }
+                            if label in TEACHING_ENVIRONMENT_PHOTO_LABELS
+                            else {}
+                        ),
                     },
                     teacher_id=teacher_id,
                     lesson_id=threshold_row.lesson_id,
@@ -544,6 +561,18 @@ def materialize_outputs(
             "source_mode": source_mode,
             **dict(evidence_context or {}),
         }
+        evidence.pop("teacher_execution_variant", None)
+        execution_variants = {
+            item.evidence.get("teacher_execution_variant")
+            for item in members
+            if isinstance(item.evidence.get("teacher_execution_variant"), str)
+        }
+        if len(execution_variants) > 1:
+            raise LessonTriggerProjectionError(
+                f"task execution variant conflict for {output_dedupe_key}"
+            )
+        if execution_variants:
+            evidence["teacher_execution_variant"] = next(iter(execution_variants))
         lesson_sample = ", ".join(lesson_ids[:10])
         sample_suffix = ", ..." if len(lesson_ids) > 10 else ""
         lesson_count = len(lesson_ids)

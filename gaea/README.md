@@ -304,10 +304,14 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55`；
-   确认 public head 为 `20260811_55_source_wide_v12`、teacher 账本 head 为
-   `0037_g04_remove_device_check`；其中 `20260811_51_g01_tesol_only` /
-   `0033_g01_tesol_only` 必须完成 G01 TESOL-only 收窄，随后执行只读契约探针。
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038`；
+   链内必须先包含 public `20260811_51_g01_tesol_only` / teacher `0033_g01_tesol_only`
+   的 G01 TESOL-only 收窄，再包含 public `20260811_54_g04_remove_device_check` / teacher
+   `0037_g04_remove_device_check` 的 G04 两模块收敛，并先执行 public
+   `20260811_55_source_wide_v12` 再执行 public `20260811_56_p_fb_negative_copy`；当前 G04 不得恢复设备检测步骤。
+   确认 public head 为 `20260811_56_p_fb_negative_copy`、teacher 账本 head 为
+   `0038_personalized_environment_photo`，随后执行只读契约探针，并同时核对 G01 TESOL-only
+   规则、G04 两模块、个性化任务零分文案、环境拍照步骤与 `TEACHING_ENVIRONMENT_V1` 审核档案。
 2. 配齐统一应用的运营、教师和两个 Worker 环境变量，确认密钥不在版本化配置中；
    `tit_source_worker_runtime` 必须是独立受限 LOGIN。
 3. 在 Gaea 将统一应用设置为至少 `2` 个副本并使用 `RollingUpdate`；若启用自动伸缩，设置

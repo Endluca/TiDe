@@ -12,6 +12,9 @@ import type {
   TaskValidationStep,
 } from './task-validation.models';
 
+const currentG04PhotoStepKey = 'g02-environment-photo';
+const teachingEnvironmentReviewProfile = 'TEACHING_ENVIRONMENT_V1';
+
 @Injectable()
 export class TaskValidationEngine {
   private readonly handlers: Map<string, TaskRuleHandler>;
@@ -48,17 +51,16 @@ export class TaskValidationEngine {
       };
     }
 
-    const currentG04ImageRule = input.rules.find(
+    const prioritizedImageRules = input.rules.filter(
       (rule) =>
         rule.ruleType === 'AI_IMAGE_REVIEW' &&
-        rule.config.stepKey === 'g02-environment-photo',
+        (rule.config.stepKey === currentG04PhotoStepKey ||
+          rule.config.reviewProfile === teachingEnvironmentReviewProfile),
     );
-    const rules = currentG04ImageRule
-      ? [
-          currentG04ImageRule,
-          ...input.rules.filter((rule) => rule !== currentG04ImageRule),
-        ]
-      : input.rules;
+    const rules = [
+      ...prioritizedImageRules,
+      ...input.rules.filter((rule) => !prioritizedImageRules.includes(rule)),
+    ];
 
     for (const rule of rules) {
       const handler = this.handlers.get(rule.ruleType);

@@ -56,6 +56,9 @@ const growthStageIndex = {
 };
 
 const externalCourseTaskCodes = new Set(["G02", "G05", "G06", "G07", "G08", "G09"]);
+const personalizedEnvironmentPhotoTaskCode = "P-FB-NEGATIVE";
+const personalizedEnvironmentPhotoStepKey = "p-fb-negative-environment-photo";
+const personalizedEnvironmentPhotoReviewProfile = "TEACHING_ENVIRONMENT_V1";
 
 function currentGrowthStageIndex(campDay) {
   const day = Number(campDay);
@@ -67,6 +70,17 @@ function inferMethod(context) {
   if (context.execution?.contentStatus !== "READY") return "content_pending";
   if (context.taskCode === "G01") return "profile_credentials";
   if (context.taskCode === "G04") return "readiness_photo";
+  if (
+    context.taskCode === personalizedEnvironmentPhotoTaskCode
+    && context.kind === "PERSONALIZED_IMPROVEMENT"
+    && context.steps.some((step) => (
+      step.stepKey === personalizedEnvironmentPhotoStepKey
+      && step.type === "UPLOAD"
+      && step.config?.role === "ENVIRONMENT_PHOTO"
+      && step.config?.reviewProfile === personalizedEnvironmentPhotoReviewProfile
+      && step.config?.captureOnly === true
+    ))
+  ) return "personalized_environment_photo";
   if (externalCourseTaskCodes.has(context.taskCode)) return "external_course";
   if (context.steps.some((step) => (
     step.type === "CUSTOM" && step.config?.kind === "TEXT_SUBMISSION"

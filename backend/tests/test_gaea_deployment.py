@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -134,6 +135,83 @@ def test_company_test_initializer_reads_back_multi_replica_contract() -> None:
     assert expected.endswith("|t")
 
 
+def test_company_test_initializer_exactly_gates_personalized_photo_contract() -> None:
+    script = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
+    pre_gate = script.split('canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "', 1)[
+        1
+    ].split('\n")"', 1)[0]
+    verification = script.split(
+        'verification="$("${APP_PSQL[@]}" -Atqc "', 1
+    )[1].split('if [[ "${verification}"', 1)[0]
+
+    pre_start = pre_gate.index("shared_template_row_id = 'P-FB-NEGATIVE:v1'")
+    verification_start = verification.index(
+        "shared_template_row_id = 'P-FB-NEGATIVE:v1'"
+    )
+    verification_end = verification.index(
+        "to_regclass('tide.analytics_task_event_semantics_v2')",
+        verification_start,
+    )
+    personalized_blocks = (
+        pre_gate[pre_start:],
+        verification[verification_start:verification_end],
+    )
+
+    expected_step = {
+        "version": "2026-08-11-personalized-environment-photo-v1",
+        "role": "ENVIRONMENT_PHOTO",
+        "reviewProfile": "TEACHING_ENVIRONMENT_V1",
+        "accept": ["image/jpeg"],
+        "captureOnly": True,
+        "maxFiles": 1,
+    }
+    expected_completion = {
+        "requiredStepKeys": ["p-fb-negative-environment-photo"]
+    }
+    expected_ai = {
+        "stepKey": "p-fb-negative-environment-photo",
+        "criteriaVersion": "personalized-teaching-environment-2026-08-v1",
+        "criteriaKeys": ["camera_angle", "lighting", "background", "dressing"],
+        "allowedMimeTypes": ["image/jpeg", "image/png", "image/webp"],
+        "reviewProfile": "TEACHING_ENVIRONMENT_V1",
+        "systemPrompt": (
+            "You strictly review teacher-submitted evidence. Return JSON only "
+            'with this exact shape: {"decision":"PASS|RETRY|ERROR",'
+            '"teacherReason":"teacher-safe concise message",'
+            '"confidenceSummary":{},"criteria":[{"criterionKey":"one '
+            'configured key","result":"PASS|FAIL|UNKNOWN","teacherMessage":'
+            '"teacher-safe message or null"}]}. Include every configured '
+            "criterion exactly once. Never infer a pass from the mere presence "
+            "of a person or object. Use UNKNOWN whenever the visual evidence is "
+            "unclear. PASS only when every configured criterion is visibly and "
+            "unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR "
+            "only when the file cannot be assessed. Do not expose internal risk "
+            "labels or private model reasoning."
+        ),
+        "userText": (
+            "Review this current teaching-environment photo strictly against "
+            "camera angle, lighting, background and dressing only."
+        ),
+    }
+
+    for block in personalized_blocks:
+        configs = [
+            json.loads(value)
+            for value in re.findall(
+                r"(?:definition|rule)\.config\s*=\s*'([^']+)'::jsonb",
+                block,
+            )
+        ]
+        assert expected_step in configs
+        assert expected_completion in configs
+        assert expected_ai in configs
+        assert "definition.title = 'Take a teaching-environment photo'" in block
+        assert "请拍摄并提交一张当前授课环境照片。" in block
+        assert "已保留你完成的内容，请根据提示更新这份材料。" in block
+        assert "definition.config->" not in block
+        assert "rule.config->" not in block
+
+
 def test_company_test_initializer_never_executes_schema_migrations() -> None:
     script = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
     grant_script = TEACHER_CRUD_GRANT.read_text(encoding="utf-8")
@@ -158,7 +236,7 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260811_55_source_wide_v12"',
+        'EXPECTED_PUBLIC_HEAD="20260811_56_p_fb_negative_copy"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -214,20 +292,22 @@ def test_company_test_initializer_requires_the_production_canonical_ledger() -> 
         "PRODUCTION_MIGRATIONS",
     )
     for contract in (
-        "count(*) = 32",
+        "count(*) = 33",
         "min(migration_order) = 1",
-        "max(migration_order) = 32",
-        "count(distinct migration_order) = 32",
+        "max(migration_order) = 33",
+        "count(distinct migration_order) = 33",
         "filename = migration_id || '.up.sql'",
         "select migration_order, migration_id, filename, sha256",
         '0032_first_login_onboarding',
         '0033_g01_tesol_only',
         '0037_g04_remove_device_check',
+        '0038_personalized_environment_photo',
     ):
         assert contract in initializer
     assert (
         "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
-        "-> public head 54 -> teacher 0037"
+        "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
+        "-> teacher 0038"
     ) in initializer
 
 
@@ -300,7 +380,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260811_55_source_wide_v12\\n' ;;
+  6) printf '20260811_56_p_fb_negative_copy\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -426,7 +506,7 @@ def test_company_test_initializer_rejects_the_precanonical_ledger_before_writes(
     )
 
     assert result.returncode != 0
-    assert "不是精确 canonical 0037" in result.stderr
+    assert "不是精确 canonical 0038" in result.stderr
     assert psql_calls == 10
     assert not pnpm_called
     assert not any(
@@ -776,10 +856,13 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "0037_g04_remove_device_check" in readme
     assert "20260811_51_g01_tesol_only" in readme
     assert "0033_g01_tesol_only" in readme
+    assert "20260811_56_p_fb_negative_copy" in readme
+    assert "0038_personalized_environment_photo" in readme
     assert (
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
-        "teacher 0037 → public 55"
+        "teacher 0037 → public 55 → public 56 → teacher 0038"
     ) in readme
+    assert "TEACHING_ENVIRONMENT_V1" in readme
     assert "settle_shared_task_scores.py --watch" in readme
     assert "TIT_SCORE_WORKER_HEARTBEAT" in readme
     assert "TIT_BOOTSTRAP_USERNAME" in readme

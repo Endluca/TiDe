@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { buildTaskResultNotificationContent } from '../notifications/task-result-notification.policy';
 import { DatabaseService } from '../platform/database/database.service';
+import {
+  PERSONALIZED_ENVIRONMENT_PHOTO_TASK_CODE,
+  PERSONALIZED_ENVIRONMENT_PHOTO_VARIANT,
+  resolveAssignmentContent as resolveAssignmentContentPolicy,
+} from './assignment-content.policy';
 import type { StepOutputDto } from './dto/submit-task.dto';
 import type {
   TaskContext,
@@ -123,6 +128,7 @@ interface LockedTaskRow extends QueryResultRow {
     'REAL' | 'DERIVED_REAL' | 'MOCK' | 'MOCK_SIMULATION' | 'MOCK_PROXY';
   teacherId: string;
   assignmentId: string;
+  evidenceSnapshot: unknown;
 }
 
 interface StepDefinitionRow extends QueryResultRow {
@@ -288,10 +294,11 @@ export class TaskRepository {
        LIMIT 1`,
       [taskInstanceId, accountId],
     );
-    const task = result.rows[0];
-    if (!task) {
+    const row = result.rows[0];
+    if (!row) {
       return null;
     }
+    const task = this.resolveAssignmentContent(row);
 
     const steps = await this.database.queryTide<StepRow>(
       `
@@ -868,7 +875,8 @@ export class TaskRepository {
           ) AS "taskTitle",
           task.source_mode AS "dataOrigin",
           task.teacher_id AS "teacherId",
-          task.assignment_id AS "assignmentId"
+          task.assignment_id AS "assignmentId",
+          task.evidence_snapshot AS "evidenceSnapshot"
         FROM public.task_assignments task
         JOIN tide.teacher_bindings binding ON binding.teacher_id = task.teacher_id
         JOIN tide.task_execution_versions execution
@@ -886,7 +894,7 @@ export class TaskRepository {
     if (!result.rows[0]) {
       throw new OwnedTaskNotFoundError();
     }
-    return result.rows[0];
+    return this.resolveAssignmentContent(result.rows[0]);
   }
 
   private async updateAssignmentStatus(
@@ -947,7 +955,18 @@ export class TaskRepository {
     task: LockedTaskRow,
     validationStatus: 'UNDER_REVIEW' | 'PASSED' | 'FAILED',
   ): boolean {
-    if (task.taskCode !== 'G04' || validationStatus === 'PASSED') {
+    if (validationStatus === 'PASSED') {
+      return false;
+    }
+    if (
+      task.taskCode === PERSONALIZED_ENVIRONMENT_PHOTO_TASK_CODE &&
+      task.sourceType === 'PERSONALIZED_IMPROVEMENT' &&
+      task.contentConfig.contentVariant ===
+        PERSONALIZED_ENVIRONMENT_PHOTO_VARIANT
+    ) {
+      return true;
+    }
+    if (task.taskCode !== 'G04') {
       return false;
     }
     const independentModules = this.isRecord(
@@ -2122,7 +2141,7 @@ export class TaskRepository {
          task.assignment_id`,
       [teacherId],
     );
-    return result.rows;
+    return result.rows.map((row) => this.resolveAssignmentContent(row));
   }
 
   private stageAvailabilityCondition(): string {
@@ -2433,6 +2452,16 @@ export class TaskRepository {
     if (typeof value !== 'string') return null;
     const text = value.trim();
     return text.length > 0 ? text.slice(0, 1_000) : null;
+  }
+
+  private resolveAssignmentContent<
+    T extends {
+      taskCode: string;
+      contentConfig: Record<string, unknown>;
+      evidenceSnapshot: unknown;
+    },
+  >(task: T): T {
+    return resolveAssignmentContentPolicy(task);
   }
 
   private publicStepConfig(config: Record<string, unknown>) {

@@ -53,6 +53,18 @@ GRANT SELECT (
     is_cpl_tesol
 ) ON public.teacher_source_wide TO tit_teacher_crud;
 
+-- 生产 readiness 只读 public Alembic head；运行账号不得改写迁移账本。
+DO $$
+BEGIN
+    IF to_regclass('public.alembic_version') IS NOT NULL THEN
+        EXECUTE
+            'REVOKE ALL ON public.alembic_version FROM tit_teacher_crud';
+        EXECUTE
+            'GRANT SELECT ON public.alembic_version TO tit_teacher_crud';
+    END IF;
+END
+$$;
+
 REVOKE ALL ON public.teacher_support_tickets FROM tit_teacher_crud;
 GRANT SELECT ON public.teacher_support_tickets TO tit_teacher_crud;
 GRANT UPDATE (

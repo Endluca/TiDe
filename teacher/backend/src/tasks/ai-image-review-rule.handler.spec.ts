@@ -280,13 +280,75 @@ describe('AiImageReviewRuleHandler', () => {
     });
   });
 
-  it('reuses the first passed G04 review for the same photo and policy', async () => {
+  it('applies the teaching-environment policy through an explicit review profile', async () => {
     const fixture = createFixture();
     fixture.context.rule.config = {
       ...config,
-      stepKey: 'g02-environment-photo',
+      stepKey: 'p-fb-negative-environment-photo',
+      reviewProfile: 'TEACHING_ENVIRONMENT_V1',
     };
-    fixture.context.outputs[0].stepKey = 'g02-environment-photo';
+    fixture.context.outputs[0].stepKey = 'p-fb-negative-environment-photo';
+    fixture.executeReview.mockResolvedValue({
+      status: 'SUCCEEDED',
+      aiRunId: 'run-id',
+      content: JSON.stringify({
+        decision: 'PASS',
+        teacherReason: '照片符合要求。',
+        confidenceSummary: { overall: 0.89 },
+        criteria: [
+          {
+            criterionKey: 'camera_angle',
+            result: 'PASS',
+            teacherMessage: null,
+            confidence: 0.89,
+          },
+          ...['lighting', 'background', 'dressing'].map((criterionKey) => ({
+            criterionKey,
+            result: 'PASS',
+            teacherMessage: null,
+            confidence: 0.96,
+          })),
+        ],
+      }),
+    });
+
+    await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({
+      passed: false,
+      resultCode: 'IMAGE_REVIEW_RETRY',
+      teacherMessage: '判断把握不足，请按提示调整后重新拍照。',
+    });
+    expect(fixture.saveReview).toHaveBeenCalledWith(
+      fixture.context.client,
+      expect.objectContaining({
+        criteriaVersion: 'criteria-v1',
+        decision: 'RETRY',
+      }),
+    );
+    const gatewayInput = fixture.executeReview.mock.calls[0][0];
+    expect(gatewayInput.systemPrompt).toBe('Return strict JSON.');
+    expect(gatewayInput.userText).toBe('Review this evidence.');
+    expect(gatewayInput.file).toMatchObject({
+      filename: 'evidence-ai.jpg',
+      mimeType: 'image/jpeg',
+    });
+  });
+
+  it.each([
+    ['the legacy G04 step key', { stepKey: 'g02-environment-photo' }],
+    [
+      'the explicit personalized review profile',
+      {
+        stepKey: 'p-fb-negative-environment-photo',
+        reviewProfile: 'TEACHING_ENVIRONMENT_V1',
+      },
+    ],
+  ])('reuses the first passed review for %s', async (_label, profile) => {
+    const fixture = createFixture();
+    fixture.context.rule.config = {
+      ...config,
+      ...profile,
+    };
+    fixture.context.outputs[0].stepKey = profile.stepKey;
     (fixture.reviews.hasPassedReview as jest.Mock).mockResolvedValue(true);
 
     await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({

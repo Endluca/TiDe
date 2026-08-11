@@ -77,6 +77,7 @@ const aiReviewRule = (input: {
   criteriaKeys: string[];
   userText: string;
   allowedMimeTypes?: string[];
+  reviewProfile?: string;
 }): CatalogRule => ({
   key: input.key,
   type: 'AI_IMAGE_REVIEW',
@@ -90,6 +91,9 @@ const aiReviewRule = (input: {
       'image/png',
       'image/webp',
     ],
+    ...(input.reviewProfile
+      ? { reviewProfile: input.reviewProfile }
+      : {}),
     systemPrompt:
       'You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {"decision":"PASS|RETRY|ERROR","teacherReason":"teacher-safe concise message","confidenceSummary":{},"criteria":[{"criterionKey":"one configured key","result":"PASS|FAIL|UNKNOWN","teacherMessage":"teacher-safe message or null"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.',
     userText: input.userText,
@@ -103,6 +107,12 @@ const environmentCriteria = [
   'background',
   'dressing',
 ];
+
+const personalizedEnvironmentPhotoStepKey =
+  'p-fb-negative-environment-photo';
+const teachingEnvironmentReviewProfile = 'TEACHING_ENVIRONMENT_V1';
+const personalizedEnvironmentContentVersion =
+  '2026-08-11-personalized-environment-photo-v1';
 
 const g04IndependentStepKeys = [
   'g02-environment-photo',
@@ -437,7 +447,6 @@ export const currentTaskCatalog: CatalogTask[] = [
       'Complete Your Lesson Memo',
       3,
     ],
-    ['P-FB-NEGATIVE', 'feedback-topic-learning', 'Improve a Teaching Skill', 4],
     [
       'P-FB-COMPLAINT',
       'feedback-topic-learning',
@@ -466,6 +475,64 @@ export const currentTaskCatalog: CatalogTask[] = [
       'JIAHE_PERSONALIZED_CONTENT_PENDING',
     ),
   ),
+  {
+    code: 'P-FB-NEGATIVE',
+    externalCode: 'feedback-topic-learning',
+    title: 'Feedback Improvement',
+    why: 'The same negative-feedback signal has appeared more than once for this teacher.',
+    whatToDo:
+      'Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.',
+    completionStandard:
+      'The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.',
+    benefit:
+      'This task carries no points. It targets a repeated learner-feedback issue.',
+    priority: 'P2',
+    score: 0,
+    stage: 'PERSONALIZED',
+    sequence: 4,
+    estimatedMinutes: 8,
+    contentVersion: personalizedEnvironmentContentVersion,
+    contentStatus: 'PENDING',
+    pendingReason: 'JIAHE_PERSONALIZED_CONTENT_PENDING',
+    independentModules: {
+      stepKeys: [personalizedEnvironmentPhotoStepKey],
+      allowOutOfOrderProgress: true,
+      keepAssignmentInProgressUntilPassed: true,
+    },
+    allowRetry: true,
+    kind: 'PERSONALIZED_IMPROVEMENT',
+    steps: [
+      {
+        key: personalizedEnvironmentPhotoStepKey,
+        type: 'UPLOAD',
+        title: 'Take a teaching-environment photo',
+        config: {
+          version: personalizedEnvironmentContentVersion,
+          role: 'ENVIRONMENT_PHOTO',
+          reviewProfile: teachingEnvironmentReviewProfile,
+          accept: ['image/jpeg'],
+          captureOnly: true,
+          maxFiles: 1,
+        },
+      },
+    ],
+    rules: [
+      allStepsRule(
+        '请拍摄并提交一张当前授课环境照片。',
+        { requiredStepKeys: [personalizedEnvironmentPhotoStepKey] },
+        personalizedEnvironmentContentVersion,
+      ),
+      aiReviewRule({
+        key: 'p-fb-negative-environment-ai-review',
+        stepKey: personalizedEnvironmentPhotoStepKey,
+        criteriaVersion: 'personalized-teaching-environment-2026-08-v1',
+        criteriaKeys: environmentCriteria,
+        reviewProfile: teachingEnvironmentReviewProfile,
+        userText:
+          'Review this current teaching-environment photo strictly against camera angle, lighting, background and dressing only.',
+      }),
+    ],
+  },
   pending(
     {
       code: 'P-FB-BLACKLIST',

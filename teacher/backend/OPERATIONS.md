@@ -47,10 +47,10 @@ pnpm provision:internal-test
 ```
 
 - 下一次明确授权的升级必须从当前 public 50 / teacher 0032 继续，并保持
-  `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55` 七阶段顺序；
-  public 54 包含 rev51，teacher 37 包含 0033，public 55 最后收敛源宽表。完成迁移并结束迁移窗口后，再运行
-  `database/scripts/apply-company-test.sh` 只读核对精确 32 条 canonical 账本/结构并初始化 execution
-  和受限账号；两者禁止并发，该脚本不再创建或升级 `tide` Schema。
+  `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038` 九阶段顺序；
+  public 54 包含 rev51，teacher 0037 包含 0033，public 55 收敛源宽表。完成迁移并结束迁移窗口后，再运行
+  `database/scripts/apply-company-test.sh` 只读核对精确 33 条 canonical 账本/结构并初始化 execution
+  和受限账号；两者禁止并发，该脚本不再创建或升级 `tide` Schema。本次代码交付未执行数据库升级。
 - `provision:internal-test` 使用 `TIDE_DATABASE_URL` 连接公司测试库，只为库中真实存在的教师创建测试账号，不复制或改写 `public.teachers`，也不生成教师可见的站内通知。
 - 后端与隧道由 `com.aiec.tide-internal-backend`、`com.aiec.tide-internal-tunnel` 两个 LaunchAgent 常驻。
 - 源代码合并后重新运行部署脚本，会同步运行副本并重启后端。
@@ -97,20 +97,23 @@ docker build -t tide-teacher-api:reviewed .
 ```
 
 镜像只暴露 `3000`，其内置健康检查请求 `/health/ready`。生产环境中，容器进入
-healthy 不只代表 Node 进程存在：迁移账本必须是完整生产清单且唯一最新版本为
-`0037_g04_remove_device_check`，运营端稳定模板行必须精确对应当前 G01–G09，
-teacher canonical 账本必须精确为 32 条且包含 `0033_g01_tesol_only`
+healthy 不只代表 Node 进程存在：public Alembic 账本必须唯一指向
+`20260811_56_p_fb_negative_copy`，教师端迁移账本必须是完整的 33 条 canonical 清单，
+包含 `0033_g01_tesol_only` 与 `0037_g04_remove_device_check`，且唯一最新版本为
+`0038_personalized_environment_photo`。运营端稳定模板行必须精确对应当前 G01–G09
 和 retired G00，九条当前执行配置也必须按同一稳定行处于 ACTIVE。后台任务租约、
 共享工单表、账号引导状态表及固定 owner 函数必须完整，6 张废弃表和 5 个旧分析视图必须不存在，教师身份来源和两张积分读取视图
-也必须可查询。教师运行账号必须只能读取迁移账本。密钥和数据库连接只能由部署平台在
-运行时注入，不能写入镜像或构建参数。
+也必须可查询。教师运行账号必须只能读取两条迁移账本；对
+`public.teacher_source_wide` 不得拥有整表读取或任何写权限，且有效可读列必须精确为
+`tchr_id` 与 `is_cpl_tesol`，不能读取已退出 G01 契约的 `is_self_introduce`。密钥和数据库
+连接只能由部署平台在运行时注入，不能写入镜像或构建参数。
 
 所有 `multipart/form-data` 请求在 Multer 读入内存前共用进程级并发门禁。
 `MULTIPART_UPLOAD_MAX_CONCURRENCY` 允许 `1–16`，默认 `4`；1 GiB 教师 API 容器应
 保持默认值，除非用真实文件大小、并发和 RSS 压测证明可以调整。容量用尽返回可重试的
 `429 MULTIPART_UPLOAD_CAPACITY_EXHAUSTED` 和 `Retry-After`，不排队持有请求体。
 
-后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出或租约过期后接管。所有副本必须连接同一个已应用 `0037_g04_remove_device_check`（包含前置 `0033_g01_tesol_only`）的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后由其他副本读取失败。
+后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出或租约过期后接管。所有副本必须连接同一个已按顺序应用 `0033_g01_tesol_only`、`0037_g04_remove_device_check` 和 `0038_personalized_environment_photo` 的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后由其他副本读取失败。
 
 ## 4. 迁移与发布前检查
 
@@ -145,6 +148,10 @@ ID、assignment ID 或历史过程记录；旧 G05 只退役为 G00，不搬迁�
 
 `0033` 只在稳定 G01 execution 上把外部状态规则收窄为 TESOL-only，并保留
 execution、step、其他 rule、assignment 与 progress 身份；down 只恢复规则版本和失败提示。
+
+`0038` 只在 public `20260811_56_p_fb_negative_copy` 与 P-FB-NEGATIVE 新文案
+精确匹配后发布个性化授课环境拍照；down 遇到已启动 assignment、命令回执、进度、
+上传或提交等执行证据时失败关闭。
 
 本地完整验收：
 

@@ -230,6 +230,20 @@ def test_v51_contains_tesol_only_acl_and_exact_downgrade_restore(
     version_up_sql, upgrade_sql, downgrade_sql, version_down_sql = executed
     assert "ALTER COLUMN version_num TYPE varchar(64)" in version_up_sql
     assert "ALTER COLUMN version_num TYPE varchar(32)" in version_down_sql
+    assert "REVOKE ALL PRIVILEGES ON TABLE public.alembic_version" in (
+        upgrade_sql
+    )
+    assert "GRANT SELECT ON TABLE public.alembic_version" in upgrade_sql
+    assert "Alembic ledger privileges are invalid" in upgrade_sql
+    for privilege in (
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "TRUNCATE",
+        "REFERENCES",
+        "TRIGGER",
+    ):
+        assert f"'public.alembic_version',\n            '{privilege}'" in upgrade_sql
     assert "REVOKE ALL PRIVILEGES ON TABLE public.teacher_source_wide" in (
         upgrade_sql
     )
@@ -239,8 +253,21 @@ def test_v51_contains_tesol_only_acl_and_exact_downgrade_restore(
         upgrade_sql
     )
     assert "has_column_privilege(" in upgrade_sql
+    assert "ARRAY['is_cpl_tesol', 'tchr_id']::text[]" in upgrade_sql
+    for privilege in ("INSERT", "UPDATE", "REFERENCES"):
+        assert f"attribute.attnum,\n                      '{privilege}'" in upgrade_sql
+    for privilege in ("DELETE", "TRUNCATE", "TRIGGER"):
+        assert (
+            f"'public.teacher_source_wide',\n            '{privilege}'"
+            in upgrade_sql
+        )
     assert "TESOL-only source privileges are invalid" in upgrade_sql
 
+    assert "REVOKE ALL PRIVILEGES ON TABLE public.alembic_version" in (
+        downgrade_sql
+    )
+    assert "GRANT SELECT ON TABLE public.alembic_version" not in downgrade_sql
+    assert "Alembic ledger privileges were not revoked" in downgrade_sql
     assert "REVOKE ALL PRIVILEGES ON TABLE public.teacher_source_wide" in (
         downgrade_sql
     )
@@ -248,4 +275,36 @@ def test_v51_contains_tesol_only_acl_and_exact_downgrade_restore(
         "GRANT SELECT (\n            tchr_id,\n            is_cpl_tesol,"
         "\n            is_self_introduce\n"
     ) in downgrade_sql
+    assert (
+        "ARRAY['is_cpl_tesol', 'is_self_introduce', 'tchr_id']::text[]"
+        in downgrade_sql
+    )
+    for privilege in ("INSERT", "UPDATE", "REFERENCES"):
+        assert f"attribute.attnum,\n                      '{privilege}'" in (
+            downgrade_sql
+        )
+    for privilege in ("DELETE", "TRUNCATE", "TRIGGER"):
+        assert (
+            f"'public.teacher_source_wide',\n            '{privilege}'"
+            in downgrade_sql
+        )
     assert "restored G01 source privileges are invalid" in downgrade_sql
+
+
+def test_teacher_runtime_grant_keeps_public_migration_ledger_read_only() -> None:
+    grant_script = (
+        Path(__file__).resolve().parents[2]
+        / "teacher"
+        / "backend"
+        / "database"
+        / "scripts"
+        / "grant-tit-teacher-crud.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "to_regclass('public.alembic_version') IS NOT NULL" in grant_script
+    assert "REVOKE ALL ON public.alembic_version FROM tit_teacher_crud" in (
+        grant_script
+    )
+    assert "GRANT SELECT ON public.alembic_version TO tit_teacher_crud" in (
+        grant_script
+    )

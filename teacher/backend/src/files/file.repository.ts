@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../platform/database/database.service';
+import { isTaskUploadStepAuthorized } from '../tasks/assignment-content.policy';
 import type { FileStorageProvider } from './file-storage.adapter';
 import type { FileObjectStatus, OwnedFileRecord } from './file.models';
 
@@ -17,6 +18,12 @@ interface UploadIntentRow extends QueryResultRow {
   expiresAt: Date;
   uploadReceivedAt: Date | null;
   requestHash: string;
+}
+
+interface UploadTaskStepRow extends QueryResultRow {
+  taskCode: string;
+  contentConfig: Record<string, unknown>;
+  evidenceSnapshot: unknown;
 }
 
 export type CreateIntentResult =
@@ -59,14 +66,18 @@ export class FileRepository {
           : { type: 'IDEMPOTENCY_CONFLICT' };
       }
 
-      const taskStep = await client.query(
+      const taskStep = await client.query<UploadTaskStepRow>(
         `
-          SELECT 1
+          SELECT
+            execution.task_code AS "taskCode",
+            execution.config AS "contentConfig",
+            task.evidence_snapshot AS "evidenceSnapshot"
           FROM public.task_assignments task
           JOIN tide.teacher_bindings binding
             ON binding.teacher_id = task.teacher_id
           JOIN tide.task_execution_versions execution
             ON execution.shared_template_row_id = task.template_version_id
+           AND execution.status = 'ACTIVE'
           JOIN tide.task_step_definitions step
             ON step.execution_version_id = execution.id
            AND step.step_key = $3
@@ -79,7 +90,11 @@ export class FileRepository {
         `,
         [input.taskAssignmentId, input.accountId, input.stepKey],
       );
-      if (taskStep.rowCount === 0) {
+      const authorizedTaskStep = taskStep.rows[0];
+      if (
+        !authorizedTaskStep ||
+        !isTaskUploadStepAuthorized(authorizedTaskStep, input.stepKey)
+      ) {
         return { type: 'TASK_STEP_NOT_FOUND' };
       }
 

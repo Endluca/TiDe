@@ -2,6 +2,7 @@
 
 -- 本地空环境 DDL 入口。共享 public 表 fixture 不得用于生产。
 \ir fixtures/0001_shared_contract.sql
+\ir fixtures/0004_p_fb_negative_contract.sql
 \ir migrations/0001_initial.up.sql
 \ir migrations/0002_shared_database_exchange.up.sql
 \ir migrations/0003_file_upload_intents.up.sql
@@ -38,3 +39,4 @@
 \ir migrations/0033_g01_tesol_only.up.sql
 \ir seed/0005_mock_g04_two_part_catalog.sql
 \ir migrations/0037_g04_remove_device_check.up.sql
+\ir migrations/0038_personalized_environment_photo.up.sql

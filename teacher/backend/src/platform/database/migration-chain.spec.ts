@@ -5,22 +5,22 @@ const databaseFile = (relativePath: string) =>
   readFileSync(resolve(__dirname, '../../../database', relativePath), 'utf8');
 
 describe('teacher database migration chain', () => {
-  it('keeps every local and production entry point on the 0037 head', () => {
+  it('keeps every local and production entry point on the 0038 head', () => {
     const ddl = databaseFile('ddl.sql');
     const production = databaseFile('scripts/apply-production.sh');
 
+    expect(ddl).toMatch(
+      /\\ir fixtures\/0004_p_fb_negative_contract\.sql[\s\S]*seed\/0000_mock_shared_catalog\.sql[\s\S]*0033_g01_tesol_only\.up\.sql[\s\S]*seed\/0005_mock_g04_two_part_catalog\.sql[\s\S]*0037_g04_remove_device_check\.up\.sql[\s\S]*0038_personalized_environment_photo\.up\.sql/,
+    );
     expect(ddl.trimEnd()).toMatch(
-      /\\ir migrations\/0037_g04_remove_device_check\.up\.sql$/,
+      /\\ir migrations\/0038_personalized_environment_photo\.up\.sql$/,
     );
     expect(ddl).toContain('\\ir seed/0005_mock_g04_two_part_catalog.sql');
-    expect(ddl).toMatch(
-      /seed\/0000_mock_shared_catalog\.sql[\s\S]*0031_g04_independent_sections\.up\.sql[\s\S]*0033_g01_tesol_only\.up\.sql[\s\S]*seed\/0005_mock_g04_two_part_catalog\.sql[\s\S]*0037_g04_remove_device_check\.up\.sql/,
-    );
     expect(production).toContain(
-      'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0037_g04_remove_device_check}"',
+      'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0038_personalized_environment_photo}"',
     );
     expect(production).toMatch(
-      /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding\s+0033_g01_tesol_only\s+0037_g04_remove_device_check/,
+      /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding\s+0033_g01_tesol_only\s+0037_g04_remove_device_check\s+0038_personalized_environment_photo/,
     );
   });
 
@@ -52,6 +52,73 @@ describe('teacher database migration chain', () => {
     expect(up).toContain('has an unreviewed shape before migration 0033');
     expect(down).toContain("SET rule_version = '2026-07-22'");
     expect(down).toContain('Self-intro 和 TESOL 真实状态尚未全部通过。');
+  });
+
+  it('keeps 0038 transactional and refuses to remove recorded photo evidence', () => {
+    const up = databaseFile(
+      'migrations/0038_personalized_environment_photo.up.sql',
+    ).trim();
+    const down = databaseFile(
+      'migrations/0038_personalized_environment_photo.down.sql',
+    ).trim();
+
+    expect(up.startsWith('BEGIN;')).toBe(true);
+    expect(up.endsWith('COMMIT;')).toBe(true);
+    expect(down.startsWith('BEGIN;')).toBe(true);
+    expect(down.endsWith('COMMIT;')).toBe(true);
+    expect(up).toContain('p-fb-negative-environment-photo');
+    expect(up).toContain("'TEACHING_ENVIRONMENT_V1'");
+    expect(up).toContain('"contentStatus":"PENDING"');
+    expect(up).toContain("'a89b9f31-2a71-43da-846e-60c51e14f162'::uuid");
+    expect(up).toContain("integration_mode = 'OUTBOUND_MANAGED'");
+    expect(up).toContain("source_mode = 'REAL'");
+    expect(up).toContain("payload->>'score_type' = 'ZERO'");
+    expect(up).toContain(
+      'Complete the configured improvement activity for the feedback issue shown in the task reason.',
+    );
+    expect(up).toContain(
+      'The teacher app marks the task as completed after every requirement for the assigned improvement activity',
+    );
+    expect(up).toContain(
+      'requires exactly one approved published REAL/OUTBOUND_MANAGED zero-point P-FB-NEGATIVE:v1 shared template',
+    );
+    expect(up).toContain(
+      'cannot create the deterministic P-FB-NEGATIVE execution because its task code or ID is already occupied',
+    );
+    expect(up).not.toContain(
+      'left the empty P-FB-NEGATIVE execution unchanged',
+    );
+    expect(up).toContain('p_fb_negative_assignment_before');
+    expect(up).toContain('p_fb_negative_progress_before');
+    expect(up).toContain(
+      'AND config = \'{"stepKey":"p-fb-negative-environment-photo","criteriaVersion":"personalized-teaching-environment-2026-08-v1"',
+    );
+    expect(up).toContain(
+      "AND teacher_failure_copy = '已保留你完成的内容，请根据提示更新这份材料。'",
+    );
+    expect(up).not.toContain('config->');
+    expect(down).toContain("integration_mode = 'OUTBOUND_MANAGED'");
+    expect(down).toContain("source_mode = 'REAL'");
+    expect(down).toContain("payload->>'score_type' = 'ZERO'");
+    expect(down).toContain(
+      'Complete the configured improvement activity for the feedback issue shown in the task reason.',
+    );
+    expect(down).toContain(
+      'The teacher app marks the task as completed after every requirement for the assigned improvement activity',
+    );
+    expect(down).toContain("AND title = 'Take a teaching-environment photo'");
+    expect(down).toContain(
+      'AND config = \'{"stepKey":"p-fb-negative-environment-photo","criteriaVersion":"personalized-teaching-environment-2026-08-v1"',
+    );
+    expect(down).toContain(
+      "AND teacher_failure_copy = '已保留你完成的内容，请根据提示更新这份材料。'",
+    );
+    expect(down).not.toContain('config->');
+    expect(down).toContain(
+      'refused to remove personalized photo definitions with recorded execution evidence',
+    );
+    expect(down).toContain('tide.file_upload_intents');
+    expect(down).toContain('tide.task_submissions');
   });
 
   it('keeps both directions of 0031 inside one explicit transaction', () => {

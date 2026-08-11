@@ -490,7 +490,7 @@ export default function IntegratedTaskFlow({
         onHelp={onHelp}
         onKuozhiProgressStateChange={onKuozhiProgressStateChange}
       />
-      {error && presentationTask.taskCode !== "G04" && (
+      {error && !["readiness_photo", "personalized_environment_photo"].includes(presentationTask.method) && (
         <div className="auth-form-error" role="alert">
           <WarningCircle size={18} weight="fill" />{error}
         </div>

@@ -211,7 +211,11 @@ describe('DatabaseService', () => {
   });
 
   it('requires the exact production migration head and current core objects', async () => {
-    const query = jest.fn().mockResolvedValue(createReadinessResult(true));
+    let productionQuery = '';
+    const query = jest.fn((sql: string) => {
+      productionQuery = sql;
+      return Promise.resolve(createReadinessResult(true));
+    });
     const pool = { query } as unknown as Pool;
     const service = new DatabaseService(
       pool,
@@ -223,8 +227,12 @@ describe('DatabaseService', () => {
       tide: 'ok',
       shiwenRead: 'not_configured',
     });
+    expect(query).toHaveBeenCalledTimes(1);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0037_g04_remove_device_check'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('0038_personalized_environment_photo'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0032_first_login_onboarding'),
@@ -232,6 +240,70 @@ describe('DatabaseService', () => {
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0033_g01_tesol_only'),
     );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM public.alembic_version'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('20260811_56_p_fb_negative_copy'),
+    );
+    expect(productionQuery).toContain(`AND has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          'SELECT'
+        )`);
+    for (const privilege of [
+      'INSERT',
+      'UPDATE',
+      'DELETE',
+      'TRUNCATE',
+      'REFERENCES',
+      'TRIGGER',
+    ]) {
+      expect(productionQuery).toContain(`AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.alembic_version'),
+          '${privilege}'
+        )`);
+    }
+    expect(productionQuery).toContain(`AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          'SELECT'
+        )`);
+    for (const column of ['tchr_id', 'is_cpl_tesol']) {
+      expect(productionQuery).toContain(`AND has_column_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          '${column}',
+          'SELECT'
+        )`);
+    }
+    for (const column of ['is_self_introduce', 'real_name']) {
+      expect(productionQuery).toContain(`AND NOT has_column_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          '${column}',
+          'SELECT'
+        )`);
+    }
+    expect(productionQuery).toContain(
+      `ARRAY['is_cpl_tesol', 'tchr_id']::text[]`,
+    );
+    for (const privilege of ['DELETE', 'TRUNCATE', 'TRIGGER']) {
+      expect(productionQuery).toContain(`AND NOT has_table_privilege(
+          current_user,
+          to_regclass('public.teacher_source_wide'),
+          '${privilege}'
+        )`);
+    }
+    for (const privilege of ['INSERT', 'UPDATE', 'REFERENCES']) {
+      expect(productionQuery).toContain(`has_column_privilege(
+                current_user,
+                attribute.attrelid,
+                attribute.attnum,
+                '${privilege}'
+              )`);
+    }
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('2026-08-11-tesol-only-v1'),
     );
@@ -283,6 +355,72 @@ describe('DatabaseService', () => {
     expect(query).not.toHaveBeenCalledWith(
       expect.stringContaining('g02-device-2026-08-05-browser-preflight-v1'),
     );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("shared_template_row_id = 'P-FB-NEGATIVE:v1'"),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('2026-08-11-personalized-environment-photo-v1'),
+    );
+    const personalizedContractStart = productionQuery.indexOf(
+      "execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'",
+    );
+    const personalizedContractEnd = productionQuery.indexOf(
+      'AND NOT EXISTS',
+      personalizedContractStart,
+    );
+    expect(personalizedContractStart).toBeGreaterThanOrEqual(0);
+    expect(personalizedContractEnd).toBeGreaterThan(personalizedContractStart);
+    const personalizedContractSql = productionQuery.slice(
+      personalizedContractStart,
+      personalizedContractEnd,
+    );
+    expect(personalizedContractSql).toContain(
+      "definition.title = 'Take a teaching-environment photo'",
+    );
+    expect(personalizedContractSql).toContain(
+      'definition.config =\n' +
+        '              \'{"version":"2026-08-11-personalized-environment-photo-v1","role":"ENVIRONMENT_PHOTO","reviewProfile":"TEACHING_ENVIRONMENT_V1","accept":["image/jpeg"],"captureOnly":true,"maxFiles":1}\'::jsonb',
+    );
+    expect(personalizedContractSql).toContain(
+      "rule.rule_key = 'all-steps-complete'",
+    );
+    expect(personalizedContractSql).toContain(
+      'rule.config =\n' +
+        '              \'{"requiredStepKeys":["p-fb-negative-environment-photo"]}\'::jsonb',
+    );
+    expect(personalizedContractSql).toContain(
+      "rule.rule_key = 'p-fb-negative-environment-ai-review'",
+    );
+    expect(personalizedContractSql).toContain(
+      '"criteriaVersion":"personalized-teaching-environment-2026-08-v1"',
+    );
+    expect(personalizedContractSql).toContain(
+      '"allowedMimeTypes":["image/jpeg","image/png","image/webp"]',
+    );
+    expect(personalizedContractSql).toContain(
+      '"systemPrompt":"You strictly review teacher-submitted evidence.',
+    );
+    expect(personalizedContractSql).toContain(
+      '"userText":"Review this current teaching-environment photo strictly',
+    );
+    expect(personalizedContractSql).toContain(
+      "'请拍摄并提交一张当前授课环境照片。'",
+    );
+    expect(personalizedContractSql).toContain(
+      "'已保留你完成的内容，请根据提示更新这份材料。'",
+    );
+    expect(personalizedContractSql).not.toContain('definition.config->');
+    expect(personalizedContractSql).not.toContain('rule.config->');
+    const exactConfigJson = Array.from(
+      personalizedContractSql.matchAll(
+        /(?:definition|rule)\.config\s*=\s*'([^']+)'::jsonb/g,
+      ),
+      (match) => match[1],
+    );
+    expect(exactConfigJson).toHaveLength(3);
+    for (const configJson of exactConfigJson) {
+      expect(() => JSON.parse(configJson) as unknown).not.toThrow();
+    }
     for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
       expect(query).toHaveBeenCalledWith(
         expect.stringContaining(

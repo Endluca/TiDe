@@ -29,6 +29,7 @@ import ExternalStatusTask from "../features/task-content/ExternalStatusTask";
 import ReadinessPhotoTask from "../features/task-content/ReadinessPhotoTask";
 import DeviceCheckTask from "../features/task-content/DeviceCheckTask";
 import EnvironmentCoachingTask from "../features/task-content/EnvironmentCoachingTask";
+import PersonalizedEnvironmentPhotoTask from "../features/task-content/PersonalizedEnvironmentPhotoTask";
 import ProfileCredentialsTask from "../features/task-content/ProfileCredentialsTask";
 import { Toki } from "./UI";
 
@@ -692,6 +693,9 @@ export default function TaskFlow({ task, onUpdate, onHelp, onKuozhiProgressState
   }
   if (task.method === "environment_coaching") {
     return <EnvironmentCoachingTask task={task} />;
+  }
+  if (task.method === "personalized_environment_photo") {
+    return <PersonalizedEnvironmentPhotoTask task={task} />;
   }
   if (task.method === "external_status") {
     return <ExternalStatusTask task={task} onHelp={onHelp} onUpdate={onUpdate} />;

@@ -4,7 +4,7 @@ set -euo pipefail
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL:-}"
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0037_g04_remove_device_check}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0038_personalized_environment_photo}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 
 if [[ -z "${DATABASE_URL}" ]]; then
@@ -78,15 +78,20 @@ PRODUCTION_MIGRATIONS=(
   0032_first_login_onboarding
   0033_g01_tesol_only
   0037_g04_remove_device_check
+  0038_personalized_environment_photo
 )
 
 target_found=false
 target_includes_product_analytics=false
+target_includes_personalized_environment_photo=false
 TARGET_MIGRATIONS=()
 for migration_id in "${PRODUCTION_MIGRATIONS[@]}"; do
   TARGET_MIGRATIONS+=("${migration_id}")
   if [[ "${migration_id}" == "0020_product_analytics" ]]; then
     target_includes_product_analytics=true
+  fi
+  if [[ "${migration_id}" == "0038_personalized_environment_photo" ]]; then
+    target_includes_personalized_environment_photo=true
   fi
   if [[ "${migration_id}" == "${TARGET_MIGRATION}" ]]; then
     target_found=true
@@ -100,8 +105,9 @@ fi
 if [[ "${TARGET_MIGRATION}" != "0028_retire_task_business_change_view" \
       && "${TARGET_MIGRATION}" != "0032_first_login_onboarding" \
       && "${TARGET_MIGRATION}" != "0037_g04_remove_device_check" \
+      && "${TARGET_MIGRATION}" != "0038_personalized_environment_photo" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  echo "生产只允许停在跨 Schema 切换点 0028、0032 或最终版本 0037；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
+  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037 或最终版本 0038；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1
 fi
 
@@ -333,6 +339,53 @@ if [[ "${forbidden_column_count}" != "0" ]]; then
   exit 1
 fi
 
+# 0038 consumes the operations-owned P-FB-NEGATIVE copy introduced by public
+# rev55. This gate deliberately runs before the migration loop, so neither the
+# 0038 business SQL nor its Tide ledger row can be written against an older or
+# drifted public contract.
+if [[ "${target_includes_personalized_environment_photo}" == "true" ]]; then
+  if [[ "$("${PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
+    echo "0038 要求 public Alembic 精确位于 20260811_56_p_fb_negative_copy；当前缺少 public 迁移账本，未执行任何 0038 写入或记账。" >&2
+    exit 1
+  fi
+
+  public_head="$("${PSQL[@]}" -Atqc "
+    select case when count(*) = 1 then min(version_num) else '' end
+    from public.alembic_version
+  ")"
+  if [[ "${public_head}" != "20260811_56_p_fb_negative_copy" ]]; then
+    echo "0038 要求 public Alembic 精确位于 20260811_56_p_fb_negative_copy；当前为 ${public_head:-未记账}，未执行任何 0038 写入或记账。" >&2
+    exit 1
+  fi
+
+  personalized_public_contract_ready="$("${PSQL[@]}" -Atqc "
+    select count(*) = 1
+    from public.task_templates
+    where row_id = 'P-FB-NEGATIVE:v1'
+      and template_id = 'P-FB-NEGATIVE'
+      and template_version = 1
+      and status = 'PUBLISHED'
+      and output_type = 'TEACHER_TASK'
+      and execution_owner = 'TEACHER_APP'
+      and integration_mode = 'OUTBOUND_MANAGED'
+      and source_mode = 'REAL'
+      and jsonb_typeof(payload) = 'object'
+      and payload->>'template_id' = 'P-FB-NEGATIVE'
+      and payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
+      and payload->>'title' = 'Feedback Improvement'
+      and payload->>'score_type' = 'ZERO'
+      and payload->'score_value' = '0'::jsonb
+      and payload->>'how_summary' =
+        'Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.'
+      and payload->>'completion_standard' =
+        'The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.'
+  ")"
+  if [[ "${personalized_public_contract_ready}" != "t" ]]; then
+    echo "0038 要求 public rev56 的 P-FB-NEGATIVE:v1 精确新文案与零分共享契约；检测到缺失或漂移，未执行任何 0038 写入或记账。" >&2
+    exit 1
+  fi
+fi
+
 product_analytics_recorded=false
 if [[ "${ledger_exists}" == "t" ]]; then
   product_analytics_recorded="$("${PSQL[@]}" -Atqc "
@@ -346,7 +399,7 @@ fi
 if [[ "${target_includes_product_analytics}" == "true" \
       && "${product_analytics_recorded}" != "t" \
       && "${legacy_teacher_snapshot_exists}" != "t" ]]; then
-  echo "历史 0020 尚未记录且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 分阶段迁移；禁止跳过中间契约回放历史 teacher 链。" >&2
+  echo "历史 0020 尚未记录且 public.teacher_metric_snapshots 已不存在。必须按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 分阶段迁移；禁止跳过中间契约回放历史 teacher 链。" >&2
   exit 1
 fi
 

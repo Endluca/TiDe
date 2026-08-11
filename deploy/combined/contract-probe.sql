@@ -153,10 +153,11 @@ BEGIN
         RAISE EXCEPTION 'contract probe role has write-capable privileges';
     END IF;
 
+    -- The reviewed head follows 20260811_55_source_wide_v12.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260811_55_source_wide_v12' THEN
+    ) IS DISTINCT FROM '20260811_56_p_fb_negative_copy' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -195,10 +196,11 @@ BEGIN
             '0031_g04_independent_sections',
             '0032_first_login_onboarding',
             '0033_g01_tesol_only',
-            '0037_g04_remove_device_check'
+            '0037_g04_remove_device_check',
+            '0038_personalized_environment_photo'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0037';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0038';
     END IF;
 
     IF to_regclass('tide.analytics_task_business_change_v1') IS NOT NULL
@@ -334,6 +336,27 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'stable G01:v1 row is not the reviewed TESOL-only catalog copy';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.task_templates
+        WHERE row_id = 'P-FB-NEGATIVE:v1'
+          AND template_id = 'P-FB-NEGATIVE'
+          AND template_version = 1
+          AND status = 'PUBLISHED'
+          AND payload->>'template_id' = 'P-FB-NEGATIVE'
+          AND payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
+          AND payload->>'title' = 'Feedback Improvement'
+          AND payload->>'how_summary' =
+              'Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.'
+          AND payload->>'completion_standard' =
+              'The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.'
+          AND payload->>'score_type' = 'ZERO'
+          AND (payload->>'score_value')::integer = 0
+    ) THEN
+        RAISE EXCEPTION
+            'stable P-FB-NEGATIVE:v1 row is not the reviewed zero-point personalized improvement copy';
     END IF;
 
     IF NOT EXISTS (
@@ -536,6 +559,91 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'G04 photo rule is not the reviewed four-criterion AI check';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN public.task_templates AS template
+          ON template.row_id = execution.shared_template_row_id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND execution.task_code = 'P-FB-NEGATIVE'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-11-personalized-environment-photo-v1","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING","independentModules":{"stepKeys":["p-fb-negative-environment-photo"],"allowOutOfOrderProgress":true,"keepAssignmentInProgressUntilPassed":true}}'::jsonb
+          AND template.template_id = 'P-FB-NEGATIVE'
+          AND template.status = 'PUBLISHED'
+          AND template.execution_owner = 'TEACHER_APP'
+          AND template.payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
+          AND (template.payload->>'score_value')::integer = 0
+    ) THEN
+        RAISE EXCEPTION
+            'P-FB-NEGATIVE is not the exact pending personalized photo execution';
+    END IF;
+
+    IF (
+        SELECT array_agg(definition.step_key ORDER BY definition.position)
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_step_definitions AS definition
+          ON definition.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+    ) IS DISTINCT FROM ARRAY['p-fb-negative-environment-photo']::text[]
+       OR NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_step_definitions AS definition
+          ON definition.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND definition.step_key = 'p-fb-negative-environment-photo'
+          AND definition.position = 1
+          AND definition.step_type = 'UPLOAD'
+          AND definition.title = 'Take a teaching-environment photo'
+          AND definition.config =
+              '{"version":"2026-08-11-personalized-environment-photo-v1","role":"ENVIRONMENT_PHOTO","reviewProfile":"TEACHING_ENVIRONMENT_V1","accept":["image/jpeg"],"captureOnly":true,"maxFiles":1}'::jsonb
+    ) THEN
+        RAISE EXCEPTION
+            'P-FB-NEGATIVE does not have the exact reviewed photo step';
+    END IF;
+
+    IF (
+        SELECT count(*)
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_validation_rules AS rule
+          ON rule.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+    ) <> 2 OR NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_validation_rules AS rule
+          ON rule.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND rule.rule_key = 'all-steps-complete'
+          AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+          AND rule.rule_version =
+              '2026-08-11-personalized-environment-photo-v1'
+          AND rule.position = 1
+          AND rule.config =
+              '{"requiredStepKeys":["p-fb-negative-environment-photo"]}'::jsonb
+          AND rule.teacher_failure_copy =
+              '请拍摄并提交一张当前授课环境照片。'
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN tide.task_validation_rules AS rule
+          ON rule.execution_version_id = execution.id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND rule.rule_key = 'p-fb-negative-environment-ai-review'
+          AND rule.rule_type = 'AI_IMAGE_REVIEW'
+          AND rule.rule_version = '2026-07-27-strict'
+          AND rule.position = 2
+          AND rule.config =
+              '{"stepKey":"p-fb-negative-environment-photo","criteriaVersion":"personalized-teaching-environment-2026-08-v1","criteriaKeys":["camera_angle","lighting","background","dressing"],"allowedMimeTypes":["image/jpeg","image/png","image/webp"],"reviewProfile":"TEACHING_ENVIRONMENT_V1","systemPrompt":"You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {\"decision\":\"PASS|RETRY|ERROR\",\"teacherReason\":\"teacher-safe concise message\",\"confidenceSummary\":{},\"criteria\":[{\"criterionKey\":\"one configured key\",\"result\":\"PASS|FAIL|UNKNOWN\",\"teacherMessage\":\"teacher-safe message or null\"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.","userText":"Review this current teaching-environment photo strictly against camera angle, lighting, background and dressing only."}'::jsonb
+          AND rule.teacher_failure_copy =
+              '已保留你完成的内容，请根据提示更新这份材料。'
+    ) THEN
+        RAISE EXCEPTION
+            'P-FB-NEGATIVE photo rules are not the exact four-criterion review';
     END IF;
 
     IF to_regrole('tit_teacher_crud') IS NULL

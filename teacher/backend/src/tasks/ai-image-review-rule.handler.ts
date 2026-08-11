@@ -27,6 +27,7 @@ import type { TaskRuleContext, TaskRuleResult } from './task-validation.models';
 const ruleConfigSchema = z
   .object({
     stepKey: z.string().min(1).max(128),
+    reviewProfile: z.enum(['TEACHING_ENVIRONMENT_V1']).optional(),
     promptVersionId: z.string().uuid().optional(),
     criteriaVersion: z.string().min(1).max(128),
     criteriaKeys: z.array(z.string().min(1).max(128)).min(1).max(50),
@@ -65,6 +66,7 @@ const technicalTeacherMessage =
   '暂时无法完成自动检查，本次提交已转为人工复核。';
 const lowConfidenceTeacherMessage = '判断把握不足，请按提示调整后重新拍照。';
 const currentG04PhotoStepKey = 'g02-environment-photo';
+const teachingEnvironmentReviewProfile = 'TEACHING_ENVIRONMENT_V1';
 const neutralExposure: CentralExposureSignals = {
   centralMeanLuma: 128,
   centralClippedLumaRatio: 0,
@@ -89,13 +91,18 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     }
     const config = parsedConfig.data;
     const isCurrentG04 = config.stepKey === currentG04PhotoStepKey;
+    const usesTeachingEnvironmentProfile =
+      config.reviewProfile === teachingEnvironmentReviewProfile ||
+      isCurrentG04;
     const criteriaVersion = isCurrentG04
       ? TEACHER_PHOTO_CRITERIA_VERSION
       : config.criteriaVersion;
-    const criteriaKeys = isCurrentG04
+    const criteriaKeys = usesTeachingEnvironmentProfile
       ? [...TEACHER_PHOTO_CRITERIA_KEYS]
       : config.criteriaKeys;
-    const minimumConfidence = isCurrentG04 ? TEACHER_PHOTO_MIN_CONFIDENCE : 0;
+    const minimumConfidence = usesTeachingEnvironmentProfile
+      ? TEACHER_PHOTO_MIN_CONFIDENCE
+      : 0;
     if (
       new Set(criteriaKeys).size !== criteriaKeys.length ||
       (config.promptVersionId &&
@@ -126,7 +133,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       return this.deferred('IMAGE_REVIEW_FILE_INVALID');
     }
     if (
-      isCurrentG04 &&
+      usesTeachingEnvironmentProfile &&
       (await this.reviews.hasPassedReview(context.client, {
         fileId,
         criteriaVersion,
@@ -156,7 +163,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     let reviewFilename = file.originalFilename;
     let reviewMimeType = file.mimeType;
     let exposure = neutralExposure;
-    if (isCurrentG04) {
+    if (usesTeachingEnvironmentProfile) {
       try {
         const prepared = await prepareAiReviewImage(content, {
           includeCameraGuide: true,
@@ -184,7 +191,9 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       systemPrompt: isCurrentG04
         ? TEACHER_PHOTO_SYSTEM_PROMPT
         : config.systemPrompt,
-      userText: isCurrentG04 ? TEACHER_PHOTO_USER_TEXT : config.userText,
+      userText: isCurrentG04
+        ? TEACHER_PHOTO_USER_TEXT
+        : config.userText,
       file: {
         content: reviewContent,
         filename: reviewFilename,
@@ -207,7 +216,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       criteriaKeys,
       minimumConfidence,
       exposure,
-      isCurrentG04,
+      usesTeachingEnvironmentProfile,
     );
     if (!parsedReview) {
       return this.saveTechnicalError(
@@ -247,7 +256,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     criteriaKeys: string[],
     minimumConfidence: number,
     exposure: CentralExposureSignals,
-    isCurrentG04: boolean,
+    usesTeachingEnvironmentProfile: boolean,
   ): z.infer<typeof reviewResponseSchema> | null {
     const json = parseAiJsonObject(content);
     const parsed = reviewResponseSchema.safeParse(json);
@@ -264,7 +273,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     }
     let thresholdDowngraded = false;
     let criteria = parsed.data.criteria.map((item) => {
-      const requiredConfidence = isCurrentG04
+      const requiredConfidence = usesTeachingEnvironmentProfile
         ? teacherPhotoMinimumConfidence(item.criterionKey)
         : minimumConfidence;
       if (
@@ -281,7 +290,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       }
       return item;
     });
-    const backgroundVetoMessage = isCurrentG04
+    const backgroundVetoMessage = usesTeachingEnvironmentProfile
       ? teacherPhotoBackgroundVetoMessage(parsed.data.confidenceSummary)
       : null;
     if (backgroundVetoMessage) {
@@ -336,7 +345,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       confidenceSummary: {
         ...parsed.data.confidenceSummary,
         minimumRequired: minimumConfidence,
-        minimumRequiredByCriterion: isCurrentG04
+        minimumRequiredByCriterion: usesTeachingEnvironmentProfile
           ? Object.fromEntries(
               criteriaKeys.map((criterionKey) => [
                 criterionKey,

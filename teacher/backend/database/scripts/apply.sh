@@ -51,6 +51,7 @@ if [[ "${shared_contract_exists}" != "t" ]]; then
 fi
 "${PSQL[@]}" -f "${DB_DIR}/fixtures/0002_score_entry_contract.sql"
 "${PSQL[@]}" -f "${DB_DIR}/fixtures/0003_course_score_snapshot_contract.sql"
+"${PSQL[@]}" -f "${DB_DIR}/fixtures/0004_p_fb_negative_contract.sql"
 
 # 只在本地开发库为受限应用角色启用登录；生产角色由 DBA 管理。
 "${PSQL[@]}" -v teacher_role_password="${TIDE_DB_PASSWORD}" >/dev/null <<'SQL'
@@ -416,6 +417,7 @@ fi
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql"
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"

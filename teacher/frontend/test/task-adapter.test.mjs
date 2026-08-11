@@ -111,6 +111,112 @@ test("maps the blacklist custom text step to the factual response flow", () => {
   assert.equal(task.method, "factual_response");
 });
 
+test("routes a ready personalized teaching-environment variant to the camera flow", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "P-FB-NEGATIVE",
+    kind: "PERSONALIZED_IMPROVEMENT",
+    capabilities: ["UPLOAD"],
+    steps: [
+      {
+        stepKey: "p-fb-negative-environment-photo",
+        type: "UPLOAD",
+        title: "Retake teaching-view photo",
+        config: {
+          role: "ENVIRONMENT_PHOTO",
+          reviewProfile: "TEACHING_ENVIRONMENT_V1",
+          captureOnly: true,
+        },
+      },
+    ],
+  }));
+
+  assert.equal(task.method, "personalized_environment_photo");
+});
+
+test("does not route an unrelated personalized upload to the environment camera flow", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "P-FB-NEGATIVE",
+    kind: "PERSONALIZED_IMPROVEMENT",
+    capabilities: ["UPLOAD"],
+    steps: [
+      {
+        stepKey: "generic-proof",
+        type: "UPLOAD",
+        title: "Upload proof",
+        config: { role: "COMPLETION_PROOF", captureOnly: false },
+      },
+    ],
+  }));
+
+  assert.equal(task.method, "upload_review");
+});
+
+test("requires ready personalized context and the exact environment review profile", () => {
+  const environmentStep = {
+    stepKey: "p-fb-negative-environment-photo",
+    type: "UPLOAD",
+    title: "Retake teaching-view photo",
+    config: {
+      role: "ENVIRONMENT_PHOTO",
+      reviewProfile: "TEACHING_ENVIRONMENT_V1",
+      captureOnly: true,
+    },
+  };
+  const variants = [
+    {
+      kind: "FIXED_GROWTH",
+      execution: { contentStatus: "READY", contentVersion: "1", pendingReason: null },
+      expected: "upload_review",
+    },
+    {
+      kind: "PERSONALIZED_IMPROVEMENT",
+      execution: { contentStatus: "PENDING", contentVersion: "1", pendingReason: "WAITING" },
+      expected: "content_pending",
+    },
+    {
+      kind: "PERSONALIZED_IMPROVEMENT",
+      execution: { contentStatus: "READY", contentVersion: "1", pendingReason: null },
+      step: { ...environmentStep, config: { ...environmentStep.config, role: "COMPLETION_PROOF" } },
+      expected: "upload_review",
+    },
+    {
+      kind: "PERSONALIZED_IMPROVEMENT",
+      execution: { contentStatus: "READY", contentVersion: "1", pendingReason: null },
+      step: { ...environmentStep, config: { ...environmentStep.config, reviewProfile: "OTHER_PROFILE" } },
+      expected: "upload_review",
+    },
+    {
+      taskCode: "P-FB-COMPLAINT",
+      kind: "PERSONALIZED_IMPROVEMENT",
+      execution: { contentStatus: "READY", contentVersion: "1", pendingReason: null },
+      expected: "upload_review",
+    },
+    {
+      kind: "PERSONALIZED_IMPROVEMENT",
+      execution: { contentStatus: "READY", contentVersion: "1", pendingReason: null },
+      step: { ...environmentStep, stepKey: "another-environment-photo" },
+      expected: "upload_review",
+    },
+    {
+      kind: "PERSONALIZED_IMPROVEMENT",
+      execution: { contentStatus: "READY", contentVersion: "1", pendingReason: null },
+      step: { ...environmentStep, config: { ...environmentStep.config, captureOnly: false } },
+      expected: "upload_review",
+    },
+  ];
+
+  for (const variant of variants) {
+    const task = adaptTaskContext(context({
+      taskCode: variant.taskCode || "P-FB-NEGATIVE",
+      kind: variant.kind,
+      capabilities: ["UPLOAD"],
+      execution: variant.execution,
+      steps: [variant.step || environmentStep],
+    }));
+    assert.equal(task.method, variant.expected);
+  }
+});
+
 test("routes G06 to the Kuozhi external course instead of the local player", () => {
   const task = adaptTaskContext(context({
     taskCode: "G06",

@@ -47,6 +47,10 @@ describe('TaskValidationEngine', () => {
     submissionId: 'submission-id',
   };
 
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   it('passes only when every configured step is complete', async () => {
     await expect(
       engine.evaluate({
@@ -231,6 +235,70 @@ describe('TaskValidationEngine', () => {
       resultCode: 'STEPS_INCOMPLETE',
     });
     expect(evaluateImage).toHaveBeenCalled();
+  });
+
+  it('runs a personalized image review before its all-steps gate', async () => {
+    evaluateImage.mockResolvedValueOnce({
+      passed: false,
+      resultCode: 'IMAGE_REVIEW_RETRY',
+      teacherMessage: '请重新拍照。',
+    });
+    const imageRule = {
+      ...rule,
+      ruleKey: 'personalized-image-review',
+      ruleType: 'AI_IMAGE_REVIEW',
+      config: {
+        stepKey: 'p-fb-negative-environment-photo',
+        reviewProfile: 'TEACHING_ENVIRONMENT_V1',
+      },
+    };
+
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [rule, imageRule],
+        steps: [
+          {
+            stepKey: 'p-fb-negative-environment-photo',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toMatchObject({
+      status: 'FAILED',
+      resultCode: 'IMAGE_REVIEW_RETRY',
+    });
+    expect(evaluateImage).toHaveBeenCalled();
+  });
+
+  it('preserves configured order for an unrelated image-review rule', async () => {
+    const unrelatedImageRule = {
+      ...rule,
+      ruleKey: 'unrelated-image-review',
+      ruleType: 'AI_IMAGE_REVIEW',
+      config: { stepKey: 'future-proof-upload' },
+    };
+
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [rule, unrelatedImageRule],
+        steps: [
+          {
+            stepKey: 'future-proof-upload',
+            status: 'NOT_STARTED',
+            percent: 0,
+          },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toMatchObject({
+      status: 'FAILED',
+      resultCode: 'STEPS_INCOMPLETE',
+    });
+    expect(evaluateImage).not.toHaveBeenCalled();
   });
 
   it('still requires every step outside the current G04 flow', async () => {

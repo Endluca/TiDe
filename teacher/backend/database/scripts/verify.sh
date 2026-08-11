@@ -207,6 +207,61 @@ g01_tesol_rule_ready="$("${PSQL[@]}" -Atqc "
       and rule.teacher_failure_copy = 'TESOL 真实状态尚未通过。'
   )
 ")"
+personalized_environment_photo_ready="$("${PSQL[@]}" -Atqc "
+  select exists (
+    select 1
+    from tide.task_execution_versions execution
+    where execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+      and execution.task_code = 'P-FB-NEGATIVE'
+      and execution.status = 'ACTIVE'
+      and execution.execution_contract_version = 'task-contract-v3'
+      and execution.config =
+        '{\"estimatedMinutes\":8,\"allowRetry\":true,\"contentStatus\":\"PENDING\",\"contentVersion\":\"2026-08-11-personalized-environment-photo-v1\",\"pendingReason\":\"JIAHE_PERSONALIZED_CONTENT_PENDING\",\"independentModules\":{\"stepKeys\":[\"p-fb-negative-environment-photo\"],\"allowOutOfOrderProgress\":true,\"keepAssignmentInProgressUntilPassed\":true}}'::jsonb
+      and (
+        select count(*) from tide.task_step_definitions definition
+        where definition.execution_version_id = execution.id
+      ) = 1
+      and exists (
+        select 1 from tide.task_step_definitions definition
+        where definition.execution_version_id = execution.id
+          and definition.step_key = 'p-fb-negative-environment-photo'
+          and definition.step_type = 'UPLOAD'
+          and definition.position = 1
+          and definition.title = 'Take a teaching-environment photo'
+          and definition.config =
+            '{\"version\":\"2026-08-11-personalized-environment-photo-v1\",\"role\":\"ENVIRONMENT_PHOTO\",\"reviewProfile\":\"TEACHING_ENVIRONMENT_V1\",\"accept\":[\"image/jpeg\"],\"captureOnly\":true,\"maxFiles\":1}'::jsonb
+      )
+      and (
+        select count(*) from tide.task_validation_rules rule
+        where rule.execution_version_id = execution.id
+      ) = 2
+      and exists (
+        select 1 from tide.task_validation_rules rule
+        where rule.execution_version_id = execution.id
+          and rule.rule_key = 'all-steps-complete'
+          and rule.rule_type = 'ALL_STEPS_COMPLETE'
+          and rule.rule_version =
+            '2026-08-11-personalized-environment-photo-v1'
+          and rule.position = 1
+          and rule.config =
+            '{\"requiredStepKeys\":[\"p-fb-negative-environment-photo\"]}'::jsonb
+          and rule.teacher_failure_copy =
+            '请拍摄并提交一张当前授课环境照片。'
+      )
+      and exists (
+        select 1 from tide.task_validation_rules rule
+        where rule.execution_version_id = execution.id
+          and rule.rule_key = 'p-fb-negative-environment-ai-review'
+          and rule.rule_type = 'AI_IMAGE_REVIEW'
+          and rule.rule_version = '2026-07-27-strict'
+          and rule.position = 2
+          and rule.config =
+            '{\"stepKey\":\"p-fb-negative-environment-photo\",\"criteriaVersion\":\"personalized-teaching-environment-2026-08-v1\",\"criteriaKeys\":[\"camera_angle\",\"lighting\",\"background\",\"dressing\"],\"allowedMimeTypes\":[\"image/jpeg\",\"image/png\",\"image/webp\"],\"reviewProfile\":\"TEACHING_ENVIRONMENT_V1\",\"systemPrompt\":\"You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {\\\"decision\\\":\\\"PASS|RETRY|ERROR\\\",\\\"teacherReason\\\":\\\"teacher-safe concise message\\\",\\\"confidenceSummary\\\":{},\\\"criteria\\\":[{\\\"criterionKey\\\":\\\"one configured key\\\",\\\"result\\\":\\\"PASS|FAIL|UNKNOWN\\\",\\\"teacherMessage\\\":\\\"teacher-safe message or null\\\"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.\",\"userText\":\"Review this current teaching-environment photo strictly against camera angle, lighting, background and dressing only.\"}'::jsonb
+          and rule.teacher_failure_copy =
+            '已保留你完成的内容，请根据提示更新这份材料。'
+      )
+  )
+")"
 faq_count="$("${PSQL[@]}" -Atqc "select count(*) from tide.knowledge_chunks chunk join tide.knowledge_documents document on document.id = chunk.document_id where document.document_key = 'mock-tide-confirmed-rules' and document.status = 'ACTIVE'")"
 unused_tide_objects_removed="$("${PSQL[@]}" -Atqc "
   select
@@ -405,14 +460,15 @@ assert_equals "${personalized_pending_count}" "5" "待嘉荷配置的个性化�
 assert_equals "${authoritative_fixed_catalog_ready}" "t" "运营端 rev38 固定任务稳定映射异常"
 assert_equals "${fixed_execution_semantic_ready}" "t" "教师端固定任务执行语义未按稳定模板行对齐"
 assert_equals "${legacy_personalized_count}" "0" "旧个性化执行配置仍处于启用状态"
-assert_equals "${step_count}" "5" "当前可执行任务步骤总数异常"
+assert_equals "${step_count}" "6" "当前可执行任务步骤总数异常"
 assert_equals "${fixed_step_count}" "4" "G01-G09 步骤总数异常"
-assert_equals "${personalized_step_count}" "1" "已配置个性化任务步骤总数异常"
-assert_equals "${step_distribution}" "G01:2,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:0,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务步骤数量异常"
+assert_equals "${personalized_step_count}" "2" "已配置个性化任务步骤总数异常"
+assert_equals "${step_distribution}" "G01:2,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:1,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务步骤数量异常"
 assert_equals "${local_quiz_runtime_absent}" "t" "TIDE 本地考试表或步骤仍然存在"
-assert_equals "${rule_count}" "6" "当前验证规则总数异常"
-assert_equals "${rule_distribution}" "G01:3,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:0,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
+assert_equals "${rule_count}" "8" "当前验证规则总数异常"
+assert_equals "${rule_distribution}" "G01:3,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:2,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
 assert_equals "${g01_tesol_rule_ready}" "t" "G01 外部状态规则未收窄为 TESOL-only"
+assert_equals "${personalized_environment_photo_ready}" "t" "P-FB-NEGATIVE 授课环境拍照执行配置异常"
 assert_equals "${faq_count}" "3" "FAQ Mock 知识数异常"
 assert_equals "${unused_tide_objects_removed}" "t" "0029 无用 tide 表或 v1 分析视图仍然存在"
 assert_equals "${unused_file_metadata_removed}" "t" "0030 无用文件可见性字段或孤儿函数仍然存在"

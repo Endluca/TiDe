@@ -181,29 +181,37 @@ test("G04 keeps partial photo and finalization failures retryable without rollin
   assert.match(readinessPhoto, /c\("Retry completion", "重试完成提交"\)/);
   assert.match(readinessPhoto, /void finalizeIfReady\(\{ reportTo: setCompletionError \}\)/);
   assert.doesNotMatch(readinessPhoto, /nextCoursewareConfirmed: true,[\s\S]{0,100}reportTo: setCoursewareError/);
-  assert.match(integratedTaskFlow, /presentationTask\.taskCode !== "G04"/);
-  assert.doesNotMatch(readinessPhoto, /setCoursewareConfirmed\(false\)/);
+  assert.match(integratedTaskFlow, /\["readiness_photo", "personalized_environment_photo"\]\.includes\(presentationTask\.method\)/);
+  assert.doesNotMatch(
+    readinessPhoto,
+    /DeviceCheckTask|DEVICE_CHECK|setDevicePassed\(false\)|setCoursewareConfirmed\(false\)/,
+  );
 });
 
 test("G04 uses Sophia's checklist first qualified photo as its camera reference", async () => {
-  const readinessPhoto = await source("features/task-content/ReadinessPhotoTask.jsx");
+  const [readinessPhoto, sharedPhotoPolicy] = await Promise.all([
+    source("features/task-content/ReadinessPhotoTask.jsx"),
+    source("features/task-content/teaching-environment-photo.js"),
+  ]);
 
   assert.match(
-    readinessPhoto,
+    sharedPhotoPolicy,
     /lesson-preparation-examples\/camera-angle-good-front\.jpg/,
   );
+  assert.match(readinessPhoto, /TEACHING_ENVIRONMENT_REFERENCE_PHOTO/);
   assert.doesNotMatch(readinessPhoto, /self-intro-reference-51talk\.webp/);
 });
 
 test("G04 shows Sophia's four visual checks with their example gallery", async () => {
-  const [app, readinessPhoto, i18n] = await Promise.all([
+  const [app, readinessPhoto, sharedPhotoPolicy, i18n] = await Promise.all([
     source("App.jsx"),
     source("features/task-content/ReadinessPhotoTask.jsx"),
+    source("features/task-content/teaching-environment-photo.js"),
     source("i18n.jsx"),
   ]);
 
   for (const criterion of ["camera_angle", "lighting", "background", "dressing"]) {
-    assert.match(readinessPhoto, new RegExp(`\\["${criterion}"`));
+    assert.match(sharedPhotoPolicy, new RegExp(`\\["${criterion}"`));
   }
   assert.match(readinessPhoto, /<ReadinessExampleGallery initialActiveId=\{exampleFocusId\} \/>/);
   assert.doesNotMatch(readinessPhoto, /Teaching headset worn|佩戴授课耳麦|seven items|7 项/);
@@ -212,6 +220,39 @@ test("G04 shows Sophia's four visual checks with their example gallery", async (
   assert.match(i18n, /两个部分可任意顺序操作/);
   assert.match(i18n, /授课画面照片的四项 AI 标准/);
   assert.doesNotMatch(i18n, /授课环境照片的七项检测|通过七项画面检测/);
+});
+
+test("personalized environment feedback uses the same live four-item photo check without G04 sections", async () => {
+  const [taskFlow, personalizedPhoto, sharedPhotoPolicy] = await Promise.all([
+    source("components/TaskFlow.jsx"),
+    source("features/task-content/PersonalizedEnvironmentPhotoTask.jsx"),
+    source("features/task-content/teaching-environment-photo.js"),
+  ]);
+
+  assert.match(taskFlow, /task\.method === "personalized_environment_photo"/);
+  assert.match(taskFlow, /<PersonalizedEnvironmentPhotoTask task=\{task\} \/>/);
+  assert.match(personalizedPhoto, /navigator\.mediaDevices\?\.getUserMedia/);
+  assert.match(personalizedPhoto, /aspectRatio: \{ ideal: 16 \/ 9 \}/);
+  assert.match(personalizedPhoto, /task\.execution\.uploadStep\(photoStep\.stepKey, photoFile\)/);
+  assert.match(personalizedPhoto, /const response = await task\.execution\.submit\(\)/);
+  assert.match(personalizedPhoto, /const reviewRequestRef = useRef\(0\)/);
+  assert.match(personalizedPhoto, /const clearPhoto = \(\) => \{\s+if \(analyzing\) return;\s+reviewRequestRef\.current \+= 1;/);
+  assert.match(personalizedPhoto, /const openCamera = async \(\) => \{\s+if \(analyzing\) return;/);
+  assert.match(personalizedPhoto, /const capture = async \(\) => \{\s+if \(analyzing\) return;/);
+  assert.match(personalizedPhoto, /if \(requestId !== reviewRequestRef\.current\) return;\s+const analysis = applyValidation/);
+  assert.match(personalizedPhoto, /if \(passed\) \{\s+stopCamera\(\);\s+setPhotoApproved\(true\);/);
+  assert.match(personalizedPhoto, /disabled=\{!cameraReady \|\| analyzing\} onClick=\{capture\}/);
+  assert.match(personalizedPhoto, /disabled=\{analyzing\} onClick=\{clearPhoto\}/);
+  assert.match(personalizedPhoto, /disabled=\{opening \|\| analyzing\} onClick=\{openCamera\}/);
+  assert.match(personalizedPhoto, /readinessPayloadFromValidation/);
+  assert.match(personalizedPhoto, /<ReadinessExampleGallery initialActiveId=\{exampleFocusId\} \/>/);
+  assert.match(personalizedPhoto, /TEACHING_ENVIRONMENT_STANDARDS/);
+  assert.match(personalizedPhoto, /useState\(taskCompleted\)/);
+  assert.doesNotMatch(personalizedPhoto, /photoProgress\?\.status === "COMPLETED"/);
+  assert.doesNotMatch(personalizedPhoto, /DeviceCheckTask|COURSEWARE_CONFIRMATION|completedPartCount/);
+  for (const criterion of ["camera_angle", "lighting", "background", "dressing"]) {
+    assert.match(sharedPhotoPolicy, new RegExp(`\\["${criterion}"`));
+  }
 });
 
 test("all four task summary regions use Shiwen content instead of local execution steps", async () => {

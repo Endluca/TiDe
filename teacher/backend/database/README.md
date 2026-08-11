@@ -40,6 +40,7 @@
 | `0032_first_login_onboarding` | 新增账号级多模块新手引导终态事实，白名单限于当前 8 个 guide code；只将迁移前已有 `LOGIN/SUCCESS` 安全事件的账号回填为 `FIRST_LOGIN` v1 / `MIGRATED_EXISTING`，从未成功登录的已注册账号不回填；down 只删除该表 |
 | `0033_g01_tesol_only` | 在稳定 `G01:v1` execution 上把既有外部状态规则原位收窄为 TESOL-only；只更新规则版本和失败提示，并用迁移前后快照确保 execution、step、其他 rule、assignment 与 progress 身份不变；down 只恢复这两个规则字段 |
 | `0037_g04_remove_device_check` | 在稳定 G04 execution 上原位删除当前设备检测步骤，将照片 AI 四项审核和课件准备确认排为两个任意顺序模块；保留旧设备进度、execution、assignment 和终态，未知结构 fail-closed，down 为 forward-only no-op |
+| `0038_personalized_environment_photo` | 在 public `20260811_56_p_fb_negative_copy` 已完成后执行；已有库保留 `P-FB-NEGATIVE:v1` execution、assignment 和进度身份；fresh 库在合法共享模板存在时用目录同源的确定性 UUID 建立 execution，再加入授课环境拍照步骤及 `TEACHING_ENVIRONMENT_V1` 四项 AI 审核规则；基础内容仍为 `PENDING`，由 assignment 稳定变体决定是否开放；缺失／非法共享模板、UUID 占用或未知结构均失败关闭，down 遇到 assignment 已启动、命令回执或拍照进度等执行证据时拒绝删除 |
 
 `0008` 在删除前会阻断任何未映射的过程数据或非 Mock 个性化任务，不会静默丢弃真实数据。
 
@@ -50,15 +51,16 @@
 | `seed/0000_mock_shared_catalog.sql` | 本地共享教师、当前 G01–G09、retired G00、G01 证据和外部消息 |
 | `fixtures/0002_score_entry_contract.sql` | 仅本地升级共享积分流水测试契约，补齐课程结分字段；不得用于公司或生产库 |
 | `fixtures/0003_course_score_snapshot_contract.sql` | 仅为本地当前视图 Mock 补齐世文源字段；公司库已由世文持有，不得用于公司或生产库 |
+| `fixtures/0004_p_fb_negative_contract.sql` | 仅为本地／隔离迁移测试提供 public rev56 新文案的稳定 `P-FB-NEGATIVE:v1` 共享模板；公司及生产必须由 public Alembic 链提供，不得执行该 fixture |
 | `seed/0002_mock_shiwen_views.sql` | 教师资料、积分总览和逐课积分当前视图 Mock |
 | `scripts/sync-current-task-catalog.ts` | 当前 G01–G09 与已确认个性化任务的唯一执行配置同步脚本；按稳定共享模板行更新，不重建 execution |
 | `seed/0004_mock_faq_knowledge.sql` | 已确认规则的 FAQ Mock 知识 |
 | `content/faq/51Talk Teacher FAQ - Canonical.md` | 全量 Canonical FAQ 的唯一版本化内容源；运行时不直接读取该文件 |
 | `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
-| `scripts/apply.sh` | 本地幂等升级至 0037，并应用当前 Seed/本地权限 |
-| `scripts/apply-company-test.sh` | 在 public rev55 + canonical Tide 0037 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
-| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；先校验运营端已到 rev54 权威目录，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0037 |
-| `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 数据库显式构造共享目录，验证 fresh、managed upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037 六阶段顺序门禁、0022–0037、G01 TESOL-only 与稳定身份、G04 未知结构 fail-closed、历史设备进度和检测证据保留、引导存量回填/未登录保留/down-up/幂等、execution ID 原位保留、checksum、工单函数 owner 和生产连接保护 |
+| `scripts/apply.sh` | 本地幂等升级至 0038，并应用当前 Seed/本地权限 |
+| `scripts/apply-company-test.sh` | 在 public rev56 + canonical Tide 0038 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
+| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；先校验运营端已到 rev54 权威目录，并在 0038 任何写入前精确验证 public `20260811_56_p_fb_negative_copy` 及 P-FB-NEGATIVE 新文案，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0038 |
+| `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 数据库显式构造共享目录，验证 fresh、managed upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→public56→teacher0038 九阶段顺序门禁、0022–0038、G01 TESOL-only 与稳定身份、G04 两模块及历史设备证据保留、P-FB-NEGATIVE 未知结构 fail-closed 与回滚执行证据保护、引导存量回填/未登录保留/down-up/幂等、execution ID 原位保留、checksum、工单函数 owner 和生产连接保护 |
 | `scripts/verify.sh` | 验证共享表、过程关联、角色权限、乐观锁、审计/Outbox 和消息回写 |
 | `scripts/rollback-test.sh` | 在临时库验证空库升级和逐级回滚 |
 | `scripts/grant-tit-teacher-crud.sql` | 由共享表 Owner/DBA 执行的最小权限脚本 |
@@ -75,7 +77,7 @@ bash database/scripts/rollback-test.sh
 ```
 
 `.env` 不进入 Git。`apply.sh` 仅接受数据库名 `tide_dev`，且必须显式设置
-`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0037`，但仍是本地
+`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0038`，但仍是本地
 Mock 入口，不能用于公司或生产库。
 
 ## 生产迁移
@@ -103,12 +105,14 @@ Mock 入口，不能用于公司或生产库。
 的库必须严格按以下跨链顺序执行：
 
 ```text
-public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037
+public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032
+-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038
 ```
 
 若旧快照已经不存在且 0020 尚未记录，生产迁移器会在任何 DDL 前失败关闭。已有完整
 teacher 0028 账本的数据库允许在 public 47 删除旧快照后继续执行 teacher 0029–0033，
-不会把已退役对象重新变成永久前置条件。历史 `0020` 文件和 checksum 保持不变。
+不会把已退役对象重新变成永久前置条件；0038 仍会在任何写入或记账前精确要求 public
+head 56 与 P-FB-NEGATIVE rev56 新文案。历史 `0020` 文件和 checksum 保持不变。
 
 非测试模式还会同时校验：
 
@@ -118,7 +122,7 @@ teacher 0028 账本的数据库允许在 public 47 删除旧快照后继续执�
 - `tide_migrator` 可登录但不是 superuser，且没有建库、建角色、复制或绕过 RLS；
 - `current_database()` 精确等于 `TIDE_MIGRATION_EXPECTED_DATABASE`。
 
-生产迁移清单明确包含 `0022–0037`，并永久排除历史
+生产迁移清单明确包含 `0022–0038`，并永久排除历史
 `0017/0018`，因为这两项会修改世文持有的 `public.task_assignments`。迁移器不创建
 角色、不设置角色密码、不导入 Mock、不执行题库／FAQ／任务内容 Seed。DBA 必须事先
 创建 `tit_teacher_crud`、`tit_growth_app`、`tide_migrator` 与
@@ -177,8 +181,8 @@ bash database/scripts/test-production-migrator.sh
 ## 公司测试库
 
 - 公司测试库配置放在本地 `database/.env.company-test`，该文件不进入 Git，权限必须为 `600`。
-- 代码侧初始化门禁面向 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55` 的完整七阶段升级结果；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。当前公司测试库仍停在 public 50 / teacher 0032，本次未执行升级。
-- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260811_55_source_wide_v12` 与精确 32 条 canonical Tide 0037 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL。
+- 代码侧初始化门禁面向 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038` 的完整九阶段升级结果；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。当前公司测试库仍停在 public 50 / teacher 0032，本次未执行升级。
+- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260811_56_p_fb_negative_copy` 与精确 33 条 canonical Tide 0038 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL。
 - 初始化器不得与 public/Tide migrator 并发运行；受控部署必须先完成迁移并释放迁移窗口，再执行初始化器。
 - 日常应用账号固定为 `tit_teacher_crud`，只读教师身份资料和 `teacher_scorecard_current / teacher_lesson_score_current`，只获得契约允许的共享任务权限和 `tide` Schema 业务表权限；不读取原始积分、课程事实或评分配置表。
 - 内部测试后端的 `TIDE_DATABASE_URL` 和 `SHIWEN_READ_DATABASE_URL` 均由该配置生成并指向同一公司测试库；运行时不再使用本地 PostgreSQL 或本地数据回退。
