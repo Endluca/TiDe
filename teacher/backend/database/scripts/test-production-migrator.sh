@@ -1614,11 +1614,11 @@ SELECT
                 AND rule.execution_version_id = execution.id
                 AND rule.rule_key = 'g01-external-status'
                 AND rule.rule_type = 'G01_EXTERNAL_STATUS'
-                AND rule.rule_version = '2026-08-11-tesol-only-v1'
+                AND rule.rule_version = '2026-07-22'
                 AND rule.position = 3
                 AND rule.config = '{}'::jsonb
                 AND rule.teacher_failure_copy =
-                    'TESOL 真实状态尚未通过。'
+                    'Self-intro 和 TESOL 真实状态尚未全部通过。'
           )
           AND EXISTS (
               SELECT 1
@@ -1672,14 +1672,13 @@ SELECT
         WHERE migration_id IN (
             '0025_fixed_task_semantic_alignment',
             '0031_g04_independent_sections',
-            '0032_first_login_onboarding',
-            '0033_g01_tesol_only'
+            '0032_first_login_onboarding'
         )
-    ) = 4;
+    ) = 3;
 SQL
 )"
 if [[ "${semantic_alignment_state}" != "t|t|t|t|t|t|t|t|t|t" ]]; then
-  echo "0025/0031/0033 未保留 G01/G04 执行、assignment 或 progress 身份：${semantic_alignment_state}" >&2
+  echo "0025/0031/0032 未保留 G01/G04 执行、assignment 或 progress 身份：${semantic_alignment_state}" >&2
   exit 1
 fi
 
@@ -1790,13 +1789,13 @@ TIDE_MIGRATION_TEST_MODE="true" \
 
 onboarding_idempotent_state="$(psql -X --no-password -AtF '|' "postgresql:///${UPGRADE_DB}" <<'SQL'
 SELECT
-    count(*) = 31,
+    count(*) = 30,
     count(*) FILTER (
         WHERE migration_id = '0032_first_login_onboarding'
     ) = 1,
     count(*) FILTER (
         WHERE migration_id = '0033_g01_tesol_only'
-    ) = 1,
+    ) = 0,
     (SELECT count(*) FROM tide.account_onboarding_states) = 1
 FROM tide.schema_migrations;
 SQL
@@ -2587,14 +2586,22 @@ if [[ "${restored_upgrade_unused_table_signature}" != "${upgrade_unused_table_si
   exit 1
 fi
 
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" \
-  -f "${DB_DIR}/migrations/0028_retire_task_business_change_view.down.sql" >/dev/null
-restored_business_change_view_definition="$(psql -X --no-password -Atqc \
-  "select pg_get_viewdef('tide.analytics_task_business_change_v1'::regclass, true)" \
+set +e
+retired_view_down_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0028_retire_task_business_change_view.down.sql" 2>&1
+)"
+retired_view_down_status=$?
+set -e
+retired_view_down_state="$(psql -X --no-password -Atqc \
+  "select to_regclass('tide.analytics_task_business_change_v1') is null" \
   "postgresql:///${UPGRADE_DB}")"
-if [[ "${restored_business_change_view_definition}" != "${upgrade_business_change_view_definition}" ]]; then
-  echo "0028 down 未精确恢复原业务变化视图。" >&2
+if [[ "${retired_view_down_status}" == "0" \
+      || "${retired_view_down_output}" != *"public.teacher_metric_snapshots"* \
+      || "${retired_view_down_state}" != "t" ]]; then
+  echo "0028 down 未在 public 47+ 缺少历史快照表时失败关闭：${retired_view_down_state}" >&2
+  echo "${retired_view_down_output}" >&2
   exit 1
 fi
 psql -X --no-password -v ON_ERROR_STOP=1 \

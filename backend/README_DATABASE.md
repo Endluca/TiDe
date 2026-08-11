@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260811_54_g04_remove_device_check`、teacher `0037_g04_remove_device_check`，最终 teacher canonical 账本为 32 条；rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块。`tit_growth_test_v2` 实存 head 仍为 public `20260810_50_g04_sections`、teacher `0032_first_login_onboarding`，是精确 30 条 canonical 账本，尚未应用 rev51/0033 与 rev54/0037；远程 G04 仍为历史三模块形状。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这只证明公司测试库结构和源数据计算链已落地，不代表外部监控服务或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260811_55_source_wide_v12`、teacher `0037_g04_remove_device_check`，最终 teacher canonical 账本为 32 条；rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块，rev55 将教师源表收敛为确认的 55 列。`tit_growth_test_v2` 实存 head 仍为 public `20260810_50_g04_sections`、teacher `0032_first_login_onboarding`，是精确 30 条 canonical 账本，尚未应用 rev51/0033、rev54/0037 与 rev55；远程 G04 仍为历史三模块形状。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这只证明公司测试库既有结构和源数据计算链已落地，不代表上述待迁移版本、外部监控服务或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -59,7 +59,7 @@ export DATABASE_URL='postgresql+psycopg://tit_growth_app@127.0.0.1:5432/tit_grow
 ## 初始化空库
 
 如果该库同时承载 teacher 的 `tide` Schema，首次初始化不能直接把 public 升到 head：必须按
-public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 分阶段执行，详见
+public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 分阶段执行，详见
 [`deploy/combined/README.md`](../deploy/combined/README.md)。只有不初始化 teacher Schema 的
 独立 public 数据库才可直接执行以下 `upgrade head`。
 
@@ -166,6 +166,9 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   只保留授课环境照片 AI 审核和课件准备确认。teacher `0037_g04_remove_device_check`
   从当前 execution 删除设备步骤定义并把完成规则收窄为上述两项；既有设备检测进度仍保留
   为历史审计事实，不修改任何 assignment、终态或分值。
+- `20260811_55_source_wide_v12` 以无 `CASCADE` 删列将教师源表从 63 列收敛为
+  53 个确认映射字段加 2 个教师资料状态字段；课程源表继续严格保持 23 列。存在数据时
+  downgrade 会失败关闭，避免伪造已删除值。
 - `seed_database.py` 只幂等补齐 14 个当前任务模板，不创建教师或任何运行时业务事实，也不修改投诉规则导入或触发结果。G01–G09 assignment 由教师写入流程初始化；初始化不创建通知、提醒或投递意图。隔离测试中的 Mock fixture 不进入运营运行库。
 - `seed_config_center.py` 只创建本地默认配置版本；空库读取不会由 API 隐式补配置。
 - 两个 Seed 脚本都要求 `APP_ENV` 明确为 `local / dev / development / test`，否则拒绝执行。

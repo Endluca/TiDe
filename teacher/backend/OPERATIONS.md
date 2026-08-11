@@ -47,10 +47,10 @@ pnpm provision:internal-test
 ```
 
 - 下一次明确授权的升级必须从当前 public 50 / teacher 0032 继续，并保持
-  `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037` 六阶段顺序；
-  public 54 包含 rev51，teacher 37 包含 0033。完成迁移并结束迁移窗口后，再运行
+  `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55` 七阶段顺序；
+  public 54 包含 rev51，teacher 37 包含 0033，public 55 最后收敛源宽表。完成迁移并结束迁移窗口后，再运行
   `database/scripts/apply-company-test.sh` 只读核对精确 32 条 canonical 账本/结构并初始化 execution
-  和受限账号；两者禁止并发，该脚本不再创建或升级 `tide` Schema。本次代码交付未执行数据库升级。
+  和受限账号；两者禁止并发，该脚本不再创建或升级 `tide` Schema。
 - `provision:internal-test` 使用 `TIDE_DATABASE_URL` 连接公司测试库，只为库中真实存在的教师创建测试账号，不复制或改写 `public.teachers`，也不生成教师可见的站内通知。
 - 后端与隧道由 `com.aiec.tide-internal-backend`、`com.aiec.tide-internal-tunnel` 两个 LaunchAgent 常驻。
 - 源代码合并后重新运行部署脚本，会同步运行副本并重启后端。

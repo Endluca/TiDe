@@ -74,12 +74,24 @@ def _type_signature(column: sa.Column) -> tuple[type, int | None, bool | None]:
     )
 
 
-def test_orm_source_wide_tables_have_61_csv_plus_2_g01_and_23_lesson_columns() -> None:
+RETIRED_IN_V12 = {
+    "tchr_group",
+    "tchr_group_desc",
+    "based_type",
+    "is_ft_hbt",
+    "is_fte",
+    "tchr_score",
+    "completed_again_student_15d_cnt",
+    "feedback_rebook_rate",
+}
+
+
+def test_orm_source_wide_tables_have_53_mapped_plus_2_g01_and_23_lesson_columns() -> None:
     assert TeacherSourceWideRecord.__tablename__ == "teacher_source_wide"
     assert LessonSourceWideRecord.__tablename__ == "lesson_source_wide"
     assert _column_names(TeacherSourceWideRecord) == TEACHER_SOURCE_FIELDS
     assert _column_names(LessonSourceWideRecord) == LESSON_SOURCE_FIELDS
-    assert len(TeacherSourceWideRecord.__table__.columns) == 63
+    assert len(TeacherSourceWideRecord.__table__.columns) == 55
     assert len(LessonSourceWideRecord.__table__.columns) == 23
     assert "是否复约" not in _column_names(LessonSourceWideRecord)
 
@@ -103,10 +115,8 @@ def test_source_types_preserve_existing_date_semantics_and_unbounded_text() -> N
 
     for field in (
         "real_name",
-        "tchr_group_desc",
         "center_type_desc",
         "bu",
-        "based_type",
         "status",
         "teach_area_type",
     ):
@@ -131,7 +141,11 @@ def test_revision_39_preserves_the_original_csv_columns_and_types(monkeypatch) -
     lesson_columns, lesson_options = created_tables["lesson_source_wide"]
     assert teacher_options == {"schema": "public"}
     assert lesson_options == {"schema": "public"}
-    assert tuple(column.name for column in teacher_columns) == TEACHER_CSV_FIELDS
+    revision_39_teacher_fields = tuple(column.name for column in teacher_columns)
+    assert tuple(
+        field for field in revision_39_teacher_fields if field not in RETIRED_IN_V12
+    ) == TEACHER_CSV_FIELDS
+    assert set(revision_39_teacher_fields) - set(TEACHER_CSV_FIELDS) == RETIRED_IN_V12
     assert tuple(column.name for column in lesson_columns) == LESSON_SOURCE_FIELDS
     assert "是否复约" not in {column.name for column in lesson_columns}
     assert [column.name for column in teacher_columns if column.primary_key] == [
@@ -142,10 +156,12 @@ def test_revision_39_preserves_the_original_csv_columns_and_types(monkeypatch) -
     ]
     assert not any(column.foreign_keys for column in lesson_columns)
 
-    teacher_orm = TeacherSourceWideRecord.__table__.columns
     lesson_orm = LessonSourceWideRecord.__table__.columns
+    teacher_orm = TeacherSourceWideRecord.__table__.columns
     assert {
-        column.name: _type_signature(column) for column in teacher_columns
+        column.name: _type_signature(column)
+        for column in teacher_columns
+        if column.name in TEACHER_CSV_FIELDS
     } == {
         column_name: _type_signature(teacher_orm[column_name])
         for column_name in TEACHER_CSV_FIELDS

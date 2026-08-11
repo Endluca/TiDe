@@ -456,4 +456,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032→public54→teacher0037 执行，随后仍需通过契约探针和发布门禁。\n'
+printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55 执行，随后仍需通过契约探针和发布门禁。\n'

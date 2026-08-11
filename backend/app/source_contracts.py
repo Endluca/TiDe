@@ -30,22 +30,16 @@ class SourceFieldDependency:
 TEACHER_CSV_FIELDS: tuple[str, ...] = (
     "tchr_id",
     "real_name",
-    "tchr_group",
-    "tchr_group_desc",
     "center_type_id",
     "center_type_desc",
     "bu",
-    "based_type",
     "status",
     "status_on_date",
     "status_off_date",
     "last_on_date",
     "job_days",
     "job_month",
-    "is_ft_hbt",
-    "is_fte",
     "teach_area_type",
-    "tchr_score",
     "onboard_date",
     "onboard_30d_end_date",
     "first_open_slot_dt",
@@ -62,7 +56,6 @@ TEACHER_CSV_FIELDS: tuple[str, ...] = (
     "perfect_cnt",
     "no_notice_cnt",
     "first_completed_student_cnt",
-    "completed_again_student_15d_cnt",
     "feedback_total_eval_cnt",
     "feedback_praise_cnt",
     "feedback_negative_cnt",
@@ -82,7 +75,6 @@ TEACHER_CSV_FIELDS: tuple[str, ...] = (
     "feedback_praise_rate",
     "feedback_negative_rate",
     "feedback_complaint_rate",
-    "feedback_rebook_rate",
     "feedback_favorite_rate",
     "feedback_block_rate",
     "feedback_eval_rate",
@@ -91,12 +83,12 @@ TEACHER_CSV_FIELDS: tuple[str, ...] = (
     "capacity_key_slot_day_rate",
 )
 
-# The confirmed upstream teacher extract contains the 61 fields above.  The
+# The confirmed v1.2 mapping contains the 53 fields above.  The
 # source table additionally keeps two source-owned, nullable profile facts.
 # G01 consumes only ``is_cpl_tesol``; ``is_self_introduce`` remains available
 # to operational profile views.  The established constant name is retained for
-# compatibility with schema checks that distinguish the supplied extract from
-# the current 63-column source table.
+# compatibility with schema checks that distinguish the supplied mapping from
+# the current 55-column source table.
 TEACHER_G01_STATUS_FIELDS: tuple[str, ...] = (
     "is_cpl_tesol",
     "is_self_introduce",
@@ -165,22 +157,17 @@ _TEACHER_PROFILE = _dependency(
 )
 
 _TEACHER_NO_DOWNSTREAM_DEFAULT = (
-    "Retained only to mirror the 61-column upstream teacher CSV; "
+    "Retained only to mirror the 53-column upstream teacher mapping; "
     "current v1 business rules do not consume it."
 )
 
 TEACHER_NO_DOWNSTREAM_FIELDS: tuple[str, ...] = (
-    "tchr_group",
-    "tchr_group_desc",
     "center_type_id",
     "center_type_desc",
     "status_on_date",
     "status_off_date",
     "last_on_date",
     "job_month",
-    "is_ft_hbt",
-    "is_fte",
-    "tchr_score",
     "first_open_slot_dt",
     "first_completed_dt",
     "total_booked_cnt",
@@ -189,7 +176,6 @@ TEACHER_NO_DOWNSTREAM_FIELDS: tuple[str, ...] = (
     "perfect_cnt",
     "no_notice_cnt",
     "first_completed_student_cnt",
-    "completed_again_student_15d_cnt",
     "feedback_total_eval_cnt",
     "feedback_negative_cnt",
     "feedback_complaint_cnt",
@@ -206,7 +192,6 @@ TEACHER_NO_DOWNSTREAM_FIELDS: tuple[str, ...] = (
     "feedback_praise_rate",
     "feedback_negative_rate",
     "feedback_complaint_rate",
-    "feedback_rebook_rate",
     "feedback_favorite_rate",
     "feedback_block_rate",
     "feedback_eval_rate",
@@ -220,14 +205,6 @@ _teacher_no_downstream_reasons = {
 }
 _teacher_no_downstream_reasons.update(
     {
-        "tchr_score": (
-            "The upstream teacher score is not the TiDe score and must not "
-            "update TiDe scoring."
-        ),
-        "completed_again_student_15d_cnt": (
-            "Retained as an upstream rebook metric; current v1 scoring removed "
-            "the rebook component."
-        ),
         "perfect_cnt": (
             "Retained only for reconciliation. Current perfect-completion scoring "
             "is derived from lesson status, late, and early fields."
@@ -247,7 +224,6 @@ _teacher_dependencies: dict[str, SourceFieldDependency] = {
     ),
     "real_name": _TEACHER_PROFILE,
     "bu": _TEACHER_PROFILE,
-    "based_type": _TEACHER_PROFILE,
     "status": _TEACHER_PROFILE,
     "job_days": _TEACHER_PROFILE,
     "teach_area_type": _TEACHER_PROFILE,
@@ -538,12 +514,12 @@ def _validate_contract(
 def validate_source_contracts() -> None:
     """Fail fast when a source field is unclassified or over-classified."""
 
-    if len(TEACHER_CSV_FIELDS) != 61:
-        raise RuntimeError("teacher CSV contract must contain exactly 61 fields")
+    if len(TEACHER_CSV_FIELDS) != 53:
+        raise RuntimeError("teacher mapping contract must contain exactly 53 fields")
     if len(TEACHER_G01_STATUS_FIELDS) != 2:
         raise RuntimeError("teacher G01 source contract must contain exactly 2 fields")
-    if len(TEACHER_SOURCE_FIELDS) != 63:
-        raise RuntimeError("teacher source table contract must contain exactly 63 fields")
+    if len(TEACHER_SOURCE_FIELDS) != 55:
+        raise RuntimeError("teacher source table contract must contain exactly 55 fields")
     if len(LESSON_SOURCE_FIELDS) != 23:
         raise RuntimeError("lesson source contract must contain exactly 23 fields")
     if "是否复约" in LESSON_SOURCE_FIELDS:

@@ -393,7 +393,10 @@ g04_two_part_execution_ready="$("${PSQL[@]}" -Atqc "
           'You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {\"decision\":\"PASS|RETRY|ERROR\",\"teacherReason\":\"teacher-safe concise message\",\"confidenceSummary\":{},\"criteria\":[{\"criterionKey\":\"one configured key\",\"result\":\"PASS|FAIL|UNKNOWN\",\"teacherMessage\":\"teacher-safe message or null\"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.'
         and rule.config->>'userText' =
           'Review this real teaching-environment photo strictly against camera angle, lighting, background and dressing only.'
-        and jsonb_object_length(rule.config) = 6
+        and (
+          select count(*)
+          from jsonb_object_keys(rule.config)
+        ) = 6
         and rule.teacher_failure_copy =
           '已保留你完成的内容，请根据提示更新这份材料。'
     )

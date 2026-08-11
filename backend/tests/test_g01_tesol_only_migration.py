@@ -222,12 +222,14 @@ def test_v51_contains_tesol_only_acl_and_exact_downgrade_restore(
     migration.upgrade()
     migration.downgrade()
 
-    assert len(executed) == 2
+    assert len(executed) == 4
     assert copy_calls == [
         (migration.NEW_COPY, migration.OLD_COPY, 1),
         (migration.OLD_COPY, migration.NEW_COPY, -1),
     ]
-    upgrade_sql, downgrade_sql = executed
+    version_up_sql, upgrade_sql, downgrade_sql, version_down_sql = executed
+    assert "ALTER COLUMN version_num TYPE varchar(64)" in version_up_sql
+    assert "ALTER COLUMN version_num TYPE varchar(32)" in version_down_sql
     assert "REVOKE ALL PRIVILEGES ON TABLE public.teacher_source_wide" in (
         upgrade_sql
     )

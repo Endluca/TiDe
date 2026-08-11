@@ -71,6 +71,17 @@ _templates = sa.table(
 G01_STABLE_ROW_ID = "G01:v1"
 
 
+UPGRADE_ALEMBIC_VERSION_WIDTH_SQL = """
+ALTER TABLE public.alembic_version
+ALTER COLUMN version_num TYPE varchar(64);
+"""
+
+DOWNGRADE_ALEMBIC_VERSION_WIDTH_SQL = """
+ALTER TABLE public.alembic_version
+ALTER COLUMN version_num TYPE varchar(32);
+"""
+
+
 UPGRADE_TEACHER_SOURCE_ACL_SQL = """
 DO $g01_tesol_only_acl$
 BEGIN
@@ -261,7 +272,15 @@ def _apply_teacher_source_acl(sql: str) -> None:
         op.execute(sql)
 
 
+def _resize_alembic_version(sql: str) -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(sql)
+
+
 def upgrade() -> None:
+    # The following reviewed revision IDs are longer than the historical
+    # varchar(32) ledger column. Resize before Alembic records rev54.
+    _resize_alembic_version(UPGRADE_ALEMBIC_VERSION_WIDTH_SQL)
     _apply_copy(
         NEW_COPY,
         expected_copy=OLD_COPY,
@@ -279,3 +298,4 @@ def downgrade() -> None:
         revision_delta=-1,
     )
     _apply_teacher_source_acl(DOWNGRADE_TEACHER_SOURCE_ACL_SQL)
+    _resize_alembic_version(DOWNGRADE_ALEMBIC_VERSION_WIDTH_SQL)

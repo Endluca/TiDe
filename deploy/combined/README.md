@@ -1,8 +1,8 @@
 # 教师端与运营端同机部署
 
 状态：**部署骨架与技术加固已建立，联合门禁已固定到 public
-`20260811_54_g04_remove_device_check`、教师端 `0037_g04_remove_device_check` 和唯一当前
-`G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 执行；
+`20260811_55_source_wide_v12`、教师端 `0037_g04_remove_device_check` 和唯一当前
+`G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 执行；
 完整链和数据库契约探针未通过前禁止上线。**
 
 ## 结论
@@ -109,8 +109,8 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
 
 切流前仍需关闭两项：
 
-1. 在目标库按跨 Schema 六阶段顺序执行到 public 54 / teacher 0037：先在 public 50 / teacher 0032 完成历史 G04 三模块链，再执行包含 rev51 的 public 54 与包含 0033 的 teacher 0037 完整链；验证 0025 保留 execution ID、
-   步骤/规则 ID 和教师进度，同时验证 rev47–54 与 0027–0037 完成本地 Quiz 退役、旧视图和
+1. 在目标库按跨 Schema 七阶段顺序执行到 public 55 / teacher 0037：先在 public 50 / teacher 0032 完成历史 G04 三模块链，再执行包含 rev51 的 public 54 与包含 0033 的 teacher 0037 完整链，最后执行 rev55；验证 0025 保留 execution ID、
+   步骤/规则 ID 和教师进度，同时验证 rev47–55 与 0027–0037 完成本地 Quiz 退役、旧视图和
    空置对象清理、G01 TESOL-only 收窄、G04 两模块收敛与引导状态建表，且未越权改写共享业务事实。
 2. 教师端主 PRD 仍描述“TIDE 刷新后再修改工单状态”，需要与已落地的原子回复函数同步，
    不能同时保留两套状态时序口径。
@@ -206,12 +206,12 @@ bash deploy/combined/preflight.sh
 docker compose -f deploy/combined/docker-compose.yml config --quiet
 ```
 
-教师端未按六阶段到 public 54 / teacher 0037、目录缺项、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
+教师端未按七阶段到 public 55 / teacher 0037、目录缺项、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
 这是预期结果。
 
 ## 发布顺序
 
-1. 评审 public 54、教师端 0037、任务编码、G01 TESOL-only 读取过滤、G04 两模块和执行配置；固定包含完整修复的新提交 SHA。
+1. 评审 public 55、教师端 0037、任务编码、G01 TESOL-only 读取过滤、G04 两模块、源宽表 v1.2 和执行配置；固定包含完整修复的新提交 SHA。
 2. 停止两端写流量、教师后台任务和积分结算 Worker。
 3. 创建一致性备份，记录 Alembic head、教师迁移账本和任务目录快照；验证恢复路径。
 4. DBA 预建或确认 `pg_trgm`。
@@ -266,6 +266,10 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    `file_objects.visibility` 和 `enforce_outbox_target()` 也不存在，0031/0032/0033/0037 分别完成 G04
    历史三模块、账号引导事实、G01 TESOL-only 和当前两模块收敛。0028 down 只能在 public 47
    之前验证，生产回退使用备份或向前修复。
+
+   teacher 0037 完成后，最后把 TiDe Alembic 升到 public head 55；rev55 只收敛教师源宽表字段，
+   课程源宽表继续保持 23 列。不得在 teacher 0037 之前执行 public 55，因为教师迁移器要求
+   在 public 54 的精确跨链切换点完成校验。
 
 9. 0025 完成旧执行编码迁移后，以只读共享目录模式核对教师端执行内容，确认 0037 的
    两模块、0033 的 G01 TESOL-only 规则、completion rule、execution/保留 step/rule ID、

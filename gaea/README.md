@@ -304,8 +304,8 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037`；
-   确认 public head 为 `20260811_54_g04_remove_device_check`、teacher 账本 head 为
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55`；
+   确认 public head 为 `20260811_55_source_wide_v12`、teacher 账本 head 为
    `0037_g04_remove_device_check`；其中 `20260811_51_g01_tesol_only` /
    `0033_g01_tesol_only` 必须完成 G01 TESOL-only 收窄，随后执行只读契约探针。
 2. 配齐统一应用的运营、教师和两个 Worker 环境变量，确认密钥不在版本化配置中；

@@ -425,7 +425,12 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                 )
             )
 
-        _run_alembic(backend_dir, database_url, "upgrade", "head")
+        _run_alembic(
+            backend_dir,
+            database_url,
+            "upgrade",
+            "20260807_49_unused_columns",
+        )
         with engine.connect() as connection:
             assert connection.execute(
                 text(
@@ -498,8 +503,12 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                 )
             )
 
-        _run_alembic(backend_dir, database_url, "upgrade", "head")
-        _run_alembic(backend_dir, database_url, "check")
+        _run_alembic(
+            backend_dir,
+            database_url,
+            "upgrade",
+            "20260807_49_unused_columns",
+        )
         with engine.connect() as connection:
             assert connection.execute(
                 text(
@@ -564,6 +573,13 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                 None,
                 None,
             )
+
+        # The current chain becomes forward-only at rev54. Prove the complete
+        # forward upgrade and ORM drift check only after the rev47-49
+        # round-trip assertions have finished; the ephemeral cluster is then
+        # discarded instead of pretending a rev54 rollback is possible.
+        _run_alembic(backend_dir, database_url, "upgrade", "head")
+        _run_alembic(backend_dir, database_url, "check")
     finally:
         engine.dispose()
         subprocess.run(

@@ -18,22 +18,16 @@ from app.source_contracts import (
 EXPECTED_TEACHER_CSV_FIELDS = (
     "tchr_id",
     "real_name",
-    "tchr_group",
-    "tchr_group_desc",
     "center_type_id",
     "center_type_desc",
     "bu",
-    "based_type",
     "status",
     "status_on_date",
     "status_off_date",
     "last_on_date",
     "job_days",
     "job_month",
-    "is_ft_hbt",
-    "is_fte",
     "teach_area_type",
-    "tchr_score",
     "onboard_date",
     "onboard_30d_end_date",
     "first_open_slot_dt",
@@ -50,7 +44,6 @@ EXPECTED_TEACHER_CSV_FIELDS = (
     "perfect_cnt",
     "no_notice_cnt",
     "first_completed_student_cnt",
-    "completed_again_student_15d_cnt",
     "feedback_total_eval_cnt",
     "feedback_praise_cnt",
     "feedback_negative_cnt",
@@ -70,7 +63,6 @@ EXPECTED_TEACHER_CSV_FIELDS = (
     "feedback_praise_rate",
     "feedback_negative_rate",
     "feedback_complaint_rate",
-    "feedback_rebook_rate",
     "feedback_favorite_rate",
     "feedback_block_rate",
     "feedback_eval_rate",
@@ -115,17 +107,12 @@ EXPECTED_LESSON_SOURCE_FIELDS = (
 )
 
 EXPECTED_TEACHER_NO_DOWNSTREAM_FIELDS = {
-    "tchr_group",
-    "tchr_group_desc",
     "center_type_id",
     "center_type_desc",
     "status_on_date",
     "status_off_date",
     "last_on_date",
     "job_month",
-    "is_ft_hbt",
-    "is_fte",
-    "tchr_score",
     "first_open_slot_dt",
     "first_completed_dt",
     "total_booked_cnt",
@@ -134,7 +121,6 @@ EXPECTED_TEACHER_NO_DOWNSTREAM_FIELDS = {
     "perfect_cnt",
     "no_notice_cnt",
     "first_completed_student_cnt",
-    "completed_again_student_15d_cnt",
     "feedback_total_eval_cnt",
     "feedback_negative_cnt",
     "feedback_complaint_cnt",
@@ -151,7 +137,6 @@ EXPECTED_TEACHER_NO_DOWNSTREAM_FIELDS = {
     "feedback_praise_rate",
     "feedback_negative_rate",
     "feedback_complaint_rate",
-    "feedback_rebook_rate",
     "feedback_favorite_rate",
     "feedback_block_rate",
     "feedback_eval_rate",
@@ -161,22 +146,22 @@ EXPECTED_TEACHER_NO_DOWNSTREAM_FIELDS = {
 }
 
 
-def test_source_field_contracts_preserve_csv_and_append_only_g01_facts() -> None:
+def test_source_field_contracts_match_v12_and_append_only_g01_facts() -> None:
     assert TEACHER_CSV_FIELDS == EXPECTED_TEACHER_CSV_FIELDS
     assert TEACHER_G01_STATUS_FIELDS == EXPECTED_TEACHER_G01_STATUS_FIELDS
     assert TEACHER_SOURCE_FIELDS == EXPECTED_TEACHER_SOURCE_FIELDS
     assert LESSON_SOURCE_FIELDS == EXPECTED_LESSON_SOURCE_FIELDS
-    assert len(TEACHER_CSV_FIELDS) == 61
-    assert len(TEACHER_SOURCE_FIELDS) == 63
+    assert len(TEACHER_CSV_FIELDS) == 53
+    assert len(TEACHER_SOURCE_FIELDS) == 55
     assert len(LESSON_SOURCE_FIELDS) == 23
     assert "是否复约" not in LESSON_SOURCE_FIELDS
 
 
-def test_dependency_registry_covers_all_86_fields_without_extras() -> None:
+def test_dependency_registry_covers_all_78_fields_without_extras() -> None:
     assert tuple(TEACHER_FIELD_DEPENDENCIES) == TEACHER_SOURCE_FIELDS
     assert set(TEACHER_FIELD_DEPENDENCIES) == set(TEACHER_SOURCE_FIELDS)
     assert set(LESSON_FIELD_DEPENDENCIES) == set(LESSON_SOURCE_FIELDS)
-    assert len(TEACHER_FIELD_DEPENDENCIES) + len(LESSON_FIELD_DEPENDENCIES) == 86
+    assert len(TEACHER_FIELD_DEPENDENCIES) + len(LESSON_FIELD_DEPENDENCIES) == 78
     assert set(SOURCE_FIELD_DEPENDENCIES) == {
         TEACHER_SOURCE_TABLE,
         LESSON_SOURCE_TABLE,

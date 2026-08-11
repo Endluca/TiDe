@@ -283,7 +283,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "pg_stat_ssl" in probe
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
-    assert "20260811_54_g04_remove_device_check" in probe
+    assert "20260811_55_source_wide_v12" in probe
     assert "Complete the required TESOL status and learning evidence." in probe
     assert "Confirm TESOL, pass all 61 questions" in probe
     assert "TESOL is complete, the 61-question check reaches 80%" in probe

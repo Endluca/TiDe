@@ -56,7 +56,7 @@
 | `content/faq/51Talk Teacher FAQ - Canonical.md` | 全量 Canonical FAQ 的唯一版本化内容源；运行时不直接读取该文件 |
 | `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
 | `scripts/apply.sh` | 本地幂等升级至 0037，并应用当前 Seed/本地权限 |
-| `scripts/apply-company-test.sh` | 在 public rev54 + canonical Tide 0037 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
+| `scripts/apply-company-test.sh` | 在 public rev55 + canonical Tide 0037 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
 | `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；先校验运营端已到 rev54 权威目录，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0037 |
 | `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 数据库显式构造共享目录，验证 fresh、managed upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037 六阶段顺序门禁、0022–0037、G01 TESOL-only 与稳定身份、G04 未知结构 fail-closed、历史设备进度和检测证据保留、引导存量回填/未登录保留/down-up/幂等、execution ID 原位保留、checksum、工单函数 owner 和生产连接保护 |
 | `scripts/verify.sh` | 验证共享表、过程关联、角色权限、乐观锁、审计/Outbox 和消息回写 |
@@ -177,8 +177,8 @@ bash database/scripts/test-production-migrator.sh
 ## 公司测试库
 
 - 公司测试库配置放在本地 `database/.env.company-test`，该文件不进入 Git，权限必须为 `600`。
-- 代码侧初始化门禁面向 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037` 的完整六阶段升级结果；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。当前公司测试库仍停在 public 50 / teacher 0032，本次未执行升级。
-- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260811_54_g04_remove_device_check` 与精确 32 条 canonical Tide 0037 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL。
+- 代码侧初始化门禁面向 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55` 的完整七阶段升级结果；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。当前公司测试库仍停在 public 50 / teacher 0032，本次未执行升级。
+- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260811_55_source_wide_v12` 与精确 32 条 canonical Tide 0037 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL。
 - 初始化器不得与 public/Tide migrator 并发运行；受控部署必须先完成迁移并释放迁移窗口，再执行初始化器。
 - 日常应用账号固定为 `tit_teacher_crud`，只读教师身份资料和 `teacher_scorecard_current / teacher_lesson_score_current`，只获得契约允许的共享任务权限和 `tide` Schema 业务表权限；不读取原始积分、课程事实或评分配置表。
 - 内部测试后端的 `TIDE_DATABASE_URL` 和 `SHIWEN_READ_DATABASE_URL` 均由该配置生成并指向同一公司测试库；运行时不再使用本地 PostgreSQL 或本地数据回退。

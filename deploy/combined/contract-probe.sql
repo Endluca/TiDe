@@ -156,7 +156,7 @@ BEGIN
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260811_54_g04_remove_device_check' THEN
+    ) IS DISTINCT FROM '20260811_55_source_wide_v12' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 

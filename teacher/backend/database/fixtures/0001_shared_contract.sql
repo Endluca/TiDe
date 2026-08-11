@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS public.teacher_metric_snapshots (
     CONSTRAINT teacher_metric_snapshots_batch_teacher_key UNIQUE (batch_id, teacher_id)
 );
 
--- Minimal local/test subset of the TiDe-owned 63-column teacher source table.
+-- Minimal local/test subset of the TiDe-owned 55-column teacher source table.
 -- Production structure is owned exclusively by the root Alembic chain.
 CREATE TABLE IF NOT EXISTS public.teacher_source_wide (
     tchr_id varchar(64) PRIMARY KEY,

@@ -158,7 +158,7 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260811_54_g04_remove_device_check"',
+        'EXPECTED_PUBLIC_HEAD="20260811_55_source_wide_v12"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -300,7 +300,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260811_54_g04_remove_device_check\\n' ;;
+  6) printf '20260811_55_source_wide_v12\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -772,13 +772,13 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "同一 UID" in readme
     assert "tit_growth_migrator" in readme
     assert "tide_migrator" in readme
-    assert "20260811_54_g04_remove_device_check" in readme
+    assert "20260811_55_source_wide_v12" in readme
     assert "0037_g04_remove_device_check" in readme
     assert "20260811_51_g01_tesol_only" in readme
     assert "0033_g01_tesol_only" in readme
     assert (
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
-        "teacher 0037"
+        "teacher 0037 → public 55"
     ) in readme
     assert "settle_shared_task_scores.py --watch" in readme
     assert "TIT_SCORE_WORKER_HEARTBEAT" in readme

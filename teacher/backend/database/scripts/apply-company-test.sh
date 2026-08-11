@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260811_54_g04_remove_device_check"
+EXPECTED_PUBLIC_HEAD="20260811_55_source_wide_v12"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -802,4 +802,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：public rev54 与 canonical Tide 0037 账本/checksum/实存结构只读门禁、G01 TESOL-only、G04 照片与课件两模块、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public rev55 与 canonical Tide 0037 账本/checksum/实存结构只读门禁、G01 TESOL-only、G04 照片与课件两模块、源宽表 v1.2、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"

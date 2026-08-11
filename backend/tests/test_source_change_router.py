@@ -51,7 +51,7 @@ def test_teacher_fields_route_to_deduplicated_stably_sorted_work() -> None:
 
 
 def test_source_only_field_is_valid_and_emits_no_downstream_work() -> None:
-    route = route_source_change(_payload(changed_fields=["tchr_score"]))
+    route = route_source_change(_payload(changed_fields=["center_type_id"]))
 
     assert route.handlers == ()
     assert route.scopes == ()

@@ -220,7 +220,6 @@ def _teacher_profile_payload(source: TeacherSourceWideRecord) -> dict[str, Any]:
     return {
         "employment_status": source.status,
         "bu": source.bu,
-        "based_type": source.based_type,
         "teach_area_type": source.teach_area_type,
         "onboard_date": _iso(source.onboard_date),
         "onboard_30d_end_date": _iso(source.onboard_30d_end_date),
