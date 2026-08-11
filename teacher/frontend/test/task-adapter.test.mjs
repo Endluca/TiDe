@@ -29,11 +29,30 @@ const context = (overrides = {}) => ({
     language: "en",
   },
   display: { stageKey: "FOUNDATION", sequence: 2, points: 2, estimatedMinutes: 8 },
-  capabilities: ["VIDEO"],
+  capabilities: ["DOCUMENT"],
   steps: [
-    { stepKey: "video", type: "VIDEO", title: "Watch", config: { assetUrl: "/video.mp4", durationSeconds: 60 } },
+    {
+      stepKey: "g02-policy-document",
+      type: "DOCUMENT",
+      title: "Read Overseas NT Policies",
+      config: {
+        sourceTitle: "Overseas NT Policies",
+        contentVersion: "2026-07-24-overseas-nt-policies-v1",
+        contentHash: "6875233667c6f3d90602a07c84849dbb88f41685929779a7b0dc79ccf859979c",
+      },
+    },
   ],
-  progress: { percent: 50, steps: [] },
+  progress: {
+    percent: 50,
+    steps: [
+      {
+        stepKey: "g02-policy-document",
+        status: "IN_PROGRESS",
+        percent: 50,
+        details: { readPercent: 50, reachedEnd: false },
+      },
+    ],
+  },
   execution: { contentStatus: "READY", contentVersion: "1", pendingReason: null },
   assignment: null,
   ...overrides,
@@ -59,17 +78,19 @@ test("adapts live task state and capabilities instead of localStorage state", ()
   const task = adaptTaskContext(context());
   assert.equal(task.id, "platform-policies");
   assert.equal(task.status, "started");
-  assert.equal(task.method, "external_course");
+  assert.equal(task.method, "document_reading");
   assert.equal(task.progress, 50);
   assert.equal(task.stateVersion, 2);
+  assert.equal(task.documentReadPercent, 50);
+  assert.equal(task.documentReachedEnd, false);
 });
 
-test("routes G02 to Kuozhi instead of legacy native content", () => {
+test("routes G02 to the current native document and projects completion", () => {
   const task = adaptTaskContext(context({
     capabilities: ["DOCUMENT"],
     steps: [
       {
-        stepKey: "g03-overseas-nt-policies",
+        stepKey: "g02-policy-document",
         type: "DOCUMENT",
         title: "Read Overseas NT Policies",
         config: {
@@ -80,11 +101,19 @@ test("routes G02 to Kuozhi instead of legacy native content", () => {
     ],
     progress: {
       percent: 50,
-      steps: [{ stepKey: "g03-overseas-nt-policies", status: "COMPLETED", percent: 100 }],
+      steps: [{
+        stepKey: "g02-policy-document",
+        status: "COMPLETED",
+        percent: 100,
+        details: { readPercent: 100, reachedEnd: true },
+      }],
     },
   }));
 
-  assert.equal(task.method, "external_course");
+  assert.equal(task.method, "document_reading");
+  assert.equal(task.documentCompleted, true);
+  assert.equal(task.documentReadPercent, 100);
+  assert.equal(task.documentReachedEnd, true);
 });
 
 test("maps the blacklist custom text step to the factual response flow", () => {

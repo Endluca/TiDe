@@ -16,6 +16,7 @@ const outputTypes = [
   'FILE',
   'DEVICE_CHECK',
   'EXTERNAL_PROOF',
+  'DOCUMENT',
   'CUSTOM',
 ] as const;
 

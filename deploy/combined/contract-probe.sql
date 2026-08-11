@@ -153,11 +153,11 @@ BEGIN
         RAISE EXCEPTION 'contract probe role has write-capable privileges';
     END IF;
 
-    -- The reviewed head follows 20260811_55_source_wide_v12.
+    -- The reviewed head contains the current G02 native document copy.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260811_56_p_fb_negative_copy' THEN
+    ) IS DISTINCT FROM '20260811_57_g02_document' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -197,10 +197,12 @@ BEGIN
             '0032_first_login_onboarding',
             '0033_g01_tesol_only',
             '0037_g04_remove_device_check',
-            '0038_personalized_environment_photo'
+            '0038_personalized_environment_photo',
+            '0039_g02_policy_document',
+            '0040_g02_document_read_status'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0038';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0040';
     END IF;
 
     IF to_regclass('tide.analytics_task_business_change_v1') IS NOT NULL
@@ -397,6 +399,22 @@ BEGIN
         RAISE EXCEPTION 'at least one teacher does not have exactly nine fixed assignments';
     END IF;
 
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.task_templates
+        WHERE row_id = 'G03:v1'
+          AND template_id = 'G02'
+          AND template_version = 1
+          AND status = 'PUBLISHED'
+          AND payload->>'how_summary' =
+              'Read the current Overseas NT Policies document in TIDE. Your reading progress is saved automatically.'
+          AND payload->>'completion_standard' =
+              'G02 is completed automatically after you reach the end of the current published document.'
+    ) THEN
+        RAISE EXCEPTION
+            'stable G03:v1 row for current G02 does not expose the reviewed document copy';
+    END IF;
+
     IF EXISTS (
         SELECT 1
         FROM tide.task_execution_versions AS execution
@@ -450,6 +468,82 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'G01 external-status rule set is not exactly the reviewed TESOL-only rule';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        WHERE execution.shared_template_row_id = 'G03:v1'
+          AND execution.task_code = 'G02'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":35,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-24-overseas-nt-policies-v1","pendingReason":null}'::jsonb
+          AND (
+              SELECT count(*)
+              FROM tide.task_step_definitions AS definition
+              WHERE definition.execution_version_id = execution.id
+          ) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM tide.task_step_definitions AS definition
+              WHERE definition.execution_version_id = execution.id
+                AND definition.step_key = 'g02-policy-document'
+                AND definition.position = 1
+                AND definition.step_type = 'DOCUMENT'
+                AND definition.config->>'contentVersion' =
+                    '2026-07-24-overseas-nt-policies-v1'
+                AND definition.config->>'contentHash' =
+                    '6875233667c6f3d90602a07c84849dbb88f41685929779a7b0dc79ccf859979c'
+          )
+          AND (
+              SELECT count(*)
+              FROM tide.task_validation_rules AS rule
+              WHERE rule.execution_version_id = execution.id
+          ) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM tide.task_validation_rules AS rule
+              WHERE rule.execution_version_id = execution.id
+                AND rule.rule_key = 'all-steps-complete'
+                AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+                AND rule.rule_version =
+                    '2026-08-11-g02-policy-document-v1'
+                AND rule.position = 1
+                AND rule.config =
+                    '{"requiredStepKeys":["g02-policy-document"]}'::jsonb
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'G02 teacher execution is not the reviewed policy document';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'tide'
+          AND table_name = 'task_step_progress'
+          AND column_name = 'reached_end'
+          AND data_type = 'boolean'
+          AND is_nullable = 'NO'
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'tide.task_step_progress'::regclass
+          AND conname = 'task_step_progress_g02_read_status_check'
+          AND contype = 'c'
+          AND convalidated
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'tide.task_step_progress'::regclass
+          AND tgname = 'task_step_progress_g02_assignment_completion_check'
+          AND NOT tgisinternal
+          AND tgdeferrable
+          AND tginitdeferred
+    ) THEN
+        RAISE EXCEPTION
+            'G02 document progress constraints are not the reviewed 0040 shape';
     END IF;
 
     IF NOT EXISTS (

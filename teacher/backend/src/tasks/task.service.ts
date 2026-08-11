@@ -35,6 +35,12 @@ import {
   KuozhiProgressConflictError,
   KuozhiProgressRepository,
 } from '../integrations/kuozhi/kuozhi-progress.repository';
+import {
+  TaskDocumentContentService,
+  TaskDocumentContentUnavailableError,
+  type TaskDocumentAsset,
+  type TaskDocumentContentResponse,
+} from './task-document-content.service';
 
 @Injectable()
 export class TaskService {
@@ -43,6 +49,8 @@ export class TaskService {
     @Optional() private readonly events?: AppEventService,
     @Optional() private readonly kuozhi?: KuozhiService,
     @Optional() private readonly kuozhiProgress?: KuozhiProgressRepository,
+    @Optional()
+    private readonly documentContent?: TaskDocumentContentService,
   ) {}
 
   async list(principal: AuthPrincipal): Promise<TaskListResponse> {
@@ -66,6 +74,37 @@ export class TaskService {
       throw this.notFound();
     }
     return task;
+  }
+
+  async getDocumentContent(
+    principal: AuthPrincipal,
+    taskInstanceId: string,
+  ): Promise<TaskDocumentContentResponse> {
+    const config = await this.documentStepConfig(principal, taskInstanceId);
+    try {
+      return this.requiredDocumentContent().getContent(config);
+    } catch (error) {
+      if (error instanceof TaskDocumentContentUnavailableError) {
+        throw this.documentContentUnavailable();
+      }
+      throw error;
+    }
+  }
+
+  async getDocumentAsset(
+    principal: AuthPrincipal,
+    taskInstanceId: string,
+    assetKey: string,
+  ): Promise<TaskDocumentAsset> {
+    const config = await this.documentStepConfig(principal, taskInstanceId);
+    try {
+      return this.requiredDocumentContent().getAsset(config, assetKey);
+    } catch (error) {
+      if (error instanceof TaskDocumentContentUnavailableError) {
+        throw this.documentContentUnavailable();
+      }
+      throw error;
+    }
   }
 
   async getKuozhiLaunch(
@@ -496,6 +535,42 @@ export class TaskService {
       });
     }
     return this.kuozhiProgress;
+  }
+
+  private async documentStepConfig(
+    principal: AuthPrincipal,
+    taskInstanceId: string,
+  ): Promise<Record<string, unknown>> {
+    const task = await this.repository.findTask(
+      principal.accountId,
+      taskInstanceId,
+    );
+    if (!task || task.taskCode !== 'G02') {
+      throw this.notFound();
+    }
+    const documentSteps = task.steps.filter(
+      (step) =>
+        step.type === 'DOCUMENT' && step.stepKey === 'g02-policy-document',
+    );
+    if (documentSteps.length !== 1) {
+      throw this.documentContentUnavailable();
+    }
+    return documentSteps[0].config;
+  }
+
+  private requiredDocumentContent(): TaskDocumentContentService {
+    if (!this.documentContent) {
+      throw this.documentContentUnavailable();
+    }
+    return this.documentContent;
+  }
+
+  private documentContentUnavailable(): UnprocessableEntityException {
+    return new UnprocessableEntityException({
+      code: 'DOCUMENT_CONTENT_UNAVAILABLE',
+      message: '当前版本的政策文档暂不可用，请稍后重试',
+      retryable: true,
+    });
   }
 
   private async captureValidationFailure(

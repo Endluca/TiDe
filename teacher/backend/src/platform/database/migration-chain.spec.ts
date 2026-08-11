@@ -5,22 +5,49 @@ const databaseFile = (relativePath: string) =>
   readFileSync(resolve(__dirname, '../../../database', relativePath), 'utf8');
 
 describe('teacher database migration chain', () => {
-  it('keeps every local and production entry point on the 0038 head', () => {
+  it('keeps every local and production entry point on the 0040 head', () => {
     const ddl = databaseFile('ddl.sql');
     const production = databaseFile('scripts/apply-production.sh');
 
     expect(ddl).toMatch(
-      /\\ir fixtures\/0004_p_fb_negative_contract\.sql[\s\S]*seed\/0000_mock_shared_catalog\.sql[\s\S]*0033_g01_tesol_only\.up\.sql[\s\S]*seed\/0005_mock_g04_two_part_catalog\.sql[\s\S]*0037_g04_remove_device_check\.up\.sql[\s\S]*0038_personalized_environment_photo\.up\.sql/,
+      /\\ir fixtures\/0004_p_fb_negative_contract\.sql[\s\S]*seed\/0000_mock_shared_catalog\.sql[\s\S]*0033_g01_tesol_only\.up\.sql[\s\S]*seed\/0005_mock_g04_two_part_catalog\.sql[\s\S]*0037_g04_remove_device_check\.up\.sql[\s\S]*0038_personalized_environment_photo\.up\.sql[\s\S]*0039_g02_policy_document\.up\.sql[\s\S]*0040_g02_document_read_status\.up\.sql/,
     );
     expect(ddl.trimEnd()).toMatch(
-      /\\ir migrations\/0038_personalized_environment_photo\.up\.sql$/,
+      /\\ir migrations\/0040_g02_document_read_status\.up\.sql$/,
     );
     expect(ddl).toContain('\\ir seed/0005_mock_g04_two_part_catalog.sql');
     expect(production).toContain(
-      'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0038_personalized_environment_photo}"',
+      'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0040_g02_document_read_status}"',
     );
     expect(production).toMatch(
-      /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding\s+0033_g01_tesol_only\s+0037_g04_remove_device_check\s+0038_personalized_environment_photo/,
+      /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding\s+0033_g01_tesol_only\s+0037_g04_remove_device_check\s+0038_personalized_environment_photo\s+0039_g02_policy_document\s+0040_g02_document_read_status/,
+    );
+  });
+
+  it('keeps G02 completion evidence and assignment state continuously consistent', () => {
+    const document = databaseFile(
+      'migrations/0039_g02_policy_document.up.sql',
+    ).trim();
+    const status = databaseFile(
+      'migrations/0040_g02_document_read_status.up.sql',
+    ).trim();
+    const down = databaseFile(
+      'migrations/0040_g02_document_read_status.down.sql',
+    ).trim();
+
+    for (const sql of [document, status, down]) {
+      expect(sql.startsWith('BEGIN;')).toBe(true);
+      expect(sql.endsWith('COMMIT;')).toBe(true);
+    }
+    expect(status).toContain('task_step_progress_g02_read_status_check');
+    expect(status).toContain(
+      'CREATE CONSTRAINT TRIGGER task_step_progress_g02_assignment_completion_check',
+    );
+    expect(status).toContain('DEFERRABLE INITIALLY DEFERRED');
+    expect(status).toContain('enforce_g02_document_assignment_completion');
+    expect(status).toContain("assignment.status = 'COMPLETED'");
+    expect(down).toContain(
+      'DROP TRIGGER IF EXISTS task_step_progress_g02_assignment_completion_check',
     );
   });
 

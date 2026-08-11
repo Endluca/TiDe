@@ -56,8 +56,8 @@ EXPECTED_MANDATORY_COPY = {
     ),
     "G02": (
         "Learn the essential classroom and account-safety rules.",
-        "Read the in-platform policy guide and complete its quiz.",
-        "The policy guide is confirmed and the quiz requirements pass.",
+        "Read the current Overseas NT Policies document in TIDE. Your reading progress is saved automatically.",
+        "G02 is completed automatically after you reach the end of the current published document.",
         "You can apply the core platform policies in class.",
         "READY",
     ),

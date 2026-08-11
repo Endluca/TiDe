@@ -264,6 +264,43 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TaskContext' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/tasks/{taskInstanceId}/document-content:
+    get:
+      tags: [Tasks]
+      summary: 获取 assignment 当前执行版本对应的原生文档内容
+      description: 文档正文由后端按步骤配置中的 contentVersion 和 contentHash 精确选择；前端不内置版本判断。
+      operationId: getTaskDocumentContent
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+      responses:
+        '200':
+          description: 版本化双语 Markdown 与受控图片清单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskDocumentContent' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/v1/tasks/{taskInstanceId}/document-content/assets/{assetKey}:
+    get:
+      tags: [Tasks]
+      summary: 获取 assignment 当前文档版本的受控图片
+      operationId: getTaskDocumentAsset
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/TaskInstanceId'
+        - name: assetKey
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[a-z0-9-]+$' }
+      responses:
+        '200':
+          description: 经过 SHA-256 校验的文档图片
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /api/v1/tasks/{taskInstanceId}/kuozhi-launch:
     get:
       tags: [Tasks]
@@ -1148,7 +1185,7 @@ components:
     TaskContext:
       type: object
       additionalProperties: false
-      required: [taskInstanceId, taskCode, kind, templateVersion, executionContractVersion, status, stateVersion, display, content, steps, progress, capabilities, assignment, availableAt, dueAt, completedAt, dataOrigin]
+      required: [taskInstanceId, taskCode, kind, templateVersion, executionContractVersion, status, stateVersion, display, content, steps, progress, execution, capabilities, assignment, availableAt, dueAt, completedAt, dataOrigin]
       properties:
         taskInstanceId: { type: string }
         taskCode: { type: string }
@@ -1163,6 +1200,14 @@ components:
           type: array
           items: { $ref: '#/components/schemas/TaskStep' }
         progress: { $ref: '#/components/schemas/TaskProgress' }
+        execution:
+          type: object
+          additionalProperties: false
+          required: [contentStatus, contentVersion, pendingReason]
+          properties:
+            contentStatus: { type: string, enum: [READY, PENDING] }
+            contentVersion: { type: [string, 'null'] }
+            pendingReason: { type: [string, 'null'] }
         capabilities:
           type: array
           uniqueItems: true
@@ -1172,6 +1217,41 @@ components:
         dueAt: { type: [string, 'null'], format: date-time }
         completedAt: { type: [string, 'null'], format: date-time }
         dataOrigin: { type: string, enum: [REAL, DERIVED_REAL, MOCK, MOCK_SIMULATION, MOCK_PROXY] }
+    TaskDocumentContent:
+      type: object
+      additionalProperties: false
+      required: [documentCode, title, sourceUpdatedAt, contentVersion, contentHash, completionMode, markdown, translationHashes, images]
+      properties:
+        documentCode: { type: string }
+        title: { type: string }
+        sourceUpdatedAt: { type: string, format: date-time }
+        contentVersion: { type: string }
+        contentHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        completionMode: { type: string, const: SCROLL_TO_END }
+        markdown:
+          type: object
+          additionalProperties: false
+          required: [en, zh]
+          properties:
+            en: { type: string }
+            zh: { type: string }
+        translationHashes:
+          type: object
+          additionalProperties: false
+          required: [zh]
+          properties:
+            zh: { type: string, pattern: '^[a-f0-9]{64}$' }
+        images:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [key, sourcePath, sha256, alt]
+            properties:
+              key: { type: string }
+              sourcePath: { type: string }
+              sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+              alt: { type: string }
     KuozhiLaunchResponse:
       type: object
       additionalProperties: false
@@ -1319,11 +1399,21 @@ components:
           type: array
           items:
             type: object
-            required: [stepKey, status, percent]
+            additionalProperties: false
+            required: [stepKey, status, percent, details]
             properties:
               stepKey: { type: string }
               status: { type: string, enum: [NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED] }
               percent: { type: integer, minimum: 0, maximum: 100 }
+              details:
+                type: object
+                description: For a DOCUMENT step this includes the validated contentVersion, contentHash, readPercent and reachedEnd state.
+                properties:
+                  contentVersion: { type: string }
+                  contentHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+                  readPercent: { type: integer, minimum: 0, maximum: 100 }
+                  reachedEnd: { type: boolean }
+                additionalProperties: true
     StepType:
       type: string
       enum: [VIDEO, DOCUMENT, CHECKLIST, UPLOAD, DEVICE_CHECK, EXTERNAL_TRAINING, CUSTOM]
@@ -1339,7 +1429,15 @@ components:
         expectedStateVersion: { type: integer, minimum: 1 }
         stepKey: { type: string }
         percent: { type: integer, minimum: 0, maximum: 100 }
-        progress: { type: object, additionalProperties: true }
+        progress:
+          type: object
+          description: DOCUMENT steps send contentVersion, contentHash, readPercent and reachedEnd; other step types use their own validated payload.
+          properties:
+            contentVersion: { type: string }
+            contentHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+            readPercent: { type: integer, minimum: 0, maximum: 100 }
+            reachedEnd: { type: boolean }
+          additionalProperties: true
     SubmitTaskRequest:
       type: object
       additionalProperties: false
@@ -1358,7 +1456,7 @@ components:
       required: [stepKey, outputType, value]
       properties:
         stepKey: { type: string }
-        outputType: { type: string, enum: [CHECKLIST, FILE, DEVICE_CHECK, EXTERNAL_PROOF, CUSTOM] }
+        outputType: { type: string, enum: [CHECKLIST, FILE, DEVICE_CHECK, EXTERNAL_PROOF, DOCUMENT, CUSTOM] }
         value: { type: object, additionalProperties: true }
     RetryTaskRequest:
       type: object
@@ -1385,6 +1483,15 @@ components:
             status: { type: string, enum: [NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED] }
             percent: { type: integer, minimum: 0, maximum: 100 }
             result: { type: object, additionalProperties: true }
+            details:
+              type: object
+              description: Validated step state; DOCUMENT responses include contentVersion, contentHash, readPercent and reachedEnd.
+              properties:
+                contentVersion: { type: string }
+                contentHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+                readPercent: { type: integer, minimum: 0, maximum: 100 }
+                reachedEnd: { type: boolean }
+              additionalProperties: true
         validation: { $ref: '#/components/schemas/ValidationResult' }
     ValidationResult:
       type: object

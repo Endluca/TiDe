@@ -60,6 +60,8 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0033_g01_tesol_only',
   '0037_g04_remove_device_check',
   '0038_personalized_environment_photo',
+  '0039_g02_policy_document',
+  '0040_g02_document_read_status',
 ] as const;
 
 @Injectable()
@@ -287,10 +289,10 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0038_personalized_environment_photo'
+        ) = '0040_g02_document_read_status'
         AND public_migration_state.migration_count = 1
         AND public_migration_state.version_num =
-          '20260811_56_p_fb_negative_copy'
+          '20260811_57_g02_document'
         AND has_table_privilege(
           current_user,
           to_regclass('public.alembic_version'),
@@ -446,6 +448,53 @@ export class DatabaseService implements OnModuleDestroy {
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.account_onboarding_states') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'tide'
+            AND table_name = 'task_step_progress'
+            AND column_name = 'reached_end'
+            AND data_type = 'boolean'
+            AND is_nullable = 'NO'
+            AND column_default IN ('false', 'false::boolean')
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conrelid = 'tide.task_step_progress'::regclass
+            AND conname = 'task_step_progress_g02_read_status_check'
+            AND contype = 'c'
+            AND convalidated
+            AND position('reached_end' IN pg_get_constraintdef(oid)) > 0
+            AND position('contentVersion' IN pg_get_constraintdef(oid)) > 0
+            AND position('contentHash' IN pg_get_constraintdef(oid)) > 0
+            AND position('completed_at' IN pg_get_constraintdef(oid)) > 0
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM pg_trigger AS trigger
+          JOIN pg_proc AS procedure ON procedure.oid = trigger.tgfoid
+          JOIN pg_namespace AS namespace
+            ON namespace.oid = procedure.pronamespace
+          WHERE trigger.tgrelid = 'tide.task_step_progress'::regclass
+            AND trigger.tgname =
+              'task_step_progress_g02_assignment_completion_check'
+            AND NOT trigger.tgisinternal
+            AND trigger.tgdeferrable
+            AND trigger.tginitdeferred
+            AND namespace.nspname = 'tide'
+            AND procedure.proname =
+              'enforce_g02_document_assignment_completion'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM tide.task_step_progress AS progress
+          JOIN public.task_assignments AS assignment
+            ON assignment.assignment_id = progress.task_assignment_id
+          WHERE progress.step_key = 'g02-policy-document'
+            AND progress.reached_end
+            AND assignment.status <> 'COMPLETED'
+        )
         AND to_regclass('tide.job_leases') IS NOT NULL
         AND to_regclass('tide.kuozhi_course_syncs') IS NOT NULL
         AND to_regclass(
@@ -559,6 +608,57 @@ export class DatabaseService implements OnModuleDestroy {
             AND rule.position = 3
             AND rule.config = '{}'::jsonb
             AND rule.teacher_failure_copy = 'TESOL 真实状态尚未通过。'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_execution_versions AS execution
+          WHERE execution.shared_template_row_id = 'G03:v1'
+            AND execution.task_code = 'G02'
+            AND execution.status = 'ACTIVE'
+            AND execution.execution_contract_version = 'task-contract-v3'
+            AND execution.config =
+              '{"estimatedMinutes":35,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-24-overseas-nt-policies-v1","pendingReason":null}'::jsonb
+        )
+        AND (
+          SELECT count(*)
+          FROM tide.task_step_definitions AS definition
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = definition.execution_version_id
+          WHERE execution.shared_template_row_id = 'G03:v1'
+        ) = 1
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_step_definitions AS definition
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = definition.execution_version_id
+          WHERE execution.shared_template_row_id = 'G03:v1'
+            AND definition.step_key = 'g02-policy-document'
+            AND definition.position = 1
+            AND definition.step_type = 'DOCUMENT'
+            AND definition.config->>'contentVersion' =
+              '2026-07-24-overseas-nt-policies-v1'
+            AND definition.config->>'contentHash' =
+              '6875233667c6f3d90602a07c84849dbb88f41685929779a7b0dc79ccf859979c'
+        )
+        AND (
+          SELECT count(*)
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'G03:v1'
+        ) = 1
+        AND EXISTS (
+          SELECT 1
+          FROM tide.task_validation_rules AS rule
+          JOIN tide.task_execution_versions AS execution
+            ON execution.id = rule.execution_version_id
+          WHERE execution.shared_template_row_id = 'G03:v1'
+            AND rule.rule_key = 'all-steps-complete'
+            AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+            AND rule.rule_version = '2026-08-11-g02-policy-document-v1'
+            AND rule.position = 1
+            AND rule.config =
+              '{"requiredStepKeys":["g02-policy-document"]}'::jsonb
         )
         AND EXISTS (
           SELECT 1

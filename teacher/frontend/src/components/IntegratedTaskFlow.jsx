@@ -82,7 +82,12 @@ function hydratedTask(task, context, status, steps) {
   }
   const documentStep = context?.steps?.find((step) => step.type === "DOCUMENT");
   if (documentStep) {
-    next.documentCompleted = steps[documentStep.stepKey]?.status === "COMPLETED";
+    const progress = steps[documentStep.stepKey];
+    next.documentCompleted = progress?.status === "COMPLETED";
+    next.documentReadPercent = Number(progress?.details?.readPercent)
+      || progress?.percent
+      || 0;
+    next.documentReachedEnd = progress?.details?.reachedEnd === true;
   }
   const factualResponse = context?.steps?.find((step) => (
     step.type === "CUSTOM" && step.config?.kind === "TEXT_SUBMISSION"
@@ -228,13 +233,13 @@ export default function IntegratedTaskFlow({
     }
   }, [task]);
 
-  const ensureStarted = useCallback(async () => {
+  const ensureStarted = useCallback(async (requestOptions = {}) => {
     const transition = async (currentStatus, currentVersion) => {
       if (currentStatus === "FAILED") {
-        return retryTask(task.backendId, currentVersion, "TEACHER_RETRY");
+        return retryTask(task.backendId, currentVersion, "TEACHER_RETRY", requestOptions);
       }
       if (taskNeedsStart(currentStatus)) {
-        return startTask(task.backendId, currentVersion);
+        return startTask(task.backendId, currentVersion, requestOptions);
       }
       return null;
     };
@@ -258,15 +263,43 @@ export default function IntegratedTaskFlow({
     }
   }, [refreshLatestContext, task.backendId, updateTaskState]);
 
-  const saveStep = useCallback((selector, progress, occurrence = 0) => enqueue(async () => {
+  const saveStep = useCallback((
+    selector,
+    progress,
+    occurrence = 0,
+    requestOptions = {},
+  ) => enqueue(async () => {
     setError("");
     const step = findStep(selector, occurrence);
     if (!step) throw new Error(language === "zh" ? "任务内容正在同步，请稍后刷新重试。" : "The task content is syncing. Refresh and try again shortly.");
     trackStepStart(step);
     try {
-      const version = await ensureStarted();
-      const response = await saveTaskProgress(task.backendId, version, step.stepKey, 0, progress);
+      const version = await ensureStarted(requestOptions);
+      const requestedPercent = step.type === "DOCUMENT"
+        && Number.isInteger(progress?.readPercent)
+        ? progress.readPercent
+        : 0;
+      const response = await saveTaskProgress(
+        task.backendId,
+        version,
+        step.stepKey,
+        requestedPercent,
+        progress,
+        requestOptions,
+      );
       updateTaskState(response);
+      if (response?.status === "COMPLETED") {
+        try {
+          await refreshLatestContext();
+        } catch {
+          // 详情刷新失败不应把已经原子完成的任务改写为进度保存失败。
+        }
+        try {
+          await onTaskSubmitted?.(response);
+        } catch {
+          // 列表或消息刷新失败不应把已经提交成功的任务改写为失败。
+        }
+      }
       if (step.type === "DOCUMENT" && response?.step?.status === "COMPLETED") {
         trackProductEventOnce(
           "DOCUMENT_COMPLETED",
@@ -308,10 +341,49 @@ export default function IntegratedTaskFlow({
       }
       return response;
     } catch (caught) {
+      if (step.type === "DOCUMENT") {
+        try {
+          const latest = await refreshLatestContext();
+          const recoveredStep = latest?.progress?.steps?.find(
+            (item) => item.stepKey === step.stepKey,
+          );
+          const recoveredDetails = recoveredStep?.details || {};
+          if (
+            latest?.status === "COMPLETED"
+            && recoveredStep?.status === "COMPLETED"
+            && recoveredStep?.percent === 100
+            && recoveredDetails.reachedEnd === true
+            && recoveredDetails.contentVersion === step.config?.contentVersion
+            && recoveredDetails.contentHash === step.config?.contentHash
+          ) {
+            const recovered = {
+              accepted: true,
+              taskInstanceId: latest.taskInstanceId || task.backendId,
+              status: "COMPLETED",
+              stateVersion: latest.stateVersion,
+              step: {
+                stepKey: recoveredStep.stepKey,
+                status: recoveredStep.status,
+                percent: recoveredStep.percent,
+                details: recoveredDetails,
+              },
+            };
+            updateTaskState(recovered);
+            try {
+              await onTaskSubmitted?.(recovered);
+            } catch {
+              // 已从权威上下文确认完成，外围列表刷新失败不影响成功回执。
+            }
+            return recovered;
+          }
+        } catch {
+          // 无法读取权威上下文时保留原始错误，让页面继续提供重试入口。
+        }
+      }
       reportError(caught);
       throw caught;
     }
-  }), [enqueue, ensureStarted, findStep, language, reportError, task, trackStepStart, updateTaskState]);
+  }), [enqueue, ensureStarted, findStep, language, onTaskSubmitted, refreshLatestContext, reportError, task, trackStepStart, updateTaskState]);
 
   const saveVideo = useCallback((selector, positionSeconds, occurrence = 0) => enqueue(async () => {
     setError("");
@@ -380,11 +452,11 @@ export default function IntegratedTaskFlow({
     }
   }), [enqueue, ensureStarted, findStep, language, reportError, task, trackStepStart, updateTaskState]);
 
-  const finalize = useCallback(() => enqueue(async () => {
+  const finalize = useCallback((requestOptions = {}) => enqueue(async () => {
     setError("");
     try {
-      const version = await ensureStarted();
-      const response = await submitTask(task.backendId, version, []);
+      const version = await ensureStarted(requestOptions);
+      const response = await submitTask(task.backendId, version, [], requestOptions);
       updateTaskState(response);
       try {
         await onRefresh?.(task.backendId);

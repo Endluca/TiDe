@@ -26,7 +26,7 @@ describe('KuozhiService', () => {
   it('keeps every confirmed formal course, task, and testpaper id', async () => {
     const service = serviceFor();
     const mappings = await Promise.all(
-      ['G01', 'G02', 'G05', 'G06', 'G07', 'G08'].map(
+      ['G01', 'G05', 'G06', 'G07', 'G08'].map(
         async (taskCode) =>
           [
             taskCode,
@@ -64,21 +64,6 @@ describe('KuozhiService', () => {
           {
             courseId: '407',
             tasks: [{ courseTaskId: '2158', testpaperId: '305' }],
-          },
-        ],
-      },
-      G02: {
-        integrationStatus: 'ACTIVE',
-        launchEnabled: true,
-        completionEnabled: true,
-        autoCompleteAssignment: true,
-        courses: [
-          {
-            courseId: '499',
-            tasks: [
-              { courseTaskId: '2702', testpaperId: null },
-              { courseTaskId: '2715', testpaperId: '415' },
-            ],
           },
         ],
       },
@@ -159,6 +144,16 @@ describe('KuozhiService', () => {
             ],
           },
         ],
+      },
+    });
+  });
+
+  it('does not expose the retired G02 Kuozhi course mapping', async () => {
+    await expect(
+      serviceFor().resolveMapping('G02', 'TEACHER-001'),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'KUOZHI_COURSE_NOT_CONFIGURED',
       },
     });
   });

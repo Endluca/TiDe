@@ -55,7 +55,7 @@ const growthStageIndex = {
   "Day 15-30": 2,
 };
 
-const externalCourseTaskCodes = new Set(["G02", "G05", "G06", "G07", "G08", "G09"]);
+const externalCourseTaskCodes = new Set(["G05", "G06", "G07", "G08", "G09"]);
 const personalizedEnvironmentPhotoTaskCode = "P-FB-NEGATIVE";
 const personalizedEnvironmentPhotoStepKey = "p-fb-negative-environment-photo";
 const personalizedEnvironmentPhotoReviewProfile = "TEACHING_ENVIRONMENT_V1";
@@ -82,6 +82,7 @@ function inferMethod(context) {
     ))
   ) return "personalized_environment_photo";
   if (externalCourseTaskCodes.has(context.taskCode)) return "external_course";
+  if (context.steps.some((step) => step.type === "DOCUMENT")) return "document_reading";
   if (context.steps.some((step) => (
     step.type === "CUSTOM" && step.config?.kind === "TEXT_SUBMISSION"
   ))) return "factual_response";
@@ -204,6 +205,14 @@ export function adaptTaskContext(context, g01Review) {
     documentStepKey: documentStep?.stepKey || null,
     documentCompleted: documentStep
       ? progressByStep[documentStep.stepKey]?.status === "COMPLETED"
+      : false,
+    documentReadPercent: documentStep
+      ? Number(progressByStep[documentStep.stepKey]?.details?.readPercent)
+        || progressByStep[documentStep.stepKey]?.percent
+        || 0
+      : 0,
+    documentReachedEnd: documentStep
+      ? progressByStep[documentStep.stepKey]?.details?.reachedEnd === true
       : false,
     videoChapters: videoSteps.length > 1
       ? videoSteps.map((step, index) => ({

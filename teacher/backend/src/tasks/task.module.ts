@@ -13,6 +13,7 @@ import { KuozhiCourseCompleteRuleHandler } from './kuozhi-course-complete-rule.h
 import { AiImageReviewRuleHandler } from './ai-image-review-rule.handler';
 import { ImageReviewRepository } from './image-review.repository';
 import { KuozhiModule } from '../integrations/kuozhi/kuozhi.module';
+import { TaskDocumentContentService } from './task-document-content.service';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { KuozhiModule } from '../integrations/kuozhi/kuozhi.module';
     G01ExternalStatusRuleHandler,
     KuozhiCourseCompleteRuleHandler,
     TaskRepository,
+    TaskDocumentContentService,
     TaskService,
   ],
 })

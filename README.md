@@ -109,18 +109,21 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码迁移 head 为 public `20260811_56_p_fb_negative_copy` 与 teacher
-  `0038_personalized_environment_photo`，最终 teacher canonical 账本为 33 条。
+- 当前代码迁移 head 为 public `20260811_57_g02_document` 与 teacher
+  `0040_g02_document_read_status`，最终 teacher canonical 账本为 35 条。
   `20260811_51_g01_tesol_only` / `0033_g01_tesol_only` 将 G01 收窄为 TESOL-only，
   rev54 / `0037_g04_remove_device_check` 将 G04 收敛为照片审核与课件准备两模块，
-  rev55 `20260811_55_source_wide_v12` 将教师源表收敛为确认的 55 列，rev56/0038 再追加个性化环境拍照。
+  rev55 `20260811_55_source_wide_v12` 将教师源表收敛为确认的 55 列，
+  `20260811_56_p_fb_negative_copy` / `0038_personalized_environment_photo` 追加个性化环境拍照，
+  `20260811_57_g02_document` / `0039_g02_policy_document`–`0040_g02_document_read_status`
+  再将 G02 切换为版本化原生文档并落实阅读完成约束。
   交接测试库仍为 public `20260810_50_g04_sections` 与 teacher
   `0032_first_login_onboarding`，仍是精确 30 条 canonical 账本，尚未应用上述后续迁移；
   远程 G04 仍为历史三模块形状。`tit_growth_test_v2` 已于 2026-08-10 受控升级；重建前旧库封存为
   `tit_growth_test_v2_pre0030_20260810`，仅保留 DBA 回滚连接。代码目标结构中
   `teacher_source_wide` 为确认映射的 53 个教师字段加 2 个可空教师资料状态字段（G01 只消费 TESOL），
   `lesson_source_wide` 严格对应 CSV 课程 23 列（无“是否复约”）；两表均不增加更新时间、版本、哈希或同步批次字段。
-  rev56 只更新稳定 `P-FB-NEGATIVE:v1` 的 How 与完成标准；teacher 0038 保留既有身份与进度并发布个性化拍照执行配置。旧库 `tit_growth_test` 未原地改造。
+  rev56 只更新稳定 `P-FB-NEGATIVE:v1` 的 How 与完成标准；teacher 0038 保留既有身份与进度并发布个性化拍照执行配置。rev57 更新稳定 G02 文案，teacher 0039–0040 保留 assignment 身份并发布原生文档、实体阅读状态与跨表完成约束。旧库 `tit_growth_test` 未原地改造。
 - 两张源表提交真实变化时，Trigger 只记录字段差异 Outbox；独立 SourceWide Worker
   默认每 3 秒轮询，按变化字段定位受影响教师，在另一个事务内幂等更新逐课结果、积分、
   任务触发和资格。失败事件保留重试，不在源表事务里执行复杂计算。
@@ -217,11 +220,11 @@ docker compose -f docker-compose.production.yml up -d api score-settlement sourc
 [联合部署说明](deploy/combined/README.md) 和
 [联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
 独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
-联合部署门禁要求按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038` 分阶段迁移，最终到达
-public `20260811_56_p_fb_negative_copy` 和教师端 `0038_personalized_environment_photo`，并同时通过
+联合部署门禁要求按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040` 分阶段迁移，最终到达
+public `20260811_57_g02_document` 和教师端 `0040_g02_document_read_status`，并同时通过
 固定提交源码中的精确 `G01–G09` 标题/分值预检和目标数据库契约探针。
-其中 public 55 收敛教师源字段，public 56 / teacher 0038 再追加个性化拍照。
-教师端未到 0038、最终 canonical 账本不是精确 33 条、目录缺项或语义错误都会失败关闭；在 public 47 及之后的空库直接
+其中 public 55 收敛教师源字段，public 56 / teacher 0038 追加个性化拍照，public 57 / teacher 0039–0040 发布 G02 原生文档。
+教师端未到 0040、最终 canonical 账本不是精确 35 条、目录缺项或语义错误都会失败关闭；在 public 47 及之后的空库直接
 回放 teacher 历史链同样会失败关闭。即使门禁通过，也不能把“已有 Compose”解释为
 已完成生产切流。
 

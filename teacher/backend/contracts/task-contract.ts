@@ -169,6 +169,13 @@ export interface TaskStep {
   config: Record<string, unknown>;
 }
 
+export interface TaskStepProgressDetails extends Record<string, unknown> {
+  contentVersion?: string;
+  contentHash?: string;
+  readPercent?: number;
+  reachedEnd?: boolean;
+}
+
 export interface TaskProgress {
   currentStepKey: string | null;
   percent: number;
@@ -176,6 +183,7 @@ export interface TaskProgress {
     stepKey: string;
     status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
     percent: number;
+    details: TaskStepProgressDetails;
   }>;
 }
 
@@ -217,12 +225,34 @@ export interface TaskContext {
   content: TeacherVisibleTaskContent;
   steps: TaskStep[];
   progress: TaskProgress;
+  execution: {
+    contentStatus: 'READY' | 'PENDING';
+    contentVersion: string | null;
+    pendingReason: string | null;
+  };
   capabilities: StepType[];
   assignment: SharedAssignmentContext;
   availableAt: string | null;
   dueAt: string | null;
   completedAt: string | null;
   dataOrigin: DataOrigin;
+}
+
+export interface TaskDocumentContent {
+  documentCode: string;
+  title: string;
+  sourceUpdatedAt: string;
+  contentVersion: string;
+  contentHash: string;
+  completionMode: 'SCROLL_TO_END';
+  markdown: { en: string; zh: string };
+  translationHashes: { zh: string };
+  images: Array<{
+    key: string;
+    sourcePath: string;
+    sha256: string;
+    alt: string;
+  }>;
 }
 
 export interface KuozhiLaunchResponse {
@@ -290,10 +320,22 @@ export interface SaveProgressRequest extends MutationMeta {
   progress: Record<string, unknown>;
 }
 
+export interface DocumentReadingProgress extends Record<string, unknown> {
+  contentVersion: string;
+  contentHash: string;
+  readPercent: number;
+  reachedEnd: boolean;
+}
+
 export interface StepOutput {
   stepKey: string;
   outputType:
-    'CHECKLIST' | 'FILE' | 'DEVICE_CHECK' | 'EXTERNAL_PROOF' | 'CUSTOM';
+    | 'CHECKLIST'
+    | 'FILE'
+    | 'DEVICE_CHECK'
+    | 'EXTERNAL_PROOF'
+    | 'DOCUMENT'
+    | 'CUSTOM';
   value: Record<string, unknown>;
 }
 
@@ -316,6 +358,7 @@ export interface TaskMutationResponse {
     status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
     percent: number;
     result?: Record<string, unknown>;
+    details?: TaskStepProgressDetails;
   };
   validation?: {
     status: 'PENDING' | 'UNDER_REVIEW' | 'PASSED' | 'FAILED' | 'ERROR';

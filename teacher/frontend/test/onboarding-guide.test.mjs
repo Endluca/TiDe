@@ -504,7 +504,8 @@ test("uses the server status, idempotent acknowledgement and accessible modal co
   assert.match(appSource, /requestState\.retryCount < 2/);
   assert.match(mainSource, /import\.meta\.env\.DEV/);
   assert.match(mainSource, /\/preview\/onboarding/);
-  assert.match(mainSource, /MemoryRouter initialEntries=\{\["\/"\]\}/);
+  assert.match(mainSource, /const previewInitialEntry = previewRoute === "\/preview\/g02"[\s\S]*: "\/";/);
+  assert.match(mainSource, /MemoryRouter initialEntries=\{\[previewInitialEntry\]\}/);
   assert.match(mainSource, /if \(!isOnboardingPreview\) startAnalyticsRuntime\(\)/);
   assert.match(appSource, /<MyTitPage/);
   assert.match(appSource, /<GrowthPathPage/);

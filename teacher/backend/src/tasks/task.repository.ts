@@ -101,6 +101,7 @@ interface StepRow extends QueryResultRow {
   progressStatus: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
   progressPercent: number;
   progressSummary: Record<string, unknown>;
+  reachedEnd: boolean;
 }
 
 interface BatchStepRow extends StepRow {
@@ -150,6 +151,7 @@ interface EvaluatedStepProgress {
   percent: number;
   summary: Record<string, unknown>;
   result?: Record<string, unknown>;
+  reachedEnd?: boolean;
 }
 
 type DeviceCheckItemStatus = 'PASSED' | 'FAILED' | 'ERROR' | 'SKIPPED';
@@ -167,6 +169,20 @@ interface NormalizedChecklistEvidence extends Record<string, unknown> {
   checkedItemKeys: string[];
 }
 
+interface NormalizedDocumentProgress extends Record<string, unknown> {
+  contentVersion: string;
+  contentHash: string;
+  readPercent: number;
+  reachedEnd: boolean;
+}
+
+interface DocumentProgressRow extends QueryResultRow {
+  status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
+  percent: number;
+  progressSummary: Record<string, unknown>;
+  reachedEnd: boolean;
+}
+
 interface StepEvidenceRow extends QueryResultRow {
   stepKey: string;
   stepType: TaskStepType;
@@ -180,6 +196,7 @@ interface ValidationStepRow extends QueryResultRow, TaskValidationStep {
   type: TaskStepType;
   config: Record<string, unknown>;
   progressSummary: Record<string, unknown>;
+  reachedEnd: boolean;
 }
 
 interface ValidationRow extends QueryResultRow {
@@ -251,7 +268,8 @@ export class TaskRepository {
           definition.config,
           COALESCE(progress.status, 'NOT_STARTED') AS "progressStatus",
           COALESCE(progress.percent, 0) AS "progressPercent",
-          COALESCE(progress.progress_summary, '{}'::jsonb) AS "progressSummary"
+          COALESCE(progress.progress_summary, '{}'::jsonb) AS "progressSummary",
+          COALESCE(progress.reached_end, false) AS "reachedEnd"
         FROM public.task_assignments assignment
         JOIN tide.task_execution_versions execution
           ON execution.shared_template_row_id = assignment.template_version_id
@@ -310,7 +328,8 @@ export class TaskRepository {
           definition.config,
           COALESCE(progress.status, 'NOT_STARTED') AS "progressStatus",
           COALESCE(progress.percent, 0) AS "progressPercent",
-          COALESCE(progress.progress_summary, '{}'::jsonb) AS "progressSummary"
+          COALESCE(progress.progress_summary, '{}'::jsonb) AS "progressSummary",
+          COALESCE(progress.reached_end, false) AS "reachedEnd"
         FROM tide.task_step_definitions definition
         LEFT JOIN tide.task_step_progress progress
           ON progress.task_assignment_id = $1
@@ -427,11 +446,38 @@ export class TaskRepository {
         input.stepKey,
         evaluated,
       );
+      const automaticCompletion =
+        task.taskCode === 'G02' &&
+        step.rows[0].stepType === 'DOCUMENT' &&
+        step.rows[0].stepKey === 'g02-policy-document' &&
+        evaluated.reachedEnd === true
+          ? await this.submitLockedTask(client, task, {
+              ...input,
+              attemptId: randomUUID(),
+              outputs: [
+                {
+                  stepKey: step.rows[0].stepKey,
+                  outputType: 'DOCUMENT',
+                  value: evaluated.summary,
+                },
+              ],
+            })
+          : null;
+      if (
+        automaticCompletion &&
+        (automaticCompletion.status !== 'COMPLETED' ||
+          automaticCompletion.validation?.status !== 'PASSED')
+      ) {
+        throw new TaskCommandConflictError('OUTPUT_INVALID', {
+          stepKey: input.stepKey,
+          reason: 'DOCUMENT_COMPLETION_REJECTED',
+        });
+      }
       const response = this.mutationResponse(
         input.taskInstanceId,
-        'IN_PROGRESS',
-        Number(task.stateVersion),
-        undefined,
+        automaticCompletion?.status ?? 'IN_PROGRESS',
+        automaticCompletion?.stateVersion ?? Number(task.stateVersion),
+        automaticCompletion?.validation,
         {
           stepKey: input.stepKey,
           status: evaluated.status,
@@ -518,164 +564,172 @@ export class TaskRepository {
       const task = await this.lockOwnedTask(client, input);
       this.assertStateVersion(task, input.expectedStateVersion);
       this.assertStatus(task, ['IN_PROGRESS']);
-      const definitions = await this.loadStepDefinitions(
-        client,
-        task.executionVersionId,
-      );
-      const outputs = await this.resolveSubmissionOutputs(
-        client,
-        input.taskInstanceId,
-        definitions,
-        input.outputs,
-        task.taskCode,
-      );
-      await this.validateOutputs(client, { ...input, outputs }, definitions);
+      const response = await this.submitLockedTask(client, task, input);
+      await this.saveCommandReceipt(client, input, 'SUBMIT', response);
+      return response;
+    });
+  }
 
-      const attemptExists = await client.query(
-        `SELECT 1 FROM tide.task_attempts WHERE id = $1 LIMIT 1`,
-        [input.attemptId],
-      );
-      if (attemptExists.rowCount) {
-        throw new TaskCommandConflictError('ATTEMPT_CONFLICT');
-      }
-      const attemptNumber = await client.query<{ attemptNo: number }>(
-        `SELECT COALESCE(MAX(attempt_no), 0) + 1 AS "attemptNo" FROM tide.task_attempts WHERE task_assignment_id = $1`,
-        [input.taskInstanceId],
-      );
-      const submissionId = randomUUID();
-      await client.query(
-        `
+  private async submitLockedTask(
+    client: PoolClient,
+    task: LockedTaskRow,
+    input: TaskCommandInput & {
+      attemptId: string;
+      outputs: StepOutputDto[];
+    },
+  ): Promise<TaskMutationResponse> {
+    const definitions = await this.loadStepDefinitions(
+      client,
+      task.executionVersionId,
+    );
+    const outputs = await this.resolveSubmissionOutputs(
+      client,
+      input.taskInstanceId,
+      definitions,
+      input.outputs,
+      task.taskCode,
+    );
+    await this.validateOutputs(client, { ...input, outputs }, definitions);
+
+    const attemptExists = await client.query(
+      `SELECT 1 FROM tide.task_attempts WHERE id = $1 LIMIT 1`,
+      [input.attemptId],
+    );
+    if (attemptExists.rowCount) {
+      throw new TaskCommandConflictError('ATTEMPT_CONFLICT');
+    }
+    const attemptNumber = await client.query<{ attemptNo: number }>(
+      `SELECT COALESCE(MAX(attempt_no), 0) + 1 AS "attemptNo" FROM tide.task_attempts WHERE task_assignment_id = $1`,
+      [input.taskInstanceId],
+    );
+    const submissionId = randomUUID();
+    await client.query(
+      `
           INSERT INTO tide.task_attempts (
             id, task_assignment_id, attempt_no, status, submitted_at
           ) VALUES ($1, $2, $3, 'SUBMITTED', now())
         `,
-        [
-          input.attemptId,
-          input.taskInstanceId,
-          attemptNumber.rows[0].attemptNo,
-        ],
-      );
-      await client.query(
-        `
+      [input.attemptId, input.taskInstanceId, attemptNumber.rows[0].attemptNo],
+    );
+    await client.query(
+      `
           INSERT INTO tide.task_submissions (
             id, task_assignment_id, task_attempt_id, submission_type,
             payload, validation_status, rule_version
           ) VALUES ($1, $2, $3, 'TASK', $4, 'PENDING', 'pending')
         `,
-        [submissionId, input.taskInstanceId, input.attemptId, { outputs }],
-      );
-      await this.linkSubmissionFiles(client, submissionId, outputs);
-      await this.persistProgressEvidence(
-        client,
-        input.attemptId,
-        submissionId,
-        input.taskInstanceId,
-        definitions,
-      );
-      const rules = await this.loadValidationRules(
-        client,
-        task.executionVersionId,
-      );
-      const progress = await this.loadValidationSteps(
-        client,
-        input.taskInstanceId,
-        task.executionVersionId,
-        task.taskCode,
-      );
-      const decision = await this.validationEngine.evaluate({
-        client,
-        accountId: input.accountId,
-        taskInstanceId: input.taskInstanceId,
-        submissionId,
-        rules,
-        steps: progress,
-        outputs,
-      });
-      const attemptStatus =
-        decision.status === 'PASSED'
-          ? 'PASSED'
-          : decision.status === 'FAILED'
-            ? 'FAILED'
-            : 'SUBMITTED';
-      await client.query(
-        `
+      [submissionId, input.taskInstanceId, input.attemptId, { outputs }],
+    );
+    await this.linkSubmissionFiles(client, submissionId, outputs);
+    await this.persistProgressEvidence(
+      client,
+      input.attemptId,
+      submissionId,
+      input.taskInstanceId,
+      definitions,
+    );
+    const rules = await this.loadValidationRules(
+      client,
+      task.executionVersionId,
+    );
+    const progress = await this.loadValidationSteps(
+      client,
+      input.taskInstanceId,
+      task.executionVersionId,
+      task.taskCode,
+    );
+    const decision = await this.validationEngine.evaluate({
+      client,
+      accountId: input.accountId,
+      taskInstanceId: input.taskInstanceId,
+      submissionId,
+      rules,
+      steps: progress,
+      outputs,
+    });
+    const attemptStatus =
+      decision.status === 'PASSED'
+        ? 'PASSED'
+        : decision.status === 'FAILED'
+          ? 'FAILED'
+          : 'SUBMITTED';
+    await client.query(
+      `
           UPDATE tide.task_attempts
           SET status = $2,
               ended_at = CASE WHEN $2 IN ('PASSED', 'FAILED') THEN now() ELSE NULL END,
               result_code = $3
           WHERE id = $1
         `,
-        [input.attemptId, attemptStatus, decision.resultCode],
-      );
-      await client.query(
-        `
+      [input.attemptId, attemptStatus, decision.resultCode],
+    );
+    await client.query(
+      `
           UPDATE tide.task_submissions
           SET payload = $2, validation_status = $3, result_code = $4,
               rule_version = $5,
               validated_at = CASE WHEN $3::text IN ('PASSED', 'FAILED', 'ERROR') THEN now() ELSE NULL END
           WHERE id = $1
         `,
-        [
-          submissionId,
-          { outputs, teacherMessage: decision.teacherMessage },
-          decision.status,
-          decision.resultCode,
-          decision.ruleVersion,
-        ],
-      );
+      [
+        submissionId,
+        { outputs, teacherMessage: decision.teacherMessage },
+        decision.status,
+        decision.resultCode,
+        decision.ruleVersion,
+      ],
+    );
 
-      const { nextStatus, stateVersion } =
-        await this.applyAssignmentValidationResult(
-          client,
-          task,
-          {
-            taskInstanceId: input.taskInstanceId,
-            expectedStateVersion: input.expectedStateVersion,
-            attemptId: input.attemptId,
-          },
-          decision,
-        );
-      if (decision.status === 'PASSED') {
-        const completionSource = rules.some(
-          (rule) => rule.ruleType === 'AI_IMAGE_REVIEW',
-        )
-          ? 'AI_REVIEW'
-          : 'RULE_ENGINE';
-        await client.query(
-          `
+    const { nextStatus, stateVersion } =
+      await this.applyAssignmentValidationResult(
+        client,
+        task,
+        {
+          taskInstanceId: input.taskInstanceId,
+          expectedStateVersion: input.expectedStateVersion,
+          attemptId: input.attemptId,
+        },
+        decision,
+      );
+    if (decision.status === 'PASSED') {
+      const completionSource = rules.some(
+        (rule) => rule.ruleType === 'AI_IMAGE_REVIEW',
+      )
+        ? 'AI_REVIEW'
+        : 'RULE_ENGINE';
+      await client.query(
+        `
             INSERT INTO tide.task_completions (
               id, task_assignment_id, task_submission_id,
               completion_source, result_version, trusted_at
             ) VALUES ($1, $2, $3, $4, $5, now())
           `,
-          [
-            randomUUID(),
-            input.taskInstanceId,
-            submissionId,
-            completionSource,
-            decision.ruleVersion,
-          ],
-        );
-      }
-      const imageReview = rules.some(
-        (rule) => rule.ruleType === 'AI_IMAGE_REVIEW',
-      )
-        ? await this.loadSubmissionImageReview(client, submissionId)
-        : null;
-      const response = this.mutationResponse(
-        input.taskInstanceId,
-        nextStatus,
-        stateVersion,
-        {
-          status: decision.status,
-          resultCode: decision.resultCode,
-          teacherMessage: decision.teacherMessage,
-          imageReview,
-        },
+        [
+          randomUUID(),
+          input.taskInstanceId,
+          submissionId,
+          completionSource,
+          decision.ruleVersion,
+        ],
       );
-      await this.saveCommandReceipt(client, input, 'SUBMIT', response);
-      return response;
-    });
+    }
+    const imageReview = rules.some(
+      (rule) => rule.ruleType === 'AI_IMAGE_REVIEW',
+    )
+      ? await this.loadSubmissionImageReview(client, submissionId)
+      : null;
+    const response = this.mutationResponse(
+      input.taskInstanceId,
+      nextStatus,
+      stateVersion,
+      {
+        status: decision.status,
+        resultCode: decision.resultCode,
+        teacherMessage: decision.teacherMessage,
+        imageReview,
+      },
+    );
+    return response;
   }
 
   retryTask(
@@ -1037,12 +1091,13 @@ export class TaskRepository {
       return this.evaluateVideoProgress(client, task, step, progress);
     }
     if (step.stepType === 'DOCUMENT') {
-      const completed = progress.acknowledged === true;
-      return {
-        status: completed ? 'COMPLETED' : 'IN_PROGRESS',
-        percent: completed ? 100 : 0,
-        summary: { acknowledged: completed },
-      };
+      return this.evaluateDocumentProgress(
+        client,
+        task,
+        step,
+        progress,
+        requestedPercent,
+      );
     }
     if (step.stepType === 'CHECKLIST') {
       return this.evaluateChecklistProgress(step, progress);
@@ -1110,9 +1165,9 @@ export class TaskRepository {
       `
         INSERT INTO tide.task_step_progress (
           id, task_assignment_id, step_key, status, percent,
-          progress_summary, first_started_at, completed_at
+          progress_summary, reached_end, first_started_at, completed_at
         ) VALUES (
-          $1, $2, $3, $4, $5::smallint, $6,
+          $1, $2, $3, $4, $5::smallint, $6, $7::boolean,
           CASE WHEN $5::smallint > 0 THEN now() ELSE NULL END,
           CASE WHEN $5::smallint = 100 THEN now() ELSE NULL END
         )
@@ -1121,6 +1176,7 @@ export class TaskRepository {
           status = EXCLUDED.status,
           percent = EXCLUDED.percent,
           progress_summary = EXCLUDED.progress_summary,
+          reached_end = EXCLUDED.reached_end,
           first_started_at = COALESCE(tide.task_step_progress.first_started_at, EXCLUDED.first_started_at),
           completed_at = CASE WHEN EXCLUDED.percent = 100 THEN COALESCE(tide.task_step_progress.completed_at, now()) ELSE NULL END,
           updated_at = now()
@@ -1132,6 +1188,7 @@ export class TaskRepository {
         evaluated.status,
         evaluated.percent,
         evaluated.summary,
+        evaluated.reachedEnd === true,
       ],
     );
   }
@@ -1455,6 +1512,108 @@ export class TaskRepository {
     return { checklistVersion: version, checkedItemKeys };
   }
 
+  private normalizeDocumentProgress(
+    config: Record<string, unknown>,
+    progress: Record<string, unknown>,
+  ): NormalizedDocumentProgress | null {
+    const configuredVersion =
+      typeof config.contentVersion === 'string'
+        ? config.contentVersion.trim()
+        : '';
+    const configuredHash =
+      typeof config.contentHash === 'string' ? config.contentHash.trim() : '';
+    if (
+      !configuredVersion ||
+      !/^[a-f0-9]{64}$/u.test(configuredHash) ||
+      progress.contentVersion !== configuredVersion ||
+      progress.contentHash !== configuredHash ||
+      !Number.isInteger(progress.readPercent) ||
+      Number(progress.readPercent) < 0 ||
+      Number(progress.readPercent) > 100 ||
+      typeof progress.reachedEnd !== 'boolean'
+    ) {
+      return null;
+    }
+    const readPercent = Number(progress.readPercent);
+    const reachedEnd = progress.reachedEnd;
+    if ((readPercent === 100) !== reachedEnd) {
+      return null;
+    }
+    return {
+      contentVersion: configuredVersion,
+      contentHash: configuredHash,
+      readPercent,
+      reachedEnd,
+    };
+  }
+
+  private async evaluateDocumentProgress(
+    client: PoolClient,
+    task: LockedTaskRow,
+    step: StepDefinitionRow,
+    progress: Record<string, unknown>,
+    requestedPercent: number,
+  ): Promise<EvaluatedStepProgress> {
+    const incoming = this.normalizeDocumentProgress(step.config, progress);
+    if (!incoming || requestedPercent !== incoming.readPercent) {
+      throw new TaskCommandConflictError('OUTPUT_INVALID', {
+        stepKey: step.stepKey,
+        reason: 'DOCUMENT_PROGRESS_INVALID',
+      });
+    }
+
+    const existingResult = await client.query<DocumentProgressRow>(
+      `
+        SELECT status, percent,
+          progress_summary AS "progressSummary",
+          reached_end AS "reachedEnd"
+        FROM tide.task_step_progress
+        WHERE task_assignment_id = $1 AND step_key = $2
+        FOR UPDATE
+      `,
+      [task.taskInstanceId, step.stepKey],
+    );
+    const existingRow = existingResult.rows[0];
+    const existing = existingRow
+      ? this.normalizeDocumentProgress(step.config, existingRow.progressSummary)
+      : null;
+    const expectedExistingStatus = existing
+      ? existing.reachedEnd
+        ? 'COMPLETED'
+        : existing.readPercent > 0
+          ? 'IN_PROGRESS'
+          : 'NOT_STARTED'
+      : null;
+    const current =
+      existing &&
+      Number(existingRow.percent) === existing.readPercent &&
+      existingRow.status === expectedExistingStatus &&
+      existingRow.reachedEnd === existing.reachedEnd
+        ? existing
+        : null;
+    const reachedEnd = current?.reachedEnd === true || incoming.reachedEnd;
+    const readPercent = reachedEnd
+      ? 100
+      : Math.max(current?.readPercent ?? 0, incoming.readPercent);
+    const summary: NormalizedDocumentProgress = {
+      contentVersion: incoming.contentVersion,
+      contentHash: incoming.contentHash,
+      readPercent,
+      reachedEnd,
+    };
+    return {
+      status: reachedEnd
+        ? 'COMPLETED'
+        : readPercent > 0
+          ? 'IN_PROGRESS'
+          : 'NOT_STARTED',
+      percent: readPercent,
+      summary,
+      result: { reachedEnd },
+      reachedEnd,
+    };
+  }
+
   private effectiveStepProgress(
     taskCode: string,
     step: {
@@ -1463,12 +1622,38 @@ export class TaskRepository {
       status: TaskValidationStep['status'];
       percent: number;
       summary: Record<string, unknown>;
+      reachedEnd: boolean;
     },
   ): {
     status: TaskValidationStep['status'];
     percent: number;
     summary: Record<string, unknown>;
   } {
+    if (step.type === 'DOCUMENT') {
+      const progress = this.normalizeDocumentProgress(
+        step.config,
+        step.summary,
+      );
+      if (!progress || step.reachedEnd !== progress.reachedEnd) {
+        return { status: 'NOT_STARTED', percent: 0, summary: {} };
+      }
+      const expectedStatus = progress.reachedEnd
+        ? 'COMPLETED'
+        : progress.readPercent > 0
+          ? 'IN_PROGRESS'
+          : 'NOT_STARTED';
+      if (
+        step.status !== expectedStatus ||
+        step.percent !== progress.readPercent
+      ) {
+        return { status: 'NOT_STARTED', percent: 0, summary: {} };
+      }
+      return {
+        status: expectedStatus,
+        percent: progress.readPercent,
+        summary: progress,
+      };
+    }
     if (taskCode !== 'G04') {
       return {
         status: step.status,
@@ -1583,6 +1768,7 @@ export class TaskRepository {
     definitions: StepDefinitionRow[],
   ): Promise<void> {
     const expectedOutput: Partial<Record<TaskStepType, string>> = {
+      DOCUMENT: 'DOCUMENT',
       CHECKLIST: 'CHECKLIST',
       UPLOAD: 'FILE',
       DEVICE_CHECK: 'DEVICE_CHECK',
@@ -1605,6 +1791,15 @@ export class TaskRepository {
         });
       }
       seen.add(output.stepKey);
+      if (
+        definition.stepType === 'DOCUMENT' &&
+        !this.normalizeDocumentProgress(definition.config, output.value)
+      ) {
+        throw new TaskCommandConflictError('OUTPUT_INVALID', {
+          stepKey: output.stepKey,
+          reason: 'DOCUMENT_EVIDENCE_INVALID',
+        });
+      }
       if (
         definition.stepType === 'DEVICE_CHECK' &&
         !this.normalizeDeviceEvidence(definition.config, output.value)
@@ -1677,6 +1872,7 @@ export class TaskRepository {
     const outputType: Partial<
       Record<TaskStepType, StepOutputDto['outputType']>
     > = {
+      DOCUMENT: 'DOCUMENT',
       CHECKLIST: 'CHECKLIST',
       UPLOAD: 'FILE',
       DEVICE_CHECK: 'DEVICE_CHECK',
@@ -1744,7 +1940,8 @@ export class TaskRepository {
           definition.config,
           COALESCE(progress.status, 'NOT_STARTED') AS status,
           COALESCE(progress.percent, 0) AS percent,
-          COALESCE(progress.progress_summary, '{}'::jsonb) AS "progressSummary"
+          COALESCE(progress.progress_summary, '{}'::jsonb) AS "progressSummary",
+          COALESCE(progress.reached_end, false) AS "reachedEnd"
         FROM tide.task_step_definitions definition
         LEFT JOIN tide.task_step_progress progress
           ON progress.task_assignment_id = $1
@@ -1761,6 +1958,7 @@ export class TaskRepository {
         status: row.status,
         percent: Number(row.percent),
         summary: row.progressSummary,
+        reachedEnd: row.reachedEnd,
       });
       return {
         stepKey: row.stepKey,
@@ -2222,6 +2420,7 @@ export class TaskRepository {
         status: row.progressStatus,
         percent: Number(row.progressPercent),
         summary: row.progressSummary,
+        reachedEnd: row.reachedEnd,
       });
       return {
         stepKey: row.stepKey,
@@ -2475,6 +2674,7 @@ export class TaskRepository {
       'prompt',
       'systemPrompt',
       'rubric',
+      'sourceNodeId',
     ]);
     const sanitize = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(sanitize);

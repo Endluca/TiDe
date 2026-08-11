@@ -40,3 +40,5 @@
 \ir seed/0005_mock_g04_two_part_catalog.sql
 \ir migrations/0037_g04_remove_device_check.up.sql
 \ir migrations/0038_personalized_environment_photo.up.sql
+\ir migrations/0039_g02_policy_document.up.sql
+\ir migrations/0040_g02_document_read_status.up.sql

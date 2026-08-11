@@ -294,6 +294,7 @@ const workspaceMeta = {
   readiness_photo: ["Two-part lesson preparation", "首课两项准备", "Use one photo for the four AI checks and confirm courseware preparation in either order.", "任意顺序完成照片四项 AI 检测和课件准备确认。"],
   upload_review: ["Submit for review", "上传材料", "Follow the steps below to submit your material for review.", "按照下方要求提交材料并查看审核结果。"],
   embedded_course: ["In-platform course", "站内课程", "Complete every learning section inside this task page.", "在当前任务页内完成全部学习内容。"],
+  document_reading: ["Policy document", "政策文档", "Read the document to the end. Progress is saved automatically.", "请将文档阅读到底，进度会自动保存。"],
   guidance_acknowledgement: ["Result and next step", "结果与下一步", "Review the affected classes, complete the AC/ACE check and record the result.", "查看触发课程，完成 AC／ACE 检测并记录结果。"],
   factual_response: ["Factual response", "事实说明", "Describe the verifiable classroom facts, save a draft if needed, then submit it for operational review.", "填写可核实的课堂事实；需要时先保存草稿，再提交运营复核。"],
   content_pending: ["Content pending", "内容待补充", "This required task is confirmed; its official content and completion method are still being prepared.", "这项必修任务已经确认，正式内容和完成方式仍在准备中。"],
@@ -5731,7 +5732,7 @@ function AppShell() {
 function buildOnboardingPreviewTasks(language) {
   const methods = {
     G01: "profile_credentials",
-    G02: "external_course",
+    G02: "document_reading",
     G03: "content_pending",
     G04: "readiness_photo",
     G05: "external_course",
@@ -5742,6 +5743,7 @@ function buildOnboardingPreviewTasks(language) {
   };
   return fixedTaskCatalog.map((catalogTask, index) => {
     const firstTask = catalogTask.taskCode === "G01";
+    const policyDocumentTask = catalogTask.taskCode === "G02";
     const laterStage = index >= 4;
     return {
       ...catalogTask,
@@ -5758,7 +5760,9 @@ function buildOnboardingPreviewTasks(language) {
       locked: laterStage,
       taskCategory: "required",
       sourceStage: catalogTask.stage,
-      duration: copy(language, "About 15 min", "约 15 分钟"),
+      duration: policyDocumentTask
+        ? copy(language, "About 35 min", "约 35 分钟")
+        : copy(language, "About 15 min", "约 15 分钟"),
       due: firstTask
         ? copy(language, "Complete before your first lesson", "建议首课前完成")
         : copy(language, "Available in your growth path", "按成长路径开放"),
@@ -5772,22 +5776,40 @@ function buildOnboardingPreviewTasks(language) {
             "Complete your teacher profile and credential requirements so you are ready for your first lesson.",
             "完善教师档案与资质要求，为第一节课做好准备。",
           )
+        : policyDocumentTask
+          ? copy(
+              language,
+              "Learn the essential classroom and account-safety rules.",
+              "了解课堂与账号安全的核心平台规则。",
+            )
         : copy(
             language,
             "Complete this required step to keep your 30-day growth path moving.",
             "完成这项必修内容，继续推进你的 30 天成长路径。",
           ),
-      value: copy(
-        language,
-        "Know exactly what is ready and what to complete next.",
-        "清楚知道哪些已经准备好，以及下一步要完成什么。",
-      ),
+      value: policyDocumentTask
+        ? copy(
+            language,
+            "Apply the core platform policies in class and account operations.",
+            "能够在课堂与日常账号操作中遵循核心平台规则。",
+          )
+        : copy(
+            language,
+            "Know exactly what is ready and what to complete next.",
+            "清楚知道哪些已经准备好，以及下一步要完成什么。",
+          ),
       result: firstTask
         ? copy(
             language,
             "Review your profile status and complete the credential actions shown in the workspace.",
             "查看档案状态，并在任务工作区完成资质相关操作。",
           )
+        : policyDocumentTask
+          ? copy(
+              language,
+              "Read the current Overseas NT Policies document in TIDE. Your reading progress is saved automatically.",
+              "在 TIDE 中阅读当前版本的 Overseas NT Policies；阅读进度会自动保存。",
+            )
         : copy(
             language,
             "Open the task and follow the instructions in its workspace.",
@@ -5799,6 +5821,12 @@ function buildOnboardingPreviewTasks(language) {
             "All required TESOL learning conditions are complete.",
             "所有 TESOL 学习条件均已完成。",
           )
+        : policyDocumentTask
+          ? copy(
+              language,
+              "G02 is completed automatically after you reach the end of the current published document.",
+              "阅读到当前发布版本的文档末尾后，G02 会自动完成。",
+            )
         : copy(
             language,
             "Meet every completion condition listed in the task.",
@@ -5810,7 +5838,9 @@ function buildOnboardingPreviewTasks(language) {
             copy(language, "Complete the required learning work", "完成必需学习任务"),
             copy(language, "Confirm the completion result", "确认完成结果"),
           ]
-        : [copy(language, "Review the task instructions", "查看任务说明")],
+        : policyDocumentTask
+          ? [copy(language, "Read the policy document to the end", "将政策文档阅读到末尾")]
+          : [copy(language, "Review the task instructions", "查看任务说明")],
       backendSteps: [],
       backendProgressByStep: {},
       progress: 0,

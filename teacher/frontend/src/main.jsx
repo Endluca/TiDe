@@ -11,8 +11,12 @@ import "./ai-help-fab.css";
 import { publicAsset } from "./public-assets";
 import { startAnalyticsRuntime } from "./analytics/product-analytics";
 
+const previewRoute = window.location.hash.replace(/^#/, "").split("?")[0];
 const isOnboardingPreview = import.meta.env.DEV
-  && window.location.hash.replace(/^#/, "").split("?")[0] === "/preview/onboarding";
+  && ["/preview/onboarding", "/preview/g02"].includes(previewRoute);
+const previewInitialEntry = previewRoute === "/preview/g02"
+  ? "/task/platform-policies"
+  : "/";
 
 if (!isOnboardingPreview) startAnalyticsRuntime();
 
@@ -24,8 +28,11 @@ document.documentElement.style.setProperty(
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     {isOnboardingPreview ? (
-      <MemoryRouter initialEntries={["/"]}>
-        <App onboardingPreview />
+      <MemoryRouter initialEntries={[previewInitialEntry]}>
+        <App
+          onboardingPreview
+          onboardingGuideInitiallyOpen={previewRoute !== "/preview/g02"}
+        />
       </MemoryRouter>
     ) : (
       <HashRouter>

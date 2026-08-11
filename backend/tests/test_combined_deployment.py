@@ -53,6 +53,8 @@ EXPECTED_TEACHER_MIGRATIONS = (
     "0033_g01_tesol_only",
     "0037_g04_remove_device_check",
     "0038_personalized_environment_photo",
+    "0039_g02_policy_document",
+    "0040_g02_document_read_status",
 )
 EXPECTED_FIXED_TASKS = (
     ("G01", "Profile & Credentials Completion", 3),
@@ -153,13 +155,13 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
         == "Dockerfile.migrate"
     )
     assert services["teacher-migrate"]["environment"]["TIDE_MIGRATION_TARGET"] == (
-        "${TIDE_TEACHER_MIGRATION_TARGET:-0038_personalized_environment_photo}"
+        "${TIDE_TEACHER_MIGRATION_TARGET:-0040_g02_document_read_status}"
     )
     combined_environment_example = (DEPLOY / ".env.example").read_text(
         encoding="utf-8"
     )
     assert (
-        "TIDE_TEACHER_MIGRATION_TARGET=0038_personalized_environment_photo"
+        "TIDE_TEACHER_MIGRATION_TARGET=0040_g02_document_read_status"
         in combined_environment_example
     )
     assert (
@@ -254,7 +256,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert (
         "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
-        "-> teacher 0038"
+        "-> teacher 0038 -> public head 57 -> teacher 0040"
     ) in preflight
     assert "product_analytics_recorded" in preflight
     assert "0031_g04_independent_sections" in preflight
@@ -290,8 +292,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "pg_stat_ssl" in probe
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
-    assert "20260811_56_p_fb_negative_copy" in probe
-    assert "20260811_55_source_wide_v12" in probe
+    assert "20260811_57_g02_document" in probe
     assert "Complete the required TESOL status and learning evidence." in probe
     assert "Confirm TESOL, pass all 61 questions" in probe
     assert "TESOL is complete, the 61-question check reaches 80%" in probe
@@ -377,6 +378,9 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "'public.teacher_source_wide',\n        'is_self_introduce'" in probe
     assert "'public.teacher_source_wide',\n        'real_name'" in probe
     assert "0038_personalized_environment_photo" in probe
+    assert "0039_g02_policy_document" in probe
+    assert "0040_g02_document_read_status" in probe
+    assert "task_step_progress_g02_assignment_completion_check" in probe
     assert "P-FB-NEGATIVE is not the exact pending personalized photo execution" in probe
     assert "p-fb-negative-environment-photo" in probe
     assert "TEACHING_ENVIRONMENT_V1" in probe
@@ -605,7 +609,7 @@ def _teacher_migrator_fixture(
     cross_chain_gate = (
         "# public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
-        "-> teacher 0038\n"
+        "-> teacher 0038 -> public head 57 -> teacher 0040\n"
         "product_analytics_recorded=true\n"
         if include_cross_chain_gate
         else ""
@@ -691,6 +695,12 @@ def _make_preflight_environment(
             "SELECT 'TEACHING_ENVIRONMENT_V1';\n"
             "SELECT '{\"contentStatus\":\"PENDING\"}';\n"
             "COMMIT;\n"
+        ),
+        "backend/database/migrations/0039_g02_policy_document.up.sql": (
+            "BEGIN;\nCOMMIT;\n"
+        ),
+        "backend/database/migrations/0040_g02_document_read_status.up.sql": (
+            "BEGIN;\nCOMMIT;\n"
         ),
         "backend/Dockerfile": "FROM scratch\n",
         "backend/Dockerfile.migrate": "FROM scratch\n",
@@ -805,7 +815,7 @@ def _run_preflight(environment: dict[str, str]) -> subprocess.CompletedProcess[s
     )
 
 
-def test_combined_preflight_rejects_teacher_chain_ending_before_0038(
+def test_combined_preflight_rejects_teacher_chain_ending_before_0040(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
@@ -818,7 +828,7 @@ def test_combined_preflight_rejects_teacher_chain_ending_before_0038(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0038 结尾的完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0040 结尾的完整有序生产链" in result.stderr
 
 
 def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
@@ -836,7 +846,7 @@ def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
     assert result.returncode != 0
     assert (
         "public46→teacher0028→public50→teacher0032→public54→teacher0037"
-        "→public55→public56→teacher0038"
+        "→public55→public56→teacher0038→public57→teacher0040"
         in result.stderr
     )
 

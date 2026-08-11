@@ -23,34 +23,6 @@
         }
       ]
     },
-    "G02": {
-      "integrationStatus": "ACTIVE",
-      "launchEnabled": true,
-      "completionEnabled": true,
-      "noHeader": true,
-      "courses": [
-        {
-          "courseId": "499",
-          "title": "Platform Policy",
-          "tasks": [
-            {
-              "courseTaskId": "2702",
-              "title": "Platform Policy video",
-              "type": "VIDEO",
-              "required": true,
-              "completionPercent": 100
-            },
-            {
-              "courseTaskId": "2715",
-              "testpaperId": "415",
-              "title": "Platform Policy assessment",
-              "type": "TESTPAPER",
-              "required": true
-            }
-          ]
-        }
-      ]
-    },
     "G05": {
       "integrationStatus": "ACTIVE",
       "launchEnabled": true,

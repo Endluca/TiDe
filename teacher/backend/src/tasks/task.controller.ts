@@ -10,8 +10,11 @@ import {
   Post,
   Put,
   Req,
+  Res,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   SessionAuthGuard,
   type AuthenticatedRequest,
@@ -40,6 +43,33 @@ export class TaskController {
     @Param('taskInstanceId') taskInstanceId: string,
   ) {
     return this.tasks.get(request.auth, taskInstanceId);
+  }
+
+  @Get(':taskInstanceId/document-content')
+  @Header('Cache-Control', 'private, no-cache')
+  documentContent(
+    @Req() request: AuthenticatedRequest,
+    @Param('taskInstanceId') taskInstanceId: string,
+  ) {
+    return this.tasks.getDocumentContent(request.auth, taskInstanceId);
+  }
+
+  @Get(':taskInstanceId/document-content/assets/:assetKey')
+  async documentAsset(
+    @Req() request: AuthenticatedRequest,
+    @Param('taskInstanceId') taskInstanceId: string,
+    @Param('assetKey') assetKey: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const asset = await this.tasks.getDocumentAsset(
+      request.auth,
+      taskInstanceId,
+      assetKey,
+    );
+    response.setHeader('Content-Type', asset.contentType);
+    response.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    response.setHeader('ETag', `"${asset.sha256}"`);
+    return new StreamableFile(asset.bytes);
   }
 
   @Get(':taskInstanceId/kuozhi-launch')

@@ -322,9 +322,11 @@ def test_readme_runs_preflight_before_migration() -> None:
     assert "0033_g01_tesol_only" in readme
     assert "20260810_50_g04_sections" in readme
     assert "0032_first_login_onboarding" in readme
-    assert "20260811_56_p_fb_negative_copy" in readme
     assert "0038_personalized_environment_photo" in readme
+    assert "20260811_57_g02_document" in readme
+    assert "0040_g02_document_read_status" in readme
     assert (
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
-        "teacher 0037 → public 55 → public 56 → teacher 0038"
+        "teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → "
+        "teacher 0040"
     ) in readme

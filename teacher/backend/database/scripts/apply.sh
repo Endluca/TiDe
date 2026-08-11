@@ -418,10 +418,12 @@ fi
 "${PSQL[@]}" -f "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0039_g02_policy_document.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0040_g02_document_read_status.up.sql"
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0037、共享表本地契约和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0040、共享表本地契约和当前 Seeds 已检查并执行。"

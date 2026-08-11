@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import {
   ArrowClockwise,
   ArrowLeft,
@@ -16,6 +16,7 @@ import {
   SealCheck,
   ShieldCheck,
   Sparkle,
+  SpinnerGap,
   UploadSimple,
   VideoCamera,
   WarningCircle,
@@ -32,6 +33,24 @@ import EnvironmentCoachingTask from "../features/task-content/EnvironmentCoachin
 import PersonalizedEnvironmentPhotoTask from "../features/task-content/PersonalizedEnvironmentPhotoTask";
 import ProfileCredentialsTask from "../features/task-content/ProfileCredentialsTask";
 import { Toki } from "./UI";
+
+const DocumentReadingTask = lazy(
+  () => import("../features/task-content/DocumentReadingTask"),
+);
+
+function DocumentReadingTaskPanel({ task }) {
+  const { language } = useI18n();
+  return (
+    <Suspense fallback={(
+      <div className="document-reading-sync" role="status">
+        <SpinnerGap className="document-reading-spinner" size={24} />
+        <strong>{language === "zh" ? "正在加载政策文档" : "Loading policy document"}</strong>
+      </div>
+    )}>
+      <DocumentReadingTask task={task} />
+    </Suspense>
+  );
+}
 
 function CompletedState({ task, onSecondary, secondaryLabel }) {
   const { language } = useI18n();
@@ -58,6 +77,8 @@ function LockedPreview({ task }) {
   const releaseDay = stageDescriptions.find((stage) => stage.range === (task.sourceStage || task.stage))?.releaseDay;
   const isStatusOnly = ["external_status", "external_course", "content_pending"].includes(task.method);
   const isChecklist = task.method === "learning_checklist";
+  const isDocument = task.method === "document_reading";
+  const isDocumentReadOnlyPreview = isDocument && readOnlyPreview;
   const configuredLearningContent = getLearningTaskContent(task);
   const learningContent = isStatusOnly
     ? { ...configuredLearningContent, videoSrc: null, chapters: null }
@@ -65,7 +86,7 @@ function LockedPreview({ task }) {
   const chapters = learningContent.chapters || (learningContent.videoSrc
     ? [{ id: `${task.id}-main`, title: task.name, titleZh: task.name }]
     : []);
-  const modules = isStatusOnly
+  const modules = isStatusOnly || isDocumentReadOnlyPreview
     ? []
     : task.courseModules?.length
     ? task.courseModules
@@ -75,11 +96,17 @@ function LockedPreview({ task }) {
   const previewTask = {
     ...task,
     locked: false,
+    previewReadOnly: readOnlyPreview,
     status: "available",
     videoProgress: 0,
     videoElapsed: 0,
     videoCompleted: false,
     chapterVideoState: {},
+    documentCompleted: false,
+    documentReadPercent: 0,
+    documentReachedEnd: false,
+    documentContent: task.documentContent || null,
+    execution: { live: false },
   };
   return (
     <div className="locked-preview locked-preview-detailed">
@@ -109,6 +136,8 @@ function LockedPreview({ task }) {
       </div>
 
       <div className="locked-preview-content">
+        {isDocumentReadOnlyPreview && <DocumentReadingTaskPanel task={previewTask} />}
+
         {hasVideoPreview && (
           <section className="preview-video-section">
             <header>
@@ -707,6 +736,9 @@ export default function TaskFlow({ task, onUpdate, onHelp, onKuozhiProgressState
         onProgressStateChange={onKuozhiProgressStateChange}
       />
     );
+  }
+  if (task.method === "document_reading") {
+    return <DocumentReadingTaskPanel task={task} />;
   }
   const Flow = flowComponents[task.method];
   if (!Flow) return null;

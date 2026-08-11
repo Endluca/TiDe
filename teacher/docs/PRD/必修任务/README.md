@@ -22,7 +22,7 @@
 | 编码 | 任务 ID | 任务名称 | 任务类型 | 文档状态 | 业务口径 | 负责人 | 任务 PRD | 开发状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `G01` | `profile-credentials` | Profile & Credentials Completion 教师档案与资质完善 | 固定必修 | 已确认 | 部分确认 | 嘉荷 | [任务 PRD](TASK-profile-credentials_教师档案与资质.md) | 四项完成条件，3 分；只读取 TESOL 真实状态，在阔知课程 407 完成考试，站内完成 Essay 确认和完成证明提交；不展示 Self-intro |
-| `G02` | `platform-policies` | Platform Policies 平台规则 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-platform-policies_平台规则.md) | 阔知 iframe 视频＋考试，2 分 |
+| `G02` | `platform-policies` | Platform Policies 平台规则 | 固定必修 | 评审中 | TIDE 原生文档 | 嘉荷 | [任务 PRD](TASK-platform-policies_平台规则.md) | 版本化双语政策文档，读到底自动完成，2 分 |
 | `G03` | `student-types` | How to handle different types of students 不同类型学员应对 | 固定必修 | 草稿 | 部分确认 | 嘉荷 | [任务 PRD](TASK-student-types_不同类型学员应对.md) | 2 分；内容待嘉荷配置，未配齐前显示内容准备中，不可 Mock 完成 |
 | `G04` | `lesson-preparation` | Lesson Preparation 首课准备 | 固定必修 | 已确认 | 已确认 | 嘉荷 | [任务 PRD](TASK-lesson-preparation_首课准备.md) | 同一任务内两个独立模块：照片 AI 四项检查、课件准备确认；可任意顺序操作，两项全部通过后完成并获得 3 分；不包含设备网络检测 |
 | `G05` | `ttp-orientation` | TTP Orientation TTP 入门培训 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-ttp-orientation_TTP入门培训.md) | 阔知 iframe 视频，3 分 |

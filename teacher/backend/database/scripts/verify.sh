@@ -207,6 +207,45 @@ g01_tesol_rule_ready="$("${PSQL[@]}" -Atqc "
       and rule.teacher_failure_copy = 'TESOL 真实状态尚未通过。'
   )
 ")"
+g02_policy_document_ready="$("${PSQL[@]}" -Atqc "
+  select exists (
+    select 1
+    from tide.task_execution_versions execution
+    where execution.shared_template_row_id = 'G03:v1'
+      and execution.task_code = 'G02'
+      and execution.status = 'ACTIVE'
+      and execution.execution_contract_version = 'task-contract-v3'
+      and execution.config->>'contentVersion' =
+        '2026-07-24-overseas-nt-policies-v1'
+      and (
+        select count(*) from tide.task_step_definitions definition
+        where definition.execution_version_id = execution.id
+          and definition.step_key = 'g02-policy-document'
+          and definition.step_type = 'DOCUMENT'
+          and definition.config->>'contentHash' =
+            '6875233667c6f3d90602a07c84849dbb88f41685929779a7b0dc79ccf859979c'
+      ) = 1
+      and (
+        select count(*) from tide.task_validation_rules rule
+        where rule.execution_version_id = execution.id
+          and rule.rule_version = '2026-08-11-g02-policy-document-v1'
+      ) = 1
+  )
+  and exists (
+    select 1 from pg_constraint
+    where conrelid = 'tide.task_step_progress'::regclass
+      and conname = 'task_step_progress_g02_read_status_check'
+      and convalidated
+  )
+  and exists (
+    select 1 from pg_trigger
+    where tgrelid = 'tide.task_step_progress'::regclass
+      and tgname = 'task_step_progress_g02_assignment_completion_check'
+      and not tgisinternal
+      and tgdeferrable
+      and tginitdeferred
+  )
+")"
 personalized_environment_photo_ready="$("${PSQL[@]}" -Atqc "
   select exists (
     select 1
@@ -460,14 +499,15 @@ assert_equals "${personalized_pending_count}" "5" "待嘉荷配置的个性化�
 assert_equals "${authoritative_fixed_catalog_ready}" "t" "运营端 rev38 固定任务稳定映射异常"
 assert_equals "${fixed_execution_semantic_ready}" "t" "教师端固定任务执行语义未按稳定模板行对齐"
 assert_equals "${legacy_personalized_count}" "0" "旧个性化执行配置仍处于启用状态"
-assert_equals "${step_count}" "6" "当前可执行任务步骤总数异常"
-assert_equals "${fixed_step_count}" "4" "G01-G09 步骤总数异常"
+assert_equals "${step_count}" "7" "当前可执行任务步骤总数异常"
+assert_equals "${fixed_step_count}" "5" "G01-G09 步骤总数异常"
 assert_equals "${personalized_step_count}" "2" "已配置个性化任务步骤总数异常"
-assert_equals "${step_distribution}" "G01:2,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:1,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务步骤数量异常"
+assert_equals "${step_distribution}" "G01:2,G02:1,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:1,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务步骤数量异常"
 assert_equals "${local_quiz_runtime_absent}" "t" "TIDE 本地考试表或步骤仍然存在"
-assert_equals "${rule_count}" "8" "当前验证规则总数异常"
-assert_equals "${rule_distribution}" "G01:3,G02:0,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:2,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
+assert_equals "${rule_count}" "9" "当前验证规则总数异常"
+assert_equals "${rule_distribution}" "G01:3,G02:1,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:2,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
 assert_equals "${g01_tesol_rule_ready}" "t" "G01 外部状态规则未收窄为 TESOL-only"
+assert_equals "${g02_policy_document_ready}" "t" "G02 原生文档及阅读完成约束未就绪"
 assert_equals "${personalized_environment_photo_ready}" "t" "P-FB-NEGATIVE 授课环境拍照执行配置异常"
 assert_equals "${faq_count}" "3" "FAQ Mock 知识数异常"
 assert_equals "${unused_tide_objects_removed}" "t" "0029 无用 tide 表或 v1 分析视图仍然存在"

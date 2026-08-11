@@ -236,7 +236,7 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260811_56_p_fb_negative_copy"',
+        'EXPECTED_PUBLIC_HEAD="20260811_57_g02_document"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -249,6 +249,9 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
         "to_regclass('tide.system_notifications') is not null",
         "to_regclass('tide.job_leases_expiry_idx') is not null",
         "to_regclass('tide.account_onboarding_states') is not null",
+        "column_name = 'reached_end'",
+        "task_step_progress_g02_read_status_check",
+        "task_step_progress_g02_assignment_completion_check",
         "to_regclass('public.teacher_metric_snapshots') is null",
         "to_regclass('public.tide_score_policy_versions_v1') is null",
     ):
@@ -292,22 +295,24 @@ def test_company_test_initializer_requires_the_production_canonical_ledger() -> 
         "PRODUCTION_MIGRATIONS",
     )
     for contract in (
-        "count(*) = 33",
+        "count(*) = 35",
         "min(migration_order) = 1",
-        "max(migration_order) = 33",
-        "count(distinct migration_order) = 33",
+        "max(migration_order) = 35",
+        "count(distinct migration_order) = 35",
         "filename = migration_id || '.up.sql'",
         "select migration_order, migration_id, filename, sha256",
         '0032_first_login_onboarding',
         '0033_g01_tesol_only',
         '0037_g04_remove_device_check',
         '0038_personalized_environment_photo',
+        '0039_g02_policy_document',
+        '0040_g02_document_read_status',
     ):
         assert contract in initializer
     assert (
         "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
-        "-> teacher 0038"
+        "-> teacher 0038 -> public head 57 -> teacher 0040"
     ) in initializer
 
 
@@ -380,7 +385,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260811_56_p_fb_negative_copy\\n' ;;
+  6) printf '20260811_57_g02_document\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -506,7 +511,7 @@ def test_company_test_initializer_rejects_the_precanonical_ledger_before_writes(
     )
 
     assert result.returncode != 0
-    assert "不是精确 canonical 0038" in result.stderr
+    assert "不是精确 canonical 0040" in result.stderr
     assert psql_calls == 10
     assert not pnpm_called
     assert not any(
@@ -858,9 +863,12 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "0033_g01_tesol_only" in readme
     assert "20260811_56_p_fb_negative_copy" in readme
     assert "0038_personalized_environment_photo" in readme
+    assert "20260811_57_g02_document" in readme
+    assert "0040_g02_document_read_status" in readme
     assert (
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
-        "teacher 0037 → public 55 → public 56 → teacher 0038"
+        "teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → "
+        "teacher 0040"
     ) in readme
     assert "TEACHING_ENVIRONMENT_V1" in readme
     assert "settle_shared_task_scores.py --watch" in readme

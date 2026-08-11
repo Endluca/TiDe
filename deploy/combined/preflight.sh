@@ -261,6 +261,8 @@ teacher_onboarding_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrati
 teacher_g01_tesol_only_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0033_g01_tesol_only.up.sql"
 teacher_g04_two_part_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0037_g04_remove_device_check.up.sql"
 teacher_personalized_photo_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0038_personalized_environment_photo.up.sql"
+teacher_g02_document_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0039_g02_policy_document.up.sql"
+teacher_g02_read_status_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0040_g02_document_read_status.up.sql"
 
 [[ -f "${teacher_service}" ]] || fail "缺少教师端任务服务"
 [[ -f "${teacher_catalog}" ]] || fail "缺少教师端任务目录同步器"
@@ -283,6 +285,10 @@ teacher_personalized_photo_migration="${TIDE_TEACHER_REPO_PATH}/backend/database
   || fail "缺少教师端 0037 G04 两模块迁移"
 [[ -f "${teacher_personalized_photo_migration}" ]] \
   || fail "缺少教师端 0038 个性化环境拍照迁移"
+[[ -f "${teacher_g02_document_migration}" ]] \
+  || fail "缺少教师端 0039 G02 原生文档迁移"
+[[ -f "${teacher_g02_read_status_migration}" ]] \
+  || fail "缺少教师端 0040 G02 阅读状态迁移"
 grep -q "2026-08-05-g04-three-part" "${teacher_g04_migration}" \
   || fail "教师端 0031 未发布经评审的 G04 三模块版本"
 grep -q "g02-device-2026-08-05-browser-preflight-v1" "${teacher_g04_migration}" \
@@ -386,9 +392,9 @@ if sorted(declared_codes) != sorted(expected) or duplicate_codes or actual != ex
 PY
 
 [[ -f "${teacher_migrator}" ]] || fail "缺少教师端正式生产迁移器"
-grep -Fq "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038" \
+grep -Fq "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040" \
   "${teacher_migrator}" \
-  || fail "教师端迁移器缺少 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→public56→teacher0038 分阶段失败关闭门禁"
+  || fail "教师端迁移器缺少 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→public56→teacher0038→public57→teacher0040 分阶段失败关闭门禁"
 grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
   || fail "教师端迁移器未区分历史 0020 是否已经记录"
 [[ -f "${TIDE_TEACHER_REPO_PATH}/backend/Dockerfile" ]] \
@@ -396,7 +402,7 @@ grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
 [[ -f "${TIDE_TEACHER_REPO_PATH}/frontend/Dockerfile" ]] \
   || fail "缺少教师端 Web 生产镜像"
 python3 - "${teacher_migrator}" <<'PY' \
-  || fail "教师端生产迁移器不是以 0038 结尾的完整有序生产链"
+  || fail "教师端生产迁移器不是以 0040 结尾的完整有序生产链"
 from __future__ import annotations
 
 import re
@@ -438,6 +444,8 @@ expected = [
     "0033_g01_tesol_only",
     "0037_g04_remove_device_check",
     "0038_personalized_environment_photo",
+    "0039_g02_policy_document",
+    "0040_g02_document_read_status",
 ]
 target_match = re.search(
     r'TARGET_MIGRATION="\$\{TIDE_MIGRATION_TARGET:-([^}]+)\}"',

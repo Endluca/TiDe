@@ -31,6 +31,8 @@ test("the active catalog no longer publishes local learning steps for Kuozhi tas
   assert.equal(catalog.includes("g10-set-fundamentals-video"), false);
   assert.equal(catalog.includes("mock-set-fundamentals-2026-07-v1"), false);
   assert.deepEqual(videoManifest.videos, []);
+  assert.match(catalog, /code: 'G02'[\s\S]*type: 'DOCUMENT'/);
+  assert.doesNotMatch(catalog, /code: 'G02'[\s\S]*type: 'VIDEO'/);
 });
 
 test("a video plus checklist task requires the video before completion", async () => {

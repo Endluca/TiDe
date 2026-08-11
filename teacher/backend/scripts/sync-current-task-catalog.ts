@@ -276,20 +276,45 @@ export const currentTaskCatalog: CatalogTask[] = [
     code: 'G02',
     title: 'Platform Policies',
     why: 'Learn the essential classroom and account-safety rules.',
-    whatToDo: 'Complete the configured course and assessment in Kuozhi.',
+    whatToDo:
+      'Read the current Overseas NT Policies document in TIDE. Your reading progress is saved automatically.',
     completionStandard:
-      'All required Kuozhi videos and assessment requirements pass.',
+      'G02 is completed automatically after you reach the end of the current published document.',
     benefit: 'You can apply the core platform policies in class.',
     priority: 'P1',
     score: 2,
     stage: 'FOUNDATION',
     sequence: 2,
-    estimatedMinutes: 15,
+    estimatedMinutes: 35,
+    contentVersion: '2026-07-24-overseas-nt-policies-v1',
     contentStatus: 'READY',
     allowRetry: true,
     kind: 'FIXED_GROWTH',
-    steps: [],
-    rules: [],
+    steps: [
+      {
+        key: 'g02-policy-document',
+        type: 'DOCUMENT',
+        title: 'Read Overseas NT Policies',
+        config: {
+          role: 'POLICY_DOCUMENT',
+          documentCode: 'overseas-nt-policies',
+          sourceTitle: 'Overseas NT Policies',
+          sourceNodeId: 'OG9lyrgJPzkq5xD6fvzmqRonWzN67Mw4',
+          sourceUpdatedAt: '2026-07-24T01:47:08Z',
+          contentVersion: '2026-07-24-overseas-nt-policies-v1',
+          contentHash:
+            '6875233667c6f3d90602a07c84849dbb88f41685929779a7b0dc79ccf859979c',
+          readingCompletion: 'SCROLL_TO_END',
+        },
+      },
+    ],
+    rules: [
+      allStepsRule(
+        '请将当前版本的 Overseas NT Policies 阅读到文档末尾。',
+        { requiredStepKeys: ['g02-policy-document'] },
+        '2026-08-11-g02-policy-document-v1',
+      ),
+    ],
   },
   pending(
     {

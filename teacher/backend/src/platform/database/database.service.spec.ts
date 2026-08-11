@@ -235,6 +235,12 @@ describe('DatabaseService', () => {
       expect.stringContaining('0038_personalized_environment_photo'),
     );
     expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('0040_g02_document_read_status'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('0039_g02_policy_document'),
+    );
+    expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0032_first_login_onboarding'),
     );
     expect(query).toHaveBeenCalledWith(
@@ -244,7 +250,7 @@ describe('DatabaseService', () => {
       expect.stringContaining('FROM public.alembic_version'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('20260811_56_p_fb_negative_copy'),
+      expect.stringContaining('20260811_57_g02_document'),
     );
     expect(productionQuery).toContain(`AND has_table_privilege(
           current_user,
@@ -340,6 +346,17 @@ describe('DatabaseService', () => {
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('2026-08-11-g04-two-part'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('task_step_progress_g02_read_status_check'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'task_step_progress_g02_assignment_completion_check',
+      ),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('enforce_g02_document_assignment_completion'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining(

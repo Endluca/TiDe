@@ -574,6 +574,371 @@ describe('TaskRepository browser device evidence', () => {
   });
 });
 
+describe('TaskRepository versioned document reading progress', () => {
+  const step = {
+    stepKey: 'g02-policy-document',
+    stepType: 'DOCUMENT' as const,
+    config: {
+      contentVersion: '2026-07-24-overseas-nt-policies-v1',
+      contentHash:
+        '6875233667c6f3d90602a07c84849dbb88f41685929779a7b0dc79ccf859979c',
+    },
+  };
+  const documentTask = {
+    taskInstanceId: 'assignment-g02',
+  };
+  const documentEvaluator = (repository: TaskRepository) =>
+    (
+      repository as unknown as {
+        evaluateDocumentProgress(
+          client: { query: jest.Mock },
+          task: { taskInstanceId: string },
+          definition: typeof step,
+          progress: Record<string, unknown>,
+          requestedPercent: number,
+        ): Promise<{
+          status: string;
+          percent: number;
+          summary: Record<string, unknown>;
+        }>;
+      }
+    ).evaluateDocumentProgress.bind(repository);
+  const progress = (readPercent: number, reachedEnd = false) => ({
+    contentVersion: step.config.contentVersion,
+    contentHash: step.config.contentHash,
+    readPercent,
+    reachedEnd,
+  });
+
+  it('does not expose the internal DingTalk source node id', () => {
+    const repository = new TaskRepository({} as never, {} as never);
+    const publicStepConfig = (
+      repository as unknown as {
+        publicStepConfig(
+          config: Record<string, unknown>,
+        ): Record<string, unknown>;
+      }
+    ).publicStepConfig.bind(repository);
+
+    expect(
+      publicStepConfig({
+        sourceNodeId: 'internal-dingtalk-node',
+        sourceTitle: 'Overseas NT Policies',
+        sourceUpdatedAt: '2026-07-24T01:47:08Z',
+        contentVersion: step.config.contentVersion,
+        contentHash: step.config.contentHash,
+      }),
+    ).toEqual({
+      sourceTitle: 'Overseas NT Policies',
+      sourceUpdatedAt: '2026-07-24T01:47:08Z',
+      contentVersion: step.config.contentVersion,
+      contentHash: step.config.contentHash,
+    });
+  });
+
+  it('keeps document progress incomplete until the current version reaches its end', async () => {
+    const repository = new TaskRepository({} as never, {} as never);
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+
+    await expect(
+      documentEvaluator(repository)(
+        { query },
+        documentTask,
+        step,
+        progress(99),
+        99,
+      ),
+    ).resolves.toMatchObject({
+      status: 'IN_PROGRESS',
+      percent: 99,
+      summary: { readPercent: 99, reachedEnd: false },
+    });
+    await expect(
+      documentEvaluator(repository)(
+        { query },
+        documentTask,
+        step,
+        progress(100, true),
+        100,
+      ),
+    ).resolves.toMatchObject({
+      status: 'COMPLETED',
+      percent: 100,
+      summary: { readPercent: 100, reachedEnd: true },
+    });
+  });
+
+  it('completes G02 in the same transaction that persists the end-of-document state', async () => {
+    const client = {
+      query: jest.fn().mockResolvedValue({ rowCount: 1, rows: [step] }),
+    };
+    const withTideTransaction = jest.fn(
+      async (operation: (transaction: typeof client) => Promise<unknown>) =>
+        operation(client),
+    );
+    const repository = new TaskRepository(
+      { withTideTransaction } as never,
+      {} as never,
+    );
+    const persistStepProgress = jest.fn().mockResolvedValue(undefined);
+    const submitLockedTask = jest.fn().mockResolvedValue({
+      accepted: true,
+      taskInstanceId: 'assignment-g02',
+      status: 'COMPLETED',
+      stateVersion: 8,
+      validation: {
+        status: 'PASSED',
+        resultCode: 'ALL_STEPS_COMPLETE',
+        teacherMessage: null,
+      },
+    });
+    const saveCommandReceipt = jest.fn().mockResolvedValue(undefined);
+    Object.assign(repository as object, {
+      findCommandReplay: jest.fn().mockResolvedValue(null),
+      lockOwnedTask: jest.fn().mockResolvedValue({
+        taskCode: 'G02',
+        taskInstanceId: 'assignment-g02',
+        executionVersionId: 'execution-g02',
+        stateVersion: '7',
+      }),
+      assertStateVersion: jest.fn(),
+      assertStatus: jest.fn(),
+      assertPreviousStepsComplete: jest.fn().mockResolvedValue(undefined),
+      evaluateStepProgress: jest.fn().mockResolvedValue({
+        status: 'COMPLETED',
+        percent: 100,
+        summary: progress(100, true),
+        result: { reachedEnd: true },
+        reachedEnd: true,
+      }),
+      persistStepProgress,
+      submitLockedTask,
+      saveCommandReceipt,
+    });
+
+    const response = await repository.saveProgress({
+      accountId: 'account-g02',
+      taskInstanceId: 'assignment-g02',
+      idempotencyKey: 'progress-g02-100',
+      commandId: 'command-g02-100',
+      requestHash: 'request-hash',
+      expectedStateVersion: 7,
+      stepKey: step.stepKey,
+      percent: 100,
+      progress: progress(100, true),
+    });
+
+    expect(withTideTransaction).toHaveBeenCalledTimes(1);
+    expect(persistStepProgress).toHaveBeenCalledTimes(1);
+    expect(submitLockedTask).toHaveBeenCalledWith(
+      client,
+      expect.objectContaining({ taskCode: 'G02' }),
+      expect.objectContaining({
+        taskInstanceId: 'assignment-g02',
+        outputs: [
+          {
+            stepKey: 'g02-policy-document',
+            outputType: 'DOCUMENT',
+            value: progress(100, true),
+          },
+        ],
+      }),
+    );
+    expect(response).toMatchObject({
+      status: 'COMPLETED',
+      stateVersion: 8,
+      step: {
+        stepKey: 'g02-policy-document',
+        status: 'COMPLETED',
+        percent: 100,
+        details: { reachedEnd: true },
+      },
+      validation: { status: 'PASSED' },
+    });
+    expect(saveCommandReceipt).toHaveBeenCalledWith(
+      client,
+      expect.any(Object),
+      'PROGRESS',
+      response,
+    );
+  });
+
+  it('keeps the highest server-side percentage when a later report is lower', async () => {
+    const repository = new TaskRepository({} as never, {} as never);
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          status: 'IN_PROGRESS',
+          percent: 80,
+          progressSummary: progress(80),
+          reachedEnd: false,
+        },
+      ],
+    });
+
+    await expect(
+      documentEvaluator(repository)(
+        { query },
+        documentTask,
+        step,
+        progress(45),
+        45,
+      ),
+    ).resolves.toMatchObject({
+      status: 'IN_PROGRESS',
+      percent: 80,
+      summary: { readPercent: 80, reachedEnd: false },
+    });
+  });
+
+  it.each([
+    [progress(100, false), 100],
+    [progress(99, true), 99],
+    [{ ...progress(50), contentVersion: 'stale-version' }, 50],
+    [{ ...progress(50), contentHash: '0'.repeat(64) }, 50],
+    [{ ...progress(50), readPercent: 50.5 }, 50],
+    [progress(50), 49],
+    [{ acknowledged: true }, 0],
+  ])(
+    'rejects inconsistent or stale document evidence',
+    async (input, percent) => {
+      const repository = new TaskRepository({} as never, {} as never);
+      const query = jest.fn().mockResolvedValue({ rows: [] });
+
+      await expect(
+        documentEvaluator(repository)(
+          { query },
+          documentTask,
+          step,
+          input,
+          percent,
+        ),
+      ).rejects.toMatchObject({
+        reason: 'OUTPUT_INVALID',
+        details: {
+          stepKey: 'g02-policy-document',
+          reason: 'DOCUMENT_PROGRESS_INVALID',
+        },
+      });
+    },
+  );
+
+  it('persists the typed reached_end field with the document progress', async () => {
+    const repository = new TaskRepository({} as never, {} as never);
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    const persist = (
+      repository as unknown as {
+        persistStepProgress(
+          client: { query: typeof query },
+          taskInstanceId: string,
+          stepKey: string,
+          evaluated: {
+            status: 'COMPLETED';
+            percent: 100;
+            summary: Record<string, unknown>;
+            reachedEnd: true;
+          },
+        ): Promise<unknown>;
+      }
+    ).persistStepProgress.bind(repository);
+
+    await persist({ query }, 'assignment-g02', step.stepKey, {
+      status: 'COMPLETED',
+      percent: 100,
+      summary: progress(100, true),
+      reachedEnd: true,
+    });
+
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('progress_summary, reached_end'),
+      expect.arrayContaining([
+        'assignment-g02',
+        'g02-policy-document',
+        'COMPLETED',
+        100,
+        true,
+      ]),
+    );
+  });
+
+  it('fails a completed JSON summary closed when the typed field is false', async () => {
+    const repository = new TaskRepository({} as never, {} as never);
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          stepKey: step.stepKey,
+          type: step.stepType,
+          config: step.config,
+          status: 'COMPLETED',
+          percent: 100,
+          progressSummary: progress(100, true),
+          reachedEnd: false,
+        },
+      ],
+    });
+    const load = (
+      repository as unknown as {
+        loadValidationSteps(
+          client: { query: typeof query },
+          taskInstanceId: string,
+          executionVersionId: string,
+          taskCode: string,
+        ): Promise<Array<{ stepKey: string; status: string; percent: number }>>;
+      }
+    ).loadValidationSteps.bind(repository);
+
+    await expect(
+      load({ query }, 'assignment-g02', 'execution-g02', 'G02'),
+    ).resolves.toEqual([
+      {
+        stepKey: 'g02-policy-document',
+        status: 'NOT_STARTED',
+        percent: 0,
+      },
+    ]);
+  });
+
+  it('fails stale completed document progress closed during final validation', async () => {
+    const repository = new TaskRepository({} as never, {} as never);
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          stepKey: step.stepKey,
+          type: step.stepType,
+          config: step.config,
+          status: 'COMPLETED',
+          percent: 100,
+          progressSummary: {
+            ...progress(100, true),
+            contentVersion: 'stale-version',
+          },
+          reachedEnd: true,
+        },
+      ],
+    });
+    const load = (
+      repository as unknown as {
+        loadValidationSteps(
+          client: { query: typeof query },
+          taskInstanceId: string,
+          executionVersionId: string,
+          taskCode: string,
+        ): Promise<Array<{ stepKey: string; status: string; percent: number }>>;
+      }
+    ).loadValidationSteps.bind(repository);
+
+    await expect(
+      load({ query }, 'assignment-g02', 'execution-g02', 'G02'),
+    ).resolves.toEqual([
+      {
+        stepKey: 'g02-policy-document',
+        status: 'NOT_STARTED',
+        percent: 0,
+      },
+    ]);
+  });
+});
+
 describe('TaskRepository versioned G04 guidance evidence', () => {
   const step = {
     stepKey: 'g02-courseware-confirmation',

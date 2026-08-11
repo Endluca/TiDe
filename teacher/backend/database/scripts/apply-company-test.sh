@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260811_56_p_fb_negative_copy"
+EXPECTED_PUBLIC_HEAD="20260811_57_g02_document"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -198,10 +198,12 @@ CANONICAL_TIDE_MIGRATIONS=(
   0033_g01_tesol_only
   0037_g04_remove_device_check
   0038_personalized_environment_photo
+  0039_g02_policy_document
+  0040_g02_document_read_status
 )
 
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('tide.schema_migrations') is not null")" != "t" ]]; then
-  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
+  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
   exit 1
 fi
 
@@ -213,10 +215,10 @@ actual_tide_migration_ids="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 tide_ledger_shape_ready="$("${ADMIN_PSQL[@]}" -Atqc "
   select
-    count(*) = 33
+    count(*) = 35
     and min(migration_order) = 1
-    and max(migration_order) = 33
-    and count(distinct migration_order) = 33
+    and max(migration_order) = 35
+    and count(distinct migration_order) = 35
     and bool_and(filename = migration_id || '.up.sql')
   from tide.schema_migrations
 ")"
@@ -228,7 +230,7 @@ if [[ "${actual_tide_migration_ids}" != "${expected_tide_migration_ids}" \
       '未记账'
     )
   ")"
-  echo "公司测试库 Tide 账本不是精确 canonical 0038（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
+  echo "公司测试库 Tide 账本不是精确 canonical 0040（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
   exit 1
 fi
 
@@ -288,6 +290,37 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
     and to_regclass('tide.job_leases_expiry_idx') is not null
     and to_regclass('tide.kuozhi_course_syncs') is not null
     and to_regclass('tide.account_onboarding_states') is not null
+    and exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'task_step_progress'
+        and column_name = 'reached_end'
+        and data_type = 'boolean'
+        and is_nullable = 'NO'
+        and column_default in ('false', 'false::boolean')
+    )
+    and exists (
+      select 1
+      from pg_constraint
+      where conrelid = 'tide.task_step_progress'::regclass
+        and conname = 'task_step_progress_g02_read_status_check'
+        and contype = 'c'
+        and convalidated
+        and position('reached_end' in pg_get_constraintdef(oid)) > 0
+        and position('contentVersion' in pg_get_constraintdef(oid)) > 0
+        and position('contentHash' in pg_get_constraintdef(oid)) > 0
+        and position('completed_at' in pg_get_constraintdef(oid)) > 0
+    )
+    and not exists (
+      select 1
+      from tide.task_step_progress progress
+      join public.task_assignments assignment
+        on assignment.assignment_id = progress.task_assignment_id
+      where progress.step_key = 'g02-policy-document'
+        and progress.reached_end
+        and assignment.status <> 'COMPLETED'
+    )
     and exists (
       select 1
       from pg_constraint
@@ -437,6 +470,75 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
     and exists (
       select 1
       from tide.task_execution_versions execution
+      where execution.shared_template_row_id = 'G03:v1'
+        and execution.task_code = 'G02'
+        and execution.status = 'ACTIVE'
+        and execution.execution_contract_version = 'task-contract-v3'
+        and execution.config =
+          '{"estimatedMinutes":35,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-24-overseas-nt-policies-v1","pendingReason":null}'::jsonb
+        and (
+          select count(*)
+          from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+        ) = 1
+        and exists (
+          select 1
+          from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+            and definition.step_key = 'g02-policy-document'
+            and definition.position = 1
+            and definition.step_type = 'DOCUMENT'
+            and definition.config->>'contentVersion' =
+              '2026-07-24-overseas-nt-policies-v1'
+            and definition.config->>'contentHash' =
+              '6875233667c6f3d90602a07c84849dbb88f41685929779a7b0dc79ccf859979c'
+        )
+        and (
+          select count(*)
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+        ) = 1
+        and exists (
+          select 1
+          from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+            and rule.rule_key = 'all-steps-complete'
+            and rule.rule_type = 'ALL_STEPS_COMPLETE'
+            and rule.rule_version = '2026-08-11-g02-policy-document-v1'
+            and rule.position = 1
+            and rule.config =
+              '{"requiredStepKeys":["g02-policy-document"]}'::jsonb
+        )
+    )
+    and exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'task_step_progress'
+        and column_name = 'reached_end'
+        and data_type = 'boolean'
+        and is_nullable = 'NO'
+    )
+    and exists (
+      select 1
+      from pg_constraint
+      where conrelid = 'tide.task_step_progress'::regclass
+        and conname = 'task_step_progress_g02_read_status_check'
+        and contype = 'c'
+        and convalidated
+    )
+    and exists (
+      select 1
+      from pg_trigger
+      where tgrelid = 'tide.task_step_progress'::regclass
+        and tgname = 'task_step_progress_g02_assignment_completion_check'
+        and not tgisinternal
+        and tgdeferrable
+        and tginitdeferred
+    )
+    and exists (
+      select 1
+      from tide.task_execution_versions execution
       where execution.shared_template_row_id = 'G02:v1'
         and execution.task_code = 'G04'
         and execution.status = 'ACTIVE'
@@ -571,7 +673,7 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
     )
 ")"
 if [[ "${canonical_schema_ready}" != "t" ]]; then
-  echo "公司测试库虽已记账到 canonical 0038，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
+  echo "公司测试库虽已记账到 canonical 0040，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
   exit 1
 fi
 
@@ -932,4 +1034,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：public rev56 与 canonical Tide 0038 账本/checksum/实存结构只读门禁、G01 TESOL-only、G04 照片与课件两模块、源宽表 v1.2、P-FB-NEGATIVE 环境拍照配置、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public rev57 与 canonical Tide 0040 账本/checksum/实存结构只读门禁、G02 原生文档阅读、G01 TESOL-only、G04 照片与课件两模块、源宽表 v1.2、P-FB-NEGATIVE 环境拍照配置、首次登录引导、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"

@@ -1,13 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set +x
 
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL:-}"
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0038_personalized_environment_photo}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0040_g02_document_read_status}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
+COMPANY_TEST_MIGRATION_MODE="${TIDE_COMPANY_TEST_MIGRATION_MODE:-false}"
 
-if [[ -z "${DATABASE_URL}" ]]; then
+APPROVED_COMPANY_TEST_DB_HOST="ai-efficiency-postgresql-20260722194941.pods.test.51talk.biz"
+APPROVED_COMPANY_TEST_DB_PORT="5432"
+APPROVED_COMPANY_TEST_DB_NAME="tit_growth_test_v2"
+APPROVED_COMPANY_TEST_DB_OWNER="postgres"
+APPROVED_COMPANY_TEST_SSLMODE="disable"
+APPROVED_COMPANY_TEST_TARGET="0040_g02_document_read_status"
+
+if [[ "${MIGRATION_TEST_MODE}" != "true" && "${MIGRATION_TEST_MODE}" != "false" ]]; then
+  echo "TIDE_MIGRATION_TEST_MODE 只接受 true 或 false。" >&2
+  exit 1
+fi
+if [[ "${COMPANY_TEST_MIGRATION_MODE}" != "true" \
+      && "${COMPANY_TEST_MIGRATION_MODE}" != "false" ]]; then
+  echo "TIDE_COMPANY_TEST_MIGRATION_MODE 只接受 true 或 false。" >&2
+  exit 1
+fi
+if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" \
+      && "${MIGRATION_TEST_MODE}" != "false" ]]; then
+  echo "公司 TEST 增量迁移禁止使用通用 TIDE_MIGRATION_TEST_MODE 绕过。" >&2
+  exit 1
+fi
+
+if [[ "${COMPANY_TEST_MIGRATION_MODE}" != "true" && -z "${DATABASE_URL}" ]]; then
   echo "TIDE_MIGRATION_DATABASE_URL 不能为空；必须使用独立迁移账号。" >&2
   exit 1
 fi
@@ -16,7 +40,62 @@ if [[ -z "${EXPECTED_DATABASE}" ]]; then
   exit 1
 fi
 
-if [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
+if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" ]]; then
+  COMPANY_TEST_CONFIG_FILE="${TIDE_COMPANY_TEST_CONFIG_FILE:-}"
+  COMPANY_TEST_DB_HOST="${TIDE_COMPANY_TEST_DB_HOST:-}"
+  COMPANY_TEST_DB_PORT="${TIDE_COMPANY_TEST_DB_PORT:-}"
+  COMPANY_TEST_DB_USER="${TIDE_COMPANY_TEST_DB_USER:-}"
+  COMPANY_TEST_DB_NAME="${TIDE_COMPANY_TEST_DB_NAME:-}"
+  COMPANY_TEST_DB_SSLMODE="${TIDE_COMPANY_TEST_DB_SSLMODE:-}"
+
+  if [[ -n "${DATABASE_URL}" ]]; then
+    echo "公司 TEST 增量迁移禁止传入连接 URI；只接受受控配置文件。" >&2
+    exit 1
+  fi
+  if [[ "${COMPANY_TEST_CONFIG_FILE}" != /* \
+        || ! -f "${COMPANY_TEST_CONFIG_FILE}" \
+        || -L "${COMPANY_TEST_CONFIG_FILE}" ]]; then
+    echo "公司 TEST 增量迁移只接受绝对路径的普通配置文件（禁止符号链接）。" >&2
+    exit 1
+  fi
+  if stat -f '%Lp' "${COMPANY_TEST_CONFIG_FILE}" >/dev/null 2>&1; then
+    company_test_config_mode="$(stat -f '%Lp' "${COMPANY_TEST_CONFIG_FILE}")"
+  else
+    company_test_config_mode="$(stat -c '%a' "${COMPANY_TEST_CONFIG_FILE}")"
+  fi
+  if [[ "${company_test_config_mode}" != "600" ]]; then
+    echo "公司 TEST 增量迁移配置权限必须精确为 600。" >&2
+    exit 1
+  fi
+  company_test_config_dir="$(cd "$(dirname "${COMPANY_TEST_CONFIG_FILE}")" && pwd -P)"
+  company_test_config_path="${company_test_config_dir}/$(basename "${COMPANY_TEST_CONFIG_FILE}")"
+  source_root_candidate="$(cd "${DB_DIR}/../../.." && pwd -P)"
+  if [[ -e "${source_root_candidate}/.git" ]]; then
+    protected_source_root="${source_root_candidate}"
+  else
+    protected_source_root="$(cd "${DB_DIR}/.." && pwd -P)"
+  fi
+  case "${company_test_config_path}" in
+    "${protected_source_root}"|"${protected_source_root}"/*)
+      echo "公司 TEST 增量迁移配置必须放在 Git/镜像工作区之外。" >&2
+      exit 1
+      ;;
+  esac
+  if [[ "${COMPANY_TEST_DB_HOST}" != "${APPROVED_COMPANY_TEST_DB_HOST}" \
+        || "${COMPANY_TEST_DB_PORT}" != "${APPROVED_COMPANY_TEST_DB_PORT}" \
+        || "${COMPANY_TEST_DB_NAME}" != "${APPROVED_COMPANY_TEST_DB_NAME}" \
+        || "${COMPANY_TEST_DB_USER}" != "${APPROVED_COMPANY_TEST_DB_OWNER}" \
+        || "${COMPANY_TEST_DB_SSLMODE}" != "${APPROVED_COMPANY_TEST_SSLMODE}" \
+        || "${EXPECTED_DATABASE}" != "${APPROVED_COMPANY_TEST_DB_NAME}" \
+        || "${TARGET_MIGRATION}" != "${APPROVED_COMPANY_TEST_TARGET}" ]]; then
+    echo "公司 TEST 增量迁移只允许已批准的 tit_growth_test_v2 / postgres / 0040 目标。" >&2
+    exit 1
+  fi
+  if [[ -z "${PGPASSWORD:-}" ]]; then
+    echo "公司 TEST 增量迁移缺少受控配置提供的数据库密码。" >&2
+    exit 1
+  fi
+elif [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
   if [[ ! "${DATABASE_URL}" =~ ^postgres(ql)?:// ]]; then
     echo "生产迁移只接受显式 PostgreSQL URI。" >&2
     exit 1
@@ -42,7 +121,18 @@ if [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
 fi
 
 export PGCONNECT_TIMEOUT="${PGCONNECT_TIMEOUT:-8}"
-PSQL=(psql -X --no-password -v ON_ERROR_STOP=1 "${DATABASE_URL}")
+if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" ]]; then
+  export PGSSLMODE="${APPROVED_COMPANY_TEST_SSLMODE}"
+  PSQL=(
+    psql -X --no-password -v ON_ERROR_STOP=1
+    -h "${APPROVED_COMPANY_TEST_DB_HOST}"
+    -p "${APPROVED_COMPANY_TEST_DB_PORT}"
+    -U "${APPROVED_COMPANY_TEST_DB_OWNER}"
+    -d "${APPROVED_COMPANY_TEST_DB_NAME}"
+  )
+else
+  PSQL=(psql -X --no-password -v ON_ERROR_STOP=1 "${DATABASE_URL}")
+fi
 
 # 0017/0018 曾修改世文持有的 public.task_assignments，生产链明确永久排除。
 PRODUCTION_MIGRATIONS=(
@@ -79,11 +169,14 @@ PRODUCTION_MIGRATIONS=(
   0033_g01_tesol_only
   0037_g04_remove_device_check
   0038_personalized_environment_photo
+  0039_g02_policy_document
+  0040_g02_document_read_status
 )
 
 target_found=false
 target_includes_product_analytics=false
 target_includes_personalized_environment_photo=false
+target_includes_g02_policy_document=false
 TARGET_MIGRATIONS=()
 for migration_id in "${PRODUCTION_MIGRATIONS[@]}"; do
   TARGET_MIGRATIONS+=("${migration_id}")
@@ -92,6 +185,9 @@ for migration_id in "${PRODUCTION_MIGRATIONS[@]}"; do
   fi
   if [[ "${migration_id}" == "0038_personalized_environment_photo" ]]; then
     target_includes_personalized_environment_photo=true
+  fi
+  if [[ "${migration_id}" == "0039_g02_policy_document" ]]; then
+    target_includes_g02_policy_document=true
   fi
   if [[ "${migration_id}" == "${TARGET_MIGRATION}" ]]; then
     target_found=true
@@ -102,12 +198,18 @@ if [[ "${target_found}" != "true" ]]; then
   echo "未知生产迁移目标：${TARGET_MIGRATION}" >&2
   exit 1
 fi
+if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" \
+      && "${TARGET_MIGRATION}" != "${APPROVED_COMPANY_TEST_TARGET}" ]]; then
+  echo "公司 TEST 增量迁移目标必须精确为 ${APPROVED_COMPANY_TEST_TARGET}。" >&2
+  exit 1
+fi
 if [[ "${TARGET_MIGRATION}" != "0028_retire_task_business_change_view" \
       && "${TARGET_MIGRATION}" != "0032_first_login_onboarding" \
       && "${TARGET_MIGRATION}" != "0037_g04_remove_device_check" \
       && "${TARGET_MIGRATION}" != "0038_personalized_environment_photo" \
+      && "${TARGET_MIGRATION}" != "0040_g02_document_read_status" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037 或最终版本 0038；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
+  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037、0038 或最终版本 0040；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1
 fi
 
@@ -200,7 +302,21 @@ if [[ "${function_owner_role_ready}" != "t" ]]; then
   echo "tide_support_ticket_owner 缺失或不是无继承的非登录最小权限角色。" >&2
   exit 1
 fi
-if [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
+if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" ]]; then
+  if [[ "${connected_user}" != "${APPROVED_COMPANY_TEST_DB_OWNER}" \
+        || "${session_user_name}" != "${APPROVED_COMPANY_TEST_DB_OWNER}" ]]; then
+    echo "公司 TEST 增量迁移实际会话必须精确为批准的 postgres owner，禁止 SET ROLE 伪装。" >&2
+    exit 1
+  fi
+  if [[ "${migration_user_superuser}" != "t" ]]; then
+    echo "公司 TEST 增量迁移批准 owner 必须保持为 postgres superuser。" >&2
+    exit 1
+  fi
+  if [[ "${ssl_active}" != "f" ]]; then
+    echo "sslmode=disable 仅批准用于指定 company TEST，实际会话状态不一致。" >&2
+    exit 1
+  fi
+elif [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
   if [[ "${connected_user}" != "tide_migrator" ]]; then
     echo "生产迁移 current_user 必须精确为 tide_migrator。" >&2
     exit 1
@@ -339,11 +455,23 @@ if [[ "${forbidden_column_count}" != "0" ]]; then
   exit 1
 fi
 
+personalized_environment_photo_recorded=false
+if [[ "${ledger_exists}" == "t" ]]; then
+  personalized_environment_photo_recorded="$("${PSQL[@]}" -Atqc "
+    SELECT EXISTS (
+      SELECT 1
+      FROM tide.schema_migrations
+      WHERE migration_id = '0038_personalized_environment_photo'
+    )
+  ")"
+fi
+
 # 0038 consumes the operations-owned P-FB-NEGATIVE copy introduced by public
 # rev55. This gate deliberately runs before the migration loop, so neither the
 # 0038 business SQL nor its Tide ledger row can be written against an older or
 # drifted public contract.
-if [[ "${target_includes_personalized_environment_photo}" == "true" ]]; then
+if [[ "${target_includes_personalized_environment_photo}" == "true" \
+      && "${personalized_environment_photo_recorded}" != "t" ]]; then
   if [[ "$("${PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
     echo "0038 要求 public Alembic 精确位于 20260811_56_p_fb_negative_copy；当前缺少 public 迁移账本，未执行任何 0038 写入或记账。" >&2
     exit 1
@@ -382,6 +510,40 @@ if [[ "${target_includes_personalized_environment_photo}" == "true" ]]; then
   ")"
   if [[ "${personalized_public_contract_ready}" != "t" ]]; then
     echo "0038 要求 public rev56 的 P-FB-NEGATIVE:v1 精确新文案与零分共享契约；检测到缺失或漂移，未执行任何 0038 写入或记账。" >&2
+    exit 1
+  fi
+fi
+
+if [[ "${target_includes_g02_policy_document}" == "true" ]]; then
+  if [[ "$("${PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
+    echo "0039/0040 要求 public Alembic 精确位于 20260811_57_g02_document；当前缺少 public 迁移账本，未执行任何 G02 teacher 写入或记账。" >&2
+    exit 1
+  fi
+  public_head="$("${PSQL[@]}" -Atqc "
+    select case when count(*) = 1 then min(version_num) else '' end
+    from public.alembic_version
+  ")"
+  if [[ "${public_head}" != "20260811_57_g02_document" ]]; then
+    echo "0039/0040 要求 public Alembic 精确位于 20260811_57_g02_document；当前为 ${public_head:-未记账}，未执行任何 G02 teacher 写入或记账。" >&2
+    exit 1
+  fi
+  g02_public_contract_ready="$("${PSQL[@]}" -Atqc "
+    select count(*) = 1
+    from public.task_templates
+    where row_id = 'G03:v1'
+      and template_id = 'G02'
+      and status = 'PUBLISHED'
+      and execution_owner = 'TEACHER_APP'
+      and payload->>'category' = 'MANDATORY_GROWTH'
+      and payload->>'title' = 'Platform Policies'
+      and payload->>'how_summary' =
+        'Read the current Overseas NT Policies document in TIDE. Your reading progress is saved automatically.'
+      and payload->>'completion_standard' =
+        'G02 is completed automatically after you reach the end of the current published document.'
+      and (payload->>'score_value')::integer = 2
+  ")"
+  if [[ "${g02_public_contract_ready}" != "t" ]]; then
+    echo "0039/0040 要求 public rev57 的 G02 原生文档精确共享契约；检测到缺失或漂移，未执行任何 G02 teacher 写入或记账。" >&2
     exit 1
   fi
 fi
@@ -530,6 +692,13 @@ elif [[ "${TARGET_MIGRATION}" == "0037_g04_remove_device_check" ]]; then
     echo "teacher 0037 要求 public head 54 中同时存在 rev51 G01 TESOL-only 精确副本与 G04 两段精确副本。本次未写入任何 Tide 迁移。" >&2
     exit 1
   fi
+elif [[ "${TARGET_MIGRATION}" == "0040_g02_document_read_status" ]]; then
+  if [[ "${current_tide_head}" != "0038_personalized_environment_photo" \
+        && "${current_tide_head}" != "0039_g02_policy_document" \
+        && "${current_tide_head}" != "0040_g02_document_read_status" ]]; then
+    echo "teacher 0040 只能从 teacher 0038 或 0039 的连续状态继续；必须先完成 public head 56 -> teacher 0038，再执行 public head 57 -> teacher 0040。本次未写入任何 Tide 迁移。" >&2
+    exit 1
+  fi
 fi
 
 sha256_file() {
@@ -645,4 +814,8 @@ if [[ "${actual_ids}" != "${expected_ids}" ]]; then
   exit 1
 fi
 
-echo "生产数据库迁移完成：${TARGET_MIGRATION}。未执行角色密码、Mock 或内容 Seed。"
+if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" ]]; then
+  echo "公司 TEST 数据库增量迁移完成：${TARGET_MIGRATION}。未执行角色密码、Mock 或内容 Seed。"
+else
+  echo "生产数据库迁移完成：${TARGET_MIGRATION}。未执行角色密码、Mock 或内容 Seed。"
+fi
