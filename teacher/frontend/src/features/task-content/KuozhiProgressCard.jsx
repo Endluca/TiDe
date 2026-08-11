@@ -99,6 +99,18 @@ export default function KuozhiProgressCard({
         </button>
       </header>
 
+      {canRefresh && !progress?.completion?.completed && (
+        <p className="kuozhi-refresh-tip">
+          <ArrowClockwise size={16} weight="bold" aria-hidden="true" />
+          <span>
+            {c(
+              'After completing the task, refresh this page or use the refresh button above to sync your latest progress.',
+              '完成任务后，记得刷新本页或点击右上角的刷新按钮，同步最新进度。',
+            )}
+          </span>
+        </p>
+      )}
+
       <div className="kuozhi-progress-overview">
         <div>
           <strong>{requiredCourseTasks.length ? `${completedTasks}/${requiredCourseTasks.length}` : '—'}</strong>

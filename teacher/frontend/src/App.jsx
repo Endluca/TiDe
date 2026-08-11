@@ -2831,6 +2831,7 @@ function DimensionDetails({
     : null;
   const matrixPageCount = Math.max(1, Math.ceil(courseColumns.length / COURSE_MATRIX_PAGE_SIZE));
   const safeMatrixPage = clampLessonPage(matrixPage, matrixPageCount);
+  const matrixPageItems = buildLessonPageItems(safeMatrixPage, matrixPageCount);
   const matrixStart = (safeMatrixPage - 1) * COURSE_MATRIX_PAGE_SIZE;
   const visibleCourseColumns = courseColumns.slice(matrixStart, matrixStart + COURSE_MATRIX_PAGE_SIZE);
   const matrixRangeEnd = Math.min(matrixStart + COURSE_MATRIX_PAGE_SIZE, courseColumns.length);
@@ -2850,6 +2851,9 @@ function DimensionDetails({
     `Class ${lesson.lessonNumber}`,
     `第 ${lesson.lessonNumber} 节课`,
   );
+  const selectMatrixPage = (nextPage) => {
+    setMatrixPage(clampLessonPage(nextPage, matrixPageCount));
+  };
 
   useEffect(() => {
     if (safeMatrixPage !== matrixPage) setMatrixPage(safeMatrixPage);
@@ -3031,24 +3035,53 @@ function DimensionDetails({
                     `当前显示 ${matrixStart + 1}–${matrixRangeEnd} / 共 ${courseColumns.length} 节加分课程`,
                   )}
                 </span>
-                <div>
-                  <button
-                    type="button"
-                    disabled={safeMatrixPage === 1}
-                    aria-label={copy(language, "Previous classes", "上一组课程")}
-                    onClick={() => setMatrixPage((current) => Math.max(current - 1, 1))}
-                  >
-                    <ArrowLeft size={16} weight="bold" />
-                  </button>
-                  <strong>{safeMatrixPage} / {matrixPageCount}</strong>
-                  <button
-                    type="button"
-                    disabled={safeMatrixPage === matrixPageCount}
-                    aria-label={copy(language, "Next classes", "下一组课程")}
-                    onClick={() => setMatrixPage((current) => Math.min(current + 1, matrixPageCount))}
-                  >
-                    <ArrowRight size={16} weight="bold" />
-                  </button>
+                <div className="dimension-course-matrix-pagination-controls">
+                  <div className="dimension-course-matrix-pages">
+                    <button
+                      type="button"
+                      disabled={safeMatrixPage === 1}
+                      aria-label={copy(language, "Previous classes", "上一组课程")}
+                      onClick={() => selectMatrixPage(safeMatrixPage - 1)}
+                    >
+                      <ArrowLeft size={16} weight="bold" />
+                    </button>
+                    {matrixPageItems.map((item) => typeof item === "number" ? (
+                      <button
+                        type="button"
+                        key={item}
+                        className={item === safeMatrixPage ? "active" : ""}
+                        aria-current={item === safeMatrixPage ? "page" : undefined}
+                        aria-label={copy(language, `Page ${item}`, `第 ${item} 页`)}
+                        onClick={() => selectMatrixPage(item)}
+                      >
+                        {item}
+                      </button>
+                    ) : (
+                      <span className="dimension-course-matrix-page-ellipsis" aria-hidden="true" key={item}>…</span>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={safeMatrixPage === matrixPageCount}
+                      aria-label={copy(language, "Next classes", "下一组课程")}
+                      onClick={() => selectMatrixPage(safeMatrixPage + 1)}
+                    >
+                      <ArrowRight size={16} weight="bold" />
+                    </button>
+                  </div>
+                  <label className="dimension-course-matrix-page-jump">
+                    <span>{copy(language, "Jump to", "跳转到")}</span>
+                    <select
+                      aria-label={copy(language, "Jump to class score page", "跳转到课程积分页")}
+                      value={safeMatrixPage}
+                      onChange={(event) => selectMatrixPage(event.target.value)}
+                    >
+                      {Array.from({ length: matrixPageCount }, (_, index) => index + 1).map((pageNumber) => (
+                        <option value={pageNumber} key={pageNumber}>
+                          {copy(language, `Page ${pageNumber}`, `第 ${pageNumber} 页`)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               </nav>
             )}

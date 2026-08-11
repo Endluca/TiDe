@@ -63,6 +63,9 @@ test('Kuozhi launch and progress stay behind the authenticated backend', async (
   assert.match(progressCard, /courseTask\.type === 'TESTPAPER'/);
   assert.match(progressCard, /kuozhi-task-score/);
   assert.match(progressCard, /courseTask\.score/);
+  assert.match(progressCard, /canRefresh && !progress\?\.completion\?\.completed/);
+  assert.match(progressCard, /After completing the task, refresh this page or use the refresh button above/);
+  assert.match(progressCard, /完成任务后，记得刷新本页或点击右上角的刷新按钮/);
   assert.match(app, /kuozhi-progress-card--sidebar/);
   assert.match(app, /raw\.method === "external_course" \? "kuozhi-task-screen"/);
   assert.match(app, /canRefresh=\{kuozhiProgressState\?\.canRefresh\}/);
@@ -87,6 +90,7 @@ test('Kuozhi iframe navigation is cropped without touching cross-origin content'
   assert.match(styles, /scrollbar-gutter:\s*stable/);
   assert.match(styles, /scroll-snap-type:\s*inline mandatory/);
   assert.match(styles, /scrollbar-width:\s*none/);
+  assert.match(styles, /\.kuozhi-refresh-tip\s*\{/);
 });
 
 test('mobile task surfaces keep compact spacing and aligned two-column cards', async () => {

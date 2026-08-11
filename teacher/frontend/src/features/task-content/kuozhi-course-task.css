@@ -240,6 +240,26 @@
   opacity: .5;
 }
 
+.kuozhi-refresh-tip {
+  display: flex;
+  align-items: flex-start;
+  margin: 0;
+  padding: 9px 10px;
+  gap: 7px;
+  border: 1px solid #f0d783;
+  border-radius: 10px;
+  color: #665015;
+  background: #fff9df;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.kuozhi-refresh-tip svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #ad7800;
+}
+
 .kuozhi-progress-overview {
   display: grid;
   gap: 8px;

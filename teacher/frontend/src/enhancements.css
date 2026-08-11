@@ -1731,9 +1731,18 @@ button.matrix-cell:hover {
   font-size: 10px;
 }
 
-.dimension-course-matrix-pagination > div {
+.dimension-course-matrix-pagination-controls,
+.dimension-course-matrix-pages,
+.dimension-course-matrix-page-jump {
   display: flex;
   align-items: center;
+}
+
+.dimension-course-matrix-pagination-controls {
+  gap: 12px;
+}
+
+.dimension-course-matrix-pages {
   gap: 8px;
 }
 
@@ -1755,17 +1764,47 @@ button.matrix-cell:hover {
   background: #edf5ff;
 }
 
+.dimension-course-matrix-pagination button.active {
+  border-color: var(--brand-blue);
+  color: #fff;
+  background: var(--brand-blue);
+}
+
 .dimension-course-matrix-pagination button:disabled {
   color: #aeb8c3;
   background: #f3f5f7;
   cursor: not-allowed;
 }
 
-.dimension-course-matrix-pagination strong {
-  min-width: 38px;
+.dimension-course-matrix-page-ellipsis {
+  min-width: 14px;
   color: #42546a;
-  font-size: 10px;
+  font-size: 13px;
   text-align: center;
+}
+
+.dimension-course-matrix-page-jump {
+  gap: 6px;
+  color: #536171;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.dimension-course-matrix-page-jump select {
+  min-width: 82px;
+  height: 31px;
+  padding: 0 26px 0 9px;
+  border: 1px solid #cfdbe7;
+  border-radius: 8px;
+  color: #30445b;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dimension-course-matrix-page-jump select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand-blue) 35%, transparent);
+  outline-offset: 2px;
 }
 
 @media (max-width: 720px) {
@@ -1929,14 +1968,38 @@ button.matrix-cell:hover {
     gap: 7px;
   }
 
-  .dimension-course-matrix-pagination > div {
+  .dimension-course-matrix-pagination-controls {
     width: 100%;
-    justify-content: space-between;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .dimension-course-matrix-pages {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 4px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .dimension-course-matrix-pages::-webkit-scrollbar {
+    display: none;
   }
 
   .dimension-course-matrix-pagination button {
-    width: 36px;
-    height: 34px;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+  }
+
+  .dimension-course-matrix-page-jump {
+    justify-content: flex-end;
+  }
+
+  .dimension-course-matrix-page-jump select {
+    height: 32px;
   }
 }
 
