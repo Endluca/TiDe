@@ -6,12 +6,12 @@ import {
   type AiGatewayExecutionResult,
 } from './ai-gateway.models';
 import { AiRunRepository } from './ai-run.repository';
-import { CompanyAiGatewayClient } from './company-ai-gateway.client';
+import { BytePlusModelArkClient } from './byteplus-modelark.client';
 
 @Injectable()
 export class AiGatewayService {
   constructor(
-    private readonly gateway: CompanyAiGatewayClient,
+    private readonly gateway: BytePlusModelArkClient,
     private readonly runs: AiRunRepository,
   ) {}
 

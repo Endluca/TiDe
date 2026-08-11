@@ -2,7 +2,7 @@
 
 ## 1. 当前定位
 
-当前交付是 NestJS 模块化单体，公共后端已覆盖账号、My TIDE、任务、文件、共享数据库事件、公司 AI 网关、图片审核扩展和仅文字 FAQ。
+当前交付是 NestJS 模块化单体，公共后端已覆盖账号、My TIDE、任务、文件、共享数据库事件、BytePlus ModelArk Responses API、图片审核扩展和仅文字 FAQ。
 
 嘉荷继续负责固定必修任务和个性化任务的具体流程、题目、素材、提示词、完成规则与任务级验收；公共后端只提供模板、状态机、文件、校验处理器和数据边界，不在代码中代填具体业务规则。
 
@@ -69,7 +69,7 @@ pnpm provision:internal-test
 - 新阶段提醒：`GROWTH_STAGE_NOTIFICATION_SCHEDULER_ENABLED` 默认关闭，轮询间隔由 `GROWTH_STAGE_NOTIFICATION_POLL_INTERVAL_MS` 控制。首次启用只记录每位老师当前最高开放阶段，不补发历史提醒；之后最高开放阶段提升时才写入一条 `tide.system_notifications`。
 - 工单清理：`SUPPORT_TICKET_CLEANUP_POLL_INTERVAL_MS / SUPPORT_TICKET_CLEANUP_BATCH_SIZE` 控制已进入截止时间的 48 小时关单和失败图片清理重试。该任务不轮询运营回复、不生成系统通知。
 - 后台任务总开关：`BACKGROUND_JOBS_ENABLED` 默认开启，统一控制系统通知发布、个性化任务提醒、成长阶段提醒和工单到期清理。多 API Pod 可全部保持 `true`：四类任务由 `tide.job_leases` 分任务单活，未取得租约的副本跳过本轮。该模式要求数据库至少已应用 `0022_performance_job_leases`，不得在缺少租约表时降级成无锁执行；`BACKGROUND_JOB_LEASE_MS` 控制调度租约。G04 图片审核属于任务提交校验，结果写入 `image_reviews / image_review_items`，没有独立照片 Worker。
-- AI：`AI_GATEWAY_*`。默认关闭；启用时必须配置密钥。真实密钥只进入公司密钥系统或后端环境变量。
+- AI：`MODELARK_ENABLED / MODELARK_BASE_URL / MODELARK_MODEL / MODELARK_TIMEOUT_MS / ARK_API_KEY`。默认关闭；启用时必须配置 `ARK_API_KEY`。`MODELARK_BASE_URL` 只填写到 `/api/v3`，不能追加 `/responses`；真实密钥只进入公司密钥系统或后端环境变量。
 
 生产环境采用 fail-closed 校验，以下条件任一不满足，进程直接拒绝启动：
 
@@ -189,7 +189,7 @@ TIDE_SMOKE_API_URL=https://api.example.com TIDE_SMOKE_ACCESS_TOKEN=实际测试�
 - 世文正式安全视图、只读角色、连接限制和一条真实 assignment 联调样例。
 - 世文消费游标、轮询频率、结分幂等、对账和故障联系人。
 - 公司邮件服务准确请求合同和真实模板。
-- 公司 AI 网关测试／正式密钥及真实连通性验证。
+- BytePlus ModelArk 测试／正式密钥、Responses API 图片输入及真实连通性验证。
 - 私有 OSS、签名访问、保留期和删除策略。
 - 盖娅部署规格、域名、日志、告警、备份恢复和密钥管理。
 - 嘉荷负责的每个任务级 PRD、素材、规则配置和业务验收样例。

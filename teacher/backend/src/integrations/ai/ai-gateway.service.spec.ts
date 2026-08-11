@@ -1,16 +1,16 @@
 import { AiGatewayService } from './ai-gateway.service';
 import { AiGatewayError } from './ai-gateway.models';
 import type { AiRunRepository } from './ai-run.repository';
-import type { CompanyAiGatewayClient } from './company-ai-gateway.client';
+import type { BytePlusModelArkClient } from './byteplus-modelark.client';
 
 function createFixture() {
   let recordedStartInput: Parameters<AiRunRepository['start']>[0] | undefined;
   const complete = jest.fn();
   const gateway = {
-    provider: jest.fn().mockReturnValue('VERTEX'),
-    model: jest.fn().mockReturnValue('doubao-seed-2-0-lite'),
+    provider: jest.fn().mockReturnValue('BYTEPLUS_MODELARK'),
+    model: jest.fn().mockReturnValue('seed-2-0-lite-260228'),
     complete,
-  } as unknown as CompanyAiGatewayClient;
+  } as unknown as BytePlusModelArkClient;
   const start = jest
     .fn<
       ReturnType<AiRunRepository['start']>,

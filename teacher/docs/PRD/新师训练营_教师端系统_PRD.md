@@ -723,15 +723,15 @@
 - 在 `app_events` 记录登录、验证、任务读取、提交、判定、消息打开和技术异常等必要事件。
 - 日志不得记录明文密码、令牌、完整敏感素材或超出教师安全投影的内容。
 
-### 8.5 公司 AI 与邮件服务
+### 8.5 BytePlus ModelArk 与邮件服务
 
-- AI 从前期开始统一调用公司 AI 网关，参考 `backend/examples/ai_gateway_video_assessment.py` 的请求结构；沿用示例 `biz_id / biz_type`，`provider` 使用公司网关实际支持豆包的 `VOLCENGINE`，模型使用 `doubao-seed-2-0-lite`，密钥只通过后端环境变量提供。
-- AI FAQ 问答发送文字；必修任务图片审核发送受控图片引用。两者共用网关适配器，不共用业务数据。
-- 公司 AI 网关能力默认关闭；只有后端同时配置启用开关和密钥后才允许真实调用。密钥、原始图片、完整提示词和模型原文不得写入应用日志或通用调用记录。
+- AI 从前期开始统一调用 BytePlus ModelArk。后端使用 OpenAI SDK 和 Responses API，Base URL 为 `https://ark.ap-southeast.bytepluses.com/api/v3`，模型为 `seed-2-0-lite-260228`，密钥只从后端 `ARK_API_KEY` 提供。
+- AI FAQ 问答发送文字；必修任务图片审核发送后端读取的私有图片 Base64。两者共用 ModelArk 客户端，不共用业务数据。
+- ModelArk 能力默认关闭；只有后端同时配置 `MODELARK_ENABLED=true` 和 `ARK_API_KEY` 后才允许真实调用。响应设置 `store=false`；密钥、原始图片、完整提示词和模型原文不得写入应用日志或通用调用记录。
 - 公共任务引擎只提供配置驱动的 `AI_IMAGE_REVIEW` 处理器；具体图片步骤、提示词、审核标准版本、标准键、失败文案和是否允许重试由嘉荷在对应任务级 PRD 与模板中配置。
-- 图片先从当前老师已完成完整性校验的私有文件读取，再上传至公司 AI 网关并传递受控引用。模型结果必须是严格 JSON，且审核项必须完整匹配模板配置；字段缺失、多余标准或无法解析均按技术异常处理。
-- `PASS` 可以生成 `AI_REVIEW` 可信完成；`RETRY` 进入失败结果并按模板 `allowRetry` 决定能否重试；`ERROR`、网关关闭、超时、上传失败、响应异常和配置异常均进入 `UNDER_REVIEW`，不得判定老师失败。
-- FAQ 的问题、回答状态和安全网关引用分别保存在 `qa_messages`、`ai_runs` 和 `qa_source_links`；可用的来源内容保存在 `knowledge_documents / knowledge_chunks`。必修任务图片审核结果保存在对应 `task_submissions.validation_result`。一期不为 AI 再拆分第二套通用调用表和多层审核明细表。
+- 图片先从当前老师已完成完整性校验的私有文件读取，再以内联 Base64 `input_image` 发送给 Responses API，不生成公开 URL。模型结果必须是严格 JSON，且审核项必须完整匹配模板配置；字段缺失、多余标准或无法解析均按技术异常处理。
+- `PASS` 可以生成 `AI_REVIEW` 可信完成；`RETRY` 进入失败结果并按模板 `allowRetry` 决定能否重试；`ERROR`、ModelArk 关闭、超时、HTTP 异常、响应异常和配置异常均进入 `UNDER_REVIEW`，不得判定老师失败。
+- FAQ 的问题、回答状态和 ModelArk response ID 分别保存在 `qa_messages`、`ai_runs` 和 `qa_source_links`；可用的来源内容保存在 `knowledge_documents / knowledge_chunks`。必修任务图片审核结果保存在对应 `task_submissions.validation_result`。一期不为 AI 再拆分第二套通用调用表和多层审核明细表。
 - 邮件统一调用公司服务 `POST http://mg.51talk.me/api/v1/msg/send`；服务固定字段由后端配置，模板动态变量为 `email / reset_url / expires_in_minutes`。
 - Postman 的 `Cookie`、`User-Agent`、`Connection` 和 `Accept-Encoding` 不进入正式后端；本地 hosts 映射只属于运行环境配置，不写入业务代码。
 

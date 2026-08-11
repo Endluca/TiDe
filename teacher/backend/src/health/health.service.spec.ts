@@ -9,7 +9,7 @@ describe('HealthService', () => {
     get: jest.fn((key: keyof AppEnvironment) => {
       if (key === 'FILE_STORAGE_PROVIDER') return 'OSS';
       if (key === 'MAIL_DELIVERY_PROVIDER') return 'COMPANY_MESSAGE_API';
-      if (key === 'AI_GATEWAY_ENABLED') return true;
+      if (key === 'MODELARK_ENABLED') return true;
       if (key === 'BACKGROUND_JOBS_ENABLED') return true;
       return undefined;
     }),

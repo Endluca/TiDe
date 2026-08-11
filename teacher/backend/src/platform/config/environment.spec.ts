@@ -33,7 +33,7 @@ describe('environment configuration', () => {
     expect(environment.FILE_STORAGE_PROVIDER).toBe('LOCAL');
     expect(environment.LOCAL_FILE_STORAGE_DIR).toBe('./storage/private');
     expect(environment.MAIL_DELIVERY_PROVIDER).toBe('UNAVAILABLE');
-    expect(environment.AI_GATEWAY_ENABLED).toBe(false);
+    expect(environment.MODELARK_ENABLED).toBe(false);
     expect(environment.BACKGROUND_JOBS_ENABLED).toBe(true);
     expect(environment.BACKGROUND_JOB_LEASE_MS).toBe(180_000);
     expect(environment.PERSONALIZED_TASK_NOTIFICATION_SCHEDULER_ENABLED).toBe(
@@ -42,8 +42,10 @@ describe('environment configuration', () => {
     expect(environment.PERSONALIZED_TASK_NOTIFICATION_POLL_INTERVAL_MS).toBe(
       300_000,
     );
-    expect(environment.AI_GATEWAY_PROVIDER).toBe('VOLCENGINE');
-    expect(environment.AI_GATEWAY_MODEL).toBe('doubao-seed-2-0-lite');
+    expect(environment.MODELARK_BASE_URL).toBe(
+      'https://ark.ap-southeast.bytepluses.com/api/v3',
+    );
+    expect(environment.MODELARK_MODEL).toBe('seed-2-0-lite-260228');
     expect(environment.KUOZHI_DETAIL_URL).toBe(
       'http://edu.51talk.me/api/me/TeacherCourseDetail',
     );
@@ -71,18 +73,28 @@ describe('environment configuration', () => {
     ).toThrow('BIND_HOST');
   });
 
-  it('requires a gateway key only when AI is enabled', () => {
+  it('requires a ModelArk key only when AI is enabled', () => {
     expect(() =>
-      validateEnvironment({ NODE_ENV: 'test', AI_GATEWAY_ENABLED: 'true' }),
-    ).toThrow('AI_GATEWAY_API_KEY');
+      validateEnvironment({ NODE_ENV: 'test', MODELARK_ENABLED: 'true' }),
+    ).toThrow('ARK_API_KEY');
 
     expect(
       validateEnvironment({
         NODE_ENV: 'test',
-        AI_GATEWAY_ENABLED: 'true',
-        AI_GATEWAY_API_KEY: 'test-key',
-      }).AI_GATEWAY_ENABLED,
+        MODELARK_ENABLED: 'true',
+        ARK_API_KEY: 'test-key',
+      }).MODELARK_ENABLED,
     ).toBe(true);
+  });
+
+  it('rejects a Responses endpoint where a ModelArk base URL is required', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        MODELARK_BASE_URL:
+          'https://ark.ap-southeast.bytepluses.com/api/v3/responses',
+      }),
+    ).toThrow('MODELARK_BASE_URL');
   });
 
   it('requires all Kuozhi ticket settings when any one is configured', () => {

@@ -265,26 +265,27 @@ export const environmentSchema = z
       .min(1)
       .max(100)
       .default(20),
-    AI_GATEWAY_ENABLED: booleanFromEnvironment,
-    AI_GATEWAY_CHAT_URL: z
+    MODELARK_ENABLED: booleanFromEnvironment,
+    MODELARK_BASE_URL: z
       .string()
       .url()
-      .default('https://aigateway.51talk.com/v1/chat/completions'),
-    AI_GATEWAY_UPLOAD_URL: z
-      .string()
-      .url()
-      .default('https://aigateway.51talk.com/v1/task/sync'),
-    AI_GATEWAY_API_KEY: z.preprocess(
+      .refine((value) => {
+        const url = new URL(value);
+        return (
+          url.protocol === 'https:' &&
+          url.pathname.replace(/\/+$/, '') === '/api/v3' &&
+          url.search === '' &&
+          url.hash === ''
+        );
+      }, '必须是 HTTPS 且路径精确到 /api/v3，不能包含 /responses')
+      .transform((value) => value.replace(/\/+$/, ''))
+      .default('https://ark.ap-southeast.bytepluses.com/api/v3'),
+    ARK_API_KEY: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z.string().min(1).optional(),
     ),
-    AI_GATEWAY_PROVIDER: z.string().min(1).default('VOLCENGINE'),
-    AI_GATEWAY_MODEL: z.string().min(1).default('doubao-seed-2-0-lite'),
-    AI_GATEWAY_BIZ_ID: z.string().min(1).default('8218469790818477355'),
-    AI_GATEWAY_BIZ_TYPE: z.string().min(1).default('NTT_CE_PRS'),
-    AI_GATEWAY_UPLOAD_BUCKET: z.string().min(1).default('ai-efficiency-center'),
-    AI_GATEWAY_UPLOAD_PROVIDER: z.string().min(1).default('GOOGLE'),
-    AI_GATEWAY_TIMEOUT_MS: z.coerce
+    MODELARK_MODEL: z.string().min(1).default('seed-2-0-lite-260228'),
+    MODELARK_TIMEOUT_MS: z.coerce
       .number()
       .int()
       .min(1_000)
@@ -428,11 +429,11 @@ export const environmentSchema = z
       });
     }
 
-    if (environment.AI_GATEWAY_ENABLED && !environment.AI_GATEWAY_API_KEY) {
+    if (environment.MODELARK_ENABLED && !environment.ARK_API_KEY) {
       context.addIssue({
         code: 'custom',
-        path: ['AI_GATEWAY_API_KEY'],
-        message: 'AI_GATEWAY_ENABLED=true 时不能为空',
+        path: ['ARK_API_KEY'],
+        message: 'MODELARK_ENABLED=true 时不能为空',
       });
     }
 

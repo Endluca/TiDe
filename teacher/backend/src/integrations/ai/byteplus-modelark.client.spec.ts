@@ -1,7 +1,7 @@
 import type { ConfigService } from '@nestjs/config';
 import type { AppEnvironment } from '../../platform/config/environment';
 import { AiGatewayError } from './ai-gateway.models';
-import { CompanyAiGatewayClient } from './company-ai-gateway.client';
+import { BytePlusModelArkClient } from './byteplus-modelark.client';
 
 const values: AppEnvironment = {
   NODE_ENV: 'test',
@@ -62,17 +62,11 @@ const values: AppEnvironment = {
   GROWTH_STAGE_NOTIFICATION_POLL_INTERVAL_MS: 300_000,
   SUPPORT_TICKET_CLEANUP_POLL_INTERVAL_MS: 60_000,
   SUPPORT_TICKET_CLEANUP_BATCH_SIZE: 20,
-  AI_GATEWAY_ENABLED: true,
-  AI_GATEWAY_CHAT_URL: 'https://gateway.example/chat',
-  AI_GATEWAY_UPLOAD_URL: 'https://gateway.example/upload',
-  AI_GATEWAY_API_KEY: 'secret-key',
-  AI_GATEWAY_PROVIDER: 'VOLCENGINE',
-  AI_GATEWAY_MODEL: 'doubao-seed-2-0-lite',
-  AI_GATEWAY_BIZ_ID: 'biz-id',
-  AI_GATEWAY_BIZ_TYPE: 'biz-type',
-  AI_GATEWAY_UPLOAD_BUCKET: 'private-bucket',
-  AI_GATEWAY_UPLOAD_PROVIDER: 'GOOGLE',
-  AI_GATEWAY_TIMEOUT_MS: 30000,
+  MODELARK_ENABLED: true,
+  MODELARK_BASE_URL: 'https://ark.ap-southeast.bytepluses.com/api/v3',
+  ARK_API_KEY: 'secret-key',
+  MODELARK_MODEL: 'seed-2-0-lite-260228',
+  MODELARK_TIMEOUT_MS: 30000,
 };
 
 function makeClient(overrides: Partial<AppEnvironment> = {}) {
@@ -81,25 +75,56 @@ function makeClient(overrides: Partial<AppEnvironment> = {}) {
       (key: keyof AppEnvironment) => ({ ...values, ...overrides })[key],
     ),
   } as unknown as ConfigService<AppEnvironment, true>;
-  return new CompanyAiGatewayClient(config);
+  return new BytePlusModelArkClient(config);
 }
 
-describe('CompanyAiGatewayClient', () => {
+function responseBody(content: string) {
+  return {
+    id: 'resp-modelark-run',
+    object: 'response',
+    output: [
+      {
+        id: 'message-1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: content,
+            annotations: [],
+          },
+        ],
+      },
+    ],
+    usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 },
+  };
+}
+
+async function requestDetails(fetchMock: jest.SpiedFunction<typeof fetch>) {
+  const [request, init] = fetchMock.mock.calls[0];
+  const url = request instanceof Request ? request.url : String(request);
+  const headers = new Headers(
+    init?.headers ?? (request instanceof Request ? request.headers : undefined),
+  );
+  const body =
+    typeof init?.body === 'string'
+      ? init.body
+      : request instanceof Request
+        ? await request.clone().text()
+        : '';
+  return { url, headers, body: JSON.parse(body) as Record<string, unknown> };
+}
+
+describe('BytePlusModelArkClient', () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it('sends images inline because the Volcengine model rejects gs:// references', async () => {
+  it('calls the BytePlus Responses API with a private inline image', async () => {
     const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          success: true,
-          res: {
-            id: 'gateway-run',
-            choices: [{ message: { content: '{"decision":"PASS"}' } }],
-            usage: { prompt_tokens: 12, completion_tokens: 3 },
-          },
-        }),
-        { status: 200 },
-      ),
+      new Response(JSON.stringify(responseBody('{"decision":"PASS"}')), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
     );
 
     await expect(
@@ -114,76 +139,72 @@ describe('CompanyAiGatewayClient', () => {
       }),
     ).resolves.toEqual({
       content: '{"decision":"PASS"}',
-      gatewayRef: 'gateway-run',
+      gatewayRef: 'resp-modelark-run',
       inputUnits: 12,
       outputUnits: 3,
     });
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const requestBody = (fetchMock.mock.calls[0][1] as RequestInit).body;
-    expect(typeof requestBody).toBe('string');
-    const chatBody = JSON.parse(requestBody as string) as Record<
-      string,
-      unknown
-    >;
-    expect(chatBody).toMatchObject({
-      api_key: 'secret-key',
-      provider: 'VOLCENGINE',
-      model: 'doubao-seed-2-0-lite',
+    const request = await requestDetails(fetchMock);
+    expect(request.url).toBe(
+      'https://ark.ap-southeast.bytepluses.com/api/v3/responses',
+    );
+    expect(request.headers.get('authorization')).toBe('Bearer secret-key');
+    expect(request.body).toMatchObject({
+      model: 'seed-2-0-lite-260228',
+      store: false,
+      stream: false,
+      temperature: 0,
+      thinking: { type: 'disabled' },
+      text: { format: { type: 'json_object' } },
     });
-    expect(JSON.stringify(chatBody)).toContain(
+    expect(JSON.stringify(request.body)).toContain(
       'data:image/png;base64,aW1hZ2U=',
     );
+    expect(JSON.stringify(request.body)).not.toContain('secret-key');
   });
 
-  it('keeps the upload-reference flow for non-image files', async () => {
-    const fetchMock = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            success: true,
-            res: { file_url: 'gs://safe/file' },
-          }),
-          { status: 200 },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            success: true,
-            res: {
-              id: 'gateway-run',
-              choices: [{ message: { content: '{"decision":"PASS"}' } }],
-              usage: { prompt_tokens: 12, completion_tokens: 3 },
-            },
-          }),
-          { status: 200 },
-        ),
-      );
+  it('supports text-only FAQ calls without adding a file input', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify(responseBody('{"decision":"MATCHED"}')), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
 
     await makeClient().complete({
-      systemPrompt: 'configured prompt',
-      userText: 'teacher evidence',
-      file: {
-        content: Buffer.from('video'),
-        filename: 'evidence.mp4',
-        mimeType: 'video/mp4',
-      },
+      systemPrompt: 'faq prompt',
+      userText: 'faq question',
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const requestBody = (fetchMock.mock.calls[1][1] as RequestInit).body;
-    expect(JSON.stringify(JSON.parse(requestBody as string))).toContain(
-      'gs://safe/file',
-    );
+    const request = await requestDetails(fetchMock);
+    expect(JSON.stringify(request.body)).toContain('faq question');
+    expect(JSON.stringify(request.body)).not.toContain('input_image');
+    expect(JSON.stringify(request.body)).not.toContain('input_file');
   });
 
-  it('fails closed when the gateway is disabled', async () => {
+  it('fails closed when ModelArk is disabled', async () => {
     await expect(
-      makeClient({ AI_GATEWAY_ENABLED: false }).complete({
+      makeClient({ MODELARK_ENABLED: false }).complete({
         systemPrompt: 'prompt',
         userText: 'question',
       }),
     ).rejects.toEqual(new AiGatewayError('AI_GATEWAY_DISABLED'));
+  });
+
+  it('maps provider HTTP errors to the stable gateway error contract', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: 'rejected' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    await expect(
+      makeClient().complete({
+        systemPrompt: 'prompt',
+        userText: 'question',
+      }),
+    ).rejects.toEqual(new AiGatewayError('AI_GATEWAY_HTTP_ERROR'));
   });
 });

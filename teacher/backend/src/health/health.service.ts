@@ -79,7 +79,7 @@ export class HealthService {
 
   async getDependencies(): Promise<DependencyStatus> {
     const database = await this.database.checkReadiness();
-    const aiEnabled = this.config.get('AI_GATEWAY_ENABLED', { infer: true });
+    const aiEnabled = this.config.get('MODELARK_ENABLED', { infer: true });
     const mailConfigured =
       this.config.get('MAIL_DELIVERY_PROVIDER', { infer: true }) ===
       'COMPANY_MESSAGE_API';

@@ -238,7 +238,10 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 | `TASK_CATALOG_PUBLIC_WRITE` | 是 | `false` | 教师端不得改共享任务目录 |
 | `VIDEO_PREFETCH_STATE_DIR` | 否 | `/var/lib/tide/video-prefetch-runs` | 执行预热发布脚本时必须指向所有执行节点共用的 RWX 状态目录 |
 | `MAIL_DELIVERY_PROVIDER` | 否 | `UNAVAILABLE` | 启用公司邮件时还需 `MAIL_API_URL/MAIL_API_ACCESS_KEY` |
-| `AI_GATEWAY_ENABLED` | 否 | `false` | 启用时必须注入 `AI_GATEWAY_API_KEY` |
+| `MODELARK_ENABLED` | 否 | `false` | 启用 BytePlus ModelArk Responses API；启用时必须注入 `ARK_API_KEY` |
+| `MODELARK_BASE_URL` | 否 | `https://ark.ap-southeast.bytepluses.com/api/v3` | 只填写 API Base URL，不追加 `/responses` |
+| `MODELARK_MODEL` | 否 | `seed-2-0-lite-260228` | BytePlus ModelArk 模型 ID |
+| `ARK_API_KEY` | 条件必填 | 密钥管理注入 | 仅教师后端模型调用使用，不进入镜像或业务表 |
 
 统一镜像会把教师 `BIND_HOST` 固定为 `127.0.0.1`、`PORT` 固定为 `3000`，并把单文件
 `FILE_UPLOAD_MAX_BYTES` 固定为 10 MiB，以保持在 Nginx 26 MiB 请求上限内；这些值不要在

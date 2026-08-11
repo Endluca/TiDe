@@ -46,7 +46,7 @@ pnpm start:dev
 - `/api/v1/app-events/anonymous`：保存登录前页面和技术异常事件。
 - `/api/v1/support-tickets`：教师创建、读取、补充、已读、关单和鉴权查看工单图片。
 
-公司 AI 网关默认关闭；图片审核启用时必须使用严格 JSON 输出，网关异常进入 `UNDER_REVIEW`，不自动判教师失败。
+BytePlus ModelArk 默认关闭；启用时由后端通过 OpenAI SDK 调用 Responses API，模型输出使用严格 JSON。`ARK_API_KEY` 只从运行环境注入；模型服务异常时图片审核进入 `UNDER_REVIEW`，不自动判教师失败。
 
 ## 验收
 
