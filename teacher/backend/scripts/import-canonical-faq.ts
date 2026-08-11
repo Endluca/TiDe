@@ -17,10 +17,9 @@ import {
 
 const documentKey = 'teacher-faq-canonical-post-launch';
 const expectedItemCount = 124;
-const repoRoot = resolve(__dirname, '../..');
 const canonicalPath = resolve(
-  repoRoot,
-  'backend/reference/teacher-faq-demo/knowledge/51Talk Teacher FAQ - Canonical.md',
+  __dirname,
+  '../content/faq/51Talk Teacher FAQ - Canonical.md',
 );
 
 const uuidFor = (value: string): string => {

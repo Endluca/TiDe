@@ -51,7 +51,8 @@
 | `seed/0002_mock_shiwen_views.sql` | 教师资料、积分总览和逐课积分当前视图 Mock |
 | `scripts/sync-current-task-catalog.ts` | 当前 G01–G09 与已确认个性化任务的唯一执行配置同步脚本；按稳定共享模板行更新，不重建 execution |
 | `seed/0004_mock_faq_knowledge.sql` | 已确认规则的 FAQ Mock 知识 |
-| `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
+| `content/faq/51Talk Teacher FAQ - Canonical.md` | 全量 Canonical FAQ 的唯一版本化内容源；运行时不直接读取该文件 |
+| `scripts/import-company-test-faq.sh` | 校验并将上述 124 条 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
 | `scripts/apply.sh` | 本地幂等升级至 0032，并应用当前 Seed/本地权限 |
 | `scripts/apply-company-test.sh` | 在 public rev50 + canonical Tide 0032 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
 | `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；先校验运营 rev38 权威目录，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0032 |

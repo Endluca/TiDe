@@ -154,6 +154,7 @@ TIDE_SMOKE_API_URL=https://api.example.com TIDE_SMOKE_ACCESS_TOKEN=实际测试�
 - 任务内容通过 `task_templates / task_template_versions / task_step_definitions / task_validation_rules` 版本化发布。第一位真实老师开始后，不原地修改已使用版本。
 - `AI_IMAGE_REVIEW` 只接收任务模板配置的图片步骤、提示词版本、标准版本和标准键；具体值由嘉荷任务级 PRD 决定。
 - FAQ 只读取 `knowledge_documents.status=ACTIVE`、`authority_level=FAQ` 且片段未禁止回答的内容。
+- 全量 FAQ 的唯一版本化内容源是 `content/faq/51Talk Teacher FAQ - Canonical.md`；运行服务不直接读取 Markdown，也不得从旧参考项目复制问答功能代码。
 - FAQ 更新采用“创建新 document version 和 chunks → 校验内容哈希与问答样例 → 同一事务激活新版本并退休旧版本”，不覆盖历史版本。
 - 公司测试库使用 `bash database/scripts/import-company-test-faq.sh` 导入经过校验的全量 Canonical FAQ；脚本会同时激活 `FAQ_INTENT_MATCH` 和 `FAQ_TEXT_ANSWER` Prompt 版本，可安全重复执行。
 - 任务和 FAQ 当前不建设运营后台；正式内容由受控迁移或审核后的导入流程写入，禁止浏览器直连数据库。
