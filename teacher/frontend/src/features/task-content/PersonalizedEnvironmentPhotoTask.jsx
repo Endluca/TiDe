@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowClockwise,
   Camera,
-  Check,
   CheckCircle,
   HourglassMedium,
   SealCheck,
@@ -15,10 +13,6 @@ import {
 } from "../../api-error-copy";
 import { useI18n } from "../../i18n";
 import ReadinessExampleGallery from "./ReadinessExampleGallery";
-import {
-  normalizeReadinessAnalysis,
-  readinessPayloadFromValidation,
-} from "./readiness-analysis";
 import {
   TEACHING_ENVIRONMENT_REFERENCE_PHOTO,
   TEACHING_ENVIRONMENT_STANDARDS,
@@ -45,7 +39,6 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
   const [photo, setPhoto] = useState("");
   const [photoFile, setPhotoFile] = useState(null);
   const [photoApproved, setPhotoApproved] = useState(taskCompleted);
-  const [reviewChecks, setReviewChecks] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [photoError, setPhotoError] = useState("");
 
@@ -64,7 +57,6 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
     setPhoto("");
     setPhotoFile(null);
     setPhotoApproved(false);
-    setReviewChecks([]);
     setPhotoError("");
   };
 
@@ -75,31 +67,6 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
   useEffect(() => {
     if (taskCompleted) setPhotoApproved(true);
   }, [taskCompleted]);
-
-  const applyValidation = (validation) => {
-    const payload = readinessPayloadFromValidation(validation);
-    if (!payload) return null;
-    const analysis = normalizeReadinessAnalysis(
-      payload,
-      criteria.map(([id, title, detail]) => ({ id, title, detail })),
-      c,
-    );
-    setReviewChecks(analysis.checks);
-    setPhotoApproved(analysis.status === "approved");
-    return analysis;
-  };
-
-  useEffect(() => {
-    if (!executionReady || !task.execution?.loadValidation) return undefined;
-    const controller = new AbortController();
-    const requestId = ++reviewRequestRef.current;
-    task.execution.loadValidation(controller.signal)
-      .then((validation) => {
-        if (requestId === reviewRequestRef.current) applyValidation(validation);
-      })
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, [executionReady, language, task.backendId]);
 
   useEffect(() => {
     if (!cameraOpen || !videoRef.current || !streamRef.current) return;
@@ -251,7 +218,6 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
     reviewRequestRef.current += 1;
     if (photo.startsWith("blob:")) URL.revokeObjectURL(photo);
     setPhotoApproved(false);
-    setReviewChecks([]);
     setPhotoError("");
     setPhotoFile(new File(
       [blob],
@@ -277,20 +243,15 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
     try {
       await task.execution.uploadStep(photoStep.stepKey, photoFile);
       const response = await task.execution.submit();
-      const persistedValidation = task.execution.loadValidation
-        ? await task.execution.loadValidation()
-        : response?.validation;
       if (requestId !== reviewRequestRef.current) return;
-      const analysis = applyValidation(persistedValidation);
-      const passed = analysis?.status === "approved"
-        || response?.status === "COMPLETED"
+      const validation = response?.validation;
+      const passed = response?.status === "COMPLETED"
         || response?.validation?.status === "PASSED";
       if (passed) {
         stopCamera();
         setPhotoApproved(true);
       } else {
-        const validation = persistedValidation ?? response?.validation;
-        setPhotoError(analysis?.teacherMessage || localizedValidationMessage(
+        setPhotoError(localizedValidationMessage(
           validation,
           language,
           c(
@@ -312,37 +273,6 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
     }
   };
 
-  const refreshReview = async () => {
-    if (!task.execution || analyzing) return;
-    const requestId = ++reviewRequestRef.current;
-    setAnalyzing(true);
-    setPhotoError("");
-    try {
-      await task.execution.refresh?.();
-      const validation = await task.execution.loadValidation?.();
-      if (requestId !== reviewRequestRef.current) return;
-      const analysis = applyValidation(validation);
-      if (analysis?.status === "unavailable") {
-        setPhotoError(analysis.teacherMessage);
-      }
-    } catch (caught) {
-      if (requestId === reviewRequestRef.current) {
-        setPhotoError(localizeApiError(
-          caught,
-          language,
-          c("The review result could not be refreshed.", "审核结果刷新失败，请稍后重试。"),
-        ));
-      }
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  const exampleFocusId = reviewChecks.find((check) => (
-    ["fail", "uncertain"].includes(check.status)
-  ))?.id || "camera_angle";
-  const reviewPending = task.status === "verifying" && !photoApproved;
-
   return (
     <div className="readiness-photo-task g04-readiness-flow personalized-environment-photo-flow">
       <section className={`g04-part-card g04-photo-part personalized-environment-photo-card ${photoApproved ? "is-complete" : ""}`}>
@@ -355,12 +285,12 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
           <span className={`g04-part-status ${photoApproved ? "is-complete" : ""}`}>
             {photoApproved
               ? <CheckCircle size={17} weight="fill" />
-              : reviewPending || analyzing
+              : analyzing
                 ? <HourglassMedium size={17} weight="fill" />
                 : <Camera size={17} />}
             {photoApproved
               ? c("Passed", "已通过")
-              : reviewPending || analyzing
+              : analyzing
                 ? c("Checking", "检测中")
                 : c("To do", "待完成")}
           </span>
@@ -388,34 +318,7 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
             ))}
           </div>
 
-          <ReadinessExampleGallery initialActiveId={exampleFocusId} />
-
-          {reviewChecks.length > 0 && (
-            <div className="readiness-result-list">
-              {reviewChecks.map((check) => {
-                const status = ["fail", "uncertain"].includes(check.status)
-                  ? check.status
-                  : "pass";
-                return (
-                  <article className={`result-${status}`} key={check.id || check.title}>
-                    <span>{status === "pass"
-                      ? <Check size={16} weight="bold" />
-                      : <WarningCircle size={16} weight="fill" />}</span>
-                    <div>
-                      <strong>{check.title}</strong>
-                      {check.message && <small>{check.message}</small>}
-                      {check.suggestion && <p>{check.suggestion}</p>}
-                    </div>
-                    <em>{status === "pass"
-                      ? c("Passed", "通过")
-                      : status === "fail"
-                        ? c("Adjust", "需调整")
-                        : c("Uncertain", "无法判断")}</em>
-                  </article>
-                );
-              })}
-            </div>
-          )}
+          <ReadinessExampleGallery initialActiveId="camera_angle" />
 
           {photoApproved ? (
             <div className="readiness-complete" role="status">
@@ -423,21 +326,10 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
               <div>
                 <strong>{c("Teaching-view photo check passed", "授课画面照片检测已通过")}</strong>
                 <p>{c(
-                  "The first qualified photo is saved as this personalized task's completion evidence.",
-                  "首次合格照片已作为本次个性化任务的完成证据保存。",
+                  "This photo passed the current check, so the personalized task is complete.",
+                  "本次照片检测通过，个性化任务已完成。",
                 )}</p>
               </div>
-            </div>
-          ) : reviewPending ? (
-            <div className="readiness-complete" role="status">
-              <HourglassMedium size={30} weight="fill" />
-              <div>
-                <strong>{c("AI review is in progress", "AI 正在审核")}</strong>
-                <p>{c("The photo is saved. Refresh shortly to view the four-item result.", "照片已保存，请稍后刷新查看四项检测结果。")}</p>
-              </div>
-              <button className="secondary-button" type="button" disabled={analyzing} onClick={refreshReview}>
-                <ArrowClockwise size={17} />{c("Refresh result", "刷新结果")}
-              </button>
             </div>
           ) : (
             <>
@@ -503,14 +395,14 @@ export default function PersonalizedEnvironmentPhotoTask({ task }) {
                   : c("Submit photo and start check", "提交照片并开始检测")}
               </button>
               <p className="readiness-retake-note">{c(
-                "You can retake and resubmit until all four items pass. The first qualified photo becomes the completion evidence.",
-                "4 项全部通过前可反复重拍并提交；首次合格照片将作为完成证据。",
+                "Each submission is checked independently. Only the current photo result counts, and earlier results are not reused.",
+                "每次提交都会独立检测；只以本次照片结果为准，不复用历史结果。",
               )}</p>
               <p className="readiness-privacy">
                 <ShieldCheck size={17} weight="fill" />
                 {c(
-                  "Use your real teaching environment and keep private information out of view.",
-                  "请使用真实授课环境拍摄，并避免在画面中暴露个人隐私信息。",
+                  "The photo is used only for this check and is not retained. Keep private information out of view.",
+                  "照片仅用于本次检测，不作保留；请避免在画面中暴露个人隐私信息。",
                 )}
               </p>
             </>

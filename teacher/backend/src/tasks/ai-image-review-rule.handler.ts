@@ -64,6 +64,8 @@ const reviewResponseSchema = z
 
 const technicalTeacherMessage =
   '暂时无法完成自动检查，本次提交已转为人工复核。';
+const ephemeralTechnicalTeacherMessage =
+  '暂时无法完成自动检查，请重新拍照后重试。';
 const lowConfidenceTeacherMessage = '判断把握不足，请按提示调整后重新拍照。';
 const currentG04PhotoStepKey = 'g02-environment-photo';
 const teachingEnvironmentReviewProfile = 'TEACHING_ENVIRONMENT_V1';
@@ -91,6 +93,9 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     }
     const config = parsedConfig.data;
     const isCurrentG04 = config.stepKey === currentG04PhotoStepKey;
+    const isEphemeralPersonalizedReview =
+      config.reviewProfile === teachingEnvironmentReviewProfile &&
+      !isCurrentG04;
     const usesTeachingEnvironmentProfile =
       config.reviewProfile === teachingEnvironmentReviewProfile || isCurrentG04;
     const criteriaVersion = isCurrentG04
@@ -132,6 +137,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       return this.deferred('IMAGE_REVIEW_FILE_INVALID');
     }
     if (
+      !isEphemeralPersonalizedReview &&
       usesTeachingEnvironmentProfile &&
       (await this.reviews.hasPassedReview(context.client, {
         fileId,
@@ -149,14 +155,30 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     try {
       content = await this.storage.read(file.objectKey, file.storageProvider);
     } catch {
-      return this.saveTechnicalError(
+      return this.handleTechnicalError(
         context,
         fileId,
         criteriaVersion,
         criteriaKeys,
         null,
         'IMAGE_REVIEW_FILE_UNAVAILABLE',
+        isEphemeralPersonalizedReview,
       );
+    }
+    if (isEphemeralPersonalizedReview) {
+      try {
+        await this.storage.delete(file.objectKey, file.storageProvider);
+      } catch {
+        return this.handleTechnicalError(
+          context,
+          fileId,
+          criteriaVersion,
+          criteriaKeys,
+          null,
+          'IMAGE_REVIEW_FILE_DELETE_FAILED',
+          true,
+        );
+      }
     }
     let reviewContent = content;
     let reviewFilename = file.originalFilename;
@@ -173,13 +195,14 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
         reviewMimeType = 'image/jpeg';
         exposure = prepared.exposure;
       } catch {
-        return this.saveTechnicalError(
+        return this.handleTechnicalError(
           context,
           fileId,
           criteriaVersion,
           criteriaKeys,
           null,
           'IMAGE_REVIEW_FILE_INVALID',
+          isEphemeralPersonalizedReview,
         );
       }
     }
@@ -198,13 +221,14 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       },
     });
     if (execution.status === 'FAILED') {
-      return this.saveTechnicalError(
+      return this.handleTechnicalError(
         context,
         fileId,
         criteriaVersion,
         criteriaKeys,
         execution.aiRunId,
         execution.errorCode,
+        isEphemeralPersonalizedReview,
       );
     }
 
@@ -216,27 +240,36 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       usesTeachingEnvironmentProfile,
     );
     if (!parsedReview) {
-      return this.saveTechnicalError(
+      return this.handleTechnicalError(
         context,
         fileId,
         criteriaVersion,
         criteriaKeys,
         execution.aiRunId,
         'IMAGE_REVIEW_RESPONSE_INVALID',
+        isEphemeralPersonalizedReview,
       );
     }
-    await this.reviews.save(context.client, {
-      fileId,
-      submissionId: context.submissionId,
-      aiRunId: execution.aiRunId,
-      criteriaVersion,
-      decision: parsedReview.decision,
-      teacherReason: parsedReview.teacherReason,
-      confidenceSummary: parsedReview.confidenceSummary,
-      items: parsedReview.criteria,
-    });
+    if (!isEphemeralPersonalizedReview) {
+      await this.reviews.save(context.client, {
+        fileId,
+        submissionId: context.submissionId,
+        aiRunId: execution.aiRunId,
+        criteriaVersion,
+        decision: parsedReview.decision,
+        teacherReason: parsedReview.teacherReason,
+        confidenceSummary: parsedReview.confidenceSummary,
+        items: parsedReview.criteria,
+      });
+    }
     if (parsedReview.decision === 'ERROR') {
-      return this.deferred('IMAGE_REVIEW_ERROR', parsedReview.teacherReason);
+      return isEphemeralPersonalizedReview
+        ? {
+            passed: false,
+            resultCode: 'IMAGE_REVIEW_ERROR',
+            teacherMessage: ephemeralTechnicalTeacherMessage,
+          }
+        : this.deferred('IMAGE_REVIEW_ERROR', parsedReview.teacherReason);
     }
     return {
       passed: parsedReview.decision === 'PASS',
@@ -362,14 +395,22 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     };
   }
 
-  private async saveTechnicalError(
+  private async handleTechnicalError(
     context: TaskRuleContext,
     fileId: string,
     criteriaVersion: string,
     criteriaKeys: string[],
     aiRunId: string | null,
     resultCode: string,
+    isEphemeralPersonalizedReview: boolean,
   ): Promise<TaskRuleResult> {
+    if (isEphemeralPersonalizedReview) {
+      return {
+        passed: false,
+        resultCode,
+        teacherMessage: ephemeralTechnicalTeacherMessage,
+      };
+    }
     const items: ImageReviewItem[] = criteriaKeys.map((criterionKey) => ({
       criterionKey,
       result: 'UNKNOWN',

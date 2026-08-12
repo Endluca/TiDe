@@ -239,15 +239,18 @@ test("personalized environment feedback uses the same live four-item photo check
   assert.match(personalizedPhoto, /const clearPhoto = \(\) => \{\s+if \(analyzing\) return;\s+reviewRequestRef\.current \+= 1;/);
   assert.match(personalizedPhoto, /const openCamera = async \(\) => \{\s+if \(analyzing\) return;/);
   assert.match(personalizedPhoto, /const capture = async \(\) => \{\s+if \(analyzing\) return;/);
-  assert.match(personalizedPhoto, /if \(requestId !== reviewRequestRef\.current\) return;\s+const analysis = applyValidation/);
+  assert.match(personalizedPhoto, /if \(requestId !== reviewRequestRef\.current\) return;\s+const validation = response\?\.validation/);
   assert.match(personalizedPhoto, /if \(passed\) \{\s+stopCamera\(\);\s+setPhotoApproved\(true\);/);
   assert.match(personalizedPhoto, /disabled=\{!cameraReady \|\| analyzing\} onClick=\{capture\}/);
   assert.match(personalizedPhoto, /disabled=\{analyzing\} onClick=\{clearPhoto\}/);
   assert.match(personalizedPhoto, /disabled=\{opening \|\| analyzing\} onClick=\{openCamera\}/);
-  assert.match(personalizedPhoto, /readinessPayloadFromValidation/);
-  assert.match(personalizedPhoto, /<ReadinessExampleGallery initialActiveId=\{exampleFocusId\} \/>/);
+  assert.match(personalizedPhoto, /<ReadinessExampleGallery initialActiveId="camera_angle" \/>/);
   assert.match(personalizedPhoto, /TEACHING_ENVIRONMENT_STANDARDS/);
   assert.match(personalizedPhoto, /useState\(taskCompleted\)/);
+  assert.match(personalizedPhoto, /只以本次照片结果为准，不复用历史结果/);
+  assert.match(personalizedPhoto, /照片仅用于本次检测，不作保留/);
+  assert.doesNotMatch(personalizedPhoto, /loadValidation|readinessPayloadFromValidation/);
+  assert.doesNotMatch(personalizedPhoto, /首次合格照片|照片已保存|刷新结果/);
   assert.doesNotMatch(personalizedPhoto, /photoProgress\?\.status === "COMPLETED"/);
   assert.doesNotMatch(personalizedPhoto, /DeviceCheckTask|COURSEWARE_CONFIRMATION|completedPartCount/);
   for (const criterion of ["camera_angle", "lighting", "background", "dressing"]) {

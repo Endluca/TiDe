@@ -273,6 +273,42 @@ describe('TaskValidationEngine', () => {
     expect(evaluateImage).toHaveBeenCalled();
   });
 
+  it('passes a personalized photo task when the current image review passes', async () => {
+    evaluateImage.mockResolvedValueOnce({
+      passed: true,
+      resultCode: 'IMAGE_REVIEW_PASSED',
+      teacherMessage: '本次照片符合要求。',
+    });
+    const imageRule = {
+      ...rule,
+      ruleKey: 'personalized-image-review',
+      ruleType: 'AI_IMAGE_REVIEW',
+      config: {
+        stepKey: 'p-fb-negative-environment-photo',
+        reviewProfile: 'TEACHING_ENVIRONMENT_V1',
+      },
+    };
+
+    await expect(
+      engine.evaluate({
+        ...context,
+        rules: [rule, imageRule],
+        steps: [
+          {
+            stepKey: 'p-fb-negative-environment-photo',
+            status: 'COMPLETED',
+            percent: 100,
+          },
+        ],
+        outputs: [],
+      }),
+    ).resolves.toMatchObject({
+      status: 'PASSED',
+      resultCode: 'ALL_RULES_PASSED',
+    });
+    expect(evaluateImage).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves configured order for an unrelated image-review rule', async () => {
     const unrelatedImageRule = {
       ...rule,

@@ -36,19 +36,22 @@ function createFixture() {
       Parameters<ImageReviewRepository['save']>
     >()
     .mockResolvedValue(undefined);
+  const deleteFile = jest.fn().mockResolvedValue(undefined);
   const storage = {
     read: jest.fn().mockResolvedValue(validImage),
+    delete: deleteFile,
   } as unknown as FileStorageAdapter;
   const executeReview = jest.fn<
     ReturnType<AiGatewayService['execute']>,
     Parameters<AiGatewayService['execute']>
   >();
+  const hasPassedReview = jest.fn().mockResolvedValue(false);
   const gateway = {
     execute: executeReview,
   } as unknown as AiGatewayService;
   const reviews = {
     isActivePromptVersion: jest.fn().mockResolvedValue(true),
-    hasPassedReview: jest.fn().mockResolvedValue(false),
+    hasPassedReview,
     findSubmissionFile: jest.fn().mockResolvedValue({
       fileId: '8df36fd5-7ef6-47bb-a73e-72e25623c67f',
       storageProvider: 'OSS',
@@ -80,7 +83,16 @@ function createFixture() {
       },
     ],
   };
-  return { handler, gateway, reviews, saveReview, executeReview, context };
+  return {
+    handler,
+    gateway,
+    reviews,
+    hasPassedReview,
+    saveReview,
+    deleteFile,
+    executeReview,
+    context,
+  };
 }
 
 describe('AiImageReviewRuleHandler', () => {
@@ -109,6 +121,7 @@ describe('AiImageReviewRuleHandler', () => {
       fixture.context.client,
       expect.objectContaining({ decision: 'PASS', aiRunId: 'run-id' }),
     );
+    expect(fixture.deleteFile).not.toHaveBeenCalled();
     const gatewayInput = fixture.executeReview.mock.calls[0][0];
     expect(gatewayInput.systemPrompt).toBe(config.systemPrompt);
     expect(gatewayInput.userText).toBe(config.userText);
@@ -317,13 +330,11 @@ describe('AiImageReviewRuleHandler', () => {
       resultCode: 'IMAGE_REVIEW_RETRY',
       teacherMessage: '判断把握不足，请按提示调整后重新拍照。',
     });
-    expect(fixture.saveReview).toHaveBeenCalledWith(
-      fixture.context.client,
-      expect.objectContaining({
-        criteriaVersion: 'criteria-v1',
-        decision: 'RETRY',
-      }),
+    expect(fixture.deleteFile).toHaveBeenCalledWith(
+      'private/evidence.png',
+      'OSS',
     );
+    expect(fixture.saveReview).not.toHaveBeenCalled();
     const gatewayInput = fixture.executeReview.mock.calls[0][0];
     expect(gatewayInput.systemPrompt).toBe('Return strict JSON.');
     expect(gatewayInput.userText).toBe('Review this evidence.');
@@ -333,28 +344,106 @@ describe('AiImageReviewRuleHandler', () => {
     });
   });
 
-  it.each([
-    ['the legacy G04 step key', { stepKey: 'g02-environment-photo' }],
-    [
-      'the explicit personalized review profile',
-      {
-        stepKey: 'p-fb-negative-environment-photo',
-        reviewProfile: 'TEACHING_ENVIRONMENT_V1',
-      },
-    ],
-  ])('reuses the first passed review for %s', async (_label, profile) => {
+  it('keeps reusing the first passed review for G04', async () => {
     const fixture = createFixture();
     fixture.context.rule.config = {
       ...config,
-      ...profile,
+      stepKey: 'g02-environment-photo',
     };
-    fixture.context.outputs[0].stepKey = profile.stepKey;
-    (fixture.reviews.hasPassedReview as jest.Mock).mockResolvedValue(true);
+    fixture.context.outputs[0].stepKey = 'g02-environment-photo';
+    fixture.hasPassedReview.mockResolvedValue(true);
 
     await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({
       passed: true,
       resultCode: 'IMAGE_REVIEW_PASSED',
       teacherMessage: null,
+    });
+    expect(fixture.executeReview).not.toHaveBeenCalled();
+    expect(fixture.saveReview).not.toHaveBeenCalled();
+    expect(fixture.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('ignores an earlier PASS and uses only the current personalized photo result', async () => {
+    const fixture = createFixture();
+    fixture.context.rule.config = {
+      ...config,
+      stepKey: 'p-fb-negative-environment-photo',
+      reviewProfile: 'TEACHING_ENVIRONMENT_V1',
+    };
+    fixture.context.outputs[0].stepKey = 'p-fb-negative-environment-photo';
+    fixture.hasPassedReview.mockResolvedValue(true);
+    fixture.executeReview.mockResolvedValue({
+      status: 'SUCCEEDED',
+      aiRunId: 'current-run-id',
+      content: JSON.stringify({
+        decision: 'PASS',
+        teacherReason: '本次照片符合要求。',
+        confidenceSummary: { overall: 0.98 },
+        criteria: ['camera_angle', 'lighting', 'background', 'dressing'].map(
+          (criterionKey) => ({
+            criterionKey,
+            result: 'PASS',
+            teacherMessage: null,
+            confidence: 0.98,
+          }),
+        ),
+      }),
+    });
+
+    await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({
+      passed: true,
+      resultCode: 'IMAGE_REVIEW_PASSED',
+      teacherMessage: '本次照片符合要求。',
+    });
+    expect(fixture.hasPassedReview).not.toHaveBeenCalled();
+    expect(fixture.executeReview).toHaveBeenCalledTimes(1);
+    expect(fixture.deleteFile).toHaveBeenCalledWith(
+      'private/evidence.png',
+      'OSS',
+    );
+    expect(fixture.saveReview).not.toHaveBeenCalled();
+  });
+
+  it('keeps personalized technical failures retryable without storing a review', async () => {
+    const fixture = createFixture();
+    fixture.context.rule.config = {
+      ...config,
+      stepKey: 'p-fb-negative-environment-photo',
+      reviewProfile: 'TEACHING_ENVIRONMENT_V1',
+    };
+    fixture.context.outputs[0].stepKey = 'p-fb-negative-environment-photo';
+    fixture.executeReview.mockResolvedValue({
+      status: 'FAILED',
+      aiRunId: 'current-run-id',
+      errorCode: 'AI_GATEWAY_UNAVAILABLE',
+    });
+
+    await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({
+      passed: false,
+      resultCode: 'AI_GATEWAY_UNAVAILABLE',
+      teacherMessage: '暂时无法完成自动检查，请重新拍照后重试。',
+    });
+    expect(fixture.deleteFile).toHaveBeenCalledWith(
+      'private/evidence.png',
+      'OSS',
+    );
+    expect(fixture.saveReview).not.toHaveBeenCalled();
+  });
+
+  it('does not run a personalized review when the temporary photo cannot be deleted', async () => {
+    const fixture = createFixture();
+    fixture.context.rule.config = {
+      ...config,
+      stepKey: 'p-fb-negative-environment-photo',
+      reviewProfile: 'TEACHING_ENVIRONMENT_V1',
+    };
+    fixture.context.outputs[0].stepKey = 'p-fb-negative-environment-photo';
+    fixture.deleteFile.mockRejectedValue(new Error('delete failed'));
+
+    await expect(fixture.handler.evaluate(fixture.context)).resolves.toEqual({
+      passed: false,
+      resultCode: 'IMAGE_REVIEW_FILE_DELETE_FAILED',
+      teacherMessage: '暂时无法完成自动检查，请重新拍照后重试。',
     });
     expect(fixture.executeReview).not.toHaveBeenCalled();
     expect(fixture.saveReview).not.toHaveBeenCalled();
