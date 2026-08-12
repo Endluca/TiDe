@@ -589,6 +589,11 @@ def test_gaea_image_builds_both_frontends_and_both_backends() -> None:
     assert "pnpm prune --prod" in dockerfile
     assert "--from=teacher-backend-build /usr/local/bin/node" in dockerfile
     assert "--from=teacher-backend-build /build/teacher-backend/dist" in dockerfile
+    assert "teacher/backend/content ./teacher/content" in dockerfile
+    assert "new TaskDocumentContentService().getContent" in dockerfile
+    assert "2026-07-24-overseas-nt-policies-v1" in dockerfile
+    assert "SCROLL_TO_END" in dockerfile
+    assert "content.title !== 'Overseas NT Policies'" in dockerfile
     assert "require('/app/teacher/node_modules/sharp')" in dockerfile
 
     assert "hub.51talk.biz/library/python:3.12-alpine AS python-build" in dockerfile

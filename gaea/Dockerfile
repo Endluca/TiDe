@@ -146,12 +146,16 @@ COPY --chown=gaea:gaea --from=teacher-backend-build /build/teacher-backend/packa
 COPY --chown=gaea:gaea --from=teacher-backend-build /build/teacher-backend/node_modules ./teacher/node_modules
 COPY --chown=gaea:gaea --from=teacher-backend-build /build/teacher-backend/dist ./teacher/dist
 COPY --chown=gaea:gaea teacher/backend/config ./teacher/config
+COPY --chown=gaea:gaea teacher/backend/content ./teacher/content
 COPY --chown=gaea:gaea --from=teacher-frontend-build /build/teacher-frontend/dist /usr/share/nginx/teacher
 
 # Fail the image build if the copied Node runtime or native sharp module is
-# incompatible with the final Python Alpine base.
+# incompatible with the final Python Alpine base. Also load the pinned G02
+# document through the production service so a missing or modified native
+# policy artifact fails the image build instead of surfacing after deployment.
 RUN node --version \
-    && node -e "require('/app/teacher/node_modules/@nestjs/core'); require('/app/teacher/node_modules/sharp')"
+    && node -e "require('/app/teacher/node_modules/@nestjs/core'); require('/app/teacher/node_modules/sharp')" \
+    && node -e "process.chdir('/app/teacher'); const { TaskDocumentContentService } = require('/app/teacher/dist/src/tasks/task-document-content.service'); const content = new TaskDocumentContentService().getContent({ documentCode: 'overseas-nt-policies', contentVersion: '2026-07-24-overseas-nt-policies-v1', contentHash: '6875233667c6f3d90602a07c84849dbb88f41685929779a7b0dc79ccf859979c', readingCompletion: 'SCROLL_TO_END' }); if (content.title !== 'Overseas NT Policies') process.exit(1)"
 
 # Supervisor, aggregate health check, and teacher Web proxy.
 COPY --chmod=755 gaea/bin /app/bin
