@@ -74,8 +74,8 @@ def _bash_array(script: str, name: str) -> tuple[str, ...]:
 def test_company_test_initializer_reads_back_multi_replica_contract() -> None:
     script = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
     verification = script.split(
-        'verification="$("${APP_PSQL[@]}" -Atqc "', 1
-    )[1].split('if [[ "${verification}"', 1)[0]
+        'verification="$("${APP_PSQL[@]}" -Atq <<\'SQL\'\n', 1
+    )[1].split('\nSQL\n)"\nif [[ "${verification}"', 1)[0]
 
     for relation in (
         "tide.job_leases",
@@ -137,12 +137,12 @@ def test_company_test_initializer_reads_back_multi_replica_contract() -> None:
 
 def test_company_test_initializer_exactly_gates_personalized_photo_contract() -> None:
     script = TEACHER_COMPANY_TEST_MIGRATOR.read_text(encoding="utf-8")
-    pre_gate = script.split('canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "', 1)[
-        1
-    ].split('\n")"', 1)[0]
+    pre_gate = script.split(
+        'canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atq <<\'SQL\'\n', 1
+    )[1].split('\nSQL\n)"\nif [[ "${canonical_schema_ready}"', 1)[0]
     verification = script.split(
-        'verification="$("${APP_PSQL[@]}" -Atqc "', 1
-    )[1].split('if [[ "${verification}"', 1)[0]
+        'verification="$("${APP_PSQL[@]}" -Atq <<\'SQL\'\n', 1
+    )[1].split('\nSQL\n)"\nif [[ "${verification}"', 1)[0]
 
     pre_start = pre_gate.index("shared_template_row_id = 'P-FB-NEGATIVE:v1'")
     verification_start = verification.index(

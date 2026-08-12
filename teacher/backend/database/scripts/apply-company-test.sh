@@ -269,7 +269,7 @@ if [[ "${actual_tide_ledger_manifest}" != "${expected_tide_ledger_manifest}" ]];
   exit 1
 fi
 
-canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
+canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atq <<'SQL'
   select
     exists (
       select 1 from pg_roles
@@ -626,7 +626,7 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
         and template.integration_mode = 'OUTBOUND_MANAGED'
         and template.source_mode = 'REAL'
         and template.payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
-        and (template.payload->>'score_value')::integer = 0
+        and (template.payload->>'score_value')::numeric = 0
         and template.payload->>'how_summary' =
           'Complete the configured improvement activity for the feedback issue shown in the task reason. Depending on the assigned activity, you may need to submit a teaching-environment photo for review or complete another guided action.'
         and template.payload->>'completion_standard' =
@@ -680,7 +680,8 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atqc "
               '已保留你完成的内容，请根据提示更新这份材料。'
         )
     )
-")"
+SQL
+)"
 if [[ "${canonical_schema_ready}" != "t" ]]; then
   echo "公司测试库虽已记账到 canonical 0041，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
   exit 1
@@ -784,7 +785,7 @@ APP_PSQL=(
   -d "${TIDE_ADMIN_DB_NAME}"
 )
 
-verification="$("${APP_PSQL[@]}" -Atqc "
+verification="$("${APP_PSQL[@]}" -Atq <<'SQL'
   select concat_ws('|',
     current_user,
     current_schema(),
@@ -1037,10 +1038,11 @@ verification="$("${APP_PSQL[@]}" -Atqc "
       and to_regclass('tide.analytics_content_quality_v2') is not null
     )
   )
-")"
+SQL
+)"
 if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|t|t|t|f|f|f|f|14|f|t|t|f|f|f|t" ]]; then
   echo "应用账号验收失败：${verification}" >&2
   exit 1
 fi
 
-echo "公司测试库初始化完成：public rev56 与 canonical Tide 0039 账本/checksum/实存结构只读门禁、G01 TESOL-only、G04 照片与课件两模块、源宽表 v1.2、P-FB-NEGATIVE 环境拍照配置、首次登录引导、CRM SSO、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public 57 与 canonical Tide 0041 账本/checksum/实存结构只读门禁、G01 TESOL-only、G02 原生政策文档、G04 照片与课件两模块、源宽表 v1.2、P-FB-NEGATIVE 环境拍照配置、首次登录引导、CRM SSO、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"

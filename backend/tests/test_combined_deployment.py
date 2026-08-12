@@ -319,7 +319,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
         in probe
     )
     assert "payload->>'score_type' = 'ZERO'" in probe
-    assert "(payload->>'score_value')::integer = 0" in probe
+    assert "(payload->>'score_value')::numeric = 0" in probe
     assert "stable P-FB-NEGATIVE:v1 row is not the reviewed zero-point" in probe
     assert "actual_titles text[]" in probe
     assert (

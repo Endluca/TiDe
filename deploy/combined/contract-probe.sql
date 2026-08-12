@@ -383,7 +383,7 @@ BEGIN
           AND payload->>'completion_standard' =
               'The teacher app marks the task as completed after every requirement for the assigned improvement activity, including any required photo review, is satisfied.'
           AND payload->>'score_type' = 'ZERO'
-          AND (payload->>'score_value')::integer = 0
+          AND (payload->>'score_value')::numeric = 0
     ) THEN
         RAISE EXCEPTION
             'stable P-FB-NEGATIVE:v1 row is not the reviewed zero-point personalized improvement copy';
@@ -698,7 +698,7 @@ BEGIN
           AND template.status = 'PUBLISHED'
           AND template.execution_owner = 'TEACHER_APP'
           AND template.payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
-          AND (template.payload->>'score_value')::integer = 0
+          AND (template.payload->>'score_value')::numeric = 0
     ) THEN
         RAISE EXCEPTION
             'P-FB-NEGATIVE is not the exact pending personalized photo execution';

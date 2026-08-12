@@ -754,7 +754,7 @@ export class DatabaseService implements OnModuleDestroy {
             AND template.status = 'PUBLISHED'
             AND template.execution_owner = 'TEACHER_APP'
             AND template.payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
-            AND (template.payload->>'score_value')::integer = 0
+            AND (template.payload->>'score_value')::numeric = 0
         )
         AND (
           SELECT count(*)
