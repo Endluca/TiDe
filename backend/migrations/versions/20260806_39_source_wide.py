@@ -29,13 +29,15 @@ def upgrade() -> None:
         return
 
     # Cluster roles are platform-owned and deliberately not created by an
-    # application migration.  Missing roles must fail closed so a successful
-    # revision can never silently omit the source-table ACL contract.
+    # application migration. Missing roles must fail closed so a successful
+    # revision can never silently omit the source-table ACL contract. The DTS
+    # consumer is a real service boundary, so it receives its ACL directly;
+    # an extra NOLOGIN permission group would add no isolation here.
     op.execute(
         """
         DO $source_wide_required_roles$
         DECLARE
-            monitor_can_login boolean;
+            ingest_role record;
         BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM pg_roles WHERE rolname = 'tit_growth_app'
@@ -44,18 +46,34 @@ def upgrade() -> None:
                     'required database role tit_growth_app does not exist';
             END IF;
 
-            SELECT rolcanlogin
-            INTO monitor_can_login
+            SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+                   rolreplication, rolbypassrls
+            INTO ingest_role
             FROM pg_roles
-            WHERE rolname = 'tit_source_monitor';
+            WHERE rolname = 'tit_dts_ingest_runtime';
 
             IF NOT FOUND THEN
                 RAISE EXCEPTION
-                    'required database role tit_source_monitor does not exist';
+                    'required database role tit_dts_ingest_runtime does not exist';
             END IF;
-            IF monitor_can_login THEN
+            IF NOT ingest_role.rolcanlogin
+               OR ingest_role.rolsuper
+               OR ingest_role.rolcreatedb
+               OR ingest_role.rolcreaterole
+               OR ingest_role.rolreplication
+               OR ingest_role.rolbypassrls THEN
                 RAISE EXCEPTION
-                    'tit_source_monitor must be a NOLOGIN permission group';
+                    'tit_dts_ingest_runtime must be a restricted LOGIN role';
+            END IF;
+            IF EXISTS (
+                SELECT 1
+                FROM pg_auth_members AS membership
+                JOIN pg_roles AS member_role
+                  ON member_role.oid = membership.member
+                WHERE member_role.rolname = 'tit_dts_ingest_runtime'
+            ) THEN
+                RAISE EXCEPTION
+                    'tit_dts_ingest_runtime must not inherit another database role';
             END IF;
         END
         $source_wide_required_roles$;
@@ -200,11 +218,12 @@ def upgrade() -> None:
             public.lesson_source_wide
         TO tit_growth_app;
 
-        GRANT USAGE ON SCHEMA public TO tit_source_monitor;
+        REVOKE CREATE ON SCHEMA public FROM tit_dts_ingest_runtime;
+        GRANT USAGE ON SCHEMA public TO tit_dts_ingest_runtime;
         GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
             public.teacher_source_wide,
             public.lesson_source_wide
-        TO tit_source_monitor;
+        TO tit_dts_ingest_runtime;
         """
     )
 
@@ -391,11 +410,12 @@ def downgrade() -> None:
                     public.lesson_source_wide
                 FROM tit_growth_app;
             END IF;
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tit_source_monitor') THEN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tit_dts_ingest_runtime') THEN
                 REVOKE ALL PRIVILEGES ON TABLE
                     public.teacher_source_wide,
                     public.lesson_source_wide
-                FROM tit_source_monitor;
+                FROM tit_dts_ingest_runtime;
+                REVOKE USAGE ON SCHEMA public FROM tit_dts_ingest_runtime;
             END IF;
         END
         $source_wide_acl_rollback$;

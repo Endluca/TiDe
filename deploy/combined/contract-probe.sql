@@ -19,15 +19,13 @@ DECLARE
     actual_titles text[];
     actual_scores integer[];
     total_score integer;
-    allowed_status_column text;
-    forbidden_assignment_column text;
     support_reply_definition text;
     teacher_reply_definition text;
 BEGIN
-    IF current_user IS DISTINCT FROM 'tit_contract_probe'
-       OR session_user IS DISTINCT FROM 'tit_contract_probe' THEN
+    IF current_user IS DISTINCT FROM 'tide_sys_admin'
+       OR session_user IS DISTINCT FROM 'tide_sys_admin' THEN
         RAISE EXCEPTION
-            'contract probe must connect directly as tit_contract_probe';
+            'contract probe must connect directly as tide_sys_admin';
     END IF;
 
     IF current_database() IS DISTINCT FROM current_setting(
@@ -52,27 +50,6 @@ BEGIN
         RAISE EXCEPTION 'contract probe database session is not using TLS';
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_roles
-        WHERE rolname = 'tit_contract_probe'
-          AND rolcanlogin
-          AND NOT rolsuper
-          AND NOT rolcreatedb
-          AND NOT rolcreaterole
-          AND NOT rolreplication
-          AND NOT rolbypassrls
-    ) OR EXISTS (
-        SELECT 1
-        FROM pg_auth_members AS membership
-        JOIN pg_roles AS probe_role
-          ON probe_role.oid = membership.member
-        WHERE probe_role.rolname = 'tit_contract_probe'
-    ) THEN
-        RAISE EXCEPTION
-            'contract probe role is privileged or inherits another role';
-    END IF;
-
     IF to_regclass('public.task_templates') IS NULL
        OR to_regclass('public.task_assignments') IS NULL
        OR to_regclass('public.teachers') IS NULL
@@ -80,85 +57,29 @@ BEGIN
        OR to_regclass('public.operator_sessions') IS NULL
        OR to_regclass('public.teacher_scorecard_current') IS NULL
        OR to_regclass('public.teacher_lesson_score_current') IS NULL
+       OR to_regclass('public.teacher_g01_status_current') IS NULL
+       OR to_regclass('public.dts_ingest_checkpoints') IS NULL
+       OR to_regclass('public.dts_ingest_events') IS NULL
+       OR to_regclass('public.dts_source_rows') IS NULL
+       OR to_regclass('public.dts_dirty_keys') IS NULL
        OR to_regclass('tide.task_execution_versions') IS NULL
        OR to_regclass('tide.file_objects') IS NULL
        OR to_regclass('tide.task_step_definitions') IS NULL
        OR to_regclass('tide.task_validation_rules') IS NULL
        OR to_regclass('tide.account_onboarding_states') IS NULL
+       OR to_regclass('tide.user_accounts') IS NULL
+       OR to_regclass('tide.auth_sessions') IS NULL
        OR to_regclass('tide.crm_sso_logins') IS NULL
        OR to_regclass('tide.schema_migrations') IS NULL THEN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
 
-    IF has_database_privilege(
-        'tit_contract_probe',
-        current_database(),
-        'CREATE'
-    ) OR has_schema_privilege(
-        'tit_contract_probe',
-        'public',
-        'CREATE'
-    ) OR has_schema_privilege(
-        'tit_contract_probe',
-        'tide',
-        'CREATE'
-    ) OR EXISTS (
-        SELECT 1
-        FROM pg_class AS relation
-        JOIN pg_namespace AS namespace
-          ON namespace.oid = relation.relnamespace
-        WHERE namespace.nspname IN ('public', 'tide')
-          AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
-          AND (
-              has_table_privilege(
-                  'tit_contract_probe',
-                  relation.oid,
-                  'INSERT'
-              )
-              OR has_table_privilege(
-                  'tit_contract_probe',
-                  relation.oid,
-                  'UPDATE'
-              )
-              OR has_table_privilege(
-                  'tit_contract_probe',
-                  relation.oid,
-                  'DELETE'
-              )
-              OR has_table_privilege(
-                  'tit_contract_probe',
-                  relation.oid,
-                  'TRUNCATE'
-              )
-          )
-    ) OR EXISTS (
-        SELECT 1
-        FROM pg_class AS sequence
-        JOIN pg_namespace AS namespace
-          ON namespace.oid = sequence.relnamespace
-        WHERE namespace.nspname IN ('public', 'tide')
-          AND sequence.relkind = 'S'
-          AND (
-              has_sequence_privilege(
-                  'tit_contract_probe',
-                  sequence.oid,
-                  'USAGE'
-              )
-              OR has_sequence_privilege(
-                  'tit_contract_probe',
-                  sequence.oid,
-                  'UPDATE'
-              )
-          )
-    ) THEN
-        RAISE EXCEPTION 'contract probe role has write-capable privileges';
-    END IF;
-
-    -- The reviewed head contains the current G02 native document copy.
+    -- Final public 59 must include the reviewed release content through
+    -- 20260811_57_g02_document; the concrete G02 rows and guards are checked below.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260811_57_g02_document' THEN
+    ) IS DISTINCT FROM '20260812_59_simple_acl' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -770,37 +691,368 @@ BEGIN
 
     IF to_regrole('tit_teacher_crud') IS NULL
        OR to_regrole('tit_growth_app') IS NULL
+       OR to_regrole('tit_dts_ingest_runtime') IS NULL
        OR to_regrole('tide_support_ticket_owner') IS NULL THEN
         RAISE EXCEPTION 'required runtime roles are missing';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE rolname IN (
+            'tit_growth_app',
+            'tit_teacher_crud',
+            'tit_dts_ingest_runtime'
+        )
+          AND (
+              NOT rolcanlogin
+              OR rolinherit
+              OR rolsuper
+              OR rolcreatedb
+              OR rolcreaterole
+              OR rolreplication
+              OR rolbypassrls
+          )
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS member_role
+          ON member_role.oid = membership.member
+        WHERE member_role.rolname IN (
+            'tit_growth_app',
+            'tit_teacher_crud',
+            'tit_dts_ingest_runtime'
+        )
+    ) THEN
+        RAISE EXCEPTION
+            'runtime service roles are privileged or inherit another role';
+    END IF;
+
+    -- The probe itself deliberately runs as tide_sys_admin inside a read-only
+    -- transaction. Validate DDL capability on the three runtime identities,
+    -- not on that migration owner: runtime DML is checked table by table below.
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'tit_growth_app',
+            'tit_teacher_crud',
+            'tit_dts_ingest_runtime'
+        ]::text[]) AS runtime_role(name)
+        WHERE has_database_privilege(
+            runtime_role.name,
+            current_database(),
+            'CREATE'
+        )
+           OR has_schema_privilege(
+               runtime_role.name,
+               'public',
+               'CREATE'
+           )
+           OR has_schema_privilege(
+               runtime_role.name,
+               'tide',
+               'CREATE'
+           )
+    ) THEN
+        RAISE EXCEPTION
+            'contract probe role has write-capable privileges';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_default_acl AS defaults
+        JOIN pg_roles AS owner_role
+          ON owner_role.oid = defaults.defaclrole
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = defaults.defaclnamespace
+        CROSS JOIN LATERAL aclexplode(defaults.defaclacl) AS privilege
+        JOIN pg_roles AS grantee_role
+          ON grantee_role.oid = privilege.grantee
+        WHERE owner_role.rolname = 'tide_sys_admin'
+          AND namespace.nspname = 'tide'
+          AND defaults.defaclobjtype = 'r'
+          AND grantee_role.rolname = 'tit_teacher_crud'
+        GROUP BY defaults.oid
+        HAVING array_agg(DISTINCT privilege.privilege_type)
+                   @> ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]
+           AND NOT (
+               array_agg(DISTINCT privilege.privilege_type)
+                   && ARRAY['TRUNCATE', 'TRIGGER']::text[]
+           )
+    ) THEN
+        RAISE EXCEPTION
+            'future tide tables will not inherit teacher runtime CRUD';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_class AS relation
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        CROSS JOIN LATERAL unnest(
+            ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]
+        ) AS required_privilege(name)
+        WHERE namespace.nspname = 'tide'
+          AND relation.relkind IN ('r', 'p')
+          AND NOT has_table_privilege(
+              'tit_teacher_crud',
+              relation.oid,
+              required_privilege.name
+          )
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_class AS relation
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        CROSS JOIN LATERAL unnest(
+            ARRAY['TRUNCATE', 'TRIGGER']::text[]
+        ) AS forbidden_privilege(name)
+        WHERE namespace.nspname = 'tide'
+          AND relation.relkind IN ('r', 'p')
+          AND has_table_privilege(
+              'tit_teacher_crud',
+              relation.oid,
+              forbidden_privilege.name
+          )
+    ) THEN
+        RAISE EXCEPTION 'teacher runtime tide-table CRUD is incomplete';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.teacher_source_wide',
+            'public.lesson_source_wide',
+            'public.dts_ingest_checkpoints',
+            'public.dts_ingest_events',
+            'public.dts_source_rows',
+            'public.dts_dirty_keys'
+        ]::text[]) AS dts_table(name),
+        unnest(ARRAY[
+            'SELECT', 'INSERT', 'UPDATE', 'DELETE'
+        ]::text[]) AS required_privilege(name)
+        WHERE NOT has_table_privilege(
+            'tit_dts_ingest_runtime',
+            dts_table.name,
+            required_privilege.name
+        )
+    ) THEN
+        RAISE EXCEPTION 'DTS runtime does not have exact six-table CRUD';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.teacher_source_wide',
+            'public.lesson_source_wide',
+            'public.dts_ingest_checkpoints',
+            'public.dts_ingest_events',
+            'public.dts_source_rows',
+            'public.dts_dirty_keys'
+        ]::text[]) AS dts_table(name),
+        unnest(ARRAY['TRUNCATE', 'TRIGGER']::text[]) AS forbidden_privilege(name)
+        WHERE has_table_privilege(
+            'tit_dts_ingest_runtime',
+            dts_table.name,
+            forbidden_privilege.name
+        )
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_class AS relation
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        CROSS JOIN LATERAL unnest(
+            ARRAY[
+                'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER'
+            ]::text[]
+        ) AS forbidden_privilege(name)
+        WHERE namespace.nspname IN ('public', 'tide')
+          AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+          AND relation.oid NOT IN (
+              'public.teacher_source_wide'::regclass,
+              'public.lesson_source_wide'::regclass,
+              'public.dts_ingest_checkpoints'::regclass,
+              'public.dts_ingest_events'::regclass,
+              'public.dts_source_rows'::regclass,
+              'public.dts_dirty_keys'::regclass
+          )
+          AND has_table_privilege(
+              'tit_dts_ingest_runtime',
+              relation.oid,
+              forbidden_privilege.name
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'DTS runtime can mutate a relation outside its six-table boundary';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.teacher_source_wide',
+            'public.lesson_source_wide'
+        ]::text[]) AS source_table(name),
+        unnest(ARRAY['SELECT']::text[]) AS required_privilege(name)
+        WHERE NOT has_table_privilege(
+            'tit_growth_app', source_table.name, required_privilege.name
+        )
+    ) OR EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.teacher_source_wide',
+            'public.lesson_source_wide'
+        ]::text[]) AS source_table(name),
+        unnest(ARRAY[
+            'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER'
+        ]::text[]) AS forbidden_privilege(name)
+        WHERE has_table_privilege(
+            'tit_growth_app', source_table.name, forbidden_privilege.name
+        )
+    ) THEN
+        RAISE EXCEPTION 'TiDe runtime source-wide access is not read-only';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.teachers',
+            'public.complaint_category_rules',
+            'public.personalized_trigger_matches',
+            'public.lesson_score_results',
+            'public.teacher_qualifications',
+            'public.score_accounts',
+            'public.score_component_accounts',
+            'public.score_entries',
+            'public.task_templates',
+            'public.task_assignments',
+            'public.notifications',
+            'public.ops_cases',
+            'public.ops_decisions',
+            'public.outbox_events',
+            'public.audit_events',
+            'public.idempotency_records',
+            'public.config_versions',
+            'public.config_publication_audits',
+            'public.operator_accounts',
+            'public.operator_role_grants',
+            'public.operator_sessions',
+            'public.teacher_support_tickets'
+        ]::text[]) AS business_table(name),
+        unnest(ARRAY[
+            'SELECT', 'INSERT', 'UPDATE', 'DELETE'
+        ]::text[]) AS required_privilege(name)
+        WHERE NOT has_table_privilege(
+            'tit_growth_app', business_table.name, required_privilege.name
+        )
+    ) OR EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.teachers',
+            'public.complaint_category_rules',
+            'public.personalized_trigger_matches',
+            'public.lesson_score_results',
+            'public.teacher_qualifications',
+            'public.score_accounts',
+            'public.score_component_accounts',
+            'public.score_entries',
+            'public.task_templates',
+            'public.task_assignments',
+            'public.notifications',
+            'public.ops_cases',
+            'public.ops_decisions',
+            'public.outbox_events',
+            'public.audit_events',
+            'public.idempotency_records',
+            'public.config_versions',
+            'public.config_publication_audits',
+            'public.operator_accounts',
+            'public.operator_role_grants',
+            'public.operator_sessions',
+            'public.teacher_support_tickets'
+        ]::text[]) AS business_table(name),
+        unnest(ARRAY['TRUNCATE', 'TRIGGER']::text[]) AS forbidden_privilege(name)
+        WHERE has_table_privilege(
+            'tit_growth_app', business_table.name, forbidden_privilege.name
+        )
+    ) THEN
+        RAISE EXCEPTION 'TiDe runtime business-table CRUD is incomplete';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.alembic_version',
+            'public.task_templates',
+            'public.teachers',
+            'public.teacher_scorecard_current',
+            'public.teacher_lesson_score_current',
+            'public.teacher_g01_status_current'
+        ]::text[]) AS read_table(name)
+        WHERE NOT has_table_privilege(
+            'tit_teacher_crud', read_table.name, 'SELECT'
+        )
+    ) OR EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.alembic_version',
+            'public.task_templates',
+            'public.teachers',
+            'public.teacher_scorecard_current',
+            'public.teacher_lesson_score_current',
+            'public.teacher_g01_status_current'
+        ]::text[]) AS read_table(name),
+        unnest(ARRAY[
+            'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER'
+        ]::text[]) AS forbidden_privilege(name)
+        WHERE has_table_privilege(
+            'tit_teacher_crud', read_table.name, forbidden_privilege.name
+        )
+    ) THEN
+        RAISE EXCEPTION 'teacher runtime public read-only ACL is invalid';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.task_assignments',
+            'public.notifications',
+            'public.notification_events',
+            'public.teacher_support_tickets'
+        ]::text[]) AS business_table(name),
+        unnest(ARRAY[
+            'SELECT', 'INSERT', 'UPDATE', 'DELETE'
+        ]::text[]) AS required_privilege(name)
+        WHERE NOT has_table_privilege(
+            'tit_teacher_crud', business_table.name, required_privilege.name
+        )
+    ) OR EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.task_assignments',
+            'public.notifications',
+            'public.notification_events',
+            'public.teacher_support_tickets'
+        ]::text[]) AS business_table(name),
+        unnest(ARRAY['TRUNCATE', 'TRIGGER']::text[]) AS forbidden_privilege(name)
+        WHERE has_table_privilege(
+            'tit_teacher_crud', business_table.name, forbidden_privilege.name
+        )
+    ) THEN
+        RAISE EXCEPTION 'teacher runtime public business-table CRUD is incomplete';
     END IF;
 
     IF has_table_privilege(
         'tit_teacher_crud',
         'public.teacher_source_wide',
         'SELECT'
-    ) OR NOT has_column_privilege(
-        'tit_teacher_crud',
-        'public.teacher_source_wide',
-        'tchr_id',
-        'SELECT'
-    ) OR NOT has_column_privilege(
-        'tit_teacher_crud',
-        'public.teacher_source_wide',
-        'is_cpl_tesol',
-        'SELECT'
-    ) OR has_column_privilege(
-        'tit_teacher_crud',
-        'public.teacher_source_wide',
-        'is_self_introduce',
-        'SELECT'
-    ) OR has_column_privilege(
-        'tit_teacher_crud',
-        'public.teacher_source_wide',
-        'real_name',
-        'SELECT'
-    ) THEN
+    ) OR (
+        SELECT array_agg(column_name ORDER BY ordinal_position)
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'teacher_g01_status_current'
+    ) IS DISTINCT FROM ARRAY['tchr_id', 'is_cpl_tesol']::text[] THEN
         RAISE EXCEPTION
-            'teacher runtime role does not have the reviewed TESOL-only source ACL';
+            'teacher runtime role can bypass the TESOL-only view boundary';
     END IF;
 
     IF EXISTS (
@@ -809,6 +1061,7 @@ BEGIN
         WHERE rolname = 'tide_support_ticket_owner'
           AND (
               rolcanlogin
+              OR rolinherit
               OR rolsuper
               OR rolcreatedb
               OR rolcreaterole
@@ -819,63 +1072,145 @@ BEGIN
         RAISE EXCEPTION 'support-ticket function owner is not a restricted NOLOGIN role';
     END IF;
 
-    IF has_table_privilege(
-        'tit_teacher_crud',
-        'public.task_assignments',
-        'INSERT'
-    ) OR has_any_column_privilege(
-        'tit_teacher_crud',
-        'public.task_assignments',
-        'INSERT'
-    ) OR has_table_privilege(
-        'tit_teacher_crud',
-        'public.task_assignments',
-        'DELETE'
-    ) THEN
-        RAISE EXCEPTION 'teacher runtime role can create or delete assignments';
+    IF (
+        SELECT array_agg(member_role.rolname ORDER BY member_role.rolname)
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS granted_role
+          ON granted_role.oid = membership.roleid
+        JOIN pg_roles AS member_role
+          ON member_role.oid = membership.member
+        WHERE granted_role.rolname = 'tide_support_ticket_owner'
+    ) IS DISTINCT FROM ARRAY['tide_sys_admin']::text[] THEN
+        RAISE EXCEPTION
+            'support-ticket function owner membership is not restricted to tide_sys_admin';
     END IF;
 
-    FOREACH allowed_status_column IN ARRAY ARRAY[
-        'status',
-        'status_reason_code',
-        'status_changed_at',
-        'completed_at',
-        'updated_by'
-    ] LOOP
-        IF NOT has_column_privilege(
-            'tit_teacher_crud',
-            'public.task_assignments',
-            allowed_status_column,
-            'UPDATE'
-        ) THEN
-            RAISE EXCEPTION
-                'teacher runtime role cannot update required column %',
-                allowed_status_column;
-        END IF;
-    END LOOP;
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'SELECT', 'INSERT', 'UPDATE', 'DELETE'
+        ]::text[]) AS required_privilege(name)
+        WHERE NOT has_table_privilege(
+            'tide_support_ticket_owner',
+            'public.teacher_support_tickets',
+            required_privilege.name
+        )
+    ) OR EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY['TRUNCATE', 'TRIGGER']::text[]) AS forbidden_privilege(name)
+        WHERE has_table_privilege(
+            'tide_support_ticket_owner',
+            'public.teacher_support_tickets',
+            forbidden_privilege.name
+        )
+    ) THEN
+        RAISE EXCEPTION 'support-ticket function owner table CRUD is incomplete';
+    END IF;
 
-    FOREACH forbidden_assignment_column IN ARRAY ARRAY[
-        'teacher_id',
-        'task_code',
-        'template_version_id',
-        'priority',
-        'why',
-        'display_title',
-        'evidence_snapshot',
-        'due_at',
-        'row_version'
-    ] LOOP
-        IF has_column_privilege(
-            'tit_teacher_crud',
-            'public.task_assignments',
-            forbidden_assignment_column,
-            'UPDATE'
-        ) THEN
-            RAISE EXCEPTION
-                'teacher runtime role can update forbidden column %',
-                forbidden_assignment_column;
-        END IF;
-    END LOOP;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.task_assignments'::regclass
+          AND tgfoid =
+              'public.enforce_task_assignment_write()'::regprocedure
+          AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.outbox_events'::regclass
+          AND tgname = 'guard_outbox_event_update'
+          AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.lesson_score_results'::regclass
+          AND tgname = 'guard_lesson_score_result_identity'
+          AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.operator_accounts'::regclass
+          AND tgname = 'guard_operator_account_runtime_update'
+          AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.notifications'::regclass
+          AND tgname = 'guard_teacher_notification_write'
+          AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.notification_events'::regclass
+          AND tgname = 'guard_notification_event_history'
+          AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.audit_events'::regclass
+          AND tgname = 'guard_audit_event_history'
+          AND NOT tgisinternal
+    ) OR (
+        SELECT count(*)
+        FROM pg_trigger
+        WHERE tgrelid = ANY (ARRAY[
+            'public.score_entries'::regclass,
+            'public.idempotency_records'::regclass,
+            'public.config_publication_audits'::regclass,
+            'public.ops_decisions'::regclass
+        ])
+          AND tgname = 'guard_runtime_append_only_fact'
+          AND NOT tgisinternal
+    ) <> 4 OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.teacher_support_tickets'::regclass
+          AND tgname = 'guard_simple_support_ticket_write'
+          AND NOT tgisinternal
+    ) OR (
+        SELECT count(*)
+        FROM pg_trigger
+        WHERE tgrelid = ANY (ARRAY[
+            'public.dts_ingest_checkpoints'::regclass,
+            'public.dts_ingest_events'::regclass,
+            'public.dts_source_rows'::regclass,
+            'public.dts_dirty_keys'::regclass
+        ])
+          AND tgname = 'guard_dts_runtime_state_write'
+          AND NOT tgisinternal
+    ) <> 4 OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'tide.schema_migrations'::regclass
+          AND tgname = 'guard_runtime_schema_migration_write'
+          AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'tide.crm_sso_logins'::regclass
+          AND tgname = 'guard_crm_sso_login_write'
+          AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'tide.system_notifications'::regclass
+          AND tgname = 'protect_system_notification_content'
+          AND NOT tgisinternal
+    ) THEN
+        RAISE EXCEPTION 'runtime table-level business guards are incomplete';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_attribute AS attribute
+        CROSS JOIN LATERAL aclexplode(attribute.attacl) AS privilege
+        JOIN pg_roles AS grantee ON grantee.oid = privilege.grantee
+        JOIN pg_class AS relation
+          ON relation.oid = attribute.attrelid
+        JOIN pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname IN ('public', 'tide')
+          AND attribute.attacl IS NOT NULL
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped
+          AND grantee.rolname IN (
+              'tit_growth_app',
+              'tit_teacher_crud',
+              'tit_dts_ingest_runtime',
+              'tide_support_ticket_owner'
+          )
+    ) THEN
+        RAISE EXCEPTION 'runtime roles still have explicit column ACL';
+    END IF;
 
     IF has_table_privilege(
         'tit_teacher_crud',
@@ -911,27 +1246,6 @@ BEGIN
         'EXECUTE'
     ) THEN
         RAISE EXCEPTION 'support-ticket function execution roles are not separated';
-    END IF;
-
-    IF has_function_privilege(
-        'tit_contract_probe',
-        'public.create_teacher_support_ticket(uuid,character varying,character varying,character varying,jsonb,jsonb)',
-        'EXECUTE'
-    ) OR has_function_privilege(
-        'tit_contract_probe',
-        'public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)',
-        'EXECUTE'
-    ) OR has_function_privilege(
-        'tit_contract_probe',
-        'public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)',
-        'EXECUTE'
-    ) OR has_function_privilege(
-        'tit_contract_probe',
-        'public.mark_teacher_support_ticket_images_deleted(uuid,timestamp with time zone)',
-        'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION
-            'contract probe role can execute a mutation function';
     END IF;
 
     SELECT pg_get_functiondef(

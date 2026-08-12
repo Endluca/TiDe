@@ -1,8 +1,10 @@
 # 教师端与运营端同机部署
 
 状态：**部署骨架与技术加固已建立，联合门禁已固定到 public
-`20260811_57_g02_document`、教师端 `0041_crm_sso_hybrid` 和唯一当前
-`G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041 执行；
+`20260812_59_simple_acl`、教师端 `0041_crm_sso_hybrid` 和唯一当前
+`G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0028 → public 50 →
+teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 →
+release public 57 → teacher 0040 → teacher 0041 → public 59 执行；
 完整链和数据库契约探针未通过前禁止上线。**
 
 ## 结论
@@ -39,7 +41,7 @@ teacher-api ---/     public = shared/TiDe facts
 验收后再启用，不能只把监听值改成 `::`。
 生产 PostgreSQL 建议使用公司内网数据库；即使数据库也在同一主机，仍不得发布 `5432`。
 
-## 教师端 0025–0039 迁移门
+## 教师端 0025–0041 迁移门
 
 TiDe 的唯一当前目录是连续 `G01–G09`，其中 `G04` 为首课准备，只保留授课环境拍照 AI
 审核和课件准备确认两个模块。
@@ -78,7 +80,7 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
 0032 创建 `tide.account_onboarding_states`，只将迁移前已有 `LOGIN/SUCCESS`
 事件的账号回填为 `FIRST_LOGIN` v1 / `MIGRATED_EXISTING`。已注册但从未成功
 登录的账号不回填，仍应在首次登录后展示引导。引导状态是账号级一次性
-终态事实，运行角色只允许读取和幂等插入。
+终态事实；运行角色使用表级 CRUD，Trigger/约束只接受读取和幂等插入语义。
 
 0033 在稳定 `G01:v1` execution 上原位更新外部状态规则，使 G01 只消费 TESOL，
 并保留 execution、step/rule ID、assignment 和已有进度。Self-intro 源字段仍由
@@ -94,45 +96,45 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
 其他标签继续失败关闭；照片沿用 G04 的四项 AI 审核档案。缺失／非法共享模板、身份冲突或
 未知旧结构都会整笔拒绝。
 
-0039 新增 CRM SSO 登录映射与认证来源字段。它保留当前账号密码登录路径，新增 SSO
-交换所需的账号级绑定事实，并允许 SSO 创建的账号不设置本地密码；不修改任务、积分、
-课程或教师执行状态。
+0039/0040 将 G02 收敛为带版本和内容哈希的原生文档阅读，并由阅读到底事实和跨表约束
+校验完成状态。0041 新增 CRM SSO 一次性交换事实、账号来源和会话认证方式；它允许 SSO
+账号不设置本地密码，同时保留原有密码登录路径，不修改任务、积分、课程或教师执行状态。
 
 当前工作树已经落地以下技术门禁：
 
 1. 教师端正式迁移器永久排除 `0017/0018` 对 `public.task_assignments` 的 DDL，并包含
-   从 `0001` 到 `0039` 的完整有序生产链、迁移账本、checksum 与 advisory lock。
+   从 `0001` 到 `0041` 的 36 条完整有序生产链、迁移账本、checksum 与 advisory lock。
    `0027` 删除已退役的本地 Quiz 运行时；`0028` 只退役依赖旧教师快照的
    `tide.analytics_task_business_change_v1`；`0029` 在空表、G00 路由和外部依赖门禁后删除
    6 张无消费者表与 5 个已被 v2 替代的视图，均不删除 public 表。
    `0030` 在确认所有文件都为私有、无外部列依赖和无函数消费者后，无 `CASCADE`
    删除 `tide.file_objects.visibility` 与孤儿 `tide.enforce_outbox_target()`；`0031`
    原位升级 G04 三模块，`0032` 创建账号级首次登录引导状态，`0033` 收窄 G01
-   TESOL-only 校验规则，`0037` 将当前 G04 收敛为照片审核和课件准备两个模块，`0038`
-   为已有 P-FB execution 原位升级、为 fresh 合法目录确定性建立个性化授课环境拍照检测；
-   `0039` 新增 CRM SSO 混合认证结构。
+   TESOL-only 校验规则，`0037` 将当前 G04 收敛为照片审核和课件准备两个模块；
+   `0038`–`0041` 依次完成个性化环境拍照、G02 文档/阅读状态和 CRM SSO。
 2. 运营回复工单函数在同一事务设置 `WAITING_TEACHER`、最后回复时间和 48 小时截止时间，
-   `tit_growth_app` 只获得查询和函数执行的必要权限。
+   `tit_growth_app` 按最终表级 ACL 授权，Trigger 强制运营回复走原子函数。
 3. 教师端生产配置对双数据库、严格 SSL、HTTPS 公共地址和 OSS fail-closed；readiness
    同时检查两条数据库连接。
 4. 教师端 API 的后台调度器虽然仍嵌在 HTTP 进程，但所有全局任务都通过
    `tide.job_leases` 竞争数据库租约；只有当前持租约副本执行，续租失败立即停止，其他副本
-   可接管。G04 与个性化环境图片均走任务提交校验，不再有独立照片队列。联合部署固定完整升级到 0041。
+   可接管。G04 与个性化环境图片均走任务提交校验，不再有独立照片队列。联合部署固定完整升级到 public 59 / teacher 0041。
 
 切流前仍需关闭两项：
 
-1. 在目标库按十二阶段顺序执行到 public 57 / teacher 0041：先在 public 50 / teacher 0032
+1. 在目标库按顺序执行到 public 59 / teacher 0041：先在 public 50 / teacher 0032
    完成历史 G04 三模块链，再通过 public 54 / teacher 0037 将当前 G04 收敛为照片审核与
    课件准备两个模块，再用 public 55 收敛源宽表，执行 public 56 / teacher 0038 的个性化环境拍照，
-   再执行 public 57 / teacher 0039–0040 的 G02 原生文档，最后执行 teacher 0041 的 CRM SSO 结构。验证 0025 保留
-   execution ID、步骤/规则 ID 和教师进度，同时验证 rev47–57 与 0027–0041 完成本地 Quiz
+   再执行 public 57 / teacher 0039–0040 的 G02 原生文档、teacher 0041 的 CRM SSO 结构，
+   最后执行 ACL/DTS 合并迁移到 public 59。验证 0025 保留 execution ID、步骤/规则 ID 和教师进度，同时验证 rev47–59 与 0027–0041 完成本地 Quiz
    退役、旧视图和空置对象清理、G01 TESOL-only 收窄、G04 两模块收敛、引导状态建表与个性化环境拍照发布，
-   且未越权改写共享业务事实。
+   DTS 状态表和最终表级 ACL，且未越权改写共享业务事实。
 2. 教师端主 PRD 仍描述“TIDE 刷新后再修改工单状态”，需要与已落地的原子回复函数同步，
    不能同时保留两套状态时序口径。
 
 `preflight.sh` 会正向核对固定提交中的完整 36 条 / 0041 迁移清单、精确 G01–G09 标题/分值、
-0033 G01 TESOL-only 规则、0037 G04 两模块规则、0038 个性化拍照契约、0039/0040 G02 原生文档与 0041 CRM SSO 结构；
+0033 G01 TESOL-only 规则、0037 G04 两模块规则、0038 个性化拍照契约、0039/0040 G02 原生文档、
+0041 CRM SSO 结构和契约探针固定的 public 59 head；
 `contract-probe.sql` 会在目标库正向核对完整迁移账本、共享目录、assignment 和 execution。
 任一通过都不替代另一个，也不替代备份恢复演练和真实压测。
 完整的发布前证据、主键级前后对照和停止条件见
@@ -142,27 +144,22 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
 
 | 对象 | 唯一迁移所有者 | 运行写入者 |
 |---|---|---|
-| `public.task_templates/task_assignments`、积分、通知、审计、Outbox、读取视图 | TiDe Alembic | 各自受限列权限 |
-| `tide.*` | 教师端 migrator | `tit_teacher_crud` |
-| `public.teacher_support_tickets` 与原子函数 | 教师端 migrator | 教师端写事实；运营端只调用函数 |
+| `public.task_templates/task_assignments`、积分、通知、审计、Outbox、读取视图 | `tide_sys_admin` | 最终文档的表级权限；业务边界由 Trigger/约束落实 |
+| `tide.*` | `tide_sys_admin` | `tit_teacher_crud` |
+| `public.teacher_support_tickets` 与原子函数 | `tide_sys_admin` | 教师端写事实；运营端只调用函数 |
 
-运行角色不得共用：
+数据库角色固定收敛为五个：
 
-- `tit_growth_migrator`：仅发布时运行 TiDe Alembic；
-- `tide_migrator`：仅迁 `tide.*` 与共享工单例外；
+- `tide_sys_admin`：已有管理账号，仅在受控发布窗口执行两条迁移链和只读契约探针；
 - `tide_support_ticket_owner`：非登录、非超级的共享工单函数 owner；
-- `tit_growth_app`：运营 API；
-- `tit_source_worker_runtime`：只继承 `tit_source_worker` 的独立 LOGIN；可读取两张源表、
-  写派生结果并按列完成源事件，不能写源表，也不能属于运营或教师运行角色；
-- `tit_teacher_crud`：教师 API，只更新 assignment 允许的状态五字段；
-- `tit_contract_probe`：只在发布门禁连接的独立只读 LOGIN 角色，不属于任何其他角色，
-  无 Schema CREATE、表写入、序列和变更函数权限；
-- 教师端世文读取连接应使用只读角色，不复用写账号。
+- `tit_growth_app`：运营 API、积分结算和 SourceWide Worker 共用的 TiDe 后端账号；
+  按最终表级 ACL 读取源表、写派生结果；业务写边界由 Trigger/约束保护；
+- `tit_teacher_crud`：教师 API，按最终文档获得 public 指定表与 `tide.*` 的表级权限；
+- `tit_dts_ingest_runtime`：DTS 消费入库，只对两张源宽表与四张接入状态表拥有 CRUD，不能写 Outbox 或其他业务表。
 
-TiDe migration 会在连接后核对 `current_user=tit_growth_migrator`、角色不是 superuser、
-当前数据库等于 `TIDE_DATABASE_NAME`，并在连接前要求唯一
-`sslmode=verify-full`。教师端 migrator 采用同级别的固定角色、目标库、TLS 与函数 owner
-门禁。任何一个条件不符都必须在执行 DDL 前停止。
+TiDe 和教师端 migration 都核对 `current_user=session_user=tide_sys_admin`、目标库与
+`sslmode=verify-full`。契约探针复用同一管理凭据，但强制使用只读事务。任何一个条件
+不符都必须在执行 DDL 或探针查询前停止。
 
 初始连接上限：
 
@@ -173,7 +170,7 @@ TiDe migration 会在连接后核对 `current_user=tit_growth_migrator`、角色
 - 运行时理论峰值 `26`，不含迁移、监控、备份和 DBA。
 
 该预算必须低于 PostgreSQL `max_connections` 的 70%–80%，否则先缩池，不能靠提高
-数据库连接上限掩盖等待。`tit_contract_probe` 只在发布门禁临时占用一个连接，不进入
+数据库连接上限掩盖等待。契约探针只在发布门禁临时占用一个管理连接，不进入
 常驻运行预算。
 
 ## 准备
@@ -188,14 +185,10 @@ TiDe migration 会在连接后核对 `current_user=tit_growth_migrator`、角色
    Docker 网络不重叠；运营 API 只信任该网络中固定的 `TIDE_EDGE_PROXY_IP`，不能信任整个
    RFC1918 地址段。`TIDE_COMPANY_GATEWAY_CIDR` 只填写公司网关实际源 IP（推荐 `/32`）
    或最小必要的 `/24`–`/32` 私网段。
-3. 分别创建运营运行、运营迁移、SourceWide Worker、契约探针、教师运行和教师迁移六个受保护环境文件；权限
-   至少为仅部署账号可读。运行、迁移和探针账号不能复用，迁移文件和探针文件不得进入运行
-   应用容器。SourceWide Worker 文件必须包含独立的
-   `TIT_SOURCE_WORKER_DATABASE_URL`（LOGIN 固定为 `tit_source_worker_runtime`）和
-   `TIT_SOURCE_WORKER_EXPECTED_DATABASE`；探针文件只包含
-   `DATABASE_URL=postgresql://tit_contract_probe:...?...&sslmode=verify-full`。
-   可从 `deploy/combined/contract-probe.env.example` 复制字段骨架，不能把填写后的文件留在
-   仓库工作树。
+3. 创建三个受保护环境文件：TiDe 后端运行（`tit_growth_app`）、教师端运行
+   （`tit_teacher_crud`）和管理迁移（`tide_sys_admin`）；权限至少为仅部署账号可读。
+   SourceWide Worker 复用 TiDe 后端运行文件，教师端迁移和只读契约探针复用管理迁移
+   文件。填写后的文件不得留在仓库工作树。
 4. 配置两个域名和 TLS。`edge` 只接收公司网关转发，宿主机不得把其 HTTP 端口直接
    暴露到公网。
 5. 教师端公共素材必须先上传到 HTTPS CDN，并完成浏览器读取验证。
@@ -222,13 +215,15 @@ bash deploy/combined/preflight.sh
 docker compose -f deploy/combined/docker-compose.yml config --quiet
 ```
 
-教师端未按十二阶段到 public 57 / teacher 0041、最终账本不是精确 36 条、G04 仍含当前设备步骤、
-目录缺项、个性化拍照契约不精确、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
+教师端未按完整顺序到 public 59 / teacher 0041、最终账本不是精确 36 条、G04 仍含当前设备步骤、
+目录缺项、个性化拍照或 G02 文档契约不精确、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
 这是预期结果。
 
 ## 发布顺序
 
-1. 评审 public 55/56、教师端 0038/0039、任务编码、G01 TESOL-only 读取过滤、G04 两模块、源宽表 v1.2、个性化拍照执行配置与 CRM SSO 混合认证结构；固定包含完整修复的新提交 SHA。
+1. 评审 public 59、教师端 0041、任务编码、G01 TESOL-only 读取过滤、G04 两模块、
+   个性化拍照、G02 文档与阅读状态、CRM SSO、源宽表 v1.2、DTS 状态和最终数据库角色；
+   固定包含完整修复的新提交 SHA。
 2. 停止两端写流量、教师后台任务和积分结算 Worker。
 3. 创建一致性备份，记录 Alembic head、教师迁移账本和任务目录快照；验证恢复路径。
 4. DBA 预建或确认 `pg_trgm`。
@@ -250,7 +245,7 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    只在第 9 步随 public 55 执行。
 
 6. 将 `TIDE_TEACHER_MIGRATION_TARGET` 临时设为 `0028_retire_task_business_change_view`，
-   使用教师端独立迁移环境文件运行正式 migrator；迁移 `tide.*` 和共享工单例外，不得执行
+   使用 `tide_sys_admin` 运行教师端正式迁移；迁移 `tide.*` 和共享工单例外，不得执行
    `0017/0018` 的共享任务表 DDL。迁移器必须确认严格 SSL、目标库、固定非超级账号和受限
    SECURITY DEFINER owner：
 
@@ -285,52 +280,32 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    历史三模块、账号引导事实、G01 TESOL-only 和当前两模块收敛。0028 down 只能在 public 47
    之前验证，生产回退使用备份或向前修复。
 
-9. 确认 public 54 / teacher 0037 同时就绪且当前 G04 已不再返回设备步骤后，将 TiDe
-   Alembic 先升到 public 55 收敛教师源宽表，再升到 public head 56；然后把
-   `TIDE_TEACHER_MIGRATION_TARGET` 设为 `0038_personalized_environment_photo` 运行
-   `teacher-migrate`。rev56 只更新稳定
-   `P-FB-NEGATIVE:v1` 的受治理改善活动文案，0038 再发布个性化授课环境拍照 execution、
-   单步照片提交与四项 AI 审核。确认账本精确为 33 条且 head 为 0038 后，先把 public 升到
-   `20260811_57_g02_document`，再将 teacher 升到 `0040_g02_document_read_status`；确认 G02
-   原生文档与阅读状态约束后，将
-   `TIDE_TEACHER_MIGRATION_TARGET` 设为 `0041_crm_sso_hybrid` 运行 `teacher-migrate`，
-   新增 CRM SSO 映射并保留现有账号密码登录。最终确认账本精确为 36 条且 head 为 0041、
-   0029 删除的 6 张废弃表和 5 个旧分析视图均不存在，且 0030 删除的
-   `file_objects.visibility` 和 `enforce_outbox_target()` 也不存在。以只读共享目录模式核对
-   0033 G01 TESOL-only 规则、0037 G04 两模块 completion rule 与无当前设备步骤、0038
-   个性化拍照步骤和审核规则；execution/保留 step/rule ID、assignment、历史设备进度与
-   个性化任务进度原始行均须符合快照。
+9. 确认 public 54 / teacher 0037 同时就绪且当前 G04 已不再返回设备步骤后，严格按
+   `20260811_55_source_wide_v12` → `20260811_56_p_fb_negative_copy` → teacher 0038 →
+   `20260811_57_g02_document` → teacher 0040 → teacher 0041 → `alembic upgrade head`
+   继续。public 55 收敛教师源宽表，release public 56 更新稳定 `P-FB-NEGATIVE:v1`
+   文案，0038 发布个性化授课环境拍照；release public 57 发布 G02 精确文案，0039/0040
+   原位切换到版本化文档并增加阅读状态约束，0041 新增 CRM SSO。最后一步才将 ACL/DTS
+   分支与 release 内容分支合并到 `20260812_59_simple_acl`。不得在 teacher 0037 之前执行
+   public 55；最终契约探针只接受 public 59 / teacher 0041。
+
+10. 确认 teacher 账本精确为 36 条且 head 为 0041，再以只读共享目录模式核对执行内容：
+   0033 G01 TESOL-only、0037 G04 两模块且无当前设备步骤、0038 个性化环境拍照、
+   0039/0040 G02 文档与阅读状态、0041 CRM SSO 结构，execution/保留 step/rule ID、
+   assignment 与历史进度原始行均必须符合快照。
    `TASK_CATALOG_PUBLIC_WRITE` 必须为 `false`，不得再以迁移器外脚本改写共享任务编码或补灌 execution 配置。
-10. 确认 public 56 / teacher 0038 同时就绪后，将 TiDe Alembic 升到 public head 57，
-   再把 `TIDE_TEACHER_MIGRATION_TARGET` 设为 `0040_g02_document_read_status` 运行
-   `teacher-migrate`。public 57 发布 G02 精确文案，0039 将稳定 G02 execution 原位切换为
-   单一版本化文档步骤，0040 增加实体阅读证据与延迟跨表完成约束。确认账本精确为 35 条、
-   head 为 0040，并核对 G02 execution 内容版本／哈希、`DOCUMENT` 提交证据和
-   `task_step_progress_g02_assignment_completion_check` constraint trigger。
-11. DBA 在两条完整迁移链结束后统一应用最小权限；由于 0024 改变了函数 owner，权限脚本
+11. DBA 在两条完整迁移链结束后统一应用最终表级权限；由于 0024 改变了函数 owner，权限脚本
    必须在本次迁移后重跑，即在 DBA 自己的受控数据库会话中执行
    `$TIDE_TEACHER_REPO_PATH/backend/database/scripts/grant-tit-teacher-crud.sql`，否则教师角色
-   不会获得工单教师消息函数的执行权。DBA 还需通过密码管理系统预建无高权限、无角色成员
-   关系的 `tit_contract_probe LOGIN`，然后在同一受控会话应用精确只读授权：
-
-   ```bash
-   psql "$DBA_DATABASE_URL" \
-     -v ON_ERROR_STOP=1 \
-     -v expected_database="$TIDE_DATABASE_NAME" \
-     -f deploy/combined/grant-contract-probe.sql
-   ```
-
-   授权脚本先撤销该角色在 `public/tide` 的既有表、序列和变更函数权限，再只授予契约读取
-   所需对象。随后使用独立探针环境文件运行数据库契约探针：
+   不会获得工单教师消息函数的执行权。随后复用管理迁移文件运行只读数据库契约探针：
 
    ```bash
    docker compose -f deploy/combined/docker-compose.yml \
      --profile migration run --rm contract-probe
    ```
 
-   探针会核对 `current_user=session_user=tit_contract_probe`、目标库、实际 TLS、只读事务、
-   无角色继承和无写权限。用迁移账号、运行账号、`SET ROLE` 或非 TLS 会话执行都会失败，
-   因此通过结果才真实覆盖探针自身权限，而不是高权限账号代查。
+   探针会核对 `current_user=session_user=tide_sys_admin`、目标库、实际 TLS、只读事务和
+   三个运行账号的精确权限边界。`SET ROLE` 或非 TLS 会话执行都会失败。
 
 12. 先启动并观察积分 Worker 与 SourceWide Worker，再启动运营 API、一个或多个教师 API 副本和两个 Web。多个
    `teacher-api` 副本必须连接同一逻辑 PostgreSQL，并在扩容前确认 0022 的

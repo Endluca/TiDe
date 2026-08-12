@@ -244,8 +244,6 @@ SELECT
     (
         SELECT
             rolcanlogin
-            AND NOT rolcreatedb
-            AND NOT rolcreaterole
             AND NOT rolreplication
             AND NOT rolbypassrls
         FROM pg_roles
@@ -326,8 +324,8 @@ if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" ]]; then
     exit 1
   fi
 elif [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  if [[ "${connected_user}" != "tide_migrator" ]]; then
-    echo "生产迁移 current_user 必须精确为 tide_migrator。" >&2
+  if [[ "${connected_user}" != "tide_sys_admin" ]]; then
+    echo "生产迁移 current_user 必须精确为 tide_sys_admin。" >&2
     exit 1
   fi
   if [[ "${migration_user_superuser}" != "f" ]]; then
@@ -335,7 +333,7 @@ elif [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
     exit 1
   fi
   if [[ "${migration_user_restricted}" != "t" ]]; then
-    echo "tide_migrator 必须是无建库、建角色、复制或绕过 RLS 权限的 LOGIN 角色。" >&2
+    echo "tide_sys_admin 必须是禁止复制和绕过 RLS 的 LOGIN 管理角色。" >&2
     exit 1
   fi
   if [[ "${ssl_active}" != "t" ]]; then
@@ -348,7 +346,7 @@ elif [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
   fi
 fi
 if [[ "${migration_owner_membership_ready}" != "t" ]]; then
-  echo "迁移账号必须由 DBA 授予 tide_support_ticket_owner 成员关系。" >&2
+  echo "tide_sys_admin 必须由 DBA 授予 tide_support_ticket_owner 成员关系。" >&2
   exit 1
 fi
 if [[ "${operator_role_ready}" != "t" ]]; then
@@ -465,12 +463,20 @@ if [[ "${forbidden_column_count}" != "0" ]]; then
 fi
 
 personalized_environment_photo_recorded=false
+g02_document_read_status_recorded=false
 if [[ "${ledger_exists}" == "t" ]]; then
   personalized_environment_photo_recorded="$("${PSQL[@]}" -Atqc "
     SELECT EXISTS (
       SELECT 1
       FROM tide.schema_migrations
       WHERE migration_id = '0038_personalized_environment_photo'
+    )
+  ")"
+  g02_document_read_status_recorded="$("${PSQL[@]}" -Atqc "
+    SELECT EXISTS (
+      SELECT 1
+      FROM tide.schema_migrations
+      WHERE migration_id = '0040_g02_document_read_status'
     )
   ")"
 fi
@@ -523,7 +529,8 @@ if [[ "${target_includes_personalized_environment_photo}" == "true" \
   fi
 fi
 
-if [[ "${target_includes_g02_policy_document}" == "true" ]]; then
+if [[ "${target_includes_g02_policy_document}" == "true" \
+      && "${g02_document_read_status_recorded}" != "t" ]]; then
   if [[ "$("${PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
     echo "0039/0040 要求 public Alembic 精确位于 20260811_57_g02_document；当前缺少 public 迁移账本，未执行任何 G02 teacher 写入或记账。" >&2
     exit 1

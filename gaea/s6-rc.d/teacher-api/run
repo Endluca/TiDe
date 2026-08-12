@@ -1,6 +1,9 @@
 #!/bin/sh
 
 set -eu
+if [ "${TIT_PROCESS_PROFILE:-application}" != "application" ]; then
+  exec sleep infinity
+fi
 cd /app/teacher
 mkdir -p /var/lib/tide/uploads /var/lib/tide/video-prefetch-runs
 chown gaea:gaea /var/lib/tide /var/lib/tide/uploads /var/lib/tide/video-prefetch-runs

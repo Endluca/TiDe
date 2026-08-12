@@ -3,6 +3,11 @@ from __future__ import annotations
 import os
 from urllib.parse import parse_qs, urlparse
 
+from .qualification_award_gate import (
+    QualificationAwardGateConfigurationError,
+    irreversible_qualification_grants_enabled,
+)
+
 
 PRODUCTION_ENVIRONMENTS = {"prod", "production"}
 LOCAL_ALLOWED_ORIGINS = (
@@ -71,6 +76,10 @@ def validate_production_runtime() -> None:
         return
 
     errors: list[str] = []
+    try:
+        irreversible_qualification_grants_enabled()
+    except QualificationAwardGateConfigurationError as exc:
+        errors.append(str(exc))
     hosts = allowed_hosts()
     if not hosts:
         errors.append("TIT_ALLOWED_HOSTS is required")
@@ -185,11 +194,11 @@ def validate_production_migration_identity(
 ) -> None:
     expected_database = os.environ["TIT_MIGRATION_EXPECTED_DATABASE"]
     if (
-        role != "tit_growth_migrator"
+        role != "tide_sys_admin"
         or database != expected_database
         or is_superuser
     ):
         raise RuntimeError(
             "Production migration requires non-superuser "
-            "tit_growth_migrator on the explicitly selected database"
+            "tide_sys_admin on the explicitly selected database"
         )

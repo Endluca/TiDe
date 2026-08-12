@@ -55,6 +55,10 @@ def test_every_runtime_table_has_one_explicit_privilege_class() -> None:
     }
     introduced_after_revision_40 = {
         "complaint_rule_imports",
+        "dts_ingest_checkpoints",
+        "dts_ingest_events",
+        "dts_source_rows",
+        "dts_dirty_keys",
         "lesson_score_results",
         "teacher_qualifications",
     }

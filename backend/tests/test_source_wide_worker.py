@@ -59,6 +59,7 @@ _TEST_TEACHER_IDS = {
     "SW-FAILURE",
     "SW-G01-STATUS",
     "SW-POLICY-PUBLISH",
+    "SW-POLICY-GRANT-GATED",
 }
 
 
@@ -121,7 +122,11 @@ def _clean_worker_records() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolated_source_worker_records():
+def _isolated_source_worker_records(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv(
+        "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED",
+        "true",
+    )
     _clean_worker_records()
     yield
     _clean_worker_records()
@@ -651,6 +656,76 @@ def test_score_policy_publish_recalculates_source_wide_teacher_in_same_transacti
         assert task_component.payload["score_config_version_id"] == replacement[
             "version_id"
         ]
+
+
+def test_score_policy_publish_updates_current_criteria_without_granting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED",
+        "false",
+    )
+    teacher_id = "SW-POLICY-GRANT-GATED"
+    config_service = ConfigService(SessionLocal)
+    first = config_service.create_draft(
+        ConfigKey.SCORE_GRADUATION,
+        actor_id="gate-policy-creator-1",
+        payload=deepcopy(DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION]),
+    )
+    assert config_service.validate_version(
+        first["version_id"], actor_id="gate-policy-validator-1"
+    )["valid"]
+    config_service.publish_version(
+        first["version_id"], actor_id="gate-policy-publisher-1"
+    )
+
+    with session_scope(engine) as session:
+        session.add(_teacher_source(teacher_id, feedback_praise_cnt=20))
+        _add_teacher_insert_event(session, teacher_id, token="POLICY-GATE-INSERT")
+    assert SourceWideWorker(engine).run_once(max_events=10)["failed"] == 0
+    with session_scope(engine) as session:
+        for assignment in _fixed_assignments(session, teacher_id):
+            assignment.status = "COMPLETED"
+            assignment.completed_at = _NOW
+
+    replacement = config_service.create_draft(
+        ConfigKey.SCORE_GRADUATION,
+        actor_id="gate-policy-creator-2",
+        from_version_id=first["version_id"],
+    )
+    replacement_payload = deepcopy(replacement["payload"])
+    replacement_payload["scoring_items"]["feedback_praise"][
+        "points_per_unit"
+    ] = 6
+    config_service.update_draft(
+        replacement["version_id"],
+        replacement_payload,
+        actor_id="gate-policy-creator-2",
+    )
+    assert config_service.validate_version(
+        replacement["version_id"], actor_id="gate-policy-validator-2"
+    )["valid"]
+    published = config_service.publish_version(
+        replacement["version_id"], actor_id="gate-policy-publisher-2"
+    )
+    assert published["recalculation"]["source_wide_recalculation"][
+        "teacher_count"
+    ] == 1
+
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        qualification = session.get(TeacherQualificationRecord, teacher_id)
+        assert teacher is not None and teacher.total_score >= 100
+        assert teacher.graduation_state == "IN_PROGRESS"
+        assert qualification is not None
+        assert qualification.graduation_criteria_met is True
+        assert qualification.graduation_qualified is False
+        assert qualification.graduation_qualified_at is None
+        assert qualification.gate_results[
+            "irreversible_qualification_grants_enabled"
+        ] is False
+
+
 def test_capacity_milestone_stays_awarded_and_duplicate_event_is_idempotent() -> None:
     teacher_id = "SW-CAPACITY"
     with session_scope(engine) as session:
@@ -817,6 +892,54 @@ def test_source_teacher_delete_preserves_identity_tasks_and_earned_qualification
         assert teacher.gold_qualified is True
         assert teacher.payload["metric_inputs"]["new_teacher_task_score"] == 30
         assert teacher.payload["metric_inputs"]["capacity_score"] == 10
+
+
+def test_source_worker_gate_keeps_scores_and_current_criteria_without_granting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED",
+        "false",
+    )
+    teacher_id = "SW-GRANT-GATED"
+    with session_scope(engine) as session:
+        session.add(_teacher_source(teacher_id, feedback_praise_cnt=40))
+        _add_teacher_insert_event(session, teacher_id, token="GRANT-GATED-INSERT")
+    assert SourceWideWorker(engine).run_once(max_events=10)["failed"] == 0
+
+    with session_scope(engine) as session:
+        for assignment in _fixed_assignments(session, teacher_id):
+            assignment.status = "COMPLETED"
+            assignment.completed_at = _NOW
+        _source_event(
+            session,
+            token="GRANT-GATED-REFRESH",
+            source_table="teacher_source_wide",
+            source_id=teacher_id,
+            operation="UPDATE",
+            changed_fields=["feedback_praise_cnt"],
+            old_teacher_id=teacher_id,
+            new_teacher_id=teacher_id,
+        )
+
+    result = SourceWideWorker(engine).run_once(max_events=10)
+    assert result["failed"] == 0
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        qualification = session.get(TeacherQualificationRecord, teacher_id)
+        assert teacher is not None and teacher.total_score >= 200
+        assert teacher.graduation_state == "IN_PROGRESS"
+        assert teacher.gold_qualified is False
+        assert qualification is not None
+        assert qualification.graduation_criteria_met is True
+        assert qualification.gold_criteria_met is True
+        assert qualification.graduation_qualified is False
+        assert qualification.gold_qualified is False
+        assert qualification.graduation_qualified_at is None
+        assert qualification.gold_qualified_at is None
+        assert qualification.gate_results[
+            "irreversible_qualification_grants_enabled"
+        ] is False
 
 
 def test_projection_failure_rolls_back_and_dead_letters_without_partial_facts() -> None:

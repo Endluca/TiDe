@@ -20,6 +20,11 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
+from app.qualification_award_gate import (
+    QualificationAwardGateConfigurationError,
+    irreversible_qualification_grants_enabled,
+)
+
 
 DEFAULT_HEARTBEAT_PATH = Path("/tmp/tit-source-worker-heartbeat")
 DEFAULT_READINESS_PATH = Path("/tmp/tit-source-worker-readiness")
@@ -39,14 +44,6 @@ _SOURCE_WORKER_IDENTITY = text(
         login_role.rolcreaterole AS can_create_role,
         login_role.rolreplication AS can_replicate,
         login_role.rolbypassrls AS can_bypass_rls,
-        pg_has_role(session_user, 'tit_source_worker', 'MEMBER')
-            AS is_source_worker,
-        pg_has_role(session_user, 'tit_growth_app', 'MEMBER')
-            AS is_growth_app,
-        pg_has_role(session_user, 'tit_source_monitor', 'MEMBER')
-            AS is_source_monitor,
-        pg_has_role(session_user, 'tit_teacher_crud', 'MEMBER')
-            AS is_teacher_app,
         has_schema_privilege(current_user, 'public', 'CREATE')
             AS can_create_public_objects,
         has_table_privilege(
@@ -58,24 +55,59 @@ _SOURCE_WORKER_IDENTITY = text(
         has_table_privilege(
             current_user,
             'public.teacher_source_wide',
-            'INSERT, UPDATE, DELETE, TRUNCATE'
+            'INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER'
         ) AS can_write_teacher_source,
         has_table_privilege(
             current_user,
             'public.lesson_source_wide',
-            'INSERT, UPDATE, DELETE, TRUNCATE'
+            'INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER'
         ) AS can_write_lesson_source,
+        (
+            has_table_privilege(
+                current_user, 'public.outbox_events', 'SELECT'
+            )
+            AND has_table_privilege(
+                current_user, 'public.outbox_events', 'INSERT'
+            )
+            AND has_table_privilege(
+                current_user, 'public.outbox_events', 'UPDATE'
+            )
+            AND has_table_privilege(
+                current_user, 'public.outbox_events', 'DELETE'
+            )
+        ) AS has_outbox_crud,
         has_table_privilege(
-            current_user, 'public.outbox_events', 'UPDATE'
-        ) AS has_broad_outbox_update,
-        has_column_privilege(
-            current_user, 'public.outbox_events', 'status', 'UPDATE'
-        ) AS can_update_outbox_status
+            current_user,
+            'public.outbox_events',
+            'TRUNCATE, TRIGGER'
+        ) AS has_outbox_non_crud_privileges
     FROM pg_roles AS login_role
     WHERE login_role.rolname = session_user
     """
 )
+_SOURCE_OUTBOX_HEALTH = text(
+    """
+    SELECT
+        EXISTS (
+            SELECT 1
+            FROM public.outbox_events
+            WHERE event_type = 'source_wide.changed.v1'
+              AND status = 'DEAD_LETTER'
+        ) AS has_dead_letter,
+        EXISTS (
+            SELECT 1
+            FROM public.outbox_events
+            WHERE event_type = 'source_wide.changed.v1'
+              AND status = 'PENDING'
+              AND attempt_count > 0
+              AND available_at <= clock_timestamp() - make_interval(
+                  secs => CAST(:max_pending_age_seconds AS double precision)
+              )
+        ) AS has_stale_pending
+    """
+)
 _DEFAULT_LEADER_RETRY_SECONDS = 10.0
+_DEFAULT_MAX_PENDING_AGE_SECONDS = 900.0
 
 
 def _is_production() -> bool:
@@ -86,17 +118,9 @@ def _is_production() -> bool:
 
 
 def _validated_source_worker_database_url() -> str:
-    """Resolve the dedicated worker URL without loading API runtime config."""
+    """Resolve the TiDe backend URL shared by API and internal workers."""
 
-    dedicated = os.environ.get("TIT_SOURCE_WORKER_DATABASE_URL", "").strip()
-    shared = os.environ.get("DATABASE_URL", "").strip()
-    if _is_production() and not dedicated:
-        raise RuntimeError(
-            "TIT_SOURCE_WORKER_DATABASE_URL_REQUIRED_IN_PRODUCTION"
-        )
-    if _is_production() and shared and dedicated == shared:
-        raise RuntimeError("SOURCE_WORKER_MUST_NOT_REUSE_API_DATABASE_URL")
-    resolved = dedicated or shared
+    resolved = os.environ.get("DATABASE_URL", "").strip()
     if not resolved:
         raise RuntimeError("SOURCE_WORKER_DATABASE_URL_REQUIRED")
     if not resolved.startswith(("postgresql://", "postgresql+psycopg://")):
@@ -140,7 +164,7 @@ def _validate_source_worker_identity(
         raise RuntimeError("SOURCE_WORKER_DATABASE_IDENTITY_MISMATCH")
     if row["current_role"] != row["session_role"]:
         raise RuntimeError("SOURCE_WORKER_SET_ROLE_IS_FORBIDDEN")
-    if row["session_role"] != "tit_source_worker_runtime":
+    if row["session_role"] != "tit_growth_app":
         raise RuntimeError("SOURCE_WORKER_LOGIN_ROLE_MISMATCH")
     if not row["can_login"] or row["is_superuser"]:
         raise RuntimeError("SOURCE_WORKER_LOGIN_MUST_BE_RESTRICTED")
@@ -155,22 +179,11 @@ def _validate_source_worker_identity(
         )
     ):
         raise RuntimeError("SOURCE_WORKER_LOGIN_HAS_ADMIN_PRIVILEGES")
-    if not row["is_source_worker"]:
-        raise RuntimeError("SOURCE_WORKER_ROLE_MEMBERSHIP_REQUIRED")
-    if any(
-        row[field]
-        for field in (
-            "is_growth_app",
-            "is_source_monitor",
-            "is_teacher_app",
-        )
-    ):
-        raise RuntimeError("SOURCE_WORKER_ROLE_MEMBERSHIP_MUST_BE_EXCLUSIVE")
     if not row["can_read_teacher_source"] or not row["can_read_lesson_source"]:
         raise RuntimeError("SOURCE_WORKER_SOURCE_READ_PRIVILEGES_MISSING")
     if row["can_write_teacher_source"] or row["can_write_lesson_source"]:
         raise RuntimeError("SOURCE_WORKER_MUST_NOT_WRITE_SOURCE_TABLES")
-    if row["has_broad_outbox_update"] or not row["can_update_outbox_status"]:
+    if not row["has_outbox_crud"] or row["has_outbox_non_crud_privileges"]:
         raise RuntimeError("SOURCE_WORKER_OUTBOX_PRIVILEGES_INVALID")
 
 
@@ -283,6 +296,54 @@ def _worker_health_is_fresh(
         readiness_path,
         max_age_seconds=max_readiness_age_seconds,
     )
+
+
+def _source_outbox_health_issue(
+    connection: Connection,
+    *,
+    max_pending_age_seconds: float,
+) -> str | None:
+    if max_pending_age_seconds <= 0:
+        raise ValueError("max_pending_age_seconds must be greater than 0")
+    row = connection.execute(
+        _SOURCE_OUTBOX_HEALTH,
+        {"max_pending_age_seconds": max_pending_age_seconds},
+    ).mappings().one()
+    if bool(row["has_dead_letter"]):
+        return "SOURCE_WIDE_OUTBOX_DEAD_LETTER"
+    if bool(row["has_stale_pending"]):
+        return "SOURCE_WIDE_OUTBOX_STALE_PENDING"
+    return None
+
+
+def _source_outbox_database_health_issue(
+    *,
+    max_pending_age_seconds: float,
+) -> str | None:
+    source_worker_url = _validated_source_worker_database_url()
+    from app.database import build_engine
+
+    health_engine = build_engine(source_worker_url, poolclass=NullPool)
+    try:
+        with health_engine.connect() as connection:
+            expected_database = (
+                os.environ.get(
+                    "TIT_SOURCE_WORKER_EXPECTED_DATABASE",
+                    "",
+                ).strip()
+                or None
+            )
+            if _is_production() or expected_database:
+                _validate_source_worker_identity(
+                    connection,
+                    expected_database=expected_database,
+                )
+            return _source_outbox_health_issue(
+                connection,
+                max_pending_age_seconds=max_pending_age_seconds,
+            )
+    finally:
+        health_engine.dispose()
 
 
 def _stable_leader_retry_seconds(
@@ -435,6 +496,11 @@ def _run_worker(
 
 
 def main() -> int:
+    try:
+        irreversible_qualification_grants_enabled()
+    except QualificationAwardGateConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(
         description="Consume SourceWide changes and refresh affected projections."
     )
@@ -499,6 +565,18 @@ def main() -> int:
         default=30.0,
         help="Maximum database-readiness age accepted by --healthcheck.",
     )
+    parser.add_argument(
+        "--max-pending-age-seconds",
+        type=float,
+        default=os.environ.get(
+            "TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS",
+            str(_DEFAULT_MAX_PENDING_AGE_SECONDS),
+        ),
+        help=(
+            "Maximum overdue age for a SourceWide PENDING outbox event "
+            "accepted by --healthcheck (default: 900 seconds)."
+        ),
+    )
     args = parser.parse_args()
     if args.max_events < 1:
         parser.error("--max-events must be at least 1")
@@ -510,17 +588,30 @@ def main() -> int:
         parser.error("--max-heartbeat-age-seconds must be greater than 0")
     if args.max_readiness_age_seconds <= 0:
         parser.error("--max-readiness-age-seconds must be greater than 0")
+    if args.max_pending_age_seconds <= 0:
+        parser.error("--max-pending-age-seconds must be greater than 0")
     if args.healthcheck:
-        return (
-            0
-            if _worker_health_is_fresh(
-                args.heartbeat_path,
-                args.readiness_path,
-                max_heartbeat_age_seconds=args.max_heartbeat_age_seconds,
-                max_readiness_age_seconds=args.max_readiness_age_seconds,
+        if not _worker_health_is_fresh(
+            args.heartbeat_path,
+            args.readiness_path,
+            max_heartbeat_age_seconds=args.max_heartbeat_age_seconds,
+            max_readiness_age_seconds=args.max_readiness_age_seconds,
+        ):
+            return 1
+        try:
+            health_issue = _source_outbox_database_health_issue(
+                max_pending_age_seconds=args.max_pending_age_seconds,
             )
-            else 1
-        )
+        except (RuntimeError, ValueError, SQLAlchemyError):
+            print(
+                "SOURCE_WIDE_OUTBOX_HEALTHCHECK_FAILED",
+                file=sys.stderr,
+            )
+            return 1
+        if health_issue is not None:
+            print(health_issue, file=sys.stderr)
+            return 1
+        return 0
 
     source_worker_url = _validated_source_worker_database_url()
     os.environ["DATABASE_URL"] = source_worker_url
@@ -532,9 +623,7 @@ def main() -> int:
         os.environ.get("TIT_SOURCE_WORKER_EXPECTED_DATABASE", "").strip()
         or None
     )
-    enforce_dedicated_identity = _is_production() or bool(
-        os.environ.get("TIT_SOURCE_WORKER_DATABASE_URL", "").strip()
-    )
+    enforce_dedicated_identity = _is_production() or bool(expected_database)
     identity_validator = (
         lambda connection: _validate_source_worker_identity(
             connection,

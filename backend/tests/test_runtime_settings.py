@@ -203,7 +203,7 @@ def test_production_migration_requires_exact_tls_database_without_api_settings(
     monkeypatch.setenv(
         "DATABASE_URL",
         (
-            "postgresql+psycopg://tit_growth_migrator:secret@db.example/"
+            "postgresql+psycopg://tide_sys_admin:secret@db.example/"
             "tit_growth?sslmode=verify-full"
         ),
     )
@@ -227,14 +227,14 @@ def test_production_alembic_requires_explicit_migration_mode(
 @pytest.mark.parametrize(
     "database_url",
     [
-        "postgresql://tit_growth_migrator:secret@db.example/other?sslmode=verify-full",
-        "postgresql://tit_growth_migrator:secret@db.example/tit_growth?sslmode=require",
+        "postgresql://tide_sys_admin:secret@db.example/other?sslmode=verify-full",
+        "postgresql://tide_sys_admin:secret@db.example/tit_growth?sslmode=require",
         (
-            "postgresql://tit_growth_migrator:secret@db.example/tit_growth"
+            "postgresql://tide_sys_admin:secret@db.example/tit_growth"
             "?sslmode=verify-full&sslmode=disable"
         ),
         (
-            "postgresql://tit_growth_migrator:secret@db.example/tit_growth"
+            "postgresql://tide_sys_admin:secret@db.example/tit_growth"
             "?sslmode=verify-full&ssl=false"
         ),
     ],
@@ -256,7 +256,7 @@ def test_production_migration_rejects_wrong_target_or_tls(
     ("role", "database", "is_superuser"),
     [
         ("postgres", "tit_growth", True),
-        ("tit_growth_migrator", "other", False),
+        ("tide_sys_admin", "other", False),
         ("unexpected_migrator", "tit_growth", False),
     ],
 )
@@ -282,7 +282,7 @@ def test_production_migration_accepts_exact_live_identity(
     monkeypatch.setenv("TIT_MIGRATION_EXPECTED_DATABASE", "tit_growth")
 
     validate_production_migration_identity(
-        role="tit_growth_migrator",
+        role="tide_sys_admin",
         database="tit_growth",
         is_superuser=False,
     )

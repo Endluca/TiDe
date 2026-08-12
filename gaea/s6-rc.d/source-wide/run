@@ -1,11 +1,21 @@
 #!/bin/sh
 
 set -eu
-: "${TIT_SOURCE_WORKER_DATABASE_URL:?TIT_SOURCE_WORKER_DATABASE_URL is required}"
+if [ "${TIT_PROCESS_PROFILE:-application}" != "application" ]; then
+  exec sleep infinity
+fi
+
+source_wide_enabled="$(/app/bin/source-wide-enabled.sh)"
+if [ "${source_wide_enabled}" = "false" ]; then
+  printf '%s\n' \
+    'SourceWide Worker paused by TIT_SOURCE_WIDE_ENABLED=false' >&2
+  exec sleep infinity
+fi
+
+: "${DATABASE_URL:?DATABASE_URL is required}"
 
 cd /app/operations
 exec s6-setuidgid gaea env \
-  TIT_SOURCE_WORKER_DATABASE_URL="${TIT_SOURCE_WORKER_DATABASE_URL}" \
   TIT_DB_POOL_SIZE="${TIT_SOURCE_WORKER_DB_POOL_SIZE:-1}" \
   TIT_DB_MAX_OVERFLOW="${TIT_SOURCE_WORKER_DB_MAX_OVERFLOW:-0}" \
   TIT_DB_STATEMENT_TIMEOUT_MS="${TIT_SOURCE_WORKER_DB_STATEMENT_TIMEOUT_MS:-60000}" \

@@ -21,15 +21,15 @@ BEGIN
             NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
             NOREPLICATION NOBYPASSRLS;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tide_migrator') THEN
-        CREATE ROLE tide_migrator
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tide_sys_admin') THEN
+        CREATE ROLE tide_sys_admin
             LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
             NOREPLICATION NOBYPASSRLS;
     END IF;
 END
 $$;
 
-GRANT tide_support_ticket_owner TO tide_migrator;
+GRANT tide_support_ticket_owner TO tide_sys_admin;
 
 CREATE TABLE IF NOT EXISTS public.teachers (
     teacher_id varchar PRIMARY KEY,
@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS public.teacher_source_wide (
     is_cpl_tesol boolean,
     is_self_introduce boolean
 );
+
+CREATE OR REPLACE VIEW public.teacher_g01_status_current AS
+SELECT tchr_id, is_cpl_tesol
+FROM public.teacher_source_wide;
+REVOKE ALL ON public.teacher_g01_status_current FROM PUBLIC;
 
 CREATE TABLE IF NOT EXISTS public.lesson_facts (
     lesson_id varchar PRIMARY KEY,

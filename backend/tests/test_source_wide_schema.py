@@ -232,14 +232,14 @@ def test_source_tables_have_separate_minimum_read_and_write_roles(monkeypatch) -
     sql = "\n".join(executed)
 
     assert "required database role tit_growth_app does not exist" in sql
-    assert "required database role tit_source_monitor does not exist" in sql
-    assert "tit_source_monitor must be a NOLOGIN permission group" in sql
+    assert "required database role tit_dts_ingest_runtime does not exist" in sql
+    assert "tit_dts_ingest_runtime must be a restricted LOGIN role" in sql
     assert "FROM PUBLIC" in sql
     assert "GRANT SELECT ON TABLE" in sql
     assert "TO tit_growth_app" in sql
-    assert "rolname = 'tit_source_monitor'" in sql
+    assert "rolname = 'tit_dts_ingest_runtime'" in sql
     assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE" in sql
-    assert "TO tit_source_monitor" in sql
+    assert "TO tit_dts_ingest_runtime" in sql
     assert "GRANT UPDATE ON TABLE public.outbox_events" not in sql
     assert "TO tit_teacher_crud" not in sql
 

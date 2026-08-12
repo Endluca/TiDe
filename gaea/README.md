@@ -1,11 +1,12 @@
-# TiDe — Gaea 单项目部署配置
+# TiDe — Gaea 单镜像、双运行 Profile 配置
 
 ## 部署模式
 
-这是 Gaea 单模块、单项目、单镜像的受控 TEST 部署；同一整套 Pod 可以水平复制。Gaea
-直接读取根级 `gaea/Dockerfile`，不再使用 `gaea.yml` 或子模块 Dockerfile。
+这是 Gaea 单模块、单镜像的受控 TEST 部署。镜像有两个互斥运行 Profile：默认
+`application` 承载现有 TiDe 应用，`dts-ingest` 只承载 DTS 接入。两者使用不同 Gaea
+项目和不同密钥集合，Gaea 都直接读取根级 `gaea/Dockerfile`，不使用 `gaea.yml` 或子模块 Dockerfile。
 
-镜像由 s6-overlay 管理五个常驻进程：
+镜像由 s6-overlay 管理六个进程入口；每个 Profile 只运行自己的业务进程，另一侧入口保持休眠：
 
 | 进程 | 监听端口 | 职责 |
 |---|---:|---|
@@ -14,20 +15,23 @@
 | `teacher-api` | `3000` | NestJS 教师端 API；只在 Pod 内访问，不配置 Gaea Ingress |
 | `score-settlement` | 无 | 固定任务积分结算候选进程、数据库选主和本 Pod heartbeat |
 | `source-wide` | 无 | 字段级源事件消费候选进程、数据库选主和本 Pod heartbeat/readiness |
+| `dts-ingest` | 无 | DTS Avro 消费、接入状态事务、数据库位点、事务后 ACK 和 23/55 字段宽表投影；只在 `dts-ingest` Profile 运行 |
 
-运营端与教师端仍是两套独立 HTTP 服务，只是共享镜像和 Pod。运营、教师、SourceWide
-三个数据库运行角色以及两套
+运营端与教师端仍是两套独立 HTTP 服务，只在 `application` Profile 共享 Pod。运营、教师、SourceWide
+数据库角色以及两套
 API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker 任一非零退出，s6 都会
 终止整个容器，让 Kubernetes 重建完整 Pod。
 
-但单容器不是安全隔离边界：`S6_KEEP_ENV=1` 会让进程继承整套运行变量，多个业务进程又以
+因此 DTS 不能把密码注入 `application` 项目。若塞进同一项目，`S6_KEEP_ENV=1` 会让进程继承整套运行变量，多个业务进程又以
 同一 UID `1001` 运行，因此其中一个进程被利用后可能读取另一个进程的数据库、JWT、OSS
 或邮件凭据。这个结构性取舍只为尽快完成办公室 TEST；需要生产级秘密隔离时必须重新拆分
-容器或 Pod，不能把“数据库角色不同”解释成“密钥彼此不可见”。
+容器或 Pod，不能把“数据库角色不同”解释成“密钥彼此不可见”。独立 `dts-ingest` Gaea
+项目正是本次 TEST 的最低秘密隔离边界。
 
 ## 多副本执行模型
 
-每个 Pod 都启动相同的五个进程，不再为 Worker 新建 Gaea 项目，也不按副本注入不同配置：
+每个 application Pod 都启动相同的五个业务进程，不再为积分或 SourceWide Worker 新建
+Gaea 项目，也不按副本注入不同配置：
 
 - FastAPI、教师 Nginx 和 NestJS 都可以横向承接 HTTP 请求；登录会话、任务、积分和上传元数据
   的事实源在 PostgreSQL，不依赖某一 Pod 内存；
@@ -51,9 +55,9 @@ PostgreSQL 或使用 session pooling；transaction pooling 不能承载 session 
 - `3000` 已由统一镜像强制绑定 `127.0.0.1`，不得再配置 Ingress、SLB 或 Service 端口；
   教师 API 只能经 `8080/api/*` 访问。
 - Alembic 和教师端 migration 都是发布前独立作业，不能放进 Pod 启动流程。
-- 单镜像不代表共用数据库账号：运营使用 `tit_growth_app`，教师端使用
-  `tit_teacher_crud` 和单独的只读来源账号；迁移分别使用 `tit_growth_migrator` 与
-  `tide_migrator`。
+- 单镜像不代表跨服务共用数据库账号：运营 API、积分和 SourceWide 计算统一使用
+  `tit_growth_app`；教师端两个连接池统一使用 `tit_teacher_crud`；迁移和只读契约探针
+  统一使用现有管理账号 `tide_sys_admin`。
 - Gaea 高级设置必须允许 root PID 1 启动 `/init`；s6 随后把业务进程降权到 UID `1001`。
   如果平台强制 `runAsNonRoot`，该镜像会在启动阶段失败。
 - 多副本不得使用各 Pod 独立的本地上传目录。私有文件优先使用 OSS；确需
@@ -119,7 +123,9 @@ Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两
 4. 本 Pod 的 `/tmp/tit-score-worker-heartbeat`：积分候选进程持续刷新；leader 与 standby
    使用相同的进程存活判定；
 5. 本 Pod 的 SourceWide heartbeat 与 readiness：进程持续运行，且最近一次数据库身份校验、
-   选主或 leader ping 成功。
+   选主或 leader ping 成功；随后只读检查 `source_wide.changed.v1` Outbox，不允许存在
+   `DEAD_LETTER`，也不允许已发生过失败（`attempt_count > 0`）且超过 `available_at`
+   900 秒仍为 `PENDING`。
 
 未持有积分 advisory lock 或教师后台租约是正常 standby 状态，不得导致本 Pod 不健康。
 因此 Pod 显示健康只表示五个进程和对应数据库就绪，不表示该 Pod 当前持有后台执行权，也
@@ -184,22 +190,103 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 
 ## SourceWide Worker 进程级变量
 
-该 Worker 使用独立 LOGIN，启动时会核对目标库、角色成员关系、源表只读和派生表写权限；
+该 Worker 与运营 API 共用 `tit_growth_app`，启动时会核对目标库、源表只读和派生表写权限；
 身份不符合即非零退出，由 s6 终止 Pod。真实密码只由 Gaea 密钥管理注入。
 收到 SIGTERM 后会完成当前事务再退出；若 25 秒内仍未结束，s6 强制终止连接，让 PostgreSQL
 回滚未提交事务，避免超过 Kubernetes 常见的 30 秒终止宽限期。
 
 | 变量名 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `TIT_SOURCE_WORKER_DATABASE_URL` | 是 | 无 | `tit_source_worker_runtime` 的 PostgreSQL URL；生产必须使用 `sslmode=verify-full` |
+| `TIT_SOURCE_WIDE_ENABLED` | 否 | `true` | 仅首次 DTS 投影排空窗口可设为 `false`；只接受小写 `true`／`false`，非法值失败关闭 |
+| `TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED` | 否 | `false` | 只接受小写 `true`／`false`；`false` 继续刷新积分与当前门槛，但禁止出营/金牌资格首次变为已获得 |
 | `TIT_SOURCE_WORKER_EXPECTED_DATABASE` | 是 | 无 | 固定目标库名，必须与 URL 一致 |
 | `TIT_SOURCE_WORKER_DB_POOL_SIZE` | 否 | `1` | Worker 连接池上限 |
 | `TIT_SOURCE_WORKER_DB_MAX_OVERFLOW` | 否 | `0` | Worker 溢出连接 |
 | `TIT_SOURCE_WORKER_DB_STATEMENT_TIMEOUT_MS` | 否 | `60000` | Worker SQL 超时 |
 | `TIT_SOURCE_WORKER_DB_APPLICATION_NAME` | 否 | `tit-growth-source-worker` | PostgreSQL 连接标识 |
+| `TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS` | 否 | `900` | SourceWide 健康检查允许已到执行时间的 `PENDING` 事件继续滞留的最大秒数，必须大于 0 |
 
-单镜像中的其他进程也能看到该环境变量，因此这是数据库权限分工，不是秘密隔离。生产级
-秘密隔离仍需把 SourceWide Worker 拆到独立 Pod。
+SourceWide 直接复用运营 `DATABASE_URL`；它与运营 API 属于同一后端信任边界，不再额外
+注入一份数据库密码。`TIT_SOURCE_WIDE_ENABLED=false` 只在 `application` Profile 暂停
+SourceWide s6 服务；聚合健康检查仍检查运营 API、教师 API 和积分 Worker，但会有意识地
+跳过 SourceWide heartbeat/readiness。DTS 项目不读取该变量，因此接入和宽表投影可继续追平。
+该开关不是常态运行模式，也不是业务资格规则；只用于首次投影排空，恢复 `true` 并确认
+SourceWide heartbeat/readiness 和 Outbox 排空后，才可进行积分、任务和当前门槛链路验收。
+不可逆资格另由 `TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED` 独立失败关闭。当前预发布
+必须保持 `false`：积分、任务分和 `graduation_criteria_met / gold_criteria_met` 仍会更新，
+但任何尚未获得的出营或金牌资格都不会首次变为 `true`；既有已获得资格不受影响。只有后续
+业务终态/双流水位门禁完成并单独验收后，才允许明确改为 `true`。空值、大小写变体、`1`、
+`yes` 等均为非法配置，应用 API 与两个 Worker 会失败关闭。
+SourceWide 健康探针会使用同一个受限数据库身份直接读取 Outbox：任一
+`source_wide.changed.v1` 事件进入 `DEAD_LETTER`，或已经失败过的事件在 `available_at`
+到期后继续 `PENDING` 超过上述阈值，整个 Pod 即不健康。首次解暂停时积压但尚未尝试的
+`attempt_count=0` 事件允许 Worker 追平；尚未到 `available_at` 的正常退避事件也不计为
+超龄。数据库探测失败同样失败关闭；重启不会清除终态事件，必须先检查 `last_error`、修复
+源数据或投影问题并按运维流程重新入队，不能用反复重启掩盖毒事件。
+
+## DTS ingest 独立 Profile
+
+国内和海外分别建立一个独立 Gaea 项目，两个项目使用同一镜像并固定
+`TIT_PROCESS_PROFILE=dts-ingest`。每个项目只消费一条订阅，不能在同一进程混放两套
+broker、消费组或 SASL 密码。两个项目都不配置运营、教师、JWT、OSS 或邮件密钥；默认
+application 项目也不配置任何 DTS 变量。
+
+当前消费者固定 partition 0，每个 DTS 项目先使用 1 个副本。两个项目可以同时把各自事件写入
+同一个 `tide_system_test.public`：接入幂等键包含 `source_region + topic + partition + offset`。
+首次追平阶段两个项目都必须关闭投影；激活后只能在一个项目启用全局宽表投影，另一个继续
+只做 ingest。启用项目必须先通过数据库激活门禁，并持有全局 PostgreSQL session advisory
+lock；第二个误开启投影的项目会失败关闭。每个 DTS Pod 的数据库池固定为 2 条连接，其中
+1 条由投影锁专用连接持续占用，另 1 条供接入事务和投影事务串行复用。PostgreSQL
+`application_name` 分别为 `tit-dts-ingest-ovs` 和 `tit-dts-ingest-dom`，便于现场区分连接。
+
+两套非敏感订阅配置如下；对应的可复制文件是
+`backend/.env.dts-ingest.ovs.production.example` 和
+`backend/.env.dts-ingest.dom.production.example`：
+
+| 变量名 | 海外项目 | 国内项目 |
+|---|---|---|
+| `TIT_DTS_SOURCE_REGION` | `ovs` | `dom` |
+| `TIT_DTS_BROKER_URL` | `100.103.7.163:18003` | `dts-cn-beijing-vpc.aliyuncs.com:18003` |
+| `TIT_DTS_TOPIC` | `ap_southeast_1_vpc_pc_gs5986x4885426aej_dba_tide_source_ovs_version2` | `cn_beijing_vpc_pc_2ze5w28lmdr8f626y_dba_tide_source_dom_version2` |
+| `TIT_DTS_GROUP_ID` | `tit-ovs-group` | `tit-dom-group` |
+| `TIT_DTS_ACCOUNT` | `titconsumeovs` | `titconsumedom` |
+| `TIT_DTS_START_AT` | `2026-08-10T14:16:00+08:00` | `2026-08-12T16:30:00+08:00` |
+
+每个项目还需要以下共同变量：
+
+| 变量名 | 必填 | TEST 值/约束 | 说明 |
+|---|---:|---|---|
+| `TIT_PROCESS_PROFILE` | 是 | `dts-ingest` | 只启动 DTS 业务进程 |
+| `TIT_DTS_PASSWORD` | 是 | 各自 Gaea 密钥 | 只用于本项目对应订阅的 DTS SASL |
+| `TIT_DTS_COHORT_START` | 否 | `2026-08-13` | 北京时间新教师 cohort 起点，按 `dom_teacher.status_on_time` 日期筛选；两项目必须一致 |
+| `TIT_DTS_COHORT_END_EXCLUSIVE` | 否 | 空 | 开放式人群；需要封闭批次时才设置不含当天的结束边界 |
+| `TIT_DTS_PROJECTION_ENABLED` | 否 | `false` | 首次追平时两项目均关闭；激活后只能有一个项目设为 `true` |
+| `TIT_DTS_PROJECTION_MAX_ATTEMPTS` | 否 | `8` | 同一脏键周期的投影尝试上限，范围 `1–100`；默认约 15 分钟退避窗口后失败关闭 |
+| `TIT_DTS_ACTIVATION_AT` | 投影开启时 | 显式带时区时间 | 两条订阅都必须追平到该 source time；两个项目使用同一值 |
+| `TIT_DTS_REQUIRED_OVS_TOPIC` | 投影开启时 | 海外 topic | 激活门禁核对海外 partition 0 数据库 checkpoint |
+| `TIT_DTS_REQUIRED_DOM_TOPIC` | 投影开启时 | 国内 topic | 激活门禁核对国内 partition 0 数据库 checkpoint |
+| `TIT_DTS_INGEST_DB_HOST` | 是 | `tide-system.rwlb.singapore.rds.aliyuncs.com` | 不含端口或 scheme |
+| `TIT_DTS_INGEST_DB_PORT` | 否 | `5432` | PostgreSQL 端口 |
+| `TIT_DTS_INGEST_DB_PASSWORD` | 是 | 各项目 Gaea 密钥 | `tit_dts_ingest_runtime` 的数据库密码，不得复用 DTS 密码 |
+
+数据库名、Schema、角色和 SSL 在代码中失败关闭为
+`tide_system_test / public / tit_dts_ingest_runtime / verify-full`。可显式配置对应变量，但值
+不一致会在连接前拒绝启动。revision `20260812_59_simple_acl` 必须先由
+`tide_sys_admin` 应用；运行账号没有建表权限，接入状态的删除/回退由 Trigger 拒绝。
+
+DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`，包含订阅区域、
+topic、本轮接入和宽表投影计数，只证明该项目的进程与数据库身份检查持续成功，不证明字段值
+已通过业务对账。国内项目的起始边界已固定为 `2026-08-12T16:30:00+08:00`；任一项目未注入
+本项目 `TIT_DTS_PASSWORD` 时失败关闭。`TIT_DTS_START_AT` 是首次回放边界，不是 Pod 启动
+时间；海外、国内起点均早于 `2026-08-13` cohort。两条链路先追平到同一激活时刻并完成静态
+投诉分类字典装载/引用完整性检查。开启投影时，代码要求两地区指定 topic 的 partition 0
+checkpoint 均存在且 `source_timestamp >= TIT_DTS_ACTIVATION_AT`，要求未删除的
+`dom_complaint_cate` 字典非空，并拒绝任何未删除投诉引用字典中不存在的 `category_ids`；
+三项新变量在投影关闭时均不读取。门禁通过且取得全局投影锁后，国内和海外当前态才通过
+同一脏键机制汇合计算。暂态依赖缺失按指数退避；同一脏键达到
+`TIT_DTS_PROJECTION_MAX_ATTEMPTS` 后不再写成功 heartbeat，DTS 进程以稳定错误
+`DTS_WIDE_PROJECTION_RETRY_EXHAUSTED` 退出。脏键记录保留，重启后仍失败关闭；只有该键收到
+新的源事件并重置为新一轮 `PENDING` 后才恢复，不能用 Pod 重启掩盖永久毒键。
 
 ## 教师端运行变量
 
@@ -212,7 +299,7 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 | `CORS_ORIGINS` | 是 | 教师域名 | 教师页面与 API 同源 |
 | `DATABASE_REQUIRED` | 是 | `true` | 禁止无数据库假启动 |
 | `TIDE_DATABASE_URL` | 是 | 无 | `tit_teacher_crud` 连接；生产必须 `sslmode=verify-full` |
-| `SHIWEN_READ_DATABASE_URL` | 是 | 无 | 教师来源只读连接；生产不得复用写账号 |
+| `SHIWEN_READ_DATABASE_URL` | 是 | 无 | 教师来源读取连接；与业务连接同用 `tit_teacher_crud`，仍保留独立连接池 |
 | `DATABASE_MAX_CONNECTIONS` | 是 | `5` | 每条教师数据库链各自的池上限；两条链合计最多 10 |
 | `DATABASE_CONNECTION_TIMEOUT_MS` | 是 | `3000` | 建连超时；需小于聚合探针超时 |
 | `DATABASE_STATEMENT_TIMEOUT_MS` | 是 | `10000` | 教师 SQL 超时 |
@@ -312,7 +399,8 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041`；
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041`，
+   先完成 release 内容链到 public 57 / teacher 0041，再应用 ACL/DTS 分支并合并到 public 59；
    已批准公司 TEST 库从 public 50 / teacher 0032 继续时，先在仓库根目录用
    `backend/.venv/bin/python backend/scripts/upgrade_company_test_database.py /Git工作区外/company-test-migration.env`
    只读预检；确认备份和维护窗口后才追加
@@ -321,31 +409,50 @@ docker stop tide-camp-gaea-test
    的 G01 TESOL-only 收窄，再包含 public `20260811_54_g04_remove_device_check` / teacher
    `0037_g04_remove_device_check` 的 G04 两模块收敛，并先执行 public
    `20260811_55_source_wide_v12` 再执行 public `20260811_56_p_fb_negative_copy`；当前 G04 不得恢复设备检测步骤。
-   确认 public head 为 `20260811_57_g02_document`、teacher 账本 head 为
-   `0041_crm_sso_hybrid`（包含前序 `0038_personalized_environment_photo`），随后执行只读契约探针，并同时核对 G01 TESOL-only
-   规则、G04 两模块、个性化任务零分文案、环境拍照步骤与 `TEACHING_ENVIRONMENT_V1` 审核档案。
-2. 配齐统一应用的运营、教师和两个 Worker 环境变量，确认密钥不在版本化配置中；
-   `tit_source_worker_runtime` 必须是独立受限 LOGIN。
+   确认 public head 为 `20260812_59_simple_acl`、teacher 账本 head 为
+   `0041_crm_sso_hybrid`（包含前序 `0038_personalized_environment_photo`）；其中
+   G01 TESOL-only、G04 两模块、G02 原生政策文档与阅读状态、CRM SSO 都必须完成。
+   随后执行只读契约探针，并核对个性化任务零分文案、环境拍照步骤与
+   `TEACHING_ENVIRONMENT_V1` 审核档案。
+2. 配齐统一应用的运营和教师环境变量，确认密钥不在版本化配置中；两个 Worker 复用运营
+   `tit_growth_app` 连接，不再注入独立数据库账号。首次 DTS 投影排空前先显式配置
+   `TIT_SOURCE_WIDE_ENABLED=false`，并保持
+   `TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED=false`。
 3. 在 Gaea 将统一应用设置为至少 `2` 个副本并使用 `RollingUpdate`；若启用自动伸缩，设置
    `minReplicas >= 2`，并按最大副本数核对数据库连接预算。同时确认平台允许 root `/init`，
    配置 `8010` 运营域名、`8080` 教师域名，以及 OSS 或同一块 RWX 共享卷。
 4. 停止旧 `test-tide-camp-worker`，避免它与新镜像内的 Worker 同时常驻。
 5. 向现有 `tide-camp-api` 项目发布统一镜像，现场读回 replicas、自动伸缩、RollingUpdate、
-   两个端口、两个域名、共享存储权限和每个 Pod 的健康状态；分别确认一个积分 leader 和
-   一个 SourceWide leader，其余 standby，并验证任一 leader 终止后有且仅有一个 standby 接管。
-6. 从两个外部 HTTPS 域名验证运营登录、教师登录、G01–G09、状态更新、幂等结分、
-   积分/课程读取、工单往返，以及跨 Pod 文件读写。
-7. 业务验收完成后再下线旧 Worker 项目；不要用“Pod 运行中”代替端到端验收。
+   两个端口、两个域名、共享存储权限和每个 Pod 的健康状态；此时应确认积分 Worker 有且仅有
+   一个 leader、SourceWide s6 服务因显式门禁保持暂停，聚合健康检查只跳过它的
+   heartbeat/readiness，而不是把其他进程故障伪装成健康。
+6. 从两个外部 HTTPS 域名先验证运营登录、教师登录、工单往返和跨 Pod 文件读写；
+   `TIT_SOURCE_WIDE_ENABLED=false` 期间不得把任务、积分或资格结果记为全流程验收通过。
+7. 分别建立海外、国内两个 DTS TEST 项目，均设置 `TIT_PROCESS_PROFILE=dts-ingest`、副本数
+   1，并只注入本项目对应的 DTS 密码与 `tit_dts_ingest_runtime` 数据库密码。使用各自固化的
+   区域回放边界和相同的 `2026-08-13` 开放式 cohort，先保持
+   `TIT_DTS_PROJECTION_ENABLED=false`，读回两套 readiness/heartbeat、事件账本、数据库位点
+   和消费组位点，完成静态投诉分类字典装载与引用完整性检查；两条流追平同一激活时刻后，仅在
+   一个项目配置相同的两个 required topic 和带时区 `TIT_DTS_ACTIVATION_AT` 后打开投影。确认
+   双 checkpoint、投诉字典门禁和全局投影锁均通过，再等待 `PENDING/RETRY/PROCESSING`
+   脏键清零且连续两轮稳定，并抽样核对两张宽表。随后把 application 项目的
+   `TIT_SOURCE_WIDE_ENABLED` 恢复为 `true` 并完成 RollingUpdate；确认 SourceWide 有且仅有
+   一个 leader、其余 standby、heartbeat/readiness 正常且 Outbox 排空后，才执行 G01–G09、
+   状态更新、幂等结分、积分/课程读取、当前门槛、乱序、单链路故障重启和双链路并发验收；
+   不可逆资格授予门禁仍保持 `false`，不得把当前门槛命中写成资格已授予。该顺序允许在
+   cohort 开始后完成首次激活，不需要用“镜像内有效教师为 0”规避中间态。
+8. 业务验收完成后再下线旧 Worker 项目；不要用“Pod 运行中”代替端到端验收，也不要把
+   “DTS 已消费”写成“两张宽表已闭环”。
 
 统一镜像可通过 `RollingUpdate` 回滚到上一个版本；旧、新版本短暂并存时仍由同一数据库锁
 保证积分逻辑单活。旧的独立 `test-tide-camp-worker` 必须保持关闭，不能与统一项目使用不
 兼容的旧版结算协议。迁移回滚继续遵循向前修复和一致性备份，不由容器启动脚本执行
 destructive down。
 
-一次性发布变量仍保持原边界：运营迁移使用 `tit_growth_migrator`、
+一次性发布变量仍保持原边界：运营和教师迁移统一使用 `tide_sys_admin`、
 `TIT_MIGRATION_MODE=true`、`TIT_MIGRATION_EXPECTED_DATABASE`；首次运营账号初始化只在一次性
-命令中注入 `TIT_BOOTSTRAP_USERNAME` 与 `TIT_BOOTSTRAP_PASSWORD`。教师 migration 使用
-`tide_migrator`，不得复用任何运行账号。
+命令中注入 `TIT_BOOTSTRAP_USERNAME` 与 `TIT_BOOTSTRAP_PASSWORD`。迁移账号不得复用任何
+运行账号。
 
 ## 当前证明边界
 
@@ -361,7 +468,8 @@ gaea/
 ├── bin/
 │   ├── healthcheck.sh
 │   ├── render-nginx-conf.sh
-│   └── render-real-ip-conf.py
+│   ├── render-real-ip-conf.py
+│   └── source-wide-enabled.sh
 ├── nginx/
 │   ├── nginx.conf
 │   ├── real-ip.conf
@@ -372,5 +480,6 @@ gaea/
     ├── teacher-web/
     ├── score-settlement/
     ├── source-wide/
+    ├── dts-ingest/
     └── user/contents.d/
 ```

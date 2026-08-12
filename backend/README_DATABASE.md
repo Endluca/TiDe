@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；当前代码 head 为 public `20260811_57_g02_document`、teacher `0041_crm_sso_hybrid`，最终 teacher canonical 账本为 36 条；rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块，rev55 将教师源表收敛为确认的 55 列，rev56/0038 追加个性化环境拍照，rev57/0039/0040 发布 G02 原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构。公司测试库 `tit_growth_test_v2` 仍停在 public `20260810_50_g04_sections`、teacher `0032_first_login_onboarding`，是精确 30 条 canonical 账本，尚未应用上述后续迁移；远程 G04 仍为历史三模块形状。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这只证明公司测试库结构和源数据计算链已落地，不代表外部监控服务或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260812_59_simple_acl`、teacher `0041_crm_sso_hybrid`，teacher 为精确 36 条 canonical 账本。rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块，rev55 将教师源表收敛为确认的 55 列，release rev56/0038 追加个性化环境拍照，release rev57/0039/0040 发布 G02 原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 汇合 release 内容链与 rev56–58 ACL/DTS 分支，最终权限以 `docs/数据库角色与权限最终版.md` 为准。业务字段所有权、状态机、不可逆事实和幂等账本继续由 Trigger/约束保护。公司 TEST 库 `tit_growth_test_v2` 上次已验证到 public `20260812_56_lean_roles`、teacher `0037_g04_remove_device_check`（精确 32 条 canonical 账本），不等于已应用 public 59 / teacher 0041；上线前仍须执行剩余迁移并以真实运行角色复验。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这不代表外部日更、业务验收或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -26,19 +26,19 @@
   `source_appoint_id` 实时汇总；教师宽表 `perfect_cnt` 只用于对账。15 日复约只保留事实、不计分。课堂质量按逐课三项硬件异常字段计算，任一字段为空则该课不加分并标记 `SOURCE_MISSING`。
 - 固定成长任务分实时读取共享 `task_assignments`：G01–G09 中每个合法 `COMPLETED` 按 assignment 固定引用的 `task_templates.payload.score_value` 累加。assignment 缺失或模板引用不合法时按证据不完整失败关闭，不使用教师快照中的默认成长任务分。
 - L0 投诉次数由 `lesson_source_wide` 的三级投诉分类与当前 `complaint_category_rules` 精确匹配后聚合；存在投诉但级别映射缺失时不能按 0 次处理。`severe_redline_event` 只保留为 v2–v4 历史兼容字段，不参与当前出营判断。
-- `task_templates` 当前发布 9 个固定成长模板（G01–G09）和 5 个个性化改善模板；另有 1 个隐藏的退役固定模板 `G00` 只用于历史审计。新教师首次写入时由本系统幂等初始化 9 条 `ASSIGNED` 固定任务；少于 9 条记为内部 `TASK_BASELINE_INCOMPLETE`，不是外部 `SOURCE_MISSING`。共享 `task_assignments`、受限教师端角色、列权限、状态机、终态保护、乐观锁和统一审计已迁入公司测试库。
+- `task_templates` 当前发布 9 个固定成长模板（G01–G09）和 5 个个性化改善模板；另有 1 个隐藏的退役固定模板 `G00` 只用于历史审计。新教师首次写入时由本系统幂等初始化 9 条 `ASSIGNED` 固定任务；少于 9 条记为内部 `TASK_BASELINE_INCOMPLETE`，不是外部 `SOURCE_MISSING`。共享 `task_assignments`、最终表级 ACL、状态机、终态保护、乐观锁和统一审计已在代码中实现；业务写边界由 Trigger/约束保护。
 - 当前出营要求 G01–G09 全部完成、L0 投诉为 0、raw 总分不低于 100；满足三项后立即投影为已出营。金牌要求继承出营资格、raw 总分不低于 200、迟到不超过 1 次、早退 0 次、缺席 0 次。数据库不承担任何 72 小时等待结算状态。
 - 源宽表没有可信教师 IANA 时区。类型化列中的 `UTC` 仅为数据库内部非空占位；人工或自动任务签发都不能使用该占位，缺少可信时区时必须 fail-closed。
 
 当前测试环境：
 
 - `tit_growth_test`：保留的旧测试库，不执行本轮迁移或清理；
-- `tit_growth_test_v2`：本轮受控重建的隔离测试库，`public` head 为
-  `20260810_50_g04_sections`，`tide` 为精确 30 条 canonical 账本且 head 为
-  `0032_first_login_onboarding`；重建前旧库以仅 DBA 可连接的
+- `tit_growth_test_v2`：本轮受控重建的隔离测试库，上次已验证的 `public` head 为
+  `20260812_56_lean_roles`，`tide` 为精确 32 条 canonical 账本且 head 为
+  `0037_g04_remove_device_check`；重建前旧库以仅 DBA 可连接的
   `tit_growth_test_v2_pre0030_20260810` 保留为回滚点；
 - `tit_growth_app`：Web App 受限运行角色，无超级用户、建库、建角色和 Schema DDL 权限；
-- `tit_teacher_crud`：教师端后端预留受限角色，只能按共享任务契约读取任务并更新已有任务的状态字段，不能创建或删除 assignment；
+- `tit_teacher_crud`：教师端后端运行角色按最终文档获得表级权限；assignment 虽有表级 CRUD，创建、删除和越权字段修改仍由数据库 Trigger 拒绝；
 - 密码只存入本机 macOS 钥匙串，服务启动时读取，不写入仓库、环境文件或日志；
 - 测试实例不支持 SSL，只允许在受控测试网络中使用。
 
@@ -58,8 +58,9 @@ export DATABASE_URL='postgresql+psycopg://tit_growth_app@127.0.0.1:5432/tit_grow
 
 ## 初始化空库
 
-如果该库同时承载 teacher 的 `tide` Schema，首次初始化不能直接把 public 升到 head：必须按
-public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041 分阶段执行，详见
+如果该库同时承载 teacher 的 `tide` Schema，首次初始化不能直接把 public 升到 head：必须先按
+`public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041`
+完成跨 Schema 的 release 内容链，再合并 ACL/DTS 分支到 public 59，详见
 [`deploy/combined/README.md`](../deploy/combined/README.md)。只有不初始化 teacher Schema 的
 独立 public 数据库才可直接执行以下 `upgrade head`。
 
@@ -98,8 +99,8 @@ cd backend
 `current_database()` 都等于同一个显式值：
 
 迁移脚本不执行 `CREATE DATABASE`。首次运行前由数据库管理员在已确认的实例新建空库
-`tit_growth_test_v2`，并创建无登录权限组 `tit_source_monitor`；实际监控服务账号后续加入该组。
-revision 39 发现 `tit_growth_app` 或 `tit_source_monitor` 缺失、或 monitor 组可直接登录时会
+`tit_growth_test_v2`，并创建受限 LOGIN `tit_dts_ingest_runtime`。revision 39 发现
+`tit_growth_app` 或 `tit_dts_ingest_runtime` 缺失，或者 DTS 账号具有管理权限/角色继承时会
 整笔拒绝迁移；它不创建账号、不设置密码。当前测试库已完成该步骤，以下命令保留为可复现入口。
 
 ```bash
@@ -162,7 +163,7 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
 - `20260806_45_source_runtime_acl` 只授予运行服务重算新结果所需的读取、插入和列级更新权；
   运行服务仍不能写源表、改结果主键或删除资格。
 - 生产 Alembic 必须显式设置 `TIT_MIGRATION_MODE=true` 和目标数据库名，使用
-  `sslmode=verify-full` 的固定非超级账号 `tit_growth_migrator`；连接角色或实际数据库
+  `sslmode=verify-full` 的现有管理账号 `tide_sys_admin`；连接角色或实际数据库
   不一致时会在 DDL 前停止。运行环境文件与迁移环境文件不得复用。
 - `20260729_37_read_perf` 为结构化审计搜索创建 `pg_trgm` 扩展和 GIN 索引。迁移角色必须具备一次性 `CREATE EXTENSION` 权限，或由 DBA 在升级前执行 `CREATE EXTENSION IF NOT EXISTS pg_trgm`；受限运行角色 `tit_growth_app` 不需要也不应获得该权限。
 - `20260729_37_read_perf` 还会把旧的无真实消费方重试事件标记为 `PARKED`，并在
@@ -191,6 +192,13 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
 - `20260811_55_source_wide_v12` 以无 `CASCADE` 删列将教师源表从 63 列收敛为
   53 个确认映射字段加 2 个教师资料状态字段；课程源表继续严格保持 23 列。存在数据时
   downgrade 会失败关闭，避免伪造已删除值。
+- `20260812_56_lean_roles` 将 API、积分结算和 SourceWide 计算统一到
+  `tit_growth_app`，将 DTS 源事实写入限定为 `tit_dts_ingest_runtime`，并撤销旧
+  SourceWide group-role 对相关表的授权；教师端继续独立使用 `tit_teacher_crud`。
+- `20260812_57_dts_state` 新增 DTS 事件账本、字段白名单当前态、反向依赖 GIN 索引、脏键和数据库位点；`run_dts_ingest.py` 在接入事务后调用投影器重算两张源宽表。
+- `20260812_58_table_acl` 撤销运行账号的显式列级 ACL，改用表级权限；任务、Outbox、
+  账号、通知、工单和逐课结果的字段边界由 Trigger 强制，教师 G01 只读两列受限视图。
+- `20260812_59_simple_acl` 合并 release 内容分支与 ACL 分支，落实最终三列表中的表级权限；DTS 状态表虽授予 CRUD，物理删除、事件账本改写和位点回退仍由 Trigger 拒绝。
 - `seed_database.py` 只幂等补齐 14 个当前任务模板，不创建教师或任何运行时业务事实，也不修改投诉规则导入或触发结果。G01–G09 assignment 由教师写入流程初始化；初始化不创建通知、提醒或投递意图。隔离测试中的 Mock fixture 不进入运营运行库。
 - `seed_config_center.py` 只创建本地默认配置版本；空库读取不会由 API 隐式补配置。
 - 两个 Seed 脚本都要求 `APP_ENV` 明确为 `local / dev / development / test`，否则拒绝执行。
@@ -240,12 +248,15 @@ export APP_ENV=local
 .venv/bin/python scripts/run_source_wide_worker.py --watch --interval-seconds 3
 ```
 
-生产运行时必须为该进程配置一个独立 LOGIN 账号并使其仅继承 NOLOGIN 权限组
-`tit_source_worker`；不能与 Web API 或外部源数据监控服务共用写账号。固定 LOGIN 名为
-`tit_source_worker_runtime`，DBA 还需对目标数据库显式授予 `CONNECT`。生产环境从
-[`backend/.env.source-worker.production.example`](.env.source-worker.production.example)
-复制字段骨架到 Git 外的受保护文件；URL 必须使用已验证 TLS，真实密码由密钥管理注入。
-进程健康同时要求本地 heartbeat 和最近一次数据库身份/选主探测 readiness 均未过期。
+生产运行时该进程与运营 API、积分结算同属 TiDe 后端信任边界，共用受限 LOGIN
+`tit_growth_app`；它不能与外部 DTS 入库账号或教师端账号共用。生产环境复用
+[`backend/.env.production.example`](.env.production.example) 的受保护运行文件；URL 必须
+使用已验证 TLS，真实密码由密钥管理注入。
+进程健康同时要求本地 heartbeat 和最近一次数据库身份/选主探测 readiness 均未过期，并且
+`source_wide.changed.v1` Outbox 中不存在 `DEAD_LETTER`，也不存在已发生失败
+（`attempt_count > 0`）且在 `available_at` 到期后仍滞留超过 900 秒的 `PENDING`。阈值可由
+`TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS` 调整；首次解暂停时未尝试的历史积压和正常的
+未来退避事件不计为超龄，数据库查询失败时健康检查失败关闭。
 
 课堂质量按逐课三项硬件异常字段均明确为 0 时每课加 2 分。旧的课堂质量重算脚本已退役，调用会在读取凭据或连接数据库前返回 `LEGACY_CLASS_QUALITY_RECALCULATION_RETIRED`。修改积分规则必须通过配置中心创建、校验和双人发布；发布事务会
 全量重算当前教师投影，任一教师失败则整笔回滚。

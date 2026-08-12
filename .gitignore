@@ -5,6 +5,9 @@
 !.env.production.example
 !.env.migration.production.example
 !.env.source-worker.production.example
+!.env.dts-ingest.production.example
+!.env.dts-ingest.ovs.production.example
+!.env.dts-ingest.dom.production.example
 __pycache__/
 *.py[cod]
 .pytest_cache/

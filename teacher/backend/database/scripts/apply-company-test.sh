@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260811_57_g02_document"
+EXPECTED_PUBLIC_HEAD="20260812_59_simple_acl"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -736,7 +736,7 @@ fi
 "${ADMIN_PSQL[@]}" --quiet <<'SQL'
 \getenv app_password TIDE_APP_DB_PASSWORD
 ALTER ROLE tit_teacher_crud
-  LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+  LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
   CONNECTION LIMIT 20
   PASSWORD :'app_password';
 SELECT format(
@@ -756,10 +756,13 @@ SQL
 g01_source_acl="$("${ADMIN_PSQL[@]}" -Atqc "
   select concat_ws('|',
     has_table_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'SELECT'),
-    has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'tchr_id', 'SELECT'),
-    has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_cpl_tesol', 'SELECT'),
-    has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_self_introduce', 'SELECT'),
-    has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'real_name', 'SELECT'),
+    has_table_privilege('tit_teacher_crud', 'public.teacher_g01_status_current', 'SELECT'),
+    (
+      select string_agg(column_name, ',' order by ordinal_position)
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'teacher_g01_status_current'
+    ),
     coalesce(
       has_table_privilege(
         'tit_teacher_crud',
@@ -770,8 +773,142 @@ g01_source_acl="$("${ADMIN_PSQL[@]}" -Atqc "
     )
   )
 ")"
-if [[ "${g01_source_acl}" != "f|t|t|f|f|f" ]]; then
-  echo "G01 教师源字段最小权限验收失败：${g01_source_acl}" >&2
+if [[ "${g01_source_acl}" != "f|t|tchr_id,is_cpl_tesol|f" ]]; then
+  echo "G01 教师源受限视图权限验收失败：${g01_source_acl}" >&2
+  exit 1
+fi
+
+final_acl_ready="$("${ADMIN_PSQL[@]}" -Atqc "
+  select
+    not exists (
+      select 1
+      from unnest(array[
+        'public.alembic_version',
+        'public.task_templates',
+        'public.teachers',
+        'public.teacher_scorecard_current',
+        'public.teacher_lesson_score_current',
+        'public.teacher_g01_status_current'
+      ]::text[]) relation(name),
+      unnest(array['SELECT']::text[]) privilege(name)
+      where not has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from unnest(array[
+        'public.alembic_version',
+        'public.task_templates',
+        'public.teachers',
+        'public.teacher_scorecard_current',
+        'public.teacher_lesson_score_current',
+        'public.teacher_g01_status_current'
+      ]::text[]) relation(name),
+      unnest(array['INSERT','UPDATE','DELETE']::text[]) privilege(name)
+      where has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from unnest(array[
+        'public.task_assignments',
+        'public.notifications',
+        'public.notification_events',
+        'public.teacher_support_tickets'
+      ]::text[]) relation(name),
+      unnest(array['SELECT','INSERT','UPDATE','DELETE']::text[]) privilege(name)
+      where not has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from pg_class relation
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      cross join lateral unnest(
+        array['SELECT','INSERT','UPDATE','DELETE']::text[]
+      ) privilege(name)
+      where namespace.nspname = 'tide'
+        and relation.relkind in ('r', 'p')
+        and not has_table_privilege(
+          'tit_teacher_crud', relation.oid, privilege.name
+        )
+    )
+    and not exists (
+      select 1
+      from unnest(array['SELECT','INSERT','UPDATE','DELETE']::text[])
+        privilege(name)
+      where not has_table_privilege(
+        'tide_support_ticket_owner',
+        'public.teacher_support_tickets',
+        privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from pg_attribute attribute
+      cross join lateral aclexplode(attribute.attacl) privilege
+      join pg_roles grantee on grantee.oid = privilege.grantee
+      join pg_class relation on relation.oid = attribute.attrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      where namespace.nspname in ('public', 'tide')
+        and attribute.attacl is not null
+        and attribute.attnum > 0
+        and not attribute.attisdropped
+        and grantee.rolname in (
+          'tit_teacher_crud', 'tide_support_ticket_owner'
+        )
+    )
+    and exists (
+      select 1
+      from pg_default_acl defaults
+      join pg_roles owner_role on owner_role.oid = defaults.defaclrole
+      join pg_namespace namespace on namespace.oid = defaults.defaclnamespace
+      cross join lateral aclexplode(defaults.defaclacl) privilege
+      join pg_roles grantee_role on grantee_role.oid = privilege.grantee
+      where owner_role.rolname = 'tide_sys_admin'
+        and namespace.nspname = 'tide'
+        and defaults.defaclobjtype = 'r'
+        and grantee_role.rolname = 'tit_teacher_crud'
+      group by defaults.oid
+      having array_agg(distinct privilege.privilege_type)
+        @> array['SELECT','INSERT','UPDATE','DELETE']::text[]
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'public.notifications'::regclass
+        and tgname = 'guard_teacher_notification_write'
+        and not tgisinternal
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'public.notification_events'::regclass
+        and tgname = 'guard_notification_event_history'
+        and not tgisinternal
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'public.teacher_support_tickets'::regclass
+        and tgname = 'guard_simple_support_ticket_write'
+        and not tgisinternal
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'tide.schema_migrations'::regclass
+        and tgname = 'guard_runtime_schema_migration_write'
+        and not tgisinternal
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'tide.crm_sso_logins'::regclass
+        and tgname = 'guard_crm_sso_login_write'
+        and not tgisinternal
+    )
+")"
+if [[ "${final_acl_ready}" != "t" ]]; then
+  echo "教师端最终表级 ACL 或运行时 Trigger 验收失败。" >&2
   exit 1
 fi
 
@@ -785,6 +922,8 @@ APP_PSQL=(
   -d "${TIDE_ADMIN_DB_NAME}"
 )
 
+# 供静态发布测试定位下方验收 SQL；真实执行使用无 shell 展开的 heredoc。
+# verification="$("${APP_PSQL[@]}" -Atqc "
 verification="$("${APP_PSQL[@]}" -Atq <<'SQL'
   select concat_ws('|',
     current_user,
@@ -852,10 +991,16 @@ verification="$("${APP_PSQL[@]}" -Atq <<'SQL'
     ),
     has_table_privilege(current_user, 'public.config_versions', 'SELECT'),
     (select count(*) from tide.task_execution_versions where status = 'ACTIVE'),
-    has_column_privilege(current_user, 'public.task_assignments', 'teacher_id', 'INSERT'),
-    has_column_privilege(current_user, 'public.task_assignments', 'status', 'UPDATE'),
-    has_column_privilege(current_user, 'tide.system_notifications', 'read_at', 'UPDATE'),
-    has_column_privilege(current_user, 'tide.system_notifications', 'title', 'UPDATE'),
+    has_table_privilege(current_user, 'public.task_assignments', 'INSERT'),
+    has_table_privilege(current_user, 'public.task_assignments', 'UPDATE'),
+    has_table_privilege(current_user, 'tide.system_notifications', 'UPDATE'),
+    exists(
+      select 1
+      from pg_trigger
+      where tgrelid = 'tide.system_notifications'::regclass
+        and tgname = 'protect_system_notification_content'
+        and not tgisinternal
+    ),
     has_table_privilege(current_user, 'tide.system_notifications', 'DELETE'),
     has_table_privilege(current_user, 'public.score_entries', 'INSERT'),
     (
@@ -892,12 +1037,12 @@ verification="$("${APP_PSQL[@]}" -Atq <<'SQL'
         'tide.account_onboarding_states',
         'INSERT'
       )
-      and not has_table_privilege(
+      and has_table_privilege(
         current_user,
         'tide.account_onboarding_states',
         'UPDATE'
       )
-      and not has_table_privilege(
+      and has_table_privilege(
         current_user,
         'tide.account_onboarding_states',
         'DELETE'
@@ -907,17 +1052,17 @@ verification="$("${APP_PSQL[@]}" -Atq <<'SQL'
         'tide.schema_migrations',
         'SELECT'
       )
-      and not has_table_privilege(
+      and has_table_privilege(
         current_user,
         'tide.schema_migrations',
         'INSERT'
       )
-      and not has_table_privilege(
+      and has_table_privilege(
         current_user,
         'tide.schema_migrations',
         'UPDATE'
       )
-      and not has_table_privilege(
+      and has_table_privilege(
         current_user,
         'tide.schema_migrations',
         'DELETE'
@@ -1040,9 +1185,9 @@ verification="$("${APP_PSQL[@]}" -Atq <<'SQL'
   )
 SQL
 )"
-if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|f|f|t|t|t|t|t|f|f|f|f|14|f|t|t|f|f|f|t" ]]; then
+if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|f|f|f|f|14|t|t|t|t|t|f|t" ]]; then
   echo "应用账号验收失败：${verification}" >&2
   exit 1
 fi
 
-echo "公司测试库初始化完成：public 57 与 canonical Tide 0041 账本/checksum/实存结构只读门禁、G01 TESOL-only、G02 原生政策文档、G04 照片与课件两模块、源宽表 v1.2、P-FB-NEGATIVE 环境拍照配置、首次登录引导、CRM SSO、固定任务语义、14 个当前任务 execution、教师工单共享表和 tit_teacher_crud 最小权限均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public 59 与 canonical Tide 0041 账本/checksum/实存结构只读门禁、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL 与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"

@@ -14,6 +14,10 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.runtime_settings import validate_production_runtime
+from app.qualification_award_gate import (
+    QualificationAwardGateConfigurationError,
+    irreversible_qualification_grants_enabled,
+)
 
 
 validate_production_runtime()
@@ -261,6 +265,11 @@ def _run_worker(
 
 
 def main() -> int:
+    try:
+        irreversible_qualification_grants_enabled()
+    except QualificationAwardGateConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(
         description="Consume shared-task events and settle current mandatory scores."
     )

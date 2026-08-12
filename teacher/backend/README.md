@@ -32,7 +32,7 @@ bash database/scripts/apply.sh
 pnpm start:dev
 ```
 
-`TIDE_DATABASE_URL` 是应用业务连接。`SHIWEN_READ_DATABASE_URL` 用于教师资料和两张世文当前视图读取。生产环境必须为两个连接配置合适的受限账号。
+`TIDE_DATABASE_URL` 是应用业务连接。`SHIWEN_READ_DATABASE_URL` 用于教师资料和两张世文当前视图读取。两个连接池职责不同，但生产环境统一使用受限账号 `tit_teacher_crud`，不再为只读连接单建数据库角色。
 
 ## 主要接口
 

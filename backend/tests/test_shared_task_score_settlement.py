@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import event, func, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
@@ -39,6 +40,16 @@ from app.task_catalog import MANDATORY_TASK_CODES
 
 NOW = datetime(2026, 7, 22, 3, 0, tzinfo=timezone.utc)
 TASK_CODES = MANDATORY_TASK_CODES
+
+
+@pytest.fixture(autouse=True)
+def _enable_qualification_grants_for_existing_contract_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED",
+        "true",
+    )
 
 
 def test_valid_ledger_read_does_not_require_score_entry_update_privilege() -> None:
@@ -650,9 +661,21 @@ def test_task_events_are_coalesced_without_rebuilding_lesson_scores() -> None:
         } == {"G01": 3, "G08": 5}
 
 
-def test_incremental_task_projection_can_grant_irreversible_qualification() -> None:
+@pytest.mark.parametrize(
+    ("grant_gate", "expected_qualified"),
+    [("true", True), ("false", False)],
+)
+def test_incremental_task_projection_respects_irreversible_qualification_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    grant_gate: str,
+    expected_qualified: bool,
+) -> None:
+    monkeypatch.setenv(
+        "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED",
+        grant_gate,
+    )
     _prepare_config()
-    teacher_id = "REAL-SCORE-QUALIFICATION"
+    teacher_id = f"REAL-SCORE-QUALIFICATION-{grant_gate.upper()}"
     _teacher(teacher_id, initial_total_score=72.8)
     provenance = {
         key: {
@@ -735,9 +758,18 @@ def test_incremental_task_projection_can_grant_irreversible_qualification() -> N
         teacher = session.get(TeacherRecord, teacher_id)
         assert teacher is not None
         assert teacher.total_score == 100
-        assert teacher.graduation_state == "GRADUATED"
+        assert teacher.graduation_state == (
+            "GRADUATED" if expected_qualified else "IN_PROGRESS"
+        )
         assert teacher.payload["graduation_criteria_met"] is True
-        assert teacher.payload["graduation_qualified"] is True
+        assert teacher.payload["graduation_qualified"] is expected_qualified
+        assert teacher.payload[
+            "irreversible_qualification_grants_enabled"
+        ] is expected_qualified
+        qualification = session.get(TeacherQualificationRecord, teacher_id)
+        assert qualification is not None
+        assert qualification.graduation_criteria_met is True
+        assert qualification.graduation_qualified is expected_qualified
 
 
 def test_source_wide_task_settlement_is_targeted_and_survives_source_refresh() -> None:

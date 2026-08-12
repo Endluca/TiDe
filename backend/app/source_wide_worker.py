@@ -53,6 +53,10 @@ from .personalized_trigger_projection import (
 )
 from .lesson_quality import hardware_quality_passed, is_perfect_lesson
 from .personalized_rules import ComplaintRule, normalize_text
+from .qualification_award_gate import (
+    irreversible_qualification_grants_enabled,
+    resolve_irreversible_qualification_grants,
+)
 from .score_projection_lock import acquire_score_projection_lock
 from .source_change_router import (
     SourceChangeRoute,
@@ -1312,10 +1316,15 @@ def _update_qualifications(
         if qualification is not None
         else legacy_gold_earned
     )
-    gold_earned = previous_gold_earned or gold_current
-    graduation_earned = (
-        previous_graduation_earned or graduation_current or gold_earned
+    grant_decision = resolve_irreversible_qualification_grants(
+        previous_graduation_earned=previous_graduation_earned,
+        previous_gold_earned=previous_gold_earned,
+        graduation_current=graduation_current,
+        gold_current=gold_current,
+        grants_enabled=irreversible_qualification_grants_enabled(),
     )
+    gold_earned = grant_decision.gold_earned
+    graduation_earned = grant_decision.graduation_earned
 
     graduation_qualified_at = (
         qualification.graduation_qualified_at
@@ -1349,6 +1358,9 @@ def _update_qualifications(
         ),
         "gold_raw_score_threshold": float(
             policy_context.policy.thresholds.gold_raw_score
+        ),
+        "irreversible_qualification_grants_enabled": (
+            grant_decision.grants_enabled
         ),
     }
     values = {

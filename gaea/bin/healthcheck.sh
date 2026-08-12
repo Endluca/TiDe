@@ -2,6 +2,17 @@
 
 set -eu
 
+if [ "${TIT_PROCESS_PROFILE:-application}" = "dts-ingest" ]; then
+  cd /app/operations
+  exec /opt/venv/bin/python scripts/run_dts_ingest.py \
+    --healthcheck \
+    --heartbeat-path /tmp/tit-dts-ingest-heartbeat \
+    --readiness-path /tmp/tit-dts-ingest-readiness \
+    --max-heartbeat-age-seconds 90
+fi
+
+source_wide_enabled="$(/app/bin/source-wide-enabled.sh)"
+
 /opt/venv/bin/python - <<'PY'
 import os
 import urllib.request
@@ -38,6 +49,12 @@ cd /app/operations
   --healthcheck \
   --heartbeat-path /tmp/tit-score-worker-heartbeat \
   --max-heartbeat-age-seconds 90
+
+if [ "${source_wide_enabled}" = "false" ]; then
+  printf '%s\n' \
+    'SourceWide healthcheck intentionally skipped: TIT_SOURCE_WIDE_ENABLED=false' >&2
+  exit 0
+fi
 
 exec /opt/venv/bin/python scripts/run_source_wide_worker.py \
   --healthcheck \

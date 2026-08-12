@@ -31,6 +31,53 @@ server_version="$("${PSQL[@]}" -Atqc "show server_version")"
   exit 1
 }
 
+deployment_heads_ready="$("${PSQL[@]}" -Atqc "
+  select
+    (select version_num from public.alembic_version)
+      = '20260812_59_simple_acl'
+    and (
+      select array_agg(migration_id order by migration_order)
+      from tide.schema_migrations
+    ) = array[
+      '0001_initial',
+      '0002_shared_database_exchange',
+      '0003_file_upload_intents',
+      '0004_task_command_receipts',
+      '0005_faq_message_commands',
+      '0006_teacher_profile_g01_support',
+      '0007_shared_task_assignment_links',
+      '0008_remove_legacy_task_exchange',
+      '0009_task_view_command',
+      '0010_current_task_execution',
+      '0011_system_notification_delivery',
+      '0012_system_notification_publication_guards',
+      '0013_system_notification_owner_maintenance',
+      '0014_teacher_photo_processing',
+      '0015_teacher_photo_filter_strength',
+      '0016_database_quiz_banks',
+      '0019_growth_stage_notification_state',
+      '0020_product_analytics',
+      '0021_teacher_support_tickets',
+      '0022_performance_job_leases',
+      '0023_teacher_support_operator_atomicity',
+      '0024_support_ticket_cas_and_function_owner',
+      '0025_fixed_task_semantic_alignment',
+      '0026_kuozhi_course_syncs',
+      '0027_remove_local_quiz_runtime',
+      '0028_retire_task_business_change_view',
+      '0029_remove_unused_tide_objects',
+      '0030_remove_unused_columns_and_orphan_function',
+      '0031_g04_independent_sections',
+      '0032_first_login_onboarding',
+      '0033_g01_tesol_only',
+      '0037_g04_remove_device_check',
+      '0038_personalized_environment_photo',
+      '0039_g02_policy_document',
+      '0040_g02_document_read_status',
+      '0041_crm_sso_hybrid'
+    ]::text[]
+")"
+
 template_count="$("${PSQL[@]}" -Atqc "select count(*) from public.task_templates where status = 'PUBLISHED' and template_id ~ '^G0[1-9]$'")"
 score_total="$("${PSQL[@]}" -Atqc "select coalesce(sum((payload->>'score_value')::integer), 0) from public.task_templates where status = 'PUBLISHED' and template_id ~ '^G0[1-9]$'")"
 assignment_count="$("${PSQL[@]}" -Atqc "select count(*) from public.task_assignments where teacher_id = 'MOCK-TEACHER-001' and task_kind = 'FIXED_GROWTH' and task_code ~ '^G0[1-9]$'")"
@@ -451,10 +498,12 @@ system_notification_guard_ready="$("${PSQL[@]}" -Atqc "
   ) > 0
 ")"
 system_notification_owner_maintenance_ready="$("${PSQL[@]}" -Atqc "
-  select position(
-    'RETURN OLD' in
-    pg_get_functiondef('tide.protect_system_notification_content()'::regprocedure)
-  ) > 0
+  select exists (
+    select 1 from pg_trigger
+    where tgrelid = 'tide.system_notifications'::regclass
+      and tgname = 'protect_system_notification_content'
+      and not tgisinternal
+  )
 ")"
 
 legacy_object_count="$("${PSQL[@]}" -Atqc "
@@ -490,7 +539,11 @@ legacy_link_count="$("${PSQL[@]}" -Atqc "
 shared_trigger_count="$("${PSQL[@]}" -Atqc "
   select count(*) from pg_trigger
   where tgrelid = 'public.task_assignments'::regclass
-    and tgname in ('enforce_task_assignment_write', 'audit_task_assignment_write')
+    and tgname in (
+      'trg_task_assignment_write',
+      'trg_task_assignment_reject_delete',
+      'trg_task_assignment_audit'
+    )
     and not tgisinternal
 ")"
 assignment_teacher_response_column_count="$("${PSQL[@]}" -Atqc "
@@ -514,6 +567,139 @@ assignment_teacher_response_constraint_count="$("${PSQL[@]}" -Atqc "
       'task_assignments_teacher_response_content_check'
     )
 ")"
+final_acl_ready="$("${PSQL[@]}" -Atqc "
+  select
+    not exists (
+      select 1
+      from unnest(array[
+        'public.alembic_version',
+        'public.task_templates',
+        'public.teachers',
+        'public.teacher_scorecard_current',
+        'public.teacher_lesson_score_current',
+        'public.teacher_g01_status_current'
+      ]::text[]) relation(name),
+      unnest(array['SELECT']::text[]) privilege(name)
+      where not has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from unnest(array[
+        'public.alembic_version',
+        'public.task_templates',
+        'public.teachers',
+        'public.teacher_scorecard_current',
+        'public.teacher_lesson_score_current',
+        'public.teacher_g01_status_current'
+      ]::text[]) relation(name),
+      unnest(array['INSERT','UPDATE','DELETE']::text[]) privilege(name)
+      where has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from unnest(array[
+        'public.task_assignments',
+        'public.notifications',
+        'public.notification_events',
+        'public.teacher_support_tickets'
+      ]::text[]) relation(name),
+      unnest(array['SELECT','INSERT','UPDATE','DELETE']::text[]) privilege(name)
+      where not has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from pg_class relation
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      cross join lateral unnest(
+        array['SELECT','INSERT','UPDATE','DELETE']::text[]
+      ) privilege(name)
+      where namespace.nspname = 'tide'
+        and relation.relkind in ('r', 'p')
+        and not has_table_privilege(
+          'tit_teacher_crud', relation.oid, privilege.name
+        )
+    )
+    and not has_table_privilege(
+      'tit_teacher_crud', 'public.teacher_source_wide', 'SELECT'
+    )
+    and not exists (
+      select 1
+      from unnest(array['SELECT','INSERT','UPDATE','DELETE']::text[])
+        privilege(name)
+      where not has_table_privilege(
+        'tide_support_ticket_owner',
+        'public.teacher_support_tickets',
+        privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from pg_attribute attribute
+      cross join lateral aclexplode(attribute.attacl) privilege
+      join pg_roles grantee on grantee.oid = privilege.grantee
+      join pg_class relation on relation.oid = attribute.attrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      where namespace.nspname in ('public', 'tide')
+        and attribute.attacl is not null
+        and attribute.attnum > 0
+        and not attribute.attisdropped
+        and grantee.rolname in (
+          'tit_teacher_crud', 'tide_support_ticket_owner'
+        )
+    )
+    and exists (
+      select 1
+      from pg_default_acl defaults
+      join pg_roles owner_role on owner_role.oid = defaults.defaclrole
+      join pg_namespace namespace on namespace.oid = defaults.defaclnamespace
+      cross join lateral aclexplode(defaults.defaclacl) privilege
+      join pg_roles grantee_role on grantee_role.oid = privilege.grantee
+      where owner_role.rolname = 'tide_sys_admin'
+        and namespace.nspname = 'tide'
+        and defaults.defaclobjtype = 'r'
+        and grantee_role.rolname = 'tit_teacher_crud'
+      group by defaults.oid
+      having array_agg(distinct privilege.privilege_type)
+        @> array['SELECT','INSERT','UPDATE','DELETE']::text[]
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'public.notifications'::regclass
+        and tgname = 'guard_teacher_notification_write'
+        and not tgisinternal
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'public.notification_events'::regclass
+        and tgname = 'guard_notification_event_history'
+        and not tgisinternal
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'public.teacher_support_tickets'::regclass
+        and tgname = 'guard_simple_support_ticket_write'
+        and not tgisinternal
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'tide.schema_migrations'::regclass
+        and tgname = 'guard_runtime_schema_migration_write'
+        and not tgisinternal
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'tide.crm_sso_logins'::regclass
+        and tgname = 'guard_crm_sso_login_write'
+        and not tgisinternal
+    )
+")"
+assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 59 + Tide canonical 0041"
 assert_equals "${template_count}" "9" "共享 G01-G09 任务模板数异常"
 assert_equals "${score_total}" "30" "G01-G09 分值合计异常"
 assert_equals "${assignment_count}" "9" "Mock 当前固定任务数异常"
@@ -549,16 +735,16 @@ assert_equals "${operator_reply_atomicity_ready}" "t" "运营回复未原子维�
 assert_equals "${support_ticket_security_hardened}" "t" "工单 CAS 或 SECURITY DEFINER owner 未加固"
 assert_equals "${notification_event_dedupe_ready}" "t" "外部消息事件幂等索引缺失"
 assert_equals "${system_notification_guard_ready}" "t" "系统通知发布不可变保护未生效"
-assert_equals "${system_notification_owner_maintenance_ready}" "t" "系统通知 Owner 维护边界未生效"
+assert_equals "${system_notification_owner_maintenance_ready}" "t" "系统通知内容保护 Trigger 未生效"
 assert_equals "${legacy_object_count}" "0" "旧任务副本、投影或交换链仍然存在"
 assert_equals "${assignment_link_count}" "7" "过程表的 task_assignment_id 关联不完整"
 assert_equals "${legacy_link_count}" "0" "过程表仍存在 teacher_task_id"
-assert_equals "${shared_trigger_count}" "2" "共享任务写入触发器数异常"
+assert_equals "${shared_trigger_count}" "3" "共享任务写入触发器数异常"
 assert_equals "${assignment_teacher_response_column_count}" "0" "共享任务仍残留教师事实说明字段"
 assert_equals "${assignment_teacher_response_constraint_count}" "0" "共享任务仍残留教师事实说明约束"
 
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.task_assignments', 'teacher_id', 'INSERT')")" "f" "教师角色不应创建共享任务"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.task_assignments', 'status', 'UPDATE')")" "t" "教师角色缺少任务状态更新权限"
+assert_equals "${final_acl_ready}" "t" "教师端最终三列表 ACL 或 rev59 Trigger 不完整"
+assert_equals "$("${PSQL[@]}" -Atqc "select rolinherit from pg_roles where rolname = 'tit_teacher_crud'")" "f" "教师应用角色必须保持 NOINHERIT"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.score_entries', 'INSERT')")" "f" "教师角色不应写积分表"
 assert_equals "$("${PSQL[@]}" -Atqc "select to_regclass('public.teacher_scorecard_current') is not null")" "t" "教师积分当前视图缺失"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.teacher_scorecard_current', 'SELECT')")" "t" "教师角色缺少积分当前视图读取权限"
@@ -569,42 +755,17 @@ assert_equals "$("${PSQL[@]}" -Atqc "select coalesce(has_table_privilege('tit_te
 assert_equals "$("${PSQL[@]}" -Atqc "select coalesce(has_table_privilege('tit_teacher_crud', to_regclass('public.lesson_dimension_scores'), 'SELECT'), false)")" "f" "教师角色不应读取原始逐课积分表"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.config_versions', 'SELECT')")" "f" "教师角色不应读取原始配置表"
 assert_equals "$("${PSQL[@]}" -Atqc "select coalesce(has_table_privilege('tit_teacher_crud', to_regclass('public.teacher_metric_snapshots'), 'SELECT'), false)")" "f" "教师角色不应继续读取旧教师快照"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'SELECT')")" "f" "教师角色不应读取整张教师宽表"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'tchr_id', 'SELECT')")" "t" "教师角色缺少 G01 教师关联键读取权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_cpl_tesol', 'SELECT')")" "t" "教师角色缺少 TESOL 状态读取权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'is_self_introduce', 'SELECT')")" "f" "教师角色不应读取 G01 已停用的 Self-intro 状态"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_source_wide', 'real_name', 'SELECT')")" "f" "教师角色不应读取 G01 无关的宽表字段"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'SELECT')")" "t" "教师角色缺少引导状态读取权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'INSERT')")" "t" "教师角色缺少引导状态幂等写入权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'UPDATE')")" "f" "教师角色不应改写引导终态事实"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'DELETE')")" "f" "教师角色不应删除引导终态事实"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.crm_sso_logins', 'SELECT')")" "t" "教师角色缺少 SSO 登录审计读取权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.crm_sso_logins', 'INSERT')")" "t" "教师角色缺少 SSO 登录创建权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.crm_sso_logins', 'UPDATE')")" "t" "教师角色缺少 SSO 兑换权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.crm_sso_logins', 'DELETE')")" "f" "教师角色不应删除 SSO 登录事实"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.notifications', 'read_at', 'UPDATE')")" "t" "教师角色缺少消息已读权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.notifications', 'clicked_at', 'UPDATE')")" "t" "教师角色缺少消息点击权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.notification_events', 'INSERT')")" "t" "教师角色缺少消息事件写入权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.system_notifications', 'DELETE')")" "f" "教师角色不应删除系统通知"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'tide.system_notifications', 'read_at', 'UPDATE')")" "t" "教师角色缺少系统通知已读权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'tide.system_notifications', 'title', 'UPDATE')")" "f" "教师角色不应修改已发布系统通知正文"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.system_notification_publications', 'DELETE')")" "f" "教师角色不应删除系统通知发布记录"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.growth_stage_notification_states', 'UPDATE')")" "t" "教师角色缺少成长阶段通知状态维护权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.teacher_support_tickets', 'SELECT')")" "t" "教师角色缺少本人工单读取权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.teacher_support_tickets', 'INSERT')")" "f" "教师角色不应绕过创建方法直接写工单"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_support_tickets', 'messages', 'UPDATE')")" "f" "教师角色不应整体覆盖工单消息"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.teacher_support_tickets', 'status', 'UPDATE')")" "t" "教师角色缺少工单状态维护权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_function_privilege('tit_teacher_crud', 'public.create_teacher_support_ticket(uuid,character varying,character varying,character varying,jsonb,jsonb)', 'EXECUTE')")" "t" "教师角色缺少工单创建方法权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_function_privilege('tit_teacher_crud', 'public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)', 'EXECUTE')")" "t" "教师角色缺少工单消息追加方法权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_function_privilege('tit_teacher_crud', 'public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)', 'EXECUTE')")" "f" "教师角色不应追加运营消息"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_growth_app', 'public.teacher_support_tickets', 'SELECT')")" "t" "运营角色缺少工单读取权限"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_growth_app', 'public.teacher_support_tickets', 'UPDATE')")" "f" "运营角色不应直接更新工单"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_growth_app', 'public.teacher_support_tickets', 'UPDATE')")" "t" "运营角色缺少工单表级更新权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_function_privilege('tit_growth_app', 'public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)', 'EXECUTE')")" "t" "运营角色缺少运营消息追加权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_function_privilege('tit_growth_app', 'public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)', 'EXECUTE')")" "f" "运营角色不应追加教师消息"
 assert_equals "$("${PSQL[@]}" -Atqc "select rolcanlogin from pg_roles where rolname = 'tide_support_ticket_owner'")" "f" "工单函数 owner 不得登录"
 assert_equals "$("${PSQL[@]}" -Atqc "select rolsuper from pg_roles where rolname = 'tide_support_ticket_owner'")" "f" "工单函数 owner 不得是 superuser"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_schema_privilege('tide_support_ticket_owner', 'public', 'CREATE')")" "f" "工单函数 owner 不得在 public 建对象"
-assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tide_support_ticket_owner', 'public.teacher_support_tickets', 'DELETE')")" "f" "工单函数 owner 不应删除工单"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tide_support_ticket_owner', 'public.teacher_support_tickets', 'DELETE')")" "t" "工单函数 owner 缺少工单表级删除权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select rolcanlogin from pg_roles where rolname = 'tit_teacher_crud'")" "t" "本地教师应用角色尚未启用登录"
 assert_equals "$("${PSQL[@]}" -Atqc "select pg_get_constraintdef(oid) like '%VIEW%' from pg_constraint where conrelid = 'tide.task_command_receipts'::regclass and conname = 'task_command_receipts_type_check'")" "t" "VIEW 幂等命令约束未生效"
 assert_equals "$("${PSQL[@]}" -Atqc "select position('A-Z0-9' in pg_get_constraintdef(oid)) > 0 from pg_constraint where conrelid = 'tide.task_execution_versions'::regclass and conname = 'task_execution_versions_code_check'")" "t" "个性化任务执行代码约束未生效"
@@ -737,6 +898,17 @@ BEGIN
   END;
   IF NOT failed THEN
     RAISE EXCEPTION 'teacher role unexpectedly replaced support messages';
+  END IF;
+
+  failed := false;
+  BEGIN
+    DELETE FROM public.teacher_support_tickets
+    WHERE ticket_id = '41000000-0000-4000-8000-000000000001';
+  EXCEPTION WHEN insufficient_privilege THEN
+    failed := true;
+  END;
+  IF NOT failed THEN
+    RAISE EXCEPTION 'support-ticket DELETE bypassed the runtime Trigger';
   END IF;
 
   failed := false;
@@ -1030,7 +1202,7 @@ BEGIN
     UPDATE public.task_assignments
     SET priority = 'P0'
     WHERE assignment_id = verify_id;
-  EXCEPTION WHEN insufficient_privilege THEN
+  EXCEPTION WHEN OTHERS THEN
     failed := true;
   END;
   IF NOT failed THEN
@@ -1076,6 +1248,62 @@ INSERT INTO public.notifications (
 
 SET ROLE tit_teacher_crud;
 
+DO $verify$
+DECLARE
+  failed boolean;
+BEGIN
+  failed := false;
+  BEGIN
+    INSERT INTO public.notifications (
+      notification_id, task_id, teacher_id, channel, priority, status, payload
+    ) VALUES (
+      'VERIFY-NOTIFICATION-ILLEGAL', :'verify_assignment_id',
+      'VERIFY-TEACHER-CRUD', 'IN_APP', 'P1', 'STORED', '{"verify":true}'::jsonb
+    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    failed := true;
+  END;
+  IF NOT failed THEN
+    RAISE EXCEPTION 'notification INSERT bypassed the teacher Trigger';
+  END IF;
+
+  failed := false;
+  BEGIN
+    UPDATE public.notifications
+    SET payload = '{"replaced":true}'::jsonb
+    WHERE notification_id = 'VERIFY-NOTIFICATION';
+  EXCEPTION WHEN insufficient_privilege THEN
+    failed := true;
+  END;
+  IF NOT failed THEN
+    RAISE EXCEPTION 'notification payload UPDATE bypassed the teacher Trigger';
+  END IF;
+
+  failed := false;
+  BEGIN
+    DELETE FROM public.notifications
+    WHERE notification_id = 'VERIFY-NOTIFICATION';
+  EXCEPTION WHEN insufficient_privilege THEN
+    failed := true;
+  END;
+  IF NOT failed THEN
+    RAISE EXCEPTION 'notification DELETE bypassed the teacher Trigger';
+  END IF;
+
+  failed := false;
+  BEGIN
+    UPDATE tide.schema_migrations
+    SET filename = filename
+    WHERE migration_id = '0041_crm_sso_hybrid';
+  EXCEPTION WHEN insufficient_privilege THEN
+    failed := true;
+  END;
+  IF NOT failed THEN
+    RAISE EXCEPTION 'migration-ledger UPDATE bypassed the teacher Trigger';
+  END IF;
+END
+$verify$;
+
 UPDATE public.notifications
 SET read_at = coalesce(read_at, now()), status = 'READ'
 WHERE notification_id = 'VERIFY-NOTIFICATION';
@@ -1087,14 +1315,43 @@ INSERT INTO public.notification_events (
   notification_event_id, notification_id, delivery_status, request_hash, payload
 ) VALUES (
   'VERIFY-NOTIFICATION-EVENT-READ', 'VERIFY-NOTIFICATION', 'READ',
-  'verify-read', '{"verify":true}'::jsonb
+  'verify-read', '{"actor":"TEACHER_APP","verify":true}'::jsonb
 );
 INSERT INTO public.notification_events (
   notification_event_id, notification_id, delivery_status, request_hash, payload
 ) VALUES (
   'VERIFY-NOTIFICATION-EVENT-READ-DUP', 'VERIFY-NOTIFICATION', 'READ',
-  'verify-read', '{"verify":true}'::jsonb
+  'verify-read', '{"actor":"TEACHER_APP","verify":true}'::jsonb
 ) ON CONFLICT (notification_id, request_hash) DO NOTHING;
+
+DO $verify$
+DECLARE
+  failed boolean;
+BEGIN
+  failed := false;
+  BEGIN
+    UPDATE public.notification_events
+    SET payload = payload || '{"replaced":true}'::jsonb
+    WHERE notification_event_id = 'VERIFY-NOTIFICATION-EVENT-READ';
+  EXCEPTION WHEN insufficient_privilege THEN
+    failed := true;
+  END;
+  IF NOT failed THEN
+    RAISE EXCEPTION 'notification-event UPDATE bypassed append-only Trigger';
+  END IF;
+
+  failed := false;
+  BEGIN
+    DELETE FROM public.notification_events
+    WHERE notification_event_id = 'VERIFY-NOTIFICATION-EVENT-READ';
+  EXCEPTION WHEN insufficient_privilege THEN
+    failed := true;
+  END;
+  IF NOT failed THEN
+    RAISE EXCEPTION 'notification-event DELETE bypassed append-only Trigger';
+  END IF;
+END
+$verify$;
 
 UPDATE public.task_assignments
 SET status = 'COMPLETED', completed_at = now(),
@@ -1161,4 +1418,4 @@ $verify$;
 ROLLBACK;
 SQL
 
-echo "PostgreSQL ${server_version}：共享任务、tide 过程表、最小权限、审计/Outbox 和消息回写验证通过。"
+echo "PostgreSQL ${server_version}：public 59、Tide 0041、最终表级 ACL、运行时 Trigger、审计/Outbox 和消息回写验证通过。"

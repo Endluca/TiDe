@@ -128,7 +128,7 @@ services:
     build:
       context: ./backend
     env_file:
-      - ${TIDE_SOURCE_WORKER_ENV_FILE:?Set TIDE_SOURCE_WORKER_ENV_FILE to a protected source-worker-only env file}
+      - ${TIDE_RUNTIME_ENV_FILE:?Set TIDE_RUNTIME_ENV_FILE to a protected runtime-only env file}
     environment:
       APP_ENV: production
       TIT_MIGRATION_MODE: "false"

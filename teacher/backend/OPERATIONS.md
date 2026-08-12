@@ -100,22 +100,30 @@ docker build -t tide-teacher-api:reviewed .
 
 镜像只暴露 `3000`，其内置健康检查请求 `/health/ready`。生产环境中，容器进入
 healthy 不只代表 Node 进程存在：public Alembic 账本必须唯一指向
-`20260811_57_g02_document`，教师端迁移账本必须是完整的 36 条 canonical 清单，
-包含 `0033_g01_tesol_only`、`0037_g04_remove_device_check` 和
-`0038_personalized_environment_photo`，且唯一最新版本为 `0041_crm_sso_hybrid`。运营端稳定模板行必须精确对应当前 G01–G09
-和 retired G00，九条当前执行配置也必须按同一稳定行处于 ACTIVE。后台任务租约、
-共享工单表、账号引导状态表及固定 owner 函数必须完整，6 张废弃表和 5 个旧分析视图必须不存在，教师身份来源和两张积分读取视图
-也必须可查询。教师运行账号必须只能读取两条迁移账本；对
-`public.teacher_source_wide` 不得拥有整表读取或任何写权限，且有效可读列必须精确为
-`tchr_id` 与 `is_cpl_tesol`，不能读取已退出 G01 契约的 `is_self_introduce`。密钥和数据库
-连接只能由部署平台在运行时注入，不能写入镜像或构建参数。
+`20260812_59_simple_acl`，教师端迁移账本必须是完整的 36 条 canonical 清单，包含
+`0033_g01_tesol_only`、`0037_g04_remove_device_check`、
+`0038_personalized_environment_photo`、`0039_g02_policy_document`、
+`0040_g02_document_read_status`，且唯一最新版本为 `0041_crm_sso_hybrid`。
+运营端稳定模板行必须精确对应当前 G01–G09 和 retired G00，九条当前执行配置也必须按
+同一稳定行处于 ACTIVE。后台任务租约、共享工单表、账号引导状态表、CRM SSO 事实及
+固定 owner 函数必须完整，6 张废弃表和 5 个旧分析视图必须不存在，教师身份受限视图和
+两张积分读取视图也必须可查询。运行账号只能读取迁移账本；public 权限必须精确收敛为
+最终 6 个只读对象和 4 个 CRUD 对象，其他 public 对象不得残留表级或列级授权；tide
+表和序列权限、默认权限及业务保护 Trigger 必须与最终 ACL 契约一致，迁移账本改写必须被
+数据库拒绝。密钥和数据库连接只能由部署平台在运行时注入，不能写入镜像或构建参数。
 
 所有 `multipart/form-data` 请求在 Multer 读入内存前共用进程级并发门禁。
 `MULTIPART_UPLOAD_MAX_CONCURRENCY` 允许 `1–16`，默认 `4`；1 GiB 教师 API 容器应
 保持默认值，除非用真实文件大小、并发和 RSS 压测证明可以调整。容量用尽返回可重试的
 `429 MULTIPART_UPLOAD_CAPACITY_EXHAUSTED` 和 `Retry-After`，不排队持有请求体。
 
-后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出或租约过期后接管。所有副本必须连接同一个已按顺序应用 `0033_g01_tesol_only`、`0037_g04_remove_device_check`、`0038_personalized_environment_photo` 和 `0041_crm_sso_hybrid` 的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后由其他副本读取失败。
+后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置
+`BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出
+或租约过期后接管。所有副本必须连接同一个已按顺序应用 G01、G02、G04、个性化拍照和
+CRM SSO 迁移、已到 public 59 / teacher 0041，并已应用最终表级 ACL 与业务保护 Trigger
+的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载
+同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后
+由其他副本读取失败。
 
 ## 4. 迁移与发布前检查
 
@@ -142,7 +150,7 @@ ID、assignment ID 或历史过程记录；旧 G05 只退役为 G00，不搬迁�
 
 `0032` 新增账号级新手引导终态事实。迁移只回填已有 `LOGIN/SUCCESS`
 安全事件的账号，从未成功登录的已注册账号保持无行，以便首次登录后展示引导。
-运行角色只得读取和幂等插入，不得更新或删除已确认的终态事实；0032 down 只删除该表。
+运行角色获得表级 CRUD，但 Trigger/约束只接受幂等插入，拒绝更新或删除已确认的终态事实；0032 down 只删除该表。
 
 `0037` 在同一 G04 execution 上删除当前 `g02-device-check` 步骤定义，
 完成规则只保留授课环境照片 AI 审核和课件准备确认。它不删除旧设备步骤进度，

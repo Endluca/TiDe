@@ -14,7 +14,7 @@ export class G01ExternalStatusRuleHandler extends TaskRuleHandler {
         SELECT
           source.is_cpl_tesol AS "tesolCompleted"
         FROM public.task_assignments assignment
-        JOIN public.teacher_source_wide source
+        JOIN public.teacher_g01_status_current source
           ON source.tchr_id = assignment.teacher_id
         WHERE assignment.assignment_id = $1
           AND assignment.task_code = 'G01'

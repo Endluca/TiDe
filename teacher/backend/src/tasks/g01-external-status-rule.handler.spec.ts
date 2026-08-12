@@ -37,7 +37,8 @@ describe('G01ExternalStatusRuleHandler', () => {
     });
     const calls = fixture.query.mock.calls as unknown as Array<[unknown]>;
     const sql = String(calls[0][0]);
-    expect(sql).toContain('public.teacher_source_wide');
+    expect(sql).toContain('public.teacher_g01_status_current');
+    expect(sql).not.toContain('public.teacher_source_wide');
     expect(sql).toContain('source.tchr_id = assignment.teacher_id');
     expect(sql).toContain('source.is_cpl_tesol');
     expect(sql).not.toContain('is_self_introduce');

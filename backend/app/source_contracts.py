@@ -83,12 +83,11 @@ TEACHER_CSV_FIELDS: tuple[str, ...] = (
     "capacity_key_slot_day_rate",
 )
 
-# The confirmed v1.2 mapping contains the 53 fields above.  The
-# source table additionally keeps two source-owned, nullable profile facts.
-# G01 consumes only ``is_cpl_tesol``; ``is_self_introduce`` remains available
-# to operational profile views.  The established constant name is retained for
-# compatibility with schema checks that distinguish the supplied mapping from
-# the current 55-column source table.
+# The confirmed v1.5 contract contains the 53 metric/profile fields above plus
+# the two nullable G01 source facts below, for 55 columns in total.  G01
+# consumes only ``is_cpl_tesol``; ``is_self_introduce`` intentionally remains
+# NULL until the business enables a source.  The established constant name is
+# retained for compatibility with existing schema checks.
 TEACHER_G01_STATUS_FIELDS: tuple[str, ...] = (
     "is_cpl_tesol",
     "is_self_introduce",

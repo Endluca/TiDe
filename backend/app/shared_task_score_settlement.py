@@ -39,6 +39,10 @@ from .db_models import (
     TeacherRecord,
     TeacherSourceWideRecord,
 )
+from .qualification_award_gate import (
+    irreversible_qualification_grants_enabled,
+    resolve_irreversible_qualification_grants,
+)
 from .services import GrowthService
 from .task_catalog import MANDATORY_TASK_CODES
 from .score_projection_lock import acquire_score_projection_lock
@@ -488,6 +492,9 @@ class SharedTaskScoreSettlementWorker:
         if teacher is None:
             raise SettlementDataError("ASSIGNMENT_TEACHER_NOT_FOUND")
         self._require_current_source_wide_teacher(session, teacher)
+        qualification_grants_enabled = (
+            irreversible_qualification_grants_enabled()
+        )
 
         baseline = list(
             session.scalars(
@@ -757,6 +764,7 @@ class SharedTaskScoreSettlementWorker:
             ],
             occurred_at=projection_time,
             previous_task_score_override=source_wide_previous_task_score,
+            qualification_grants_enabled=qualification_grants_enabled,
         )
         self._synchronize_source_wide_qualification(
             session,
@@ -767,6 +775,7 @@ class SharedTaskScoreSettlementWorker:
             expected_count=len(FIXED_GROWTH_CODES),
             config_snapshot=config_snapshot,
             occurred_at=projection_time,
+            qualification_grants_enabled=qualification_grants_enabled,
         )
         return _Outcome(
             "SETTLED",
@@ -872,6 +881,7 @@ class SharedTaskScoreSettlementWorker:
         task_components: list[dict[str, Any]],
         occurred_at: datetime,
         previous_task_score_override: float | None,
+        qualification_grants_enabled: bool,
     ) -> None:
         """Persist task status into the current source-wide projection only."""
 
@@ -1028,6 +1038,38 @@ class SharedTaskScoreSettlementWorker:
             teacher_payload,
             (policy, "PUBLISHED"),
             score_overrides,
+        )
+        previous_graduation_earned = bool(
+            original_teacher_payload.get("graduation_qualified")
+            or original_graduation_state == "GRADUATED"
+        )
+        previous_gold_earned = bool(
+            original_teacher_payload.get("gold_qualified")
+            or original_gold_qualified
+        )
+        grant_decision = resolve_irreversible_qualification_grants(
+            previous_graduation_earned=previous_graduation_earned,
+            previous_gold_earned=previous_gold_earned,
+            graduation_current=bool(projected["graduation_criteria_met"]),
+            gold_current=bool(projected["gold_criteria_met"]),
+            grants_enabled=qualification_grants_enabled,
+        )
+        projected.update(
+            {
+                "graduation_state": (
+                    "GRADUATED"
+                    if grant_decision.graduation_earned
+                    else "IN_PROGRESS"
+                ),
+                "graduation_qualified": grant_decision.graduation_earned,
+                "gold_qualified": grant_decision.gold_earned,
+                "irreversible_qualification_grants_enabled": (
+                    grant_decision.grants_enabled
+                ),
+            }
+        )
+        teacher_payload["irreversible_qualification_grants_enabled"] = (
+            grant_decision.grants_enabled
         )
         projected_task_score = float(
             next(
@@ -1216,6 +1258,7 @@ class SharedTaskScoreSettlementWorker:
         expected_count: int,
         config_snapshot: dict[str, Any],
         occurred_at: datetime,
+        qualification_grants_enabled: bool,
     ) -> None:
         """Refresh only task-dependent qualification state for a source teacher.
 
@@ -1322,10 +1365,15 @@ class SharedTaskScoreSettlementWorker:
             qualification.graduation_qualified
         )
         previous_gold_earned = bool(qualification.gold_qualified)
-        gold_earned = previous_gold_earned or gold_current
-        graduation_earned = (
-            previous_graduation_earned or graduation_current or gold_earned
+        grant_decision = resolve_irreversible_qualification_grants(
+            previous_graduation_earned=previous_graduation_earned,
+            previous_gold_earned=previous_gold_earned,
+            graduation_current=graduation_current,
+            gold_current=gold_current,
+            grants_enabled=qualification_grants_enabled,
         )
+        gold_earned = grant_decision.gold_earned
+        graduation_earned = grant_decision.graduation_earned
         graduation_qualified_at = qualification.graduation_qualified_at
         gold_qualified_at = qualification.gold_qualified_at
         if not previous_graduation_earned and graduation_earned:
@@ -1345,6 +1393,9 @@ class SharedTaskScoreSettlementWorker:
                 ),
                 "gold_raw_score_threshold": float(
                     policy.thresholds.gold_raw_score
+                ),
+                "irreversible_qualification_grants_enabled": (
+                    grant_decision.grants_enabled
                 ),
             }
         )

@@ -634,8 +634,6 @@ def _restore_acl() -> None:
             role_name text;
         BEGIN
             FOREACH role_name IN ARRAY ARRAY[
-                'tit_source_monitor',
-                'tit_source_worker',
                 'tit_teacher_crud',
                 'tide_business_app'
             ]::text[] LOOP

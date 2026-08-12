@@ -30,6 +30,9 @@ from .config_models import (
     ScoreGraduationConfig,
 )
 from .db_models import TeacherRecord
+from .qualification_award_gate import (
+    irreversible_qualification_grants_enabled,
+)
 from .score_projection_lock import acquire_score_projection_lock
 
 
@@ -114,6 +117,10 @@ def refresh_persisted_score_read_models(
     """
 
     del trigger_type, trigger_ref
+    # Validate the fail-closed grant gate even when a policy publication has
+    # no current teachers to rebuild. Actual awards are gated again at the
+    # shared qualification persistence boundary.
+    irreversible_qualification_grants_enabled()
     acquire_score_projection_lock(session)
 
     selected_ids = sorted({str(item) for item in teacher_ids or []})

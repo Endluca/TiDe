@@ -61,13 +61,13 @@
 | `content/faq/51Talk Teacher FAQ - Canonical.md` | 全量 Canonical FAQ 的唯一版本化内容源；运行时不直接读取该文件 |
 | `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
 | `scripts/apply.sh` | 本地幂等升级至 0041，并应用当前 Seed/本地权限 |
-| `scripts/apply-company-test.sh` | 在 public rev57 + canonical Tide 0041 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
+| `scripts/apply-company-test.sh` | 只接受 public 59、canonical Tide 0041 与精确 36 条账本；只读核对账本/checksum/实存结构后，初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
 | `scripts/publish-company-test-g03.sh` | 仅在明确需要发布 G03 内容时，受限地将 G03 共享模板与执行配置同步到 `tit_growth_test_v2`；必须提供工作区外、权限 600 的配置文件并显式传入 `--apply` |
-| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；公司 TEST 特例也只放行 0037、0038、0040、0041 四个跨 Schema 切换点；先校验运营端权威目录，在 0038 前精确验证 public rev56，在 0039/0040 前精确验证 public rev57，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0041 |
-| `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 数据库显式构造共享目录，验证 fresh、managed upgrade、跨 Schema 分阶段顺序门禁、0022–0041、G01 TESOL-only、G02 原生文档、G04 两模块、个性化拍照、首次登录引导、CRM SSO、checksum、工单函数 owner 和生产连接保护 |
+| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；公司 TEST 特例也只放行 0037、0038、0040、0041 四个跨 Schema 切换点；先校验运营端权威目录，在 0038 前精确验证 public rev56，在 0039/0040 前精确验证 public rev57，再使用账本、SHA-256、PostgreSQL advisory lock 和最终角色守卫升级至 0041 |
+| `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 显式构造共享目录，验证 fresh、managed upgrade、跨 Schema 分阶段顺序门禁、完整 36 条账本、0022–0041、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、个性化拍照、首次登录引导、CRM SSO、最终 ACL/Trigger、checksum、工单函数 owner 和生产连接保护 |
 | `scripts/verify.sh` | 验证共享表、过程关联、角色权限、乐观锁、审计/Outbox 和消息回写 |
 | `scripts/rollback-test.sh` | 在临时库验证空库升级和逐级回滚 |
-| `scripts/grant-tit-teacher-crud.sql` | 由共享表 Owner/DBA 执行的最小权限脚本 |
+| `scripts/grant-tit-teacher-crud.sql` | 由 DBA 执行最终表级 ACL；业务写边界由 Trigger/约束保护 |
 
 ## 本地执行
 
@@ -81,7 +81,7 @@ bash database/scripts/rollback-test.sh
 ```
 
 `.env` 不进入 Git。`apply.sh` 仅接受数据库名 `tide_dev`，且必须显式设置
-`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0039`，但仍是本地
+`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0041`，但仍是本地
 Mock 入口，不能用于公司或生产库。
 
 ## 生产迁移
@@ -122,25 +122,25 @@ head 56 与 P-FB-NEGATIVE rev56 新文案。历史 `0020` 文件和 checksum 保
 非测试模式还会同时校验：
 
 - URI 中 `sslmode=verify-full` 恰好出现一次，且当前 PostgreSQL 会话确实使用 TLS；
-- `current_user` 与 `session_user` 都是 `tide_migrator`，不是通过高权限账号
+- `current_user` 与 `session_user` 都是 `tide_sys_admin`，不是通过其他高权限账号
   `SET ROLE` 伪装；
-- `tide_migrator` 可登录但不是 superuser，且没有建库、建角色、复制或绕过 RLS；
+- `tide_sys_admin` 可登录但不是 superuser，且不允许复制或绕过 RLS；
 - `current_database()` 精确等于 `TIDE_MIGRATION_EXPECTED_DATABASE`。
 
 生产迁移清单明确包含 `0022–0041`，并永久排除历史
 `0017/0018`，因为这两项会修改世文持有的 `public.task_assignments`。迁移器不创建
 角色、不设置角色密码、不导入 Mock、不执行题库／FAQ／任务内容 Seed。DBA 必须事先
-创建 `tit_teacher_crud`、`tit_growth_app`、`tide_migrator` 与
+创建 `tit_teacher_crud`、`tit_growth_app`、`tide_sys_admin` 与
 `tide_support_ticket_owner`，教师端权限继续单独审核
 `scripts/grant-tit-teacher-crud.sql`。`tide_support_ticket_owner` 必须
-`NOLOGIN`、无高权限且不继承任何其他角色；`tide_migrator` 必须由 DBA 授予该 owner
+`NOLOGIN`、无高权限且不继承任何其他角色；`tide_sys_admin` 必须由 DBA 授予该 owner
 的成员关系，并获得 TIDE Schema 结构变更和必要授权的 grant option，以便迁移后把
 四个 SECURITY DEFINER 函数移交给固定 owner；它不需要且不得拥有 superuser、
 `CREATEDB`、`CREATEROLE`、`REPLICATION` 或 `BYPASSRLS`。`0023`
 只向 `tit_growth_app` 授予共享工单 `SELECT` 和运营追加函数 `EXECUTE`，`0024`
 则只给函数 owner 执行这些函数所必需的表列权限，并在移交后撤销其 `public.CREATE`。
-迁移完成后必须重跑 `grant-tit-teacher-crud.sql`：教师运行账号只读
-`tide.schema_migrations`，不得插入、更新或删除迁移账本。
+迁移完成后必须重跑 `grant-tit-teacher-crud.sql`：教师运行账号按最终表级 ACL 授权，
+`tide.schema_migrations` 的改写由数据库 Trigger 拒绝。
 
 `0024`、`0025`、`0031` 和 `0037` 的 down 都是有意的 no-op：前两者不恢复
 安全绕过或旧任务路由；`0031` 不会把已有三模块进度重新解释为旧结构，
@@ -152,13 +152,13 @@ DBA 预置角色属性示例（密码或认证材料必须通过独立秘密管�
 ```sql
 CREATE ROLE tide_support_ticket_owner
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-CREATE ROLE tide_migrator
-  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-GRANT tide_support_ticket_owner TO tide_migrator;
+CREATE ROLE tide_sys_admin
+  LOGIN NOSUPERUSER NOREPLICATION NOBYPASSRLS;
+GRANT tide_support_ticket_owner TO tide_sys_admin;
 ```
 
 ```bash
-export TIDE_MIGRATION_DATABASE_URL='postgresql://tide_migrator@db.example/tide_production?sslmode=verify-full'
+export TIDE_MIGRATION_DATABASE_URL='postgresql://tide_sys_admin@db.example/tide_production?sslmode=verify-full'
 export TIDE_MIGRATION_EXPECTED_DATABASE='tide_production'
 bash database/scripts/apply-production.sh
 ```
@@ -174,7 +174,7 @@ docker run --rm \
 ```
 
 `teacher-migration.env` 至少包含
-`TIDE_MIGRATION_DATABASE_URL=postgresql://tide_migrator@db.example/tide_production?sslmode=verify-full`
+`TIDE_MIGRATION_DATABASE_URL=postgresql://tide_sys_admin@db.example/tide_production?sslmode=verify-full`
 和 `TIDE_MIGRATION_EXPECTED_DATABASE=tide_production`，不得进入镜像或 Git。
 
 生产前可在隔离 PostgreSQL 16 实例运行：
@@ -186,11 +186,11 @@ bash database/scripts/test-production-migrator.sh
 ## 公司测试库
 
 - 迁移配置必须放在 Git/镜像工作区之外，权限精确为 `600`；不要使用仓库内的 `database/.env.company-test` 作为迁移入口。
-- 代码侧初始化门禁面向 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041` 的完整十二阶段升级结果；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。当前公司测试库仍停在 public 50 / teacher 0032，本次未执行升级。
-- 从仓库根目录运行 `backend/scripts/upgrade_company_test_database.py`。省略 `--apply` 时只读检查并输出计划；提交时必须同时给出 `--backup-confirmed --maintenance-window-confirmed`。脚本按 public 54（含 rev51）→ teacher 0037（含 0033）→ public 55 → public 56 → teacher 0038 → public 57 → teacher 0040（含 0039）→ teacher 0041 逐段执行和读回；未知组合、错序、账本/checksum 漂移均失败关闭。
-- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260811_57_g02_document` 与精确 36 条 canonical Tide 0041 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL。
+- 代码侧初始化门禁面向完整 release 内容链和最终 ACL merge；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。最终目标必须同时达到 public 59 / teacher 0041；仅有旧升级记录不代表权限迁移已完成。
+- 从仓库根目录运行 `backend/scripts/upgrade_company_test_database.py`。省略 `--apply` 时只读检查并输出计划；提交时必须同时给出 `--backup-confirmed --maintenance-window-confirmed`。脚本按 public 54（含 rev51）→ teacher 0037（含 0033）→ public 55 → public 56 → teacher 0038 → public 57 → teacher 0040（含 0039）→ teacher 0041 逐段执行和读回；随后仍须完成 public 58/59 最终权限迁移。未知组合、错序、账本/checksum 漂移均失败关闭。
+- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260812_59_simple_acl` 与精确 36 条 canonical Tide 0041 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL、Mock Seed 或共享模板写入。
 - 初始化器不得与 public/Tide migrator 并发运行；受控部署必须先完成迁移并释放迁移窗口，再执行初始化器。
-- 日常应用账号固定为 `tit_teacher_crud`，只读教师身份资料和 `teacher_scorecard_current / teacher_lesson_score_current`，只获得契约允许的共享任务权限和 `tide` Schema 业务表权限；不读取原始积分、课程事实或评分配置表。
+- 日常应用账号固定为 `tit_teacher_crud`，对 public 使用最终文档列出的 6 个只读对象和 4 张 CRUD 表，对 `tide.*` 使用表级 CRUD；不读取原始积分、课程事实或评分配置表，越权业务写入由 Trigger/约束拒绝。
 - 内部测试后端的 `TIDE_DATABASE_URL` 和 `SHIWEN_READ_DATABASE_URL` 均由该配置生成并指向同一公司测试库；运行时不再使用本地 PostgreSQL 或本地数据回退。
 - 本地 `apply.sh` 会写 Mock Seed，不得用于公司测试库。
 

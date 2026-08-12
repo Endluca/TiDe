@@ -49,6 +49,10 @@ def test_effective_acl_covers_every_root_table_and_all_score_views() -> None:
         "lesson_score_results",
         "teacher_qualifications",
         "complaint_rule_imports",
+        "dts_ingest_checkpoints",
+        "dts_ingest_events",
+        "dts_source_rows",
+        "dts_dirty_keys",
     }
     assert {table.name for table in Base.metadata.sorted_tables} <= managed
     assert set(migration.ROOT_RUNTIME_NO_ACCESS_VIEWS) == {

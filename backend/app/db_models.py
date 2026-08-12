@@ -6,6 +6,7 @@ from typing import Any, Optional
 from sqlalchemy import (
     JSON,
     Boolean,
+    BigInteger,
     CheckConstraint,
     Date,
     DateTime,
@@ -175,6 +176,189 @@ class LessonSourceWideRecord(Base):
         Boolean,
     )
     is_false_early_leave: Mapped[Optional[bool]] = mapped_column("假早退", Boolean)
+
+
+class DtsIngestCheckpointRecord(Base):
+    """Durable replay floor after one DTS event transaction commits."""
+
+    __tablename__ = "dts_ingest_checkpoints"
+    __table_args__ = (
+        CheckConstraint(
+            "source_region IN ('ovs', 'dom')",
+            name="ck_dts_checkpoint_region",
+        ),
+        CheckConstraint(
+            "partition_id >= 0 AND next_offset >= 0",
+            name="ck_dts_checkpoint_offsets",
+        ),
+    )
+
+    source_region: Mapped[str] = mapped_column(String(8), primary_key=True)
+    topic: Mapped[str] = mapped_column(String(512), primary_key=True)
+    partition_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    next_offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_position: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+
+
+class DtsIngestEventRecord(Base):
+    """One safe, immutable processing receipt per Kafka offset."""
+
+    __tablename__ = "dts_ingest_events"
+    __table_args__ = (
+        CheckConstraint(
+            "source_region IN ('ovs', 'dom')",
+            name="ck_dts_event_region",
+        ),
+        CheckConstraint(
+            "partition_id >= 0 AND offset_value >= 0 AND dirty_key_count >= 0",
+            name="ck_dts_event_offsets",
+        ),
+        CheckConstraint(
+            "route_status IN ('PROCESSED', 'IGNORED')",
+            name="ck_dts_event_route_status",
+        ),
+        Index(
+            "ix_dts_ingest_events_source_table_processed",
+            "source_region",
+            "source_table",
+            "processed_at",
+        ),
+    )
+
+    source_region: Mapped[str] = mapped_column(String(8), primary_key=True)
+    topic: Mapped[str] = mapped_column(String(512), primary_key=True)
+    partition_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    offset_value: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    record_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_txid: Mapped[str] = mapped_column(Text, nullable=False)
+    source_position: Mapped[str] = mapped_column(Text, nullable=False)
+    operation: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_database: Mapped[Optional[str]] = mapped_column(Text)
+    source_schema: Mapped[Optional[str]] = mapped_column(Text)
+    source_table: Mapped[Optional[str]] = mapped_column(Text)
+    route_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    dirty_key_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    issue_codes: Mapped[list[str]] = mapped_column(JSON_VALUE, nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+
+
+class DtsSourceRowRecord(Base):
+    """Latest whitelisted source image seen after the subscription start."""
+
+    __tablename__ = "dts_source_rows"
+    __table_args__ = (
+        CheckConstraint(
+            "source_region IN ('ovs', 'dom')",
+            name="ck_dts_source_row_region",
+        ),
+        CheckConstraint(
+            "last_partition >= 0 AND last_offset >= 0 AND row_version >= 1",
+            name="ck_dts_source_row_version",
+        ),
+        Index(
+            "ix_dts_source_rows_table_active",
+            "source_region",
+            "source_table",
+            "is_deleted",
+        ),
+        Index(
+            "ix_dts_source_rows_dependency_keys",
+            "dependency_keys",
+            postgresql_using="gin",
+            postgresql_ops={"dependency_keys": "jsonb_path_ops"},
+        ),
+    )
+
+    source_region: Mapped[str] = mapped_column(String(8), primary_key=True)
+    source_table: Mapped[str] = mapped_column(String(128), primary_key=True)
+    source_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    source_key_data: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    dependency_keys: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    source_row: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    source_timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_record_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_position: Mapped[str] = mapped_column(Text, nullable=False)
+    last_topic: Mapped[str] = mapped_column(String(512), nullable=False)
+    last_partition: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+
+
+class DtsDirtyKeyRecord(Base):
+    """Coalesced key waiting for deterministic source-wide recomputation."""
+
+    __tablename__ = "dts_dirty_keys"
+    __table_args__ = (
+        CheckConstraint(
+            "key_type IN "
+            "('COURSE', 'TEACHER', 'TEACHER_STUDENT', 'LABEL', 'COMPLAINT_CATEGORY')",
+            name="ck_dts_dirty_key_type",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'PROCESSING', 'RETRY', 'COMPLETED')",
+            name="ck_dts_dirty_key_status",
+        ),
+        CheckConstraint(
+            "last_source_region IN ('ovs', 'dom')",
+            name="ck_dts_dirty_key_region",
+        ),
+        CheckConstraint(
+            "pending_event_count >= 1 AND attempt_count >= 0 "
+            "AND last_partition >= 0 AND last_offset >= 0 AND row_version >= 1",
+            name="ck_dts_dirty_key_counters",
+        ),
+        Index(
+            "ix_dts_dirty_keys_ready",
+            "status",
+            "next_attempt_at",
+            "last_seen_at",
+        ),
+    )
+
+    key_type: Mapped[str] = mapped_column(String(32), primary_key=True)
+    key_part_1: Mapped[str] = mapped_column(String(256), primary_key=True)
+    key_part_2: Mapped[str] = mapped_column(String(256), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    pending_event_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_source_region: Mapped[str] = mapped_column(String(8), nullable=False)
+    last_source_table: Mapped[Optional[str]] = mapped_column(String(128))
+    last_topic: Mapped[str] = mapped_column(String(512), nullable=False)
+    last_partition: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    issue_codes: Mapped[list[str]] = mapped_column(JSON_VALUE, nullable=False)
+    last_error_code: Mapped[Optional[str]] = mapped_column(String(128))
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(128))
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
 
 
 class TeacherRecord(Base):

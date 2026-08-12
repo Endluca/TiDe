@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.exc import OperationalError
 
+import scripts.settle_shared_task_scores as score_worker_script
 from app.database import engine
 from app.shared_task_score_settlement import settle_shared_task_scores_once
 from scripts.settle_shared_task_scores import (
@@ -30,6 +31,20 @@ def test_score_worker_heartbeat_is_atomic_and_expires(tmp_path: Path) -> None:
     old = time.time() - 30
     os.utime(heartbeat, (old, old))
     assert _heartbeat_is_fresh(heartbeat, max_age_seconds=15) is False
+
+
+def test_score_worker_rejects_invalid_qualification_grant_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(
+        "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED",
+        "yes",
+    )
+    assert score_worker_script.main() == 2
+    assert capsys.readouterr().err.strip() == (
+        "IRREVERSIBLE_QUALIFICATION_AWARD_GATE_INVALID"
+    )
 
 
 class _PostgresDialect:

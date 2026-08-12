@@ -21,7 +21,8 @@ describe('TideRepository G01 evidence', () => {
       [unknown, unknown[] | undefined]
     >;
     const sql = String(calls[0][0]);
-    expect(sql).toContain('FROM public.teacher_source_wide');
+    expect(sql).toContain('FROM public.teacher_g01_status_current');
+    expect(sql).not.toContain('FROM public.teacher_source_wide');
     expect(sql).toContain('WHERE tchr_id = $1');
     expect(sql).toContain('is_cpl_tesol');
     expect(sql).not.toContain('is_self_introduce');

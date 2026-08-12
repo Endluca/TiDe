@@ -80,7 +80,7 @@ RUN python -m venv /opt/venv
 COPY backend/requirements.txt ./requirements.txt
 RUN /opt/venv/bin/pip install --no-cache-dir --requirement requirements.txt
 
-# ========== Stage 5: one image, five supervised processes ==========
+# ========== Stage 5: one image, profile-isolated supervised processes ==========
 FROM hub.51talk.biz/library/python:3.12-alpine AS runtime
 LABEL maintainer="51talk SRE"
 
@@ -101,6 +101,8 @@ ENV TZ=Asia/Shanghai \
     TIT_SCORE_WORKER_HEARTBEAT=/tmp/tit-score-worker-heartbeat \
     TIT_SOURCE_WORKER_HEARTBEAT=/tmp/tit-source-worker-heartbeat \
     TIT_SOURCE_WORKER_READINESS=/tmp/tit-source-worker-readiness \
+    TIT_DTS_INGEST_HEARTBEAT=/tmp/tit-dts-ingest-heartbeat \
+    TIT_DTS_INGEST_READINESS=/tmp/tit-dts-ingest-readiness \
     VIDEO_PREFETCH_STATE_DIR=/var/lib/tide/video-prefetch-runs \
     S6_KEEP_ENV=1 \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \

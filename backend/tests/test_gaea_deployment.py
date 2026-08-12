@@ -14,11 +14,16 @@ GAEA_DIR = ROOT / "gaea"
 DOCKERFILE = GAEA_DIR / "Dockerfile"
 README = GAEA_DIR / "README.md"
 HEALTHCHECK = GAEA_DIR / "bin" / "healthcheck.sh"
+SOURCE_WIDE_ENABLED = GAEA_DIR / "bin" / "source-wide-enabled.sh"
 NGINX_CONF = GAEA_DIR / "nginx" / "nginx.conf"
 TEACHER_CONF = GAEA_DIR / "nginx" / "teacher.conf"
 RENDER_NGINX = GAEA_DIR / "bin" / "render-nginx-conf.sh"
 RENDER_REAL_IP = GAEA_DIR / "bin" / "render-real-ip-conf.py"
 S6_DIR = GAEA_DIR / "s6-rc.d"
+DTS_OVS_ENV = ROOT / "backend" / ".env.dts-ingest.ovs.production.example"
+DTS_DOM_ENV = ROOT / "backend" / ".env.dts-ingest.dom.production.example"
+APPLICATION_ENV = ROOT / "backend" / ".env.production.example"
+COMBINED_ENV = ROOT / "deploy" / "combined" / ".env.example"
 TEACHER_COMPANY_TEST_MIGRATOR = (
     ROOT
     / "teacher"
@@ -228,15 +233,32 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
     assert '-v app_password="${TIDE_APP_DB_PASSWORD}"' not in script
     assert r"\getenv app_password TIDE_APP_DB_PASSWORD" in script
     assert "DROP " not in grant_script.upper()
-    assert "REVOKE ALL ON public.teachers FROM tit_teacher_crud;" in grant_script
-    assert "GRANT SELECT ON public.teachers TO tit_teacher_crud;" in grant_script
+    assert (
+        "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM tit_teacher_crud;"
+        in grant_script
+    )
+    assert "public.teachers," in grant_script
+    assert "public.teacher_g01_status_current" in grant_script
+    assert (
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA tide "
+        "TO tit_teacher_crud;"
+    ) in grant_script
+    assert (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE tide_sys_admin IN SCHEMA tide"
+        in grant_script
+    )
+    assert "GRANT SELECT ON ALL TABLES IN SCHEMA public" not in grant_script
+    assert (
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public"
+        not in grant_script
+    )
     assert "not has_table_privilege(current_user, 'public.teachers', 'INSERT')" in script
     assert "not has_table_privilege(current_user, 'public.teachers', 'UPDATE')" in script
     assert "not has_table_privilege(current_user, 'public.teachers', 'DELETE')" in script
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260811_57_g02_document"',
+        'EXPECTED_PUBLIC_HEAD="20260812_59_simple_acl"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -386,7 +408,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260811_57_g02_document\\n' ;;
+  6) printf '20260812_59_simple_acl\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -790,7 +812,7 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "http://127.0.0.1:8080/health/ready" in healthcheck
     assert "http://127.0.0.1:3000/health/ready" not in healthcheck
     assert "TIDE_TEACHER_HOST must be a hostname" in healthcheck
-    assert healthcheck.count("--healthcheck") == 2
+    assert healthcheck.count("--healthcheck") == 3
     assert "--max-heartbeat-age-seconds 90" in healthcheck
     assert "--max-readiness-age-seconds 90" in healthcheck
 
@@ -800,6 +822,7 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
         "teacher-web": "nginx",
         "score-settlement": "settle_shared_task_scores.py",
         "source-wide": "run_source_wide_worker.py",
+        "dts-ingest": "run_dts_ingest.py",
     }
     for service, command in expected_services.items():
         service_type = (S6_DIR / service / "type").read_text(
@@ -823,7 +846,17 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert (S6_DIR / "source-wide" / "timeout-kill").read_text(
         encoding="utf-8"
     ).strip() == "25000"
-    assert "TIT_SOURCE_WORKER_DATABASE_URL is required" in source_worker_run
+    assert "DATABASE_URL is required" in source_worker_run
+    assert "TIT_SOURCE_WORKER_DATABASE_URL" not in source_worker_run
+    assert "/app/bin/source-wide-enabled.sh" in source_worker_run
+    assert "TIT_SOURCE_WIDE_ENABLED=false" in source_worker_run
+    assert source_worker_run.count("exec sleep infinity") == 2
+    assert source_worker_run.index("TIT_PROCESS_PROFILE") < source_worker_run.index(
+        "/app/bin/source-wide-enabled.sh"
+    )
+    assert source_worker_run.index(
+        "/app/bin/source-wide-enabled.sh"
+    ) < source_worker_run.index("DATABASE_URL is required")
     assert "--watch --max-events 25 --interval-seconds 3" in source_worker_run
     assert (
         "--heartbeat-path /tmp/tit-source-worker-heartbeat"
@@ -835,10 +868,73 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     )
     assert "--heartbeat-path /tmp/tit-source-worker-heartbeat" in healthcheck
     assert "--readiness-path /tmp/tit-source-worker-readiness" in healthcheck
+    assert "/app/bin/source-wide-enabled.sh" in healthcheck
+    assert "SourceWide healthcheck intentionally skipped" in healthcheck
+    assert healthcheck.index("TIT_PROCESS_PROFILE") < healthcheck.index(
+        "/app/bin/source-wide-enabled.sh"
+    )
     assert "TIT_SCORE_WORKER_HEARTBEAT" in dockerfile
     assert "TIT_SOURCE_WORKER_HEARTBEAT" in dockerfile
     assert "TIT_SOURCE_WORKER_READINESS" in dockerfile
+    assert "TIT_DTS_INGEST_HEARTBEAT" in dockerfile
+    assert "TIT_DTS_INGEST_READINESS" in dockerfile
+    dts_run = (S6_DIR / "dts-ingest" / "run").read_text(encoding="utf-8")
+    assert "TIT_PROCESS_PROFILE" in dts_run
+    assert "TIT_DTS_PASSWORD is required" in dts_run
+    assert "TIT_DTS_INGEST_DB_PASSWORD is required" in dts_run
+    assert "--watch --max-messages 100" in dts_run
+    assert (S6_DIR / "dts-ingest" / "timeout-kill").read_text(
+        encoding="utf-8"
+    ).strip() == "25000"
+    for service in (
+        "operations",
+        "teacher-api",
+        "teacher-web",
+        "score-settlement",
+        "source-wide",
+    ):
+        assert "TIT_PROCESS_PROFILE" in (S6_DIR / service / "run").read_text(
+            encoding="utf-8"
+        )
     assert "STOPSIGNAL SIGTERM" in dockerfile
+
+
+def test_source_wide_enable_gate_defaults_true_and_rejects_invalid_values() -> None:
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert SOURCE_WIDE_ENABLED.is_file()
+    assert os.access(SOURCE_WIDE_ENABLED, os.X_OK)
+    assert "COPY --chmod=755 gaea/bin /app/bin" in dockerfile
+
+    base_env = os.environ.copy()
+    base_env.pop("TIT_SOURCE_WIDE_ENABLED", None)
+    valid_values = ((None, "true"), ("true", "true"), ("false", "false"))
+    for value, expected in valid_values:
+        env = base_env.copy()
+        if value is not None:
+            env["TIT_SOURCE_WIDE_ENABLED"] = value
+        result = subprocess.run(
+            [str(SOURCE_WIDE_ENABLED)],
+            check=False,
+            capture_output=True,
+            env=env,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == expected
+        assert result.stderr == ""
+
+    for value in ("", "TRUE", "1", "yes"):
+        result = subprocess.run(
+            [str(SOURCE_WIDE_ENABLED)],
+            check=False,
+            capture_output=True,
+            env=base_env | {"TIT_SOURCE_WIDE_ENABLED": value},
+            text=True,
+        )
+        assert result.returncode == 64
+        assert result.stdout == ""
+        assert "must be exactly true or false" in result.stderr
 
 
 def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
@@ -846,12 +942,22 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
 
     assert "单模块" in readme
     assert "单镜像" in readme
-    assert "五个常驻进程" in readme
+    assert "六个进程入口" in readme
     assert "8010" in readme and "8080" in readme and "3000" in readme
     assert "设置为 `2` 或更高" in readme
     assert "RollingUpdate" in readme
     assert "不再要求 `Recreate`" in readme
-    assert "不再为 Worker 新建 Gaea 项目" in readme
+    assert "不再为积分或 SourceWide Worker 新建" in readme
+    assert "TIT_PROCESS_PROFILE=dts-ingest" in readme
+    assert "TIT_DTS_INGEST_DB_PASSWORD" in readme
+    assert "TIT_DTS_COHORT_START" in readme
+    assert "2026-08-13" in readme
+    assert "TIT_DTS_PROJECTION_ENABLED=false" in readme
+    assert "TIT_DTS_ACTIVATION_AT" in readme
+    assert "TIT_DTS_REQUIRED_OVS_TOPIC" in readme
+    assert "TIT_DTS_REQUIRED_DOM_TOPIC" in readme
+    assert "pg_try_advisory_lock" not in readme
+    assert "session advisory" in readme
     assert "session advisory lock" in readme
     assert "standby" in readme
     assert "未持有积分 advisory lock" in readme
@@ -861,8 +967,10 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "副本数必须固定为 `1`" not in readme
     assert "先缩容到 `0`" not in readme
     assert "同一 UID" in readme
-    assert "tit_growth_migrator" in readme
-    assert "tide_migrator" in readme
+    assert "tide_sys_admin" in readme
+    assert "tit_growth_migrator" not in readme
+    assert "tide_migrator" not in readme
+    assert "20260812_59_simple_acl" in readme
     assert "20260811_55_source_wide_v12" in readme
     assert "0037_g04_remove_device_check" in readme
     assert "20260811_51_g01_tesol_only" in readme
@@ -872,17 +980,50 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "0041_crm_sso_hybrid" in readme
     assert (
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
-        "teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → "
-        "teacher 0040 → teacher 0041"
+        "teacher 0037 → public 55 → release public 56 → teacher 0038 → "
+        "release public 57 → teacher 0040 → teacher 0041"
     ) in readme
     assert "TEACHING_ENVIRONMENT_V1" in readme
+    assert "G01 TESOL-only" in readme
+    assert "release 内容链到 public 57 / teacher 0041" in readme
     assert "settle_shared_task_scores.py --watch" in readme
     assert "TIT_SCORE_WORKER_HEARTBEAT" in readme
+    assert "TIT_SOURCE_WIDE_ENABLED" in readme
+    assert "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED" in readme
+    assert "当前门槛" in readme
+    assert "首次 DTS 投影排空" in readme
+    assert "恢复为 `true`" in readme
     assert "TIT_BOOTSTRAP_USERNAME" in readme
     assert "TIT_BOOTSTRAP_PASSWORD" in readme
     assert "`https://tide.51talk.com`" in readme
     assert "tide-camp-teacher.test.51talk.biz" not in readme
     assert "不代表" in readme
+
+
+def test_application_examples_enable_source_wide_by_default() -> None:
+    for path in (APPLICATION_ENV, COMBINED_ENV):
+        content = path.read_text(encoding="utf-8")
+        assert content.count("TIT_SOURCE_WIDE_ENABLED=true") == 1
+        assert content.count(
+            "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED=false"
+        ) == 1
+
+
+def test_dts_region_examples_share_the_projection_activation_contract() -> None:
+    overseas = DTS_OVS_ENV.read_text(encoding="utf-8")
+    domestic = DTS_DOM_ENV.read_text(encoding="utf-8")
+    expected_topics = {
+        "TIT_DTS_REQUIRED_OVS_TOPIC=ap_southeast_1_vpc_pc_"
+        "gs5986x4885426aej_dba_tide_source_ovs_version2",
+        "TIT_DTS_REQUIRED_DOM_TOPIC=cn_beijing_vpc_pc_"
+        "2ze5w28lmdr8f626y_dba_tide_source_dom_version2",
+    }
+
+    for content in (overseas, domestic):
+        assert "TIT_DTS_PROJECTION_ENABLED=false" in content
+        assert "TIT_DTS_ACTIVATION_AT=" in content
+        for topic in expected_topics:
+            assert topic in content
 
 
 def test_current_deployment_docs_do_not_restore_single_replica_mode() -> None:

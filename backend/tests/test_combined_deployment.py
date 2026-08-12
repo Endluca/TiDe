@@ -15,10 +15,6 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "deploy" / "combined"
-SOURCE_WORKER_ENV_FILE = (
-    "${TIDE_SOURCE_WORKER_ENV_FILE:?Set TIDE_SOURCE_WORKER_ENV_FILE "
-    "to a protected source-worker-only env file}"
-)
 EXPECTED_TEACHER_MIGRATIONS = (
     "0001_initial",
     "0002_shared_database_exchange",
@@ -136,20 +132,16 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
 
     assert services["api"]["env_file"] != services["teacher-api"]["env_file"]
     assert services["migrate"]["env_file"] != services["api"]["env_file"]
-    assert services["source-wide"]["env_file"] == [SOURCE_WORKER_ENV_FILE]
-    assert services["source-wide"]["env_file"] != services["api"]["env_file"]
+    assert services["source-wide"]["env_file"] == services["api"]["env_file"]
     assert services["source-wide"]["env_file"] != services["migrate"]["env_file"]
-    assert services["contract-probe"]["env_file"] != services["migrate"]["env_file"]
+    assert services["contract-probe"]["env_file"] == services["migrate"]["env_file"]
     assert services["contract-probe"]["env_file"] != services["api"]["env_file"]
-    assert services["contract-probe"]["env_file"] == [
-        "${TIDE_CONTRACT_PROBE_ENV_FILE:?Set TIDE_CONTRACT_PROBE_ENV_FILE to a protected read-only probe env file}"
-    ]
     assert services["contract-probe"]["environment"][
         "TIDE_CONTRACT_PROBE_REQUIRE_SSL"
     ] == "true"
     assert (
         services["teacher-migrate"]["env_file"]
-        != services["teacher-api"]["env_file"]
+        == services["migrate"]["env_file"]
     )
     assert (
         services["teacher-migrate"]["build"]["dockerfile"]
@@ -182,20 +174,6 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
         ]
         == "${TIDE_TEACHER_PUBLIC_ASSET_BASE_URL:?Set an HTTPS public asset base URL}"
     )
-    probe_environment_example = (
-        DEPLOY / "contract-probe.env.example"
-    ).read_text(encoding="utf-8")
-    configured_lines = [
-        line
-        for line in probe_environment_example.splitlines()
-        if line and not line.startswith("#")
-    ]
-    assert configured_lines == [
-        "DATABASE_URL=postgresql://tit_contract_probe:REPLACE_ME@"
-        "postgres.example.internal:5432/tit_growth?sslmode=verify-full"
-    ]
-
-
 def test_combined_deployment_runs_source_worker_with_bounded_resources() -> None:
     source_worker = _compose()["services"]["source-wide"]
 
@@ -242,7 +220,6 @@ def test_combined_deployment_runs_source_worker_with_bounded_resources() -> None
 def test_combined_preflight_and_database_probe_fail_closed() -> None:
     preflight = (DEPLOY / "preflight.sh").read_text(encoding="utf-8")
     probe = (DEPLOY / "contract-probe.sql").read_text(encoding="utf-8")
-    grants = (DEPLOY / "grant-contract-probe.sql").read_text(encoding="utf-8")
     runner = (DEPLOY / "run-contract-probe.sh").read_text(encoding="utf-8")
 
     assert "status --porcelain" in preflight
@@ -264,6 +241,10 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0032_first_login_onboarding" in preflight
     assert "0037_g04_remove_device_check" in preflight
     assert "0033_g01_tesol_only" in preflight
+    assert "0038_personalized_environment_photo" in preflight
+    assert "0039_g02_policy_document" in preflight
+    assert "0040_g02_document_read_status" in preflight
+    assert "0041_crm_sso_hybrid" in preflight
     assert "2026-08-11-tesol-only-v1" in preflight
     assert "TESOL 真实状态尚未通过。" in preflight
     assert "0038_personalized_environment_photo" in preflight
@@ -275,6 +256,15 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "g02-courseware-2026-08-05-guidance-v1" in preflight
     assert "2026-08-05-g04-three-part-v1" in preflight
     assert "2026-08-11-g04-two-part" in preflight
+    assert "p-fb-negative-environment-photo" in preflight
+    assert "TEACHING_ENVIRONMENT_V1" in preflight
+    assert "g02-policy-document" in preflight
+    assert "step_type = 'DOCUMENT'" in preflight
+    assert "task_step_progress_g02_assignment_completion_check" in preflight
+    assert "CREATE TABLE tide.crm_sso_logins" in preflight
+    assert "20260811_56_p_fb_negative_copy" in preflight
+    assert "20260811_57_g02_document" in preflight
+    assert "20260812_59_simple_acl" in preflight
     assert "DELETE FROM tide.task_step_definitions" in preflight
     assert (
         '"requiredStepKeys":\\["g02-environment-photo",'
@@ -282,19 +272,99 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     ) in preflight
     assert "Lesson Preparation" in preflight
     assert "is_loopback_or_rfc1918_ipv4" in preflight
-    assert "TIDE_CONTRACT_PROBE_ENV_FILE" in preflight
-    assert "TIDE_SOURCE_WORKER_ENV_FILE" in preflight
-    assert "TIT_SOURCE_WORKER_DATABASE_URL" in preflight
-    assert "tit_source_worker_runtime" in preflight
+    assert "TIDE_CONTRACT_PROBE_ENV_FILE" not in preflight
+    assert "TIDE_SOURCE_WORKER_ENV_FILE" not in preflight
+    assert "TIT_SOURCE_WORKER_DATABASE_URL" not in preflight
+    assert "tit_growth_app" in preflight
+    assert "tide_sys_admin" in preflight
+    assert "tit_teacher_crud" in preflight
     assert "公司网关可信源" in preflight
 
-    assert "current_user IS DISTINCT FROM 'tit_contract_probe'" in probe
-    assert "session_user IS DISTINCT FROM 'tit_contract_probe'" in probe
+    assert "current_user IS DISTINCT FROM 'tide_sys_admin'" in probe
+    assert "session_user IS DISTINCT FROM 'tide_sys_admin'" in probe
     assert "transaction_read_only" in probe
     assert "pg_stat_ssl" in probe
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
     assert "20260811_57_g02_document" in probe
+    assert "20260812_59_simple_acl" in probe
+    ledger_start = probe.index(
+        "SELECT array_agg(migration_id ORDER BY migration_order)"
+    )
+    ledger_end = probe.index("]::text[] THEN", ledger_start)
+    ledger_entries = tuple(
+        line.strip().strip(",").strip("'")
+        for line in probe[ledger_start:ledger_end].splitlines()
+        if line.strip().startswith("'")
+    )
+    assert len(ledger_entries) == 36
+    assert ledger_entries == EXPECTED_TEACHER_MIGRATIONS
+    assert "chain ending at 0041" in probe
+    assert "tide.crm_sso_logins" in probe
+    assert "tide.user_accounts" in probe
+    assert "tide.auth_sessions" in probe
+    assert "CRM SSO account or session columns are incomplete" in probe
+    for relation in (
+        "teacher_source_wide",
+        "lesson_source_wide",
+        "dts_ingest_checkpoints",
+        "dts_ingest_events",
+        "dts_source_rows",
+        "dts_dirty_keys",
+    ):
+        assert relation in probe
+    assert "tit_dts_ingest_runtime" in probe
+    assert "DTS runtime does not have exact six-table CRUD" in probe
+    assert (
+        "DTS runtime can mutate a relation outside its six-table boundary"
+        in probe
+    )
+    for relation in (
+        "public.teachers",
+        "public.complaint_category_rules",
+        "public.personalized_trigger_matches",
+        "public.lesson_score_results",
+        "public.teacher_qualifications",
+        "public.score_accounts",
+        "public.score_component_accounts",
+        "public.score_entries",
+        "public.task_templates",
+        "public.task_assignments",
+        "public.notifications",
+        "public.ops_cases",
+        "public.ops_decisions",
+        "public.outbox_events",
+        "public.audit_events",
+        "public.idempotency_records",
+        "public.config_versions",
+        "public.config_publication_audits",
+        "public.operator_accounts",
+        "public.operator_role_grants",
+        "public.operator_sessions",
+        "public.teacher_support_tickets",
+    ):
+        assert relation in probe
+    assert "TiDe runtime source-wide access is not read-only" in probe
+    assert "TiDe runtime business-table CRUD is incomplete" in probe
+    for relation in (
+        "public.alembic_version",
+        "public.task_templates",
+        "public.teachers",
+        "public.teacher_scorecard_current",
+        "public.teacher_lesson_score_current",
+        "public.teacher_g01_status_current",
+        "public.task_assignments",
+        "public.notifications",
+        "public.notification_events",
+        "public.teacher_support_tickets",
+    ):
+        assert relation in probe
+    assert "teacher runtime public read-only ACL is invalid" in probe
+    assert "teacher runtime public business-table CRUD is incomplete" in probe
+    assert "teacher runtime tide-table CRUD is incomplete" in probe
+    assert "support-ticket function owner table CRUD is incomplete" in probe
+    assert "guard_audit_event_history" in probe
+    assert "guard_runtime_append_only_fact" in probe
     assert "Complete the required TESOL status and learning evidence." in probe
     assert "Confirm TESOL, pass all 61 questions" in probe
     assert "TESOL is complete, the 61-question check reaches 80%" in probe
@@ -375,27 +445,32 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0032_first_login_onboarding" in probe
     assert "0033_g01_tesol_only" in probe
     assert "0037_g04_remove_device_check" in probe
-    assert "'public.teacher_source_wide',\n        'tchr_id'" in probe
-    assert "'public.teacher_source_wide',\n        'is_cpl_tesol'" in probe
-    assert "'public.teacher_source_wide',\n        'is_self_introduce'" in probe
-    assert "'public.teacher_source_wide',\n        'real_name'" in probe
     assert "0038_personalized_environment_photo" in probe
     assert "0041_crm_sso_hybrid" in probe
     assert "tide.crm_sso_logins" in probe
     assert "P-FB-NEGATIVE is not the exact pending personalized photo execution" in probe
     assert "p-fb-negative-environment-photo" in probe
     assert "TEACHING_ENVIRONMENT_V1" in probe
+    assert "public.teacher_g01_status_current" in probe
+    assert "ARRAY['tchr_id', 'is_cpl_tesol']" in probe
+    assert "guard_teacher_notification_write" in probe
+    assert "guard_notification_event_history" in probe
+    assert "guard_simple_support_ticket_write" in probe
+    assert "guard_dts_runtime_state_write" in probe
+    assert "guard_runtime_schema_migration_write" in probe
+    assert "guard_crm_sso_login_write" in probe
+    assert "protect_system_notification_content" in probe
+    assert "guard_outbox_event_update" in probe
+    assert "guard_lesson_score_result_identity" in probe
+    assert "guard_operator_account_runtime_update" in probe
+    assert "runtime roles still have explicit column ACL" in probe
+    assert "pg_default_acl" in probe
+    assert "future tide tables will not inherit teacher runtime CRUD" in probe
     assert "tide.account_onboarding_states" in probe
     assert "account_onboarding_states_request_hash_check" in probe
     assert "confdeltype = 'c'" in probe
     assert "p_message IS NULL" in probe
     assert "tide_support_ticket_owner" in probe
-    assert "ALTER ROLE tit_contract_probe SET default_transaction_read_only" in grants
-    assert "GRANT SELECT ON" in grants
-    assert "tide.task_step_definitions" in grants
-    assert "tide.task_validation_rules" in grants
-    assert "tide.account_onboarding_states" in grants
-    assert "REVOKE ALL PRIVILEGES ON ALL TABLES" in grants
     assert "sslmode=verify-full" in runner
     assert "--no-password" in runner
 
@@ -611,6 +686,8 @@ def _teacher_migrator_fixture(
         "# public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
         "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041\n"
+        "required_public_56=20260811_56_p_fb_negative_copy\n"
+        "required_public_57=20260811_57_g02_document\n"
         "product_analytics_recorded=true\n"
         if include_cross_chain_gate
         else ""
@@ -698,9 +775,20 @@ def _make_preflight_environment(
             "COMMIT;\n"
         ),
         "backend/database/migrations/"
-        "0039_g02_policy_document.up.sql": "BEGIN;\nCOMMIT;\n",
+        "0039_g02_policy_document.up.sql": (
+            "BEGIN;\n"
+            "SELECT step_key = 'g02-policy-document';\n"
+            "SELECT step_type = 'DOCUMENT';\n"
+            "SELECT '{\"contentHash\":\"fixture\"}';\n"
+            "COMMIT;\n"
+        ),
         "backend/database/migrations/"
-        "0040_g02_document_read_status.up.sql": "BEGIN;\nCOMMIT;\n",
+        "0040_g02_document_read_status.up.sql": (
+            "BEGIN;\n"
+            "CREATE CONSTRAINT TRIGGER "
+            "task_step_progress_g02_assignment_completion_check;\n"
+            "COMMIT;\n"
+        ),
         "backend/database/migrations/"
         "0041_crm_sso_hybrid.up.sql": (
             "BEGIN;\n"
@@ -751,18 +839,28 @@ def _make_preflight_environment(
     environment_files = [
         tmp_path / "ops.env",
         tmp_path / "ops-migration.env",
-        tmp_path / "source-worker.env",
-        tmp_path / "contract-probe.env",
         tmp_path / "teacher.env",
-        tmp_path / "teacher-migration.env",
     ]
-    for environment_file in environment_files:
-        environment_file.write_text("PLACEHOLDER=true\n", encoding="utf-8")
-    environment_files[2].write_text(
-        "TIT_SOURCE_WORKER_DATABASE_URL="
-        "postgresql+psycopg://tit_source_worker_runtime:secret@db.example/"
+    environment_files[0].write_text(
+        "DATABASE_URL="
+        "postgresql+psycopg://tit_growth_app:secret@db.example/"
         "tit_growth?sslmode=verify-full\n"
         "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth\n",
+        encoding="utf-8",
+    )
+    environment_files[1].write_text(
+        "DATABASE_URL="
+        "postgresql+psycopg://tide_sys_admin:secret@db.example/"
+        "tit_growth?sslmode=verify-full\n",
+        encoding="utf-8",
+    )
+    environment_files[2].write_text(
+        "TIDE_DATABASE_URL="
+        "postgresql://tit_teacher_crud:secret@db.example/"
+        "tit_growth?sslmode=verify-full\n"
+        "SHIWEN_READ_DATABASE_URL="
+        "postgresql://tit_teacher_crud:secret@db.example/"
+        "tit_growth?sslmode=verify-full\n",
         encoding="utf-8",
     )
 
@@ -777,10 +875,7 @@ def _make_preflight_environment(
         "TIDE_DATABASE_NAME": "tit_growth",
         "TIDE_OPS_ENV_FILE": str(environment_files[0]),
         "TIDE_OPS_MIGRATION_ENV_FILE": str(environment_files[1]),
-        "TIDE_SOURCE_WORKER_ENV_FILE": str(environment_files[2]),
-        "TIDE_CONTRACT_PROBE_ENV_FILE": str(environment_files[3]),
-        "TIDE_TEACHER_ENV_FILE": str(environment_files[4]),
-        "TIDE_TEACHER_MIGRATION_ENV_FILE": str(environment_files[5]),
+        "TIDE_TEACHER_ENV_FILE": str(environment_files[2]),
         "TIDE_TEACHER_REPO_PATH": str(teacher_repo),
         "TIDE_TEACHER_EXPECTED_COMMIT": commit,
         "TIDE_TEACHER_PUBLIC_ASSET_BASE_URL": "https://media.example.com",
@@ -836,7 +931,7 @@ def test_combined_preflight_rejects_teacher_chain_ending_before_0041(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0041 结尾的完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0041 结尾的 36 条完整有序生产链" in result.stderr
 
 
 def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
@@ -854,7 +949,8 @@ def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
     assert result.returncode != 0
     assert (
         "public46→teacher0028→public50→teacher0032→public54→teacher0037"
-        "→public55→public56→teacher0038→public57→teacher0040→teacher0041"
+        "→public55→release-public56→teacher0038→release-public57"
+        "→teacher0040→teacher0041"
         in result.stderr
     )
 
@@ -984,25 +1080,23 @@ def test_combined_preflight_limits_the_trusted_gateway_source(
     assert (result.returncode == 0) is accepted, result.stderr
 
 
-def test_combined_preflight_rejects_reused_probe_credentials(
+def test_combined_preflight_rejects_reused_runtime_and_migration_credentials(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
-    environment["TIDE_CONTRACT_PROBE_ENV_FILE"] = environment[
-        "TIDE_OPS_MIGRATION_ENV_FILE"
-    ]
+    environment["TIDE_OPS_MIGRATION_ENV_FILE"] = environment["TIDE_OPS_ENV_FILE"]
 
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "契约探针必须使用独立只读账号环境文件" in result.stderr
+    assert "运营运行与迁移环境文件不得复用" in result.stderr
 
 
 def test_contract_probe_runner_requires_strict_production_tls() -> None:
     environment = {
         **os.environ,
         "DATABASE_URL": (
-            "postgresql://tit_contract_probe:secret@db.example/tit_growth"
+            "postgresql://tide_sys_admin:secret@db.example/tit_growth"
             "?sslmode=require"
         ),
         "TIDE_CONTRACT_PROBE_EXPECTED_DATABASE": "tit_growth",

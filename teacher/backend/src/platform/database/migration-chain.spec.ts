@@ -22,6 +22,10 @@ describe('teacher database migration chain', () => {
     expect(production).toMatch(
       /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding\s+0033_g01_tesol_only\s+0037_g04_remove_device_check\s+0038_personalized_environment_photo\s+0039_g02_policy_document\s+0040_g02_document_read_status\s+0041_crm_sso_hybrid/,
     );
+    expect(production).toContain('g02_document_read_status_recorded=false');
+    expect(production).toContain(
+      '&& "${g02_document_read_status_recorded}" != "t"',
+    );
   });
 
   it('updates only the stable G01 external-status rule in 0033', () => {

@@ -1,0 +1,24 @@
+#!/bin/sh
+
+set -eu
+if [ "${TIT_PROCESS_PROFILE:-application}" != "dts-ingest" ]; then
+  exec sleep infinity
+fi
+
+: "${TIT_DTS_SOURCE_REGION:?TIT_DTS_SOURCE_REGION is required}"
+: "${TIT_DTS_BROKER_URL:?TIT_DTS_BROKER_URL is required}"
+: "${TIT_DTS_TOPIC:?TIT_DTS_TOPIC is required}"
+: "${TIT_DTS_GROUP_ID:?TIT_DTS_GROUP_ID is required}"
+: "${TIT_DTS_ACCOUNT:?TIT_DTS_ACCOUNT is required}"
+: "${TIT_DTS_PASSWORD:?TIT_DTS_PASSWORD is required}"
+: "${TIT_DTS_START_AT:?TIT_DTS_START_AT is required}"
+: "${TIT_DTS_INGEST_DB_HOST:?TIT_DTS_INGEST_DB_HOST is required}"
+: "${TIT_DTS_INGEST_DB_PASSWORD:?TIT_DTS_INGEST_DB_PASSWORD is required}"
+
+cd /app/operations
+exec s6-setuidgid gaea \
+  /opt/venv/bin/python /app/operations/scripts/run_dts_ingest.py \
+  --watch --max-messages 100 --max-projection-keys 200 \
+  --idle-timeout-ms 10000 --interval-seconds 3 \
+  --heartbeat-path /tmp/tit-dts-ingest-heartbeat \
+  --readiness-path /tmp/tit-dts-ingest-readiness

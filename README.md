@@ -109,14 +109,22 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码迁移 head 为 public `20260811_57_g02_document` 与 teacher
-  `0041_crm_sso_hybrid`，最终 teacher canonical 账本为 36 条。
-  `20260811_51_g01_tesol_only` / `0033_g01_tesol_only` 将 G01 收窄为 TESOL-only，
-  rev54 / `0037_g04_remove_device_check` 将 G04 收敛为照片审核与课件准备两模块，
-  rev55 `20260811_55_source_wide_v12` 将教师源表收敛为确认的 55 列，`20260811_56_p_fb_negative_copy` / 0038 再追加个性化环境拍照，rev57/0039/0040 发布 G02 原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构。
-  交接测试库仍为 public `20260810_50_g04_sections` 与 teacher
-  `0032_first_login_onboarding`，仍是精确 30 条 canonical 账本，尚未应用上述后续迁移；
-  远程 G04 仍为历史三模块形状。`tit_growth_test_v2` 已于 2026-08-10 受控升级；重建前旧库封存为
+- 当前代码迁移 head 为 public `20260812_59_simple_acl` 与 teacher
+  `0041_crm_sso_hybrid`，最终 teacher canonical 账本为 36 条，其中
+  `20260811_51_g01_tesol_only` / `0033_g01_tesol_only`
+  将 G01 收窄为 TESOL-only，`20260811_54_g04_remove_device_check` /
+  `0037_g04_remove_device_check` 将 G04 收敛为照片审核与课件准备两模块，
+  `20260811_55_source_wide_v12` 将教师源表收敛为确认的 55 列，
+  `20260811_56_p_fb_negative_copy` / `0038_personalized_environment_photo`
+  追加个性化环境拍照，`20260811_57_g02_document` / 0039 / 0040 发布 G02
+  原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 再汇合
+  release 内容链与 ACL/DTS 分支。
+  公司 TEST 库 `tit_growth_test_v2` 已于 2026-08-11 按七阶段顺序受控升级至
+  public `20260812_56_lean_roles` 与 teacher `0037_g04_remove_device_check`，
+  teacher 为精确 32 条 canonical 账本；升级保留 public
+  `20260810_50_g04_sections` / teacher `0032_first_login_onboarding` 中间切换点，
+  G01、G04 与源宽表均已应用对应契约，但这不是 public 59 / teacher 0041 的完成证明。
+  重建前旧库封存为
   `tit_growth_test_v2_pre0030_20260810`，仅保留 DBA 回滚连接。代码目标结构中
   `teacher_source_wide` 为确认映射的 53 个教师字段加 2 个可空教师资料状态字段（G01 只消费 TESOL），
   `lesson_source_wide` 严格对应 CSV 课程 23 列（无“是否复约”）；两表均不增加更新时间、版本、哈希或同步批次字段。
@@ -128,7 +136,7 @@ Tide_teachers_camp/
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
-- 外部数据日更、教师端生产接入、真实通知回执、监控、备份和回滚仍待完成。国内/海外两个业务库到宽表的字段查询 SQL 与影响映射尚未提供，因此 Otter、MQ 消费与宽表写入逻辑不在当前已实现边界内。
+- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；两条订阅的非敏感参数已固化，`tide_system_test` 已迁移至 public 59，但两个 Gaea DTS 项目、运行时密钥和真实 broker 消费均尚未配置。当前增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；两条流先只接入追平，投影通过显式开关在单一项目启用。外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
 
 ## Gaea 部署骨架（单项目、单镜像、双域名）
 
@@ -162,7 +170,6 @@ Pod 都启动五个进程；两个 Worker 分别通过 PostgreSQL session adviso
 ```bash
 export TIDE_RUNTIME_ENV_FILE=/安全路径/TiDe.runtime.production.env
 export TIDE_MIGRATION_ENV_FILE=/安全路径/TiDe.migration.production.env
-export TIDE_SOURCE_WORKER_ENV_FILE=/安全路径/TiDe.source-worker.production.env
 export TIDE_MIGRATION_EXPECTED_DATABASE=tit_growth
 export TIDE_OPS_HOST=tit-growth.example.com
 
@@ -192,10 +199,10 @@ docker compose -f docker-compose.production.yml up -d api score-settlement sourc
 
 - `backend/Dockerfile` 使用非 root 用户运行 FastAPI，默认 2 个 Worker；
 - `frontend/Dockerfile` 产出静态资源，Nginx 同源代理 `/api`；
-- `TIDE_RUNTIME_ENV_FILE` 只使用受限运行角色 `tit_growth_app`，
-  `TIDE_MIGRATION_ENV_FILE` 只使用迁移角色 `tit_growth_migrator`，
-  `TIDE_SOURCE_WORKER_ENV_FILE` 只使用独立 LOGIN `tit_source_worker_runtime`；三个文件不得复用，
-  数据库凭据只由部署环境注入，不能复制进镜像；
+- `TIDE_RUNTIME_ENV_FILE` 使用受限运行角色 `tit_growth_app`，同时供运营 API、积分结算和
+  SourceWide Worker 使用；三者属于同一 TiDe 后端信任边界。`TIDE_MIGRATION_ENV_FILE`
+  使用现有管理账号 `tide_sys_admin`，只在受控发布窗口执行两条迁移链和只读契约探针；
+  两个文件不得复用，数据库凭据只由部署环境注入，不能复制进镜像；
 - 启动运营账号属于一次性管理动作，必须复用迁移/管理凭据执行；运行角色只有账号读取和
   自身密码哈希列更新权限，不能创建账号或授予角色；
 - 同源代理会把 Web App 域名作为 API 的 `Host`。`TIDE_OPS_HOST` 必须同时出现在运行
@@ -217,10 +224,14 @@ docker compose -f docker-compose.production.yml up -d api score-settlement sourc
 [联合部署说明](deploy/combined/README.md) 和
 [联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
 独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
-联合部署门禁要求按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041` 分阶段迁移，最终到达
-public `20260811_57_g02_document` 和教师端 `0041_crm_sso_hybrid`，并同时通过
+联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041` 完成跨 Schema 迁移，再升级 ACL 分支并合并到 public 59，最终到达
+public `20260812_59_simple_acl` 和教师端 `0041_crm_sso_hybrid`，并同时通过
 固定提交源码中的精确 `G01–G09` 标题/分值预检和目标数据库契约探针。
-其中 public 55 收敛教师源字段，public 56 / teacher 0038 追加个性化拍照，public 57 / teacher 0039–0040 发布 G02 原生文档，teacher 0041 增加 CRM SSO。
+其中 public 54 阶段包含 rev51 G01 TESOL-only，teacher 37 阶段包含 0033 G01 规则迁移，
+public 55 收敛教师源字段，release public 56 / teacher 0038 追加个性化拍照，
+release public 57 / teacher 0039–0040 发布 G02 原生文档，teacher 0041 增加 CRM SSO；
+public 59 合并 release 内容链与 ACL/DTS 分支，将运行权限统一为最终表级 ACL，并用
+Trigger/受限视图保留业务所有权。
 教师端未到 0041、最终 canonical 账本不是精确 36 条、目录缺项或语义错误都会失败关闭；在 public 47 及之后的空库直接
 回放 teacher 历史链同样会失败关闭。即使门禁通过，也不能把“已有 Compose”解释为
 已完成生产切流。

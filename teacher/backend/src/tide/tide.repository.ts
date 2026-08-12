@@ -96,7 +96,7 @@ export class TideRepository {
       `
         SELECT
           is_cpl_tesol AS "tesolCompleted"
-        FROM public.teacher_source_wide
+        FROM public.teacher_g01_status_current
         WHERE tchr_id = $1
         LIMIT 1
       `,

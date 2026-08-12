@@ -159,7 +159,7 @@ def test_revision_43_creates_tables_rewires_fk_and_guards_qualifications(
     assert "BEFORE UPDATE OR DELETE ON public.teacher_qualifications" in sql
 
 
-def test_source_worker_acl_is_explicit_and_cannot_write_source_payloads(
+def test_growth_runtime_acl_covers_internal_worker_without_source_writes(
     monkeypatch,
 ) -> None:
     migration = _migration_module()
@@ -170,10 +170,10 @@ def test_source_worker_acl_is_explicit_and_cannot_write_source_payloads(
         "execute",
         lambda statement: executed.append(str(statement)),
     )
-    migration._grant_source_worker_acl()
+    migration._grant_growth_runtime_acl()
     grants, assertions = executed
 
-    assert "tit_source_worker must be NOLOGIN" in source
+    assert "tit_growth_app must be a restricted LOGIN role" in source
     assert "rolcanlogin" in source
     assert set(migration.SOURCE_READ_TABLES) == {
         "teacher_source_wide",
@@ -209,16 +209,16 @@ def test_source_worker_acl_is_explicit_and_cannot_write_source_payloads(
         "updated_by",
     )
     assert "task_assignments" not in migration.READ_INSERT_UPDATE_TABLES
-    assert "GRANT SELECT ON TABLE public.outbox_events" in source
+    assert "GRANT SELECT, INSERT ON TABLE public.outbox_events" in source
     assert "GRANT UPDATE ({outbox_columns})" in source
     assert "GRANT UPDATE ({task_suppression_columns})" in source
-    assert "tit_source_worker may only update task suppression columns" in source
+    assert "tit_growth_app may only update task suppression columns" in source
     assert (
         "GRANT UPDATE (status, status_reason_code, status_changed_at, updated_by)\n"
         "            ON TABLE public.task_assignments"
     ) in grants
     assert "public.task_assignments,\n            public.notifications" not in grants
-    assert "has_table_privilege(\n                'tit_source_worker', " in assertions
+    assert "has_table_privilege(\n                'tit_growth_app', " in assertions
     assert "'public.task_assignments', 'UPDATE'" in assertions
     assert "'public.task_assignments',\n                      columns.attname::text" in assertions
     assert "server_default=sa.text(\"'{}'::jsonb\")" in source

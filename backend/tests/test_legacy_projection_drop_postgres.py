@@ -10,6 +10,7 @@ import sys
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
+from sqlalchemy.exc import DBAPIError
 
 
 POSTGRES_BINARIES = ("initdb", "pg_ctl", "postgres")
@@ -200,9 +201,19 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
         with engine.begin() as connection:
             for role_name in (
                 "tit_growth_app",
+                "tit_teacher_crud",
+                "tit_dts_ingest_runtime",
+            ):
+                connection.execute(
+                    text(
+                        f"CREATE ROLE {role_name} LOGIN NOINHERIT "
+                        "NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                        "NOREPLICATION NOBYPASSRLS"
+                    )
+                )
+            for role_name in (
                 "tit_source_monitor",
                 "tit_source_worker",
-                "tit_teacher_crud",
                 "tide_business_app",
             ):
                 connection.execute(
@@ -612,6 +623,67 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                 )
             )
         _run_alembic(backend_dir, database_url, "upgrade", "head")
+        with engine.begin() as connection:
+            assert connection.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM pg_trigger
+                    WHERE tgrelid = ANY (ARRAY[
+                        'public.score_entries'::regclass,
+                        'public.idempotency_records'::regclass,
+                        'public.config_publication_audits'::regclass,
+                        'public.ops_decisions'::regclass
+                    ])
+                      AND tgname = 'guard_runtime_append_only_fact'
+                      AND NOT tgisinternal
+                    """
+                )
+            ).scalar_one() == 4
+            connection.execute(text("SET LOCAL ROLE tit_growth_app"))
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.idempotency_records (
+                        scope, idempotency_key, request_hash, resource_id,
+                        response_payload, created_at
+                    ) VALUES (
+                        'ACL-APPEND-ONLY-PROBE', 'K1', repeat('a', 64), 'R1',
+                        '{}'::jsonb, now()
+                    )
+                    """
+                )
+            )
+
+        for forbidden_statement in (
+            """
+            UPDATE public.idempotency_records
+            SET request_hash = repeat('b', 64)
+            WHERE scope = 'ACL-APPEND-ONLY-PROBE'
+              AND idempotency_key = 'K1'
+            """,
+            """
+            DELETE FROM public.idempotency_records
+            WHERE scope = 'ACL-APPEND-ONLY-PROBE'
+              AND idempotency_key = 'K1'
+            """,
+        ):
+            with pytest.raises(DBAPIError, match="append-only for runtime roles"):
+                with engine.begin() as connection:
+                    connection.execute(text("SET LOCAL ROLE tit_growth_app"))
+                    connection.execute(text(forbidden_statement))
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    """
+                    SELECT count(*), min(request_hash)
+                    FROM public.idempotency_records
+                    WHERE scope = 'ACL-APPEND-ONLY-PROBE'
+                      AND idempotency_key = 'K1'
+                    """
+                )
+            ).one() == (1, "a" * 64)
         _run_alembic(backend_dir, database_url, "check")
     finally:
         engine.dispose()

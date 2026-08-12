@@ -9,10 +9,6 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE_WORKER_ENV_FILE = (
-    "${TIDE_SOURCE_WORKER_ENV_FILE:?Set TIDE_SOURCE_WORKER_ENV_FILE "
-    "to a protected source-worker-only env file}"
-)
 
 
 def _compose() -> dict:
@@ -31,8 +27,7 @@ def test_production_compose_separates_migration_and_runtime_credentials() -> Non
         "${TIDE_RUNTIME_ENV_FILE:?Set TIDE_RUNTIME_ENV_FILE to a protected runtime-only env file}"
     ]
     assert services["score-settlement"]["env_file"] == services["api"]["env_file"]
-    assert services["source-wide"]["env_file"] == [SOURCE_WORKER_ENV_FILE]
-    assert services["source-wide"]["env_file"] != services["api"]["env_file"]
+    assert services["source-wide"]["env_file"] == services["api"]["env_file"]
     assert services["source-wide"]["env_file"] != services["migrate"]["env_file"]
 
     migrate_environment = services["migrate"]["environment"]
@@ -161,28 +156,20 @@ def test_production_nginx_does_not_trust_forged_forwarding_headers() -> None:
     assert "$proxy_add_x_forwarded_for" not in nginx
 
 
-def test_production_env_examples_keep_database_roles_separate() -> None:
+def test_production_env_examples_use_lean_database_roles() -> None:
     runtime_example = (
         ROOT / "backend" / ".env.production.example"
     ).read_text(encoding="utf-8")
     migration_example = (
         ROOT / "backend" / ".env.migration.production.example"
     ).read_text(encoding="utf-8")
-    source_worker_example = (
-        ROOT / "backend" / ".env.source-worker.production.example"
-    ).read_text(encoding="utf-8")
-
     assert "tit_growth_app:" in runtime_example
-    assert "tit_growth_migrator:" not in runtime_example
+    assert "tide_sys_admin:" not in runtime_example
     assert "TIT_MIGRATION_MODE=false" in runtime_example
-    assert "tit_growth_migrator:" in migration_example
+    assert "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth" in runtime_example
+    assert "tide_sys_admin:" in migration_example
     assert "tit_growth_app:" not in migration_example
     assert "TIT_MIGRATION_MODE=true" not in migration_example
-    assert "tit_source_worker_runtime:" in source_worker_example
-    assert "tit_growth_app:" not in source_worker_example
-    assert "tit_growth_migrator:" not in source_worker_example
-    assert "TIT_SOURCE_WORKER_DATABASE_URL=" in source_worker_example
-    assert "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth" in source_worker_example
 
 
 def _preflight_environment(tmp_path: Path) -> dict[str, str]:
@@ -190,29 +177,21 @@ def _preflight_environment(tmp_path: Path) -> dict[str, str]:
     runtime_env.write_text(
         "DATABASE_URL="
         "postgresql+psycopg://tit_growth_app:secret@db.example/"
-        "tit_growth?sslmode=verify-full\n",
+        "tit_growth?sslmode=verify-full\n"
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth\n",
         encoding="utf-8",
     )
     migration_env = tmp_path / "migration.env"
     migration_env.write_text(
         "DATABASE_URL="
-        "postgresql+psycopg://tit_growth_migrator:secret@db.example/"
+        "postgresql+psycopg://tide_sys_admin:secret@db.example/"
         "tit_growth?sslmode=verify-full\n",
-        encoding="utf-8",
-    )
-    source_worker_env = tmp_path / "source-worker.env"
-    source_worker_env.write_text(
-        "TIT_SOURCE_WORKER_DATABASE_URL="
-        "postgresql+psycopg://tit_source_worker_runtime:secret@db.example/"
-        "tit_growth?sslmode=verify-full\n"
-        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth\n",
         encoding="utf-8",
     )
     return {
         **os.environ,
         "TIDE_RUNTIME_ENV_FILE": str(runtime_env),
         "TIDE_MIGRATION_ENV_FILE": str(migration_env),
-        "TIDE_SOURCE_WORKER_ENV_FILE": str(source_worker_env),
         "TIDE_MIGRATION_EXPECTED_DATABASE": "tit_growth",
         "TIDE_OPS_HOST": "tit-growth.example.com",
         "TIDE_GATEWAY_BIND_ADDRESS": "127.0.0.1",
@@ -288,23 +267,23 @@ def test_production_preflight_rejects_reused_env_file(
     assert "must differ" in result.stderr
 
 
-def test_production_preflight_rejects_api_role_for_source_worker(
+def test_production_preflight_rejects_worker_database_mismatch(
     tmp_path: Path,
 ) -> None:
     environment = _preflight_environment(tmp_path)
-    source_worker_env = Path(environment["TIDE_SOURCE_WORKER_ENV_FILE"])
-    source_worker_env.write_text(
-        "TIT_SOURCE_WORKER_DATABASE_URL="
+    runtime_env = Path(environment["TIDE_RUNTIME_ENV_FILE"])
+    runtime_env.write_text(
+        "DATABASE_URL="
         "postgresql+psycopg://tit_growth_app:secret@db.example/"
         "tit_growth?sslmode=verify-full\n"
-        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tit_growth\n",
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=other\n",
         encoding="utf-8",
     )
 
     result = _run_preflight(environment)
 
     assert result.returncode == 1
-    assert "tit_source_worker_runtime PostgreSQL role" in result.stderr
+    assert "source-worker expected database must be tit_growth" in result.stderr
 
 
 def test_readme_runs_preflight_before_migration() -> None:
@@ -316,8 +295,8 @@ def test_readme_runs_preflight_before_migration() -> None:
         "--profile migration run --rm migrate"
     )
     assert preflight < migration
-    assert "20260811_55_source_wide_v12" in readme
-    assert "0037_g04_remove_device_check" in readme
+    assert "20260812_59_simple_acl" in readme
+    assert "0041_crm_sso_hybrid" in readme
     assert "20260811_51_g01_tesol_only" in readme
     assert "0033_g01_tesol_only" in readme
     assert "20260810_50_g04_sections" in readme
@@ -327,6 +306,6 @@ def test_readme_runs_preflight_before_migration() -> None:
     assert "0041_crm_sso_hybrid" in readme
     assert (
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
-        "teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → "
-        "teacher 0040 → teacher 0041"
+        "teacher 0037 → public 55 → release public 56 → teacher 0038 → "
+        "release public 57 → teacher 0040 → teacher 0041"
     ) in readme

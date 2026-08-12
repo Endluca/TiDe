@@ -298,158 +298,132 @@ export class DatabaseService implements OnModuleDestroy {
         ) = '0041_crm_sso_hybrid'
         AND public_migration_state.migration_count = 1
         AND public_migration_state.version_num =
-          '20260811_57_g02_document'
-        AND has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          'SELECT'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          'INSERT'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          'UPDATE'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          'DELETE'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          'TRUNCATE'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          'REFERENCES'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          'TRIGGER'
+          '20260812_59_simple_acl'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(
+            ARRAY[
+              'public.alembic_version',
+              'public.task_templates',
+              'public.teachers',
+              'public.teacher_scorecard_current',
+              'public.teacher_lesson_score_current',
+              'public.teacher_g01_status_current'
+            ]::text[]
+          ) AS read_relation(relation_name)
+          WHERE to_regclass(read_relation.relation_name) IS NULL
+             OR NOT has_table_privilege(
+               current_user,
+               to_regclass(read_relation.relation_name),
+               'SELECT'
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM unnest(
+                 ARRAY[
+                   'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE',
+                   'REFERENCES', 'TRIGGER'
+                 ]::text[]
+               ) AS forbidden(privilege_name)
+               WHERE has_table_privilege(
+                 current_user,
+                 to_regclass(read_relation.relation_name),
+                 forbidden.privilege_name
+               )
+             )
+             OR EXISTS (
+               SELECT 1
+               FROM pg_attribute AS attribute
+               CROSS JOIN unnest(
+                 ARRAY['INSERT', 'UPDATE', 'REFERENCES']::text[]
+               ) AS forbidden(privilege_name)
+               WHERE attribute.attrelid =
+                   to_regclass(read_relation.relation_name)
+                 AND attribute.attnum > 0
+                 AND NOT attribute.attisdropped
+                 AND has_column_privilege(
+                   current_user,
+                   attribute.attrelid,
+                   attribute.attnum,
+                   forbidden.privilege_name
+                 )
+             )
         )
         AND NOT EXISTS (
           SELECT 1
-          FROM pg_attribute AS attribute
-          WHERE attribute.attrelid =
-              to_regclass('public.alembic_version')
-            AND attribute.attnum > 0
-            AND NOT attribute.attisdropped
-            AND (
-              has_column_privilege(
-                current_user,
-                attribute.attrelid,
-                attribute.attnum,
-                'INSERT'
-              )
-              OR has_column_privilege(
-                current_user,
-                attribute.attrelid,
-                attribute.attnum,
-                'UPDATE'
-              )
-              OR has_column_privilege(
-                current_user,
-                attribute.attrelid,
-                attribute.attnum,
-                'REFERENCES'
-              )
-            )
+          FROM unnest(
+            ARRAY[
+              'public.task_assignments',
+              'public.notifications',
+              'public.notification_events',
+              'public.teacher_support_tickets'
+            ]::text[]
+          ) AS crud_relation(relation_name)
+          CROSS JOIN unnest(
+            ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]
+          ) AS required(privilege_name)
+          WHERE to_regclass(crud_relation.relation_name) IS NULL
+             OR NOT has_table_privilege(
+               current_user,
+               to_regclass(crud_relation.relation_name),
+               required.privilege_name
+             )
         )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'SELECT'
-        )
-        AND has_column_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'tchr_id',
-          'SELECT'
-        )
-        AND has_column_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'is_cpl_tesol',
-          'SELECT'
-        )
-        AND NOT has_column_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'is_self_introduce',
-          'SELECT'
-        )
-        AND NOT has_column_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'real_name',
-          'SELECT'
-        )
-        AND (
-          SELECT array_agg(
-            attribute.attname::text ORDER BY attribute.attname
-          )
-          FROM pg_attribute AS attribute
-          WHERE attribute.attrelid =
-              to_regclass('public.teacher_source_wide')
-            AND attribute.attnum > 0
-            AND NOT attribute.attisdropped
-            AND has_column_privilege(
-              current_user,
-              attribute.attrelid,
-              attribute.attnum,
-              'SELECT'
-            )
-        ) IS NOT DISTINCT FROM
-          ARRAY['is_cpl_tesol', 'tchr_id']::text[]
         AND NOT EXISTS (
           SELECT 1
-          FROM pg_attribute AS attribute
-          WHERE attribute.attrelid =
-              to_regclass('public.teacher_source_wide')
-            AND attribute.attnum > 0
-            AND NOT attribute.attisdropped
+          FROM pg_class AS relation
+          JOIN pg_namespace AS namespace
+            ON namespace.oid = relation.relnamespace
+          WHERE namespace.nspname = 'public'
+            AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+            AND relation.oid <> ALL (
+              ARRAY[
+                to_regclass('public.alembic_version'),
+                to_regclass('public.task_templates'),
+                to_regclass('public.teachers'),
+                to_regclass('public.teacher_scorecard_current'),
+                to_regclass('public.teacher_lesson_score_current'),
+                to_regclass('public.teacher_g01_status_current'),
+                to_regclass('public.task_assignments'),
+                to_regclass('public.notifications'),
+                to_regclass('public.notification_events'),
+                to_regclass('public.teacher_support_tickets')
+              ]::oid[]
+            )
             AND (
-              has_column_privilege(
-                current_user,
-                attribute.attrelid,
-                attribute.attnum,
-                'INSERT'
+              EXISTS (
+                SELECT 1
+                FROM unnest(
+                  ARRAY[
+                    'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE',
+                    'REFERENCES', 'TRIGGER'
+                  ]::text[]
+                ) AS forbidden(privilege_name)
+                WHERE has_table_privilege(
+                  current_user,
+                  relation.oid,
+                  forbidden.privilege_name
+                )
               )
-              OR has_column_privilege(
-                current_user,
-                attribute.attrelid,
-                attribute.attnum,
-                'UPDATE'
-              )
-              OR has_column_privilege(
-                current_user,
-                attribute.attrelid,
-                attribute.attnum,
-                'REFERENCES'
+              OR EXISTS (
+                SELECT 1
+                FROM pg_attribute AS attribute
+                CROSS JOIN unnest(
+                  ARRAY[
+                    'SELECT', 'INSERT', 'UPDATE', 'REFERENCES'
+                  ]::text[]
+                ) AS forbidden(privilege_name)
+                WHERE attribute.attrelid = relation.oid
+                  AND attribute.attnum > 0
+                  AND NOT attribute.attisdropped
+                  AND has_column_privilege(
+                    current_user,
+                    attribute.attrelid,
+                    attribute.attnum,
+                    forbidden.privilege_name
+                  )
               )
             )
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'DELETE'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'TRUNCATE'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'TRIGGER'
         )
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.account_onboarding_states') IS NOT NULL
@@ -918,110 +892,81 @@ export class DatabaseService implements OnModuleDestroy {
           'public',
           'CREATE'
         )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.schema_migrations'),
-          'SELECT'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_class AS relation
+          JOIN pg_namespace AS namespace
+            ON namespace.oid = relation.relnamespace
+          CROSS JOIN unnest(
+            ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]
+          ) AS required(privilege_name)
+          WHERE namespace.nspname = 'tide'
+            AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+            AND NOT has_table_privilege(
+              current_user,
+              relation.oid,
+              required.privilege_name
+            )
         )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('tide.schema_migrations'),
-          'INSERT'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_class AS sequence
+          JOIN pg_namespace AS namespace
+            ON namespace.oid = sequence.relnamespace
+          CROSS JOIN unnest(
+            ARRAY['USAGE', 'SELECT']::text[]
+          ) AS required(privilege_name)
+          WHERE namespace.nspname = 'tide'
+            AND sequence.relkind = 'S'
+            AND NOT has_sequence_privilege(
+              current_user,
+              sequence.oid,
+              required.privilege_name
+            )
         )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('tide.schema_migrations'),
-          'UPDATE'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(
+            ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]
+          ) AS required(privilege_name)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_default_acl AS defaults
+            JOIN pg_roles AS owner_role
+              ON owner_role.oid = defaults.defaclrole
+            JOIN pg_namespace AS namespace
+              ON namespace.oid = defaults.defaclnamespace
+            CROSS JOIN LATERAL aclexplode(defaults.defaclacl) AS privilege
+            WHERE owner_role.rolname = 'tide_sys_admin'
+              AND namespace.nspname = 'tide'
+              AND defaults.defaclobjtype = 'r'
+              AND privilege.privilege_type = required.privilege_name
+              AND privilege.grantee = (
+                SELECT oid FROM pg_roles WHERE rolname = current_user
+              )
+          )
         )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('tide.schema_migrations'),
-          'DELETE'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.job_leases'),
-          'SELECT'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.job_leases'),
-          'INSERT'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.job_leases'),
-          'UPDATE'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.job_leases'),
-          'DELETE'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.account_onboarding_states'),
-          'SELECT'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.account_onboarding_states'),
-          'INSERT'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('tide.account_onboarding_states'),
-          'UPDATE'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('tide.account_onboarding_states'),
-          'DELETE'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.crm_sso_logins'),
-          'SELECT'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.crm_sso_logins'),
-          'INSERT'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.crm_sso_logins'),
-          'UPDATE'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('tide.crm_sso_logins'),
-          'DELETE'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.kuozhi_course_syncs'),
-          'SELECT'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('tide.kuozhi_course_syncs'),
-          'INSERT'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('tide.kuozhi_course_syncs'),
-          'UPDATE'
-        )
-        AND NOT has_table_privilege(
-          current_user,
-          to_regclass('tide.kuozhi_course_syncs'),
-          'DELETE'
-        )
-        AND has_table_privilege(
-          current_user,
-          to_regclass('public.teacher_support_tickets'),
-          'SELECT'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(
+            ARRAY['USAGE', 'SELECT']::text[]
+          ) AS required(privilege_name)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_default_acl AS defaults
+            JOIN pg_roles AS owner_role
+              ON owner_role.oid = defaults.defaclrole
+            JOIN pg_namespace AS namespace
+              ON namespace.oid = defaults.defaclnamespace
+            CROSS JOIN LATERAL aclexplode(defaults.defaclacl) AS privilege
+            WHERE owner_role.rolname = 'tide_sys_admin'
+              AND namespace.nspname = 'tide'
+              AND defaults.defaclobjtype = 'S'
+              AND privilege.privilege_type = required.privilege_name
+              AND privilege.grantee = (
+                SELECT oid FROM pg_roles WHERE rolname = current_user
+              )
+          )
         )
         AND has_function_privilege(
           current_user,

@@ -70,43 +70,41 @@ def _qualified(objects: tuple[str, ...]) -> str:
     return ",\n            ".join(f"public.{name}" for name in objects)
 
 
-def _guard_source_worker_role() -> None:
+def _guard_growth_runtime_role() -> None:
     op.execute(
         """
-        DO $source_worker_role_guard$
+        DO $growth_runtime_role_guard$
         DECLARE
-            worker_role record;
+            runtime_role record;
         BEGIN
             SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
                    rolreplication, rolbypassrls
-            INTO worker_role
+            INTO runtime_role
             FROM pg_roles
-            WHERE rolname = 'tit_source_worker';
+            WHERE rolname = 'tit_growth_app';
 
             IF NOT FOUND THEN
                 RAISE EXCEPTION
-                    'required NOLOGIN role tit_source_worker does not exist';
+                    'required LOGIN role tit_growth_app does not exist';
             END IF;
-            IF worker_role.rolcanlogin THEN
-                RAISE EXCEPTION 'tit_source_worker must be NOLOGIN';
-            END IF;
-            IF worker_role.rolsuper
-               OR worker_role.rolcreatedb
-               OR worker_role.rolcreaterole
-               OR worker_role.rolreplication
-               OR worker_role.rolbypassrls THEN
+            IF NOT runtime_role.rolcanlogin
+               OR runtime_role.rolsuper
+               OR runtime_role.rolcreatedb
+               OR runtime_role.rolcreaterole
+               OR runtime_role.rolreplication
+               OR runtime_role.rolbypassrls THEN
                 RAISE EXCEPTION
-                    'tit_source_worker must be an unprivileged role';
+                    'tit_growth_app must be a restricted LOGIN role';
             END IF;
             IF EXISTS (
                 SELECT 1
                 FROM pg_auth_members AS memberships
                 JOIN pg_roles AS member_role
                   ON member_role.oid = memberships.member
-                WHERE member_role.rolname = 'tit_source_worker'
+                WHERE member_role.rolname = 'tit_growth_app'
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker must not inherit another database role';
+                    'tit_growth_app must not inherit another database role';
             END IF;
             IF EXISTS (
                 SELECT 1
@@ -114,7 +112,7 @@ def _guard_source_worker_role() -> None:
                 WHERE namespaces.nspname = 'public'
                   AND namespaces.nspowner = (
                       SELECT oid FROM pg_roles
-                      WHERE rolname = 'tit_source_worker'
+                      WHERE rolname = 'tit_growth_app'
                   )
             ) OR EXISTS (
                 SELECT 1
@@ -124,14 +122,14 @@ def _guard_source_worker_role() -> None:
                 WHERE namespaces.nspname = 'public'
                   AND relations.relowner = (
                       SELECT oid FROM pg_roles
-                      WHERE rolname = 'tit_source_worker'
+                      WHERE rolname = 'tit_growth_app'
                   )
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker must not own public schema objects';
+                    'tit_growth_app must not own public schema objects';
             END IF;
         END
-        $source_worker_role_guard$;
+        $growth_runtime_role_guard$;
         """
     )
 
@@ -469,7 +467,7 @@ def _create_qualification_guard() -> None:
     )
 
 
-def _grant_source_worker_acl() -> None:
+def _grant_growth_runtime_acl() -> None:
     all_relations = (
         SOURCE_READ_TABLES
         + READ_INSERT_TABLES
@@ -485,118 +483,126 @@ def _grant_source_worker_acl() -> None:
         f"""
         REVOKE ALL PRIVILEGES ON TABLE
             {_qualified(all_relations)}
-        FROM tit_source_worker;
+        FROM tit_growth_app;
         REVOKE UPDATE ({outbox_columns})
             ON TABLE public.outbox_events
-        FROM tit_source_worker;
+        FROM tit_growth_app;
         REVOKE UPDATE ({task_suppression_columns})
             ON TABLE public.task_assignments
-        FROM tit_source_worker;
+        FROM tit_growth_app;
         REVOKE ALL PRIVILEGES ON TABLE
             public.lesson_score_results,
             public.teacher_qualifications
         FROM PUBLIC;
 
-        REVOKE CREATE ON SCHEMA public FROM tit_source_worker;
-        GRANT USAGE ON SCHEMA public TO tit_source_worker;
+        REVOKE CREATE ON SCHEMA public FROM tit_growth_app;
+        GRANT USAGE ON SCHEMA public TO tit_growth_app;
 
         GRANT SELECT ON TABLE
             {_qualified(SOURCE_READ_TABLES)}
-        TO tit_source_worker;
+        TO tit_growth_app;
+
+        -- Preserve the API configuration/catalog writes from revision 40.
+        -- SourceWide is another process inside the same TiDe backend trust
+        -- boundary, so the effective role receives the union of both needs.
+        GRANT SELECT, INSERT, UPDATE ON TABLE
+            public.task_templates,
+            public.config_versions
+        TO tit_growth_app;
 
         GRANT SELECT, INSERT ON TABLE
             {_qualified(READ_INSERT_TABLES)}
-        TO tit_source_worker;
+        TO tit_growth_app;
 
         GRANT UPDATE ({task_suppression_columns})
             ON TABLE public.task_assignments
-        TO tit_source_worker;
+        TO tit_growth_app;
 
         GRANT SELECT, INSERT, UPDATE ON TABLE
             {_qualified(READ_INSERT_UPDATE_TABLES)}
-        TO tit_source_worker;
+        TO tit_growth_app;
 
         GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
             {_qualified(READ_INSERT_UPDATE_DELETE_TABLES)}
-        TO tit_source_worker;
+        TO tit_growth_app;
 
-        GRANT SELECT ON TABLE public.outbox_events TO tit_source_worker;
+        GRANT SELECT, INSERT ON TABLE public.outbox_events TO tit_growth_app;
         GRANT UPDATE ({outbox_columns})
             ON TABLE public.outbox_events
-        TO tit_source_worker;
+        TO tit_growth_app;
         """
     )
     op.execute(
         """
-        DO $source_worker_acl_assertions$
+        DO $growth_runtime_acl_assertions$
         BEGIN
             IF has_schema_privilege(
-                'tit_source_worker', 'public', 'CREATE'
+                'tit_growth_app', 'public', 'CREATE'
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker must not create public schema objects';
+                    'tit_growth_app must not create public schema objects';
             END IF;
             IF NOT has_schema_privilege(
-                'tit_source_worker', 'public', 'USAGE'
+                'tit_growth_app', 'public', 'USAGE'
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker is missing public schema usage';
+                    'tit_growth_app is missing public schema usage';
             END IF;
             IF has_table_privilege(
-                'tit_source_worker',
+                'tit_growth_app',
                 'public.teacher_source_wide',
                 'INSERT'
             ) OR has_table_privilege(
-                'tit_source_worker',
+                'tit_growth_app',
                 'public.teacher_source_wide',
                 'UPDATE'
             ) OR has_table_privilege(
-                'tit_source_worker',
+                'tit_growth_app',
                 'public.teacher_source_wide',
                 'DELETE'
             ) OR has_table_privilege(
-                'tit_source_worker',
+                'tit_growth_app',
                 'public.lesson_source_wide',
                 'INSERT'
             ) OR has_table_privilege(
-                'tit_source_worker',
+                'tit_growth_app',
                 'public.lesson_source_wide',
                 'UPDATE'
             ) OR has_table_privilege(
-                'tit_source_worker',
+                'tit_growth_app',
                 'public.lesson_source_wide',
                 'DELETE'
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker may only read source-wide tables';
+                    'tit_growth_app source-wide tables must remain read-only';
             END IF;
             IF has_table_privilege(
-                'tit_source_worker', 'public.outbox_events', 'UPDATE'
+                'tit_growth_app', 'public.outbox_events', 'UPDATE'
             ) OR has_column_privilege(
-                'tit_source_worker',
+                'tit_growth_app',
                 'public.outbox_events',
                 'payload',
                 'UPDATE'
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker received broad outbox update access';
+                    'tit_growth_app received broad outbox update access';
             END IF;
             IF NOT has_column_privilege(
-                'tit_source_worker',
+                'tit_growth_app',
                 'public.outbox_events',
                 'status',
                 'UPDATE'
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker cannot complete source outbox events';
+                    'tit_growth_app cannot complete source outbox events';
             END IF;
             IF has_table_privilege(
-                'tit_source_worker', 'public.task_assignments', 'UPDATE'
+                'tit_growth_app', 'public.task_assignments', 'UPDATE'
             ) OR has_table_privilege(
-                'tit_source_worker', 'public.task_assignments', 'DELETE'
+                'tit_growth_app', 'public.task_assignments', 'DELETE'
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker must not receive broad task mutation access';
+                    'tit_growth_app must not receive broad task mutation access';
             END IF;
             IF EXISTS (
                 SELECT 1
@@ -607,14 +613,14 @@ def _grant_source_worker_acl() -> None:
                     'updated_by'
                 ]) AS allowed(column_name)
                 WHERE NOT has_column_privilege(
-                    'tit_source_worker',
+                    'tit_growth_app',
                     'public.task_assignments',
                     allowed.column_name,
                     'UPDATE'
                 )
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker is missing task suppression privileges';
+                    'tit_growth_app is missing task suppression privileges';
             END IF;
             IF EXISTS (
                 SELECT 1
@@ -629,17 +635,17 @@ def _grant_source_worker_acl() -> None:
                       'updated_by'
                   ])
                   AND has_column_privilege(
-                      'tit_source_worker',
+                      'tit_growth_app',
                       'public.task_assignments',
                       columns.attname::text,
                       'UPDATE'
                   )
             ) THEN
                 RAISE EXCEPTION
-                    'tit_source_worker may only update task suppression columns';
+                    'tit_growth_app may only update task suppression columns';
             END IF;
         END
-        $source_worker_acl_assertions$;
+        $growth_runtime_acl_assertions$;
         """
     )
 
@@ -648,12 +654,12 @@ def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
 
-    _guard_source_worker_role()
+    _guard_growth_runtime_role()
     _create_derived_tables()
     _rewire_trigger_match_lesson_fk(to_source_wide=True)
     _backfill_earned_qualifications()
     _create_qualification_guard()
-    _grant_source_worker_acl()
+    _grant_growth_runtime_acl()
 
 
 def downgrade() -> None:
@@ -675,14 +681,40 @@ def downgrade() -> None:
         f"""
         REVOKE UPDATE ({outbox_columns})
             ON TABLE public.outbox_events
-        FROM tit_source_worker;
+        FROM tit_growth_app;
         REVOKE UPDATE ({task_suppression_columns})
             ON TABLE public.task_assignments
-        FROM tit_source_worker;
+        FROM tit_growth_app;
         REVOKE ALL PRIVILEGES ON TABLE
             {_qualified(all_relations)}
-        FROM tit_source_worker;
-        REVOKE USAGE ON SCHEMA public FROM tit_source_worker;
+        FROM tit_growth_app;
+
+        -- Restore the exact revision-42 runtime contract on the relations
+        -- that predated this revision.
+        GRANT USAGE ON SCHEMA public TO tit_growth_app;
+        GRANT SELECT ON TABLE
+            public.teacher_source_wide,
+            public.lesson_source_wide,
+            public.complaint_category_rules,
+            public.personalized_trigger_matches,
+            public.task_assignments
+        TO tit_growth_app;
+        GRANT SELECT, INSERT ON TABLE public.score_entries
+        TO tit_growth_app;
+        GRANT SELECT, UPDATE ON TABLE
+            public.teachers,
+            public.notifications,
+            public.ops_cases
+        TO tit_growth_app;
+        GRANT SELECT, INSERT, UPDATE ON TABLE
+            public.task_templates,
+            public.outbox_events,
+            public.config_versions,
+            public.score_accounts
+        TO tit_growth_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+            public.score_component_accounts
+        TO tit_growth_app;
         """
     )
     op.execute(

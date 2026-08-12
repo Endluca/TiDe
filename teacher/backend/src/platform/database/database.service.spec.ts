@@ -247,66 +247,40 @@ describe('DatabaseService', () => {
       expect.stringContaining('FROM public.alembic_version'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('20260811_57_g02_document'),
+      expect.stringContaining('20260812_59_simple_acl'),
     );
-    expect(productionQuery).toContain(`AND has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          'SELECT'
-        )`);
-    for (const privilege of [
-      'INSERT',
-      'UPDATE',
-      'DELETE',
-      'TRUNCATE',
-      'REFERENCES',
-      'TRIGGER',
+    expect(productionQuery).toContain('AS read_relation(relation_name)');
+    for (const relation of [
+      'public.alembic_version',
+      'public.task_templates',
+      'public.teachers',
+      'public.teacher_scorecard_current',
+      'public.teacher_lesson_score_current',
+      'public.teacher_g01_status_current',
     ]) {
-      expect(productionQuery).toContain(`AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.alembic_version'),
-          '${privilege}'
-        )`);
-    }
-    expect(productionQuery).toContain(`AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          'SELECT'
-        )`);
-    for (const column of ['tchr_id', 'is_cpl_tesol']) {
-      expect(productionQuery).toContain(`AND has_column_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          '${column}',
-          'SELECT'
-        )`);
-    }
-    for (const column of ['is_self_introduce', 'real_name']) {
-      expect(productionQuery).toContain(`AND NOT has_column_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          '${column}',
-          'SELECT'
-        )`);
+      expect(productionQuery).toContain(`'${relation}'`);
     }
     expect(productionQuery).toContain(
-      `ARRAY['is_cpl_tesol', 'tchr_id']::text[]`,
+      "'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE',",
     );
-    for (const privilege of ['DELETE', 'TRUNCATE', 'TRIGGER']) {
-      expect(productionQuery).toContain(`AND NOT has_table_privilege(
-          current_user,
-          to_regclass('public.teacher_source_wide'),
-          '${privilege}'
-        )`);
+    expect(productionQuery).toContain("'REFERENCES', 'TRIGGER'");
+    expect(productionQuery).toContain(
+      "ARRAY['INSERT', 'UPDATE', 'REFERENCES']::text[]",
+    );
+    expect(productionQuery).toContain('AS crud_relation(relation_name)');
+    for (const relation of [
+      'public.task_assignments',
+      'public.notifications',
+      'public.notification_events',
+      'public.teacher_support_tickets',
+    ]) {
+      expect(productionQuery).toContain(`'${relation}'`);
     }
-    for (const privilege of ['INSERT', 'UPDATE', 'REFERENCES']) {
-      expect(productionQuery).toContain(`has_column_privilege(
-                current_user,
-                attribute.attrelid,
-                attribute.attnum,
-                '${privilege}'
-              )`);
-    }
+    expect(productionQuery).not.toContain('public.teacher_source_wide');
+    expect(productionQuery).toContain('relation.oid <> ALL (');
+    expect(productionQuery).toContain(
+      "'SELECT', 'INSERT', 'UPDATE', 'REFERENCES'",
+    );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('2026-08-11-tesol-only-v1'),
     );
@@ -321,11 +295,6 @@ describe('DatabaseService', () => {
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.schema_migrations'),
-    );
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "to_regclass('tide.schema_migrations'),\n          'DELETE'",
-      ),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.job_leases'),
@@ -438,13 +407,6 @@ describe('DatabaseService', () => {
     for (const configJson of exactConfigJson) {
       expect(() => JSON.parse(configJson) as unknown).not.toThrow();
     }
-    for (const privilege of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
-      expect(query).toHaveBeenCalledWith(
-        expect.stringContaining(
-          `to_regclass('tide.job_leases'),\n          '${privilege}'`,
-        ),
-      );
-    }
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining("to_regclass('tide.teacher_photo_runs') IS NULL"),
     );
@@ -456,24 +418,22 @@ describe('DatabaseService', () => {
         "to_regprocedure('tide.enforce_outbox_target()') IS NULL",
       ),
     );
-    for (const privilege of ['SELECT', 'INSERT']) {
-      expect(query).toHaveBeenCalledWith(
-        expect.stringContaining(
-          `to_regclass('tide.account_onboarding_states'),\n          '${privilege}'`,
-        ),
-      );
-    }
-    for (const privilege of ['SELECT', 'INSERT', 'UPDATE']) {
-      expect(query).toHaveBeenCalledWith(
-        expect.stringContaining(
-          `to_regclass('tide.crm_sso_logins'),\n          '${privilege}'`,
-        ),
-      );
-    }
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "to_regclass('tide.crm_sso_logins'),\n          'DELETE'",
-      ),
+    expect(productionQuery).toContain("namespace.nspname = 'tide'");
+    expect(productionQuery).toContain(
+      "relation.relkind IN ('r', 'p', 'v', 'm', 'f')",
+    );
+    expect(productionQuery).toContain(
+      "ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]",
+    );
+    expect(productionQuery).toContain('has_sequence_privilege(');
+    expect(productionQuery).toContain("sequence.relkind = 'S'");
+    expect(productionQuery).toContain("ARRAY['USAGE', 'SELECT']::text[]");
+    expect(productionQuery).toContain('FROM pg_default_acl AS defaults');
+    expect(productionQuery).toContain("owner_role.rolname = 'tide_sys_admin'");
+    expect(productionQuery).toContain("defaults.defaclobjtype = 'r'");
+    expect(productionQuery).toContain("defaults.defaclobjtype = 'S'");
+    expect(productionQuery).toContain(
+      'SELECT oid FROM pg_roles WHERE rolname = current_user',
     );
     expect(query).not.toHaveBeenCalledWith(
       expect.stringContaining("'SELECT,INSERT,UPDATE"),

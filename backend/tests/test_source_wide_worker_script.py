@@ -9,13 +9,17 @@ from pathlib import Path
 import pytest
 from sqlalchemy.exc import OperationalError
 
+import scripts.run_source_wide_worker as source_worker_script
 from scripts.run_source_wide_worker import (
     DEFAULT_HEARTBEAT_PATH,
     DEFAULT_READINESS_PATH,
     SourceWideLeadership,
+    _SOURCE_WORKER_IDENTITY,
     _heartbeat_is_fresh,
     _poll_source_once,
     _run_worker,
+    _SOURCE_OUTBOX_HEALTH,
+    _source_outbox_health_issue,
     _stable_leader_retry_seconds,
     _validate_source_worker_identity,
     _validated_source_worker_database_url,
@@ -32,6 +36,20 @@ def test_source_worker_uses_an_independent_leader_key_and_heartbeat() -> None:
     assert SCORE_WORKER_LEADER_LOCK_KEY == 2
     assert DEFAULT_HEARTBEAT_PATH == Path("/tmp/tit-source-worker-heartbeat")
     assert DEFAULT_READINESS_PATH == Path("/tmp/tit-source-worker-readiness")
+
+
+def test_source_worker_rejects_invalid_qualification_grant_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(
+        "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED",
+        "TRUE",
+    )
+    assert source_worker_script.main() == 2
+    assert capsys.readouterr().err.strip() == (
+        "IRREVERSIBLE_QUALIFICATION_AWARD_GATE_INVALID"
+    )
 
 
 def test_source_worker_runtime_does_not_load_legacy_lesson_importer() -> None:
@@ -98,17 +116,31 @@ def test_source_worker_health_requires_fresh_liveness_and_readiness(
     ) is False
 
 
-def test_source_worker_healthcheck_cli_accepts_readiness_arguments(
+def test_source_worker_healthcheck_cli_checks_outbox_after_fresh_markers(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     heartbeat = tmp_path / "heartbeat"
     readiness = tmp_path / "readiness"
     _write_heartbeat(heartbeat)
     _write_readiness(readiness)
 
-    result = subprocess.run(
+    thresholds: list[float] = []
+
+    def check_outbox(*, max_pending_age_seconds: float) -> None:
+        thresholds.append(max_pending_age_seconds)
+        return None
+
+    monkeypatch.setenv("TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS", "1200")
+    monkeypatch.setattr(
+        source_worker_script,
+        "_source_outbox_database_health_issue",
+        check_outbox,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
         [
-            sys.executable,
             "scripts/run_source_wide_worker.py",
             "--healthcheck",
             "--heartbeat-path",
@@ -120,40 +152,119 @@ def test_source_worker_healthcheck_cli_accepts_readiness_arguments(
             "--max-readiness-age-seconds",
             "90",
         ],
-        cwd=Path(__file__).resolve().parents[1],
-        check=False,
-        capture_output=True,
-        text=True,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert source_worker_script.main() == 0
+    assert thresholds == [1200.0]
 
 
-def test_production_source_worker_requires_a_distinct_verified_database_url(
+class _OutboxHealthResult:
+    def __init__(self, row: dict[str, bool]) -> None:
+        self.row = row
+
+    def mappings(self):
+        return self
+
+    def one(self) -> dict[str, bool]:
+        return self.row
+
+
+class _OutboxHealthConnection:
+    def __init__(self, *, dead_letter: bool, stale_pending: bool) -> None:
+        self.row = {
+            "has_dead_letter": dead_letter,
+            "has_stale_pending": stale_pending,
+        }
+        self.parameters: dict[str, float] | None = None
+
+    def execute(self, statement, parameters):
+        assert statement is _SOURCE_OUTBOX_HEALTH
+        self.parameters = parameters
+        return _OutboxHealthResult(self.row)
+
+
+@pytest.mark.parametrize(
+    ("dead_letter", "stale_pending", "expected_issue"),
+    [
+        (False, False, None),
+        (True, False, "SOURCE_WIDE_OUTBOX_DEAD_LETTER"),
+        (False, True, "SOURCE_WIDE_OUTBOX_STALE_PENDING"),
+        (True, True, "SOURCE_WIDE_OUTBOX_DEAD_LETTER"),
+    ],
+)
+def test_source_outbox_health_fails_closed_on_terminal_or_stale_events(
+    dead_letter: bool,
+    stale_pending: bool,
+    expected_issue: str | None,
+) -> None:
+    connection = _OutboxHealthConnection(
+        dead_letter=dead_letter,
+        stale_pending=stale_pending,
+    )
+
+    assert _source_outbox_health_issue(
+        connection,
+        max_pending_age_seconds=900,
+    ) == expected_issue
+    assert connection.parameters == {"max_pending_age_seconds": 900}
+    sql = str(_SOURCE_OUTBOX_HEALTH)
+    assert "event_type = 'source_wide.changed.v1'" in sql
+    assert "status = 'DEAD_LETTER'" in sql
+    assert "status = 'PENDING'" in sql
+    assert "attempt_count > 0" in sql
+    assert "available_at <= clock_timestamp() - make_interval" in sql
+
+
+@pytest.mark.parametrize(
+    "issue",
+    ["SOURCE_WIDE_OUTBOX_DEAD_LETTER", "SOURCE_WIDE_OUTBOX_STALE_PENDING"],
+)
+def test_source_worker_healthcheck_exits_nonzero_for_outbox_issue(
+    issue: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    heartbeat = tmp_path / "heartbeat"
+    readiness = tmp_path / "readiness"
+    _write_heartbeat(heartbeat)
+    _write_readiness(readiness)
+    monkeypatch.setattr(
+        source_worker_script,
+        "_source_outbox_database_health_issue",
+        lambda **_kwargs: issue,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "scripts/run_source_wide_worker.py",
+            "--healthcheck",
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ],
+    )
+
+    assert source_worker_script.main() == 1
+    assert capsys.readouterr().err.strip() == issue
+
+
+def test_production_source_worker_reuses_verified_tide_backend_database_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv(
         "DATABASE_URL",
-        "postgresql+psycopg://api@example/tit_growth?sslmode=verify-full",
+        "postgresql+psycopg://tit_growth_app@example/tit_growth?sslmode=verify-full",
     )
-    monkeypatch.delenv("TIT_SOURCE_WORKER_DATABASE_URL", raising=False)
     monkeypatch.setenv("TIT_SOURCE_WORKER_EXPECTED_DATABASE", "tit_growth")
-    with pytest.raises(
-        RuntimeError,
-        match="TIT_SOURCE_WORKER_DATABASE_URL_REQUIRED_IN_PRODUCTION",
-    ):
-        _validated_source_worker_database_url()
+    assert "tit_growth_app@example" in _validated_source_worker_database_url()
 
     monkeypatch.setenv(
-        "TIT_SOURCE_WORKER_DATABASE_URL",
-        "postgresql+psycopg://worker@example/tit_growth?sslmode=verify-full",
-    )
-    assert "worker@example" in _validated_source_worker_database_url()
-
-    monkeypatch.setenv(
-        "TIT_SOURCE_WORKER_DATABASE_URL",
-        "postgresql+psycopg://worker@example/tit_growth?sslmode=verify-ca",
+        "DATABASE_URL",
+        "postgresql+psycopg://tit_growth_app@example/tit_growth?sslmode=verify-ca",
     )
     with pytest.raises(
         RuntimeError,
@@ -162,8 +273,8 @@ def test_production_source_worker_requires_a_distinct_verified_database_url(
         _validated_source_worker_database_url()
 
     monkeypatch.setenv(
-        "TIT_SOURCE_WORKER_DATABASE_URL",
-        "postgresql+psycopg://worker@example/other?sslmode=verify-full",
+        "DATABASE_URL",
+        "postgresql+psycopg://tit_growth_app@example/other?sslmode=verify-full",
     )
     with pytest.raises(RuntimeError, match="SOURCE_WORKER_DATABASE_TARGET_MISMATCH"):
         _validated_source_worker_database_url()
@@ -183,29 +294,25 @@ class _MappingResult:
 def _valid_identity() -> dict[str, object]:
     return {
         "database_name": "tit_growth_test_v2",
-        "current_role": "tit_source_worker_runtime",
-        "session_role": "tit_source_worker_runtime",
+        "current_role": "tit_growth_app",
+        "session_role": "tit_growth_app",
         "can_login": True,
         "is_superuser": False,
         "can_create_database": False,
         "can_create_role": False,
         "can_replicate": False,
         "can_bypass_rls": False,
-        "is_source_worker": True,
-        "is_growth_app": False,
-        "is_source_monitor": False,
-        "is_teacher_app": False,
         "can_create_public_objects": False,
         "can_read_teacher_source": True,
         "can_read_lesson_source": True,
         "can_write_teacher_source": False,
         "can_write_lesson_source": False,
-        "has_broad_outbox_update": False,
-        "can_update_outbox_status": True,
+        "has_outbox_crud": True,
+        "has_outbox_non_crud_privileges": False,
     }
 
 
-def test_source_worker_runtime_identity_is_restricted_and_exclusive() -> None:
+def test_source_worker_runtime_identity_is_restricted() -> None:
     class _IdentityConnection:
         def __init__(self, row: dict[str, object]) -> None:
             self.row = row
@@ -230,17 +337,6 @@ def test_source_worker_runtime_identity_is_restricted_and_exclusive() -> None:
             expected_database="tit_growth_test_v2",
         )
 
-    reused_api_role = _valid_identity()
-    reused_api_role["is_growth_app"] = True
-    with pytest.raises(
-        RuntimeError,
-        match="SOURCE_WORKER_ROLE_MEMBERSHIP_MUST_BE_EXCLUSIVE",
-    ):
-        _validate_source_worker_identity(
-            _IdentityConnection(reused_api_role),
-            expected_database="tit_growth_test_v2",
-        )
-
     source_writer = _valid_identity()
     source_writer["can_write_teacher_source"] = True
     with pytest.raises(
@@ -251,6 +347,38 @@ def test_source_worker_runtime_identity_is_restricted_and_exclusive() -> None:
             _IdentityConnection(source_writer),
             expected_database="tit_growth_test_v2",
         )
+
+    missing_outbox_crud = _valid_identity()
+    missing_outbox_crud["has_outbox_crud"] = False
+    with pytest.raises(
+        RuntimeError,
+        match="SOURCE_WORKER_OUTBOX_PRIVILEGES_INVALID",
+    ):
+        _validate_source_worker_identity(
+            _IdentityConnection(missing_outbox_crud),
+            expected_database="tit_growth_test_v2",
+        )
+
+    outbox_non_crud = _valid_identity()
+    outbox_non_crud["has_outbox_non_crud_privileges"] = True
+    with pytest.raises(
+        RuntimeError,
+        match="SOURCE_WORKER_OUTBOX_PRIVILEGES_INVALID",
+    ):
+        _validate_source_worker_identity(
+            _IdentityConnection(outbox_non_crud),
+            expected_database="tit_growth_test_v2",
+        )
+
+
+def test_source_worker_identity_query_requires_outbox_crud() -> None:
+    query = str(_SOURCE_WORKER_IDENTITY)
+
+    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        assert f"'public.outbox_events', '{privilege}'" in query
+    assert "has_column_privilege" not in query
+    assert "'TRUNCATE, TRIGGER'" in query
+    assert "'INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER'" in query
 
 
 class _PostgresDialect:

@@ -1,6 +1,9 @@
 #!/bin/sh
 
 set -eu
+if [ "${TIT_PROCESS_PROFILE:-application}" != "application" ]; then
+  exec sleep infinity
+fi
 cd /app/operations
 exec s6-setuidgid gaea env \
   TIT_SCORE_WORKER_HEARTBEAT=/tmp/tit-score-worker-heartbeat \

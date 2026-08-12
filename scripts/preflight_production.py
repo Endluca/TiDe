@@ -105,18 +105,14 @@ def _validate_database_identity(
 def validate(environment: Mapping[str, str]) -> None:
     runtime_env = _existing_file(environment, "TIDE_RUNTIME_ENV_FILE")
     migration_env = _existing_file(environment, "TIDE_MIGRATION_ENV_FILE")
-    source_worker_env = _existing_file(
-        environment,
-        "TIDE_SOURCE_WORKER_ENV_FILE",
-    )
-    protected_files = (runtime_env, migration_env, source_worker_env)
+    protected_files = (runtime_env, migration_env)
     if any(
         os.path.samefile(left, right)
         for index, left in enumerate(protected_files)
         for right in protected_files[index + 1 :]
     ):
         raise PreflightError(
-            "runtime, migration and source-worker env files must differ"
+            "runtime and migration env files must differ"
         )
 
     expected_database = _required(
@@ -176,22 +172,16 @@ def validate(environment: Mapping[str, str]) -> None:
     )
     _validate_database_identity(
         migration_env,
-        expected_role="tit_growth_migrator",
-        expected_database=expected_database,
-    )
-    _validate_database_identity(
-        source_worker_env,
-        variable_name="TIT_SOURCE_WORKER_DATABASE_URL",
-        expected_role="tit_source_worker_runtime",
+        expected_role="tide_sys_admin",
         expected_database=expected_database,
     )
     worker_expected_database = _environment_value(
-        source_worker_env,
+        runtime_env,
         "TIT_SOURCE_WORKER_EXPECTED_DATABASE",
     )
     if worker_expected_database != expected_database:
         raise PreflightError(
-            f"{source_worker_env.name} source-worker expected database must "
+            f"{runtime_env.name} source-worker expected database must "
             f"be {expected_database}"
         )
 

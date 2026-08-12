@@ -19,8 +19,8 @@ ADMIN_PSQL=(psql -X --no-password -v ON_ERROR_STOP=1 "${ADMIN_DATABASE_URL}")
 
 cleanup() {
   "${ADMIN_PSQL[@]}" -c "
-    ALTER ROLE tide_migrator
-      LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+    ALTER ROLE tide_sys_admin
+      LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS
   " >/dev/null 2>&1 || true
   for database_name in "${FRESH_DB}" "${UPGRADE_DB}" "${PUBLIC_HEAD_FIRST_DB}"; do
@@ -209,6 +209,90 @@ INSERT INTO public.alembic_version (version_num) VALUES (:'public_head');
 SQL
 }
 
+install_public_59_support_guard_and_acl() {
+  local database_name="$1"
+  # 教师 migrator 测试库不运行根仓库 Alembic；这里镜像 public head 59
+  # 提供的只读视图与工单 Trigger/ACL 边界，以验证最终授权契约。
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${database_name}" >/dev/null <<'SQL'
+CREATE OR REPLACE FUNCTION public.guard_simple_support_ticket_write()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $function$
+DECLARE
+    actor_name text := COALESCE(
+        NULLIF(current_setting('role', true), 'none'),
+        session_user
+    );
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'support tickets cannot be deleted'
+            USING ERRCODE = '42501';
+    END IF;
+    IF current_user = 'tide_support_ticket_owner' THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT'
+       AND actor_name IN ('tit_teacher_crud', 'tit_growth_app') THEN
+        RAISE EXCEPTION
+            'runtime roles must create support tickets through the owner function'
+            USING ERRCODE = '42501';
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        RETURN NEW;
+    END IF;
+    IF actor_name = 'tit_growth_app' THEN
+        RAISE EXCEPTION
+            'TiDe runtime must update support tickets through the owner function'
+            USING ERRCODE = '42501';
+    END IF;
+    IF actor_name = 'tit_teacher_crud'
+       AND (
+           NEW.ticket_id IS DISTINCT FROM OLD.ticket_id
+           OR NEW.teacher_id IS DISTINCT FROM OLD.teacher_id
+           OR NEW.primary_category IS DISTINCT FROM OLD.primary_category
+           OR NEW.secondary_category IS DISTINCT FROM OLD.secondary_category
+           OR NEW.problem_location IS DISTINCT FROM OLD.problem_location
+           OR NEW.problem_context IS DISTINCT FROM OLD.problem_context
+           OR NEW.messages IS DISTINCT FROM OLD.messages
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       ) THEN
+        RAISE EXCEPTION
+            'teacher runtime may not replace support-ticket identity or messages'
+            USING ERRCODE = '42501';
+    END IF;
+    IF actor_name = 'tit_teacher_crud'
+       AND OLD.status = 'CLOSED'
+       AND NEW.status IS DISTINCT FROM OLD.status THEN
+        RAISE EXCEPTION 'closed support tickets cannot be reopened'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE OR REPLACE VIEW public.teacher_scorecard_current AS
+SELECT teacher_id FROM public.teachers WHERE false;
+CREATE OR REPLACE VIEW public.teacher_lesson_score_current AS
+SELECT teacher_id FROM public.teachers WHERE false;
+
+REVOKE ALL ON FUNCTION public.guard_simple_support_ticket_write() FROM PUBLIC;
+DROP TRIGGER IF EXISTS guard_teacher_support_ticket_update
+ON public.teacher_support_tickets;
+DROP TRIGGER IF EXISTS guard_simple_support_ticket_write
+ON public.teacher_support_tickets;
+CREATE TRIGGER guard_simple_support_ticket_write
+BEFORE INSERT OR UPDATE OR DELETE ON public.teacher_support_tickets
+FOR EACH ROW EXECUTE FUNCTION public.guard_simple_support_ticket_write();
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+ON public.teacher_support_tickets
+TO tit_growth_app, tit_teacher_crud, tide_support_ticket_owner;
+SQL
+  set_public_head "${database_name}" "20260812_59_simple_acl"
+}
+
 install_public_personalized_contract() {
   local database_name="$1"
   local integration_mode="$2"
@@ -293,6 +377,9 @@ if [[ "${public_head_first_status}" == "0" \
 fi
 
 create_test_database "${FRESH_DB}"
+"${ADMIN_PSQL[@]}" -c \
+  "ALTER ROLE tide_sys_admin NOINHERIT; ALTER ROLE tit_teacher_crud NOINHERIT" \
+  >/dev/null
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
 TIDE_MIGRATION_TARGET="0028_retire_task_business_change_view" \
@@ -518,6 +605,7 @@ TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
 TIDE_MIGRATION_TARGET="0041_crm_sso_hybrid" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+install_public_59_support_guard_and_acl "${FRESH_DB}"
 
 fresh_state="$(psql -X --no-password -AtF '|' "postgresql:///${FRESH_DB}" <<'SQL'
 SELECT
@@ -635,6 +723,8 @@ SELECT
     NOT EXISTS (SELECT 1 FROM tide.account_onboarding_states),
     to_regclass('tide.crm_sso_logins') IS NOT NULL,
     NOT EXISTS (SELECT 1 FROM tide.crm_sso_logins),
+    (SELECT version_num FROM public.alembic_version) =
+        '20260812_59_simple_acl',
     count(*) FILTER (
         WHERE migration_id = '0041_crm_sso_hybrid'
     ) = 1,
@@ -657,7 +747,7 @@ SELECT
 FROM tide.schema_migrations;
 SQL
 )"
-if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|36" ]]; then
+if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|36" ]]; then
   echo "生产 fresh 迁移状态异常：${fresh_state}" >&2
   exit 1
 fi
@@ -946,10 +1036,6 @@ if [[ "${post_public_drop_state}" != "t|t|t|t" ]]; then
 fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${FRESH_DB}" >/dev/null <<'SQL'
-CREATE VIEW public.teacher_scorecard_current AS
-SELECT teacher_id FROM public.teachers WHERE false;
-CREATE VIEW public.teacher_lesson_score_current AS
-SELECT teacher_id FROM public.teachers WHERE false;
 ALTER TABLE public.lesson_dimension_scores
   RENAME TO test_retired_lesson_dimension_scores;
 ALTER TABLE public.lesson_facts
@@ -958,6 +1044,90 @@ SQL
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${FRESH_DB}" \
   -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql" >/dev/null
+final_acl_probe_state="$(psql -X --no-password -Atqc "
+  select
+    not exists (
+      select 1
+      from unnest(array[
+        'public.alembic_version',
+        'public.task_templates',
+        'public.teachers',
+        'public.teacher_scorecard_current',
+        'public.teacher_lesson_score_current',
+        'public.teacher_g01_status_current'
+      ]::text[]) relation(name),
+      unnest(array['SELECT']::text[]) privilege(name)
+      where not has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from unnest(array[
+        'public.alembic_version',
+        'public.task_templates',
+        'public.teachers',
+        'public.teacher_scorecard_current',
+        'public.teacher_lesson_score_current',
+        'public.teacher_g01_status_current'
+      ]::text[]) relation(name),
+      unnest(array['INSERT','UPDATE','DELETE']::text[]) privilege(name)
+      where has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from unnest(array[
+        'public.task_assignments',
+        'public.notifications',
+        'public.notification_events',
+        'public.teacher_support_tickets'
+      ]::text[]) relation(name),
+      unnest(array['SELECT','INSERT','UPDATE','DELETE']::text[]) privilege(name)
+      where not has_table_privilege(
+        'tit_teacher_crud', relation.name, privilege.name
+      )
+    )
+    and not exists (
+      select 1
+      from pg_class relation
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      cross join lateral unnest(
+        array['SELECT','INSERT','UPDATE','DELETE']::text[]
+      ) privilege(name)
+      where namespace.nspname = 'tide'
+        and relation.relkind in ('r', 'p')
+        and not has_table_privilege(
+          'tit_teacher_crud', relation.oid, privilege.name
+        )
+    )
+    and not has_table_privilege(
+      'tit_teacher_crud', 'public.teacher_source_wide', 'SELECT'
+    )
+    and not exists (
+      select 1
+      from unnest(array['SELECT','INSERT','UPDATE','DELETE']::text[])
+        privilege(name)
+      where not has_table_privilege(
+        'tide_support_ticket_owner',
+        'public.teacher_support_tickets',
+        privilege.name
+      )
+    )
+    and exists (
+      select 1 from pg_trigger
+      where tgrelid = 'public.teacher_support_tickets'::regclass
+        and tgname = 'guard_simple_support_ticket_write'
+        and not tgisinternal
+    )
+    and (select not rolinherit from pg_roles where rolname = 'tide_sys_admin')
+    and (select not rolinherit from pg_roles where rolname = 'tit_teacher_crud')
+" "postgresql:///${FRESH_DB}")"
+if [[ "${final_acl_probe_state}" != "t" ]]; then
+  echo "public 59 最终教师/Owner 表级 ACL 验收失败。" >&2
+  exit 1
+fi
 legacy_acl_probe_state="$(psql -X --no-password -AtF '|' \
   "postgresql:///${FRESH_DB}" <<'SQL'
 SELECT
@@ -2842,6 +3012,10 @@ if [[ "${crm_sso_migration_state}" != "t|t|t" ]]; then
   echo "0041 CRM SSO 结构或迁移账本异常：${crm_sso_migration_state}" >&2
   exit 1
 fi
+install_public_59_support_guard_and_acl "${UPGRADE_DB}"
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql" >/dev/null
 
 analytics_semantics_state="$(psql -X --no-password -AtF '|' "postgresql:///${UPGRADE_DB}" <<'SQL'
 SELECT
@@ -3086,7 +3260,22 @@ SET ROLE tit_growth_app;
 DO $verify$
 DECLARE
     null_message_rejected boolean := false;
+    direct_update_rejected boolean := false;
+    direct_delete_rejected boolean := false;
 BEGIN
+    BEGIN
+        UPDATE public.teacher_support_tickets
+        SET messages = '[]'::jsonb
+        WHERE ticket_id = '42000000-0000-4000-8000-000000000001';
+    EXCEPTION WHEN insufficient_privilege THEN
+        direct_update_rejected := true;
+    END;
+    BEGIN
+        DELETE FROM public.teacher_support_tickets
+        WHERE ticket_id = '42000000-0000-4000-8000-000000000001';
+    EXCEPTION WHEN insufficient_privilege THEN
+        direct_delete_rejected := true;
+    END;
     BEGIN
         PERFORM public.append_teacher_support_ticket_operator_message(
             '42000000-0000-4000-8000-000000000001',
@@ -3097,8 +3286,11 @@ BEGIN
         null_message_rejected := true;
     END;
 
-    IF NOT null_message_rejected THEN
-        RAISE EXCEPTION 'operator NULL message bypassed validation';
+    IF NOT null_message_rejected
+       OR NOT direct_update_rejected
+       OR NOT direct_delete_rejected THEN
+        RAISE EXCEPTION
+            'operator validation or table-level support-ticket Trigger was bypassed';
     END IF;
 END
 $verify$;
@@ -3180,13 +3372,315 @@ SELECT
         'tide_support_ticket_owner',
         'public',
         'CREATE'
+    ),
+    EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.teacher_support_tickets'::regclass
+          AND tgname = 'guard_simple_support_ticket_write'
+          AND NOT tgisinternal
     )
 FROM public.teacher_support_tickets
 WHERE ticket_id = '42000000-0000-4000-8000-000000000001';
 SQL
 )"
-if [[ "${atomic_state}" != "WAITING_TEACHER|t|t|t|2|2|t|f|t|f|t|t|f|f" ]]; then
-  echo "运营回复原子性或最小权限异常：${atomic_state}" >&2
+if [[ "${atomic_state}" != "WAITING_TEACHER|t|t|t|2|2|t|t|t|f|t|t|t|f|t" ]]; then
+  echo "运营回复原子性、最终表级权限或 Trigger 异常：${atomic_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql" >/dev/null
+crm_sso_down_state="$(psql -X --no-password -Atqc "
+  SELECT
+    to_regclass('tide.crm_sso_logins') IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'tide'
+        AND table_name = 'auth_sessions'
+        AND column_name = 'auth_method'
+    )
+" "postgresql:///${UPGRADE_DB}")"
+if [[ "${crm_sso_down_state}" != "t" ]]; then
+  echo "0041 down 未恢复本地认证结构。" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql" >/dev/null
+crm_sso_down_up_state="$(psql -X --no-password -Atqc "
+  SELECT to_regclass('tide.crm_sso_logins') IS NOT NULL
+" "postgresql:///${UPGRADE_DB}")"
+if [[ "${crm_sso_down_up_state}" != "t" ]]; then
+  echo "0041 down-up 未恢复 CRM SSO 结构。" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql" >/dev/null
+
+set +e
+personalized_evidence_down_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
+)"
+personalized_evidence_down_status=$?
+set -e
+personalized_evidence_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = '25abcdef-0000-4000-8000-000000000011'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config->>'contentVersion' =
+              '2026-08-11-personalized-environment-photo-v1'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_step_progress
+        WHERE id = '25abcdef-0000-4000-8000-000000000220'
+          AND task_assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND step_key = 'p-fb-negative-environment-photo'
+          AND status = 'IN_PROGRESS'
+          AND percent = 60
+          AND progress_summary = '{"checkpoint":"before-0038"}'::jsonb
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    );
+SQL
+)"
+if [[ "${personalized_evidence_down_status}" == "0" \
+      || "${personalized_evidence_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
+      || "${personalized_evidence_down_state}" != "t|t|t|t" ]]; then
+  echo "0038 down 未原子保护已有个性化拍照进度：${personalized_evidence_down_state}" >&2
+  echo "${personalized_evidence_down_output}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DELETE FROM tide.task_step_progress WHERE id = '25abcdef-0000-4000-8000-000000000220'" >/dev/null
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+INSERT INTO tide.task_command_receipts (
+    id,
+    account_id,
+    idempotency_key,
+    command_id,
+    command_type,
+    request_hash,
+    response_body,
+    task_assignment_id
+) VALUES (
+    '25abcdef-0000-4000-8000-000000000221',
+    '27000000-0000-4000-8000-000000000001',
+    'migration-0038-photo-start',
+    'migration-0038-photo-start-command',
+    'START',
+    repeat('b', 64),
+    '{"accepted":true}'::jsonb,
+    'MIGRATION-P-FB-NEGATIVE'
+);
+SQL
+
+set +e
+personalized_receipt_down_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
+)"
+personalized_receipt_down_status=$?
+set -e
+personalized_receipt_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_command_receipts
+        WHERE id = '25abcdef-0000-4000-8000-000000000221'
+          AND task_assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND command_type = 'START'
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    );
+SQL
+)"
+if [[ "${personalized_receipt_down_status}" == "0" \
+      || "${personalized_receipt_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
+      || "${personalized_receipt_down_state}" != "t|t|t" ]]; then
+  echo "0038 down 未原子保护个性化任务命令回执：${personalized_receipt_down_state}" >&2
+  echo "${personalized_receipt_down_output}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -c "DELETE FROM tide.task_command_receipts WHERE id = '25abcdef-0000-4000-8000-000000000221'" >/dev/null
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" >/dev/null
+
+personalized_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config =
+            '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-06","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING"}'::jsonb
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_step_definitions definition
+        JOIN tide.task_execution_versions execution
+          ON execution.id = definition.execution_version_id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_validation_rules rule
+        JOIN tide.task_execution_versions execution
+          ON execution.id = rule.execution_version_id
+        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = '25abcdef-0000-4000-8000-000000000011'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM public.task_assignments
+        WHERE assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND template_version_id = 'P-FB-NEGATIVE:v1'
+          AND status = 'ASSIGNED'
+          AND row_version = 1
+    );
+SQL
+)"
+if [[ "${personalized_down_state}" != "t|t|t|t|t" ]]; then
+  echo "0038 down 未恢复精确待配置执行形状：${personalized_down_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql" >/dev/null
+personalized_down_up_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE id = '25abcdef-0000-4000-8000-000000000011'
+          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
+          AND config->>'contentVersion' =
+              '2026-08-11-personalized-environment-photo-v1'
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    EXISTS (
+        SELECT 1
+        FROM public.task_assignments
+        WHERE assignment_id = 'MIGRATION-P-FB-NEGATIVE'
+          AND status = 'ASSIGNED'
+          AND row_version = 1
+    );
+SQL
+)"
+if [[ "${personalized_down_up_state}" != "t|t|t|t" ]]; then
+  echo "0038 existing execution down/up 未保留身份和 assignment：${personalized_down_up_state}" >&2
+  exit 1
+fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
+UPDATE public.task_assignments
+SET
+    status = 'VIEWED',
+    status_changed_at = status_changed_at + interval '1 second'
+WHERE assignment_id = 'MIGRATION-P-FB-STARTED';
+
+UPDATE public.task_assignments
+SET
+    status = 'IN_PROGRESS',
+    status_changed_at = status_changed_at + interval '1 second'
+WHERE assignment_id = 'MIGRATION-P-FB-STARTED';
+SQL
+
+set +e
+personalized_started_assignment_down_output="$(
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${UPGRADE_DB}" \
+    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
+)"
+personalized_started_assignment_down_status=$?
+set -e
+personalized_started_assignment_down_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM public.task_assignments
+        WHERE assignment_id = 'MIGRATION-P-FB-STARTED'
+          AND template_version_id = 'P-FB-NEGATIVE:v1'
+          AND status = 'IN_PROGRESS'
+          AND row_version = 3
+    ),
+    (
+        SELECT count(*) = 1
+        FROM tide.task_step_definitions
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    ),
+    (
+        SELECT count(*) = 2
+        FROM tide.task_validation_rules
+        WHERE execution_version_id =
+            '25abcdef-0000-4000-8000-000000000011'
+    );
+SQL
+)"
+if [[ "${personalized_started_assignment_down_status}" == "0" \
+      || "${personalized_started_assignment_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
+      || "${personalized_started_assignment_down_state}" != "t|t|t" ]]; then
+  echo "0038 down 未原子保护 IN_PROGRESS 个性化 assignment：${personalized_started_assignment_down_state}" >&2
+  echo "${personalized_started_assignment_down_output}" >&2
   exit 1
 fi
 
@@ -3838,15 +4332,15 @@ guard_output="$(
 )"
 guard_status=$?
 set -e
-if [[ "${guard_status}" == "0" || "${guard_output}" != *"current_user 必须精确为 tide_migrator"* ]]; then
+if [[ "${guard_status}" == "0" || "${guard_output}" != *"current_user 必须精确为 tide_sys_admin"* ]]; then
   echo "生产迁移未按账号守卫阻断错误数据库账号：${guard_output}" >&2
   exit 1
 fi
 
-"${ADMIN_PSQL[@]}" -c "ALTER ROLE tide_migrator SUPERUSER" >/dev/null
+"${ADMIN_PSQL[@]}" -c "ALTER ROLE tide_sys_admin SUPERUSER" >/dev/null
 set +e
 guard_output="$(
-  PGOPTIONS="-c role=tide_migrator" \
+  PGOPTIONS="-c role=tide_sys_admin" \
   TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}?sslmode=verify-full" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
@@ -3854,8 +4348,8 @@ guard_output="$(
 guard_status=$?
 set -e
 "${ADMIN_PSQL[@]}" -c "
-  ALTER ROLE tide_migrator
-    NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+  ALTER ROLE tide_sys_admin
+    NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 " >/dev/null
 if [[ "${guard_status}" == "0" || "${guard_output}" != *"禁止使用 superuser"* ]]; then
   echo "生产迁移未按 superuser 守卫阻断：${guard_output}" >&2
@@ -3864,7 +4358,7 @@ fi
 
 set +e
 guard_output="$(
-  PGOPTIONS="-c role=tide_migrator" \
+  PGOPTIONS="-c role=tide_sys_admin" \
   TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}?sslmode=verify-full" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
@@ -3888,4 +4382,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→public56→teacher0038→public57→teacher0040→teacher0041 顺序门禁、旧表缺失权限探测、0022–0041、无用对象/字段/函数门禁与精确恢复、首次登录和 CRM SSO down-up/幂等、G01 TESOL-only、G02 原生文档、G04 照片+课件两模块与历史设备证据保留、P-FB-NEGATIVE 环境拍照与回滚执行证据保护、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"
+echo "生产 migrator fresh/upgrade、teacher canonical 0041 与最终 public 59、跨 Schema 顺序门禁、0022–0041、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过。"

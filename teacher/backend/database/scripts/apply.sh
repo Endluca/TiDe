@@ -423,7 +423,7 @@ fi
 
 crm_sso_logins_exists="$("${PSQL[@]}" -Atqc "
   select to_regclass('tide.crm_sso_logins') is not null
-)"
+")"
 if [[ "${crm_sso_logins_exists}" != "t" ]]; then
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql"
 fi
