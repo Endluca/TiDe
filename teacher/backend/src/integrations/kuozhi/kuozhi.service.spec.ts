@@ -26,7 +26,7 @@ describe('KuozhiService', () => {
   it('keeps every confirmed formal course, task, and testpaper id', async () => {
     const service = serviceFor();
     const mappings = await Promise.all(
-      ['G01', 'G05', 'G06', 'G07', 'G08'].map(
+      ['G01', 'G03', 'G05', 'G06', 'G07', 'G08'].map(
         async (taskCode) =>
           [
             taskCode,
@@ -64,6 +64,25 @@ describe('KuozhiService', () => {
           {
             courseId: '407',
             tasks: [{ courseTaskId: '2158', testpaperId: '305' }],
+          },
+        ],
+      },
+      G03: {
+        integrationStatus: 'ACTIVE',
+        launchEnabled: true,
+        completionEnabled: true,
+        autoCompleteAssignment: true,
+        courses: [
+          {
+            courseId: '655',
+            tasks: [
+              { courseTaskId: '3781', testpaperId: null },
+              { courseTaskId: '3783', testpaperId: '582' },
+              { courseTaskId: '3784', testpaperId: null },
+              { courseTaskId: '3785', testpaperId: '583' },
+              { courseTaskId: '3786', testpaperId: null },
+              { courseTaskId: '3787', testpaperId: '584' },
+            ],
           },
         ],
       },
@@ -164,7 +183,7 @@ describe('KuozhiService', () => {
     expect(response).toMatchObject({
       provider: 'KUOZHI',
       dataMode: 'REAL',
-      mappingVersion: 5,
+      mappingVersion: 6,
       integrationStatus: 'ACTIVE',
     });
     expect(response.courses.map((course) => course.courseId)).toEqual([
@@ -186,7 +205,7 @@ describe('KuozhiService', () => {
 
     expect(response).toMatchObject({
       integrationStatus: 'ACTIVE',
-      mappingVersion: 5,
+      mappingVersion: 6,
       courses: [{ courseId: '407', embedMode: 'IFRAME' }],
     });
   });

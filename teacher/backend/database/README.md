@@ -62,6 +62,7 @@
 | `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
 | `scripts/apply.sh` | 本地幂等升级至 0041，并应用当前 Seed/本地权限 |
 | `scripts/apply-company-test.sh` | 在 public rev57 + canonical Tide 0041 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
+| `scripts/publish-company-test-g03.sh` | 仅在明确需要发布 G03 内容时，受限地将 G03 共享模板与执行配置同步到 `tit_growth_test_v2`；必须提供工作区外、权限 600 的配置文件并显式传入 `--apply` |
 | `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；公司 TEST 特例也只放行 0037、0038、0040、0041 四个跨 Schema 切换点；先校验运营端权威目录，在 0038 前精确验证 public rev56，在 0039/0040 前精确验证 public rev57，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0041 |
 | `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 数据库显式构造共享目录，验证 fresh、managed upgrade、跨 Schema 分阶段顺序门禁、0022–0041、G01 TESOL-only、G02 原生文档、G04 两模块、个性化拍照、首次登录引导、CRM SSO、checksum、工单函数 owner 和生产连接保护 |
 | `scripts/verify.sh` | 验证共享表、过程关联、角色权限、乐观锁、审计/Outbox 和消息回写 |

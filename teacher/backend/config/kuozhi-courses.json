@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "tasks": {
     "G01": {
       "integrationStatus": "ACTIVE",
@@ -19,6 +19,27 @@
               "type": "TESTPAPER",
               "required": true
             }
+          ]
+        }
+      ]
+    },
+    "G03": {
+      "integrationStatus": "ACTIVE",
+      "launchEnabled": true,
+      "completionEnabled": true,
+      "autoCompleteAssignment": true,
+      "noHeader": true,
+      "courses": [
+        {
+          "courseId": "655",
+          "title": "How to Handle Different Types of Students",
+          "tasks": [
+            { "courseTaskId": "3781", "title": "Shy student video", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3783", "testpaperId": "582", "title": "Shy student assessment", "type": "TESTPAPER", "required": true },
+            { "courseTaskId": "3784", "title": "Non-responsive student video", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3785", "testpaperId": "583", "title": "Non-responsive student assessment", "type": "TESTPAPER", "required": true },
+            { "courseTaskId": "3786", "title": "Short Attention Span video", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3787", "testpaperId": "584", "title": "Short Attention Span assessment", "type": "TESTPAPER", "required": true }
           ]
         }
       ]

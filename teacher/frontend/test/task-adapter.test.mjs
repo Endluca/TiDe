@@ -276,6 +276,19 @@ test("routes G06 to the Kuozhi external course instead of the local player", () 
   assert.equal(task.method, "external_course");
 });
 
+test("routes ready G03 to the Kuozhi external course", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "G03",
+    execution: {
+      contentStatus: "READY",
+      contentVersion: "2026-08-12-student-types-kuozhi-v1",
+      pendingReason: null,
+    },
+  }));
+
+  assert.equal(task.method, "external_course");
+});
+
 test("routes G05 to Kuozhi even while legacy checklist steps remain in the backend context", () => {
   const task = adaptTaskContext(context({
     taskCode: "G05",

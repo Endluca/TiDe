@@ -1,4 +1,7 @@
-import { currentTaskCatalog } from '../../scripts/sync-current-task-catalog';
+import {
+  currentTaskCatalog,
+  isFullCatalogSync,
+} from '../../scripts/sync-current-task-catalog';
 
 interface ChecklistItem {
   key: string;
@@ -7,6 +10,14 @@ interface ChecklistItem {
 }
 
 describe('current task catalog locale fields', () => {
+  it('does not run legacy retirements for a targeted G03 content publish', () => {
+    expect(isFullCatalogSync(new Set(['G03']))).toBe(false);
+    expect(isFullCatalogSync(new Set())).toBe(true);
+    expect(
+      isFullCatalogSync(new Set(currentTaskCatalog.map((task) => task.code))),
+    ).toBe(true);
+  });
+
   it('matches the operations-side G01-G09 semantics and score contract', () => {
     expect(
       currentTaskCatalog
@@ -148,6 +159,21 @@ describe('current task catalog locale fields', () => {
       pendingReason: 'KUOZHI_G09_COURSE_MAPPING_PENDING',
       steps: [],
       rules: [],
+    });
+  });
+
+  it('publishes G03 as the mapped Kuozhi Student Types course', () => {
+    const g03 = currentTaskCatalog.find((task) => task.code === 'G03');
+
+    expect(g03).toMatchObject({
+      contentStatus: 'READY',
+      contentVersion: '2026-08-12-student-types-kuozhi-v1',
+      steps: [],
+      rules: [],
+      whatToDo:
+        'Complete the three student-type videos and pass each paired assessment in Kuozhi.',
+      completionStandard:
+        'All three videos reach 100% progress and all three paired assessments are passed in Kuozhi.',
     });
   });
 

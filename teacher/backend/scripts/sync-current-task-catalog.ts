@@ -187,7 +187,7 @@ export const currentTaskCatalog: CatalogTask[] = [
         key: 'g01-kuozhi-course',
         type: 'KUOZHI_COURSE_COMPLETE',
         version: '2026-08-06-percent-v1',
-        config: { mappingVersion: 5 },
+        config: { mappingVersion: 6 },
         teacherFailureCopy: '请先在阔知完成课程考试，并刷新学习进度。',
       },
       {
@@ -316,25 +316,27 @@ export const currentTaskCatalog: CatalogTask[] = [
       ),
     ],
   },
-  pending(
-    {
-      code: 'G03',
-      title: 'How to handle different types of students',
-      why: 'Build practical responses for different learner needs.',
-      whatToDo: 'Complete the learning content configured by Jiahe.',
-      completionStandard:
-        'Meet every requirement in the published Student Types configuration.',
-      benefit: 'You can adapt your teaching to different learner types.',
-      priority: 'P1',
-      score: 2,
-      stage: 'FOUNDATION',
-      sequence: 3,
-      estimatedMinutes: 15,
-      allowRetry: true,
-      kind: 'FIXED_GROWTH',
-    },
-    'JIAHE_STUDENT_TYPES_CONFIG_PENDING',
-  ),
+  {
+    code: 'G03',
+    title: 'How to handle different types of students',
+    why: 'Build practical responses for different learner needs.',
+    whatToDo:
+      'Complete the three student-type videos and pass each paired assessment in Kuozhi.',
+    completionStandard:
+      'All three videos reach 100% progress and all three paired assessments are passed in Kuozhi.',
+    benefit: 'You can adapt your teaching to different learner types.',
+    priority: 'P1',
+    score: 2,
+    stage: 'FOUNDATION',
+    sequence: 3,
+    estimatedMinutes: 15,
+    contentVersion: '2026-08-12-student-types-kuozhi-v1',
+    contentStatus: 'READY',
+    allowRetry: true,
+    kind: 'FIXED_GROWTH',
+    steps: [],
+    rules: [],
+  },
   {
     code: 'G05',
     title: 'TTP Orientation',
@@ -583,6 +585,10 @@ export const currentTaskCatalog: CatalogTask[] = [
 const currentFixedTasks = currentTaskCatalog.filter(
   (task) => task.kind === 'FIXED_GROWTH',
 );
+
+export const isFullCatalogSync = (requestedCodes: ReadonlySet<string>) =>
+  requestedCodes.size === 0 ||
+  currentTaskCatalog.every((task) => requestedCodes.has(task.code));
 
 async function assertCurrentSharedCatalog(client: Client): Promise<void> {
   const result = await client.query<{
@@ -971,6 +977,7 @@ async function main(): Promise<void> {
   }
   const allowPublicWrites =
     process.env.TASK_CATALOG_PUBLIC_WRITE?.toLowerCase() === 'true';
+  const shouldRetireLegacyCatalog = isFullCatalogSync(requestedCodes);
   const client = new Client(
     process.env.TASK_CATALOG_DATABASE_URL
       ? { connectionString: process.env.TASK_CATALOG_DATABASE_URL }
@@ -987,8 +994,10 @@ async function main(): Promise<void> {
     await client.query('BEGIN');
     await assertCurrentSharedCatalog(client);
     await assertExecutionCatalogMigrated(client);
-    await retireLegacyPersonalizedCatalog(client, allowPublicWrites);
-    await retireMergedSharedExecutions(client);
+    if (shouldRetireLegacyCatalog) {
+      await retireLegacyPersonalizedCatalog(client, allowPublicWrites);
+      await retireMergedSharedExecutions(client);
+    }
     for (const task of selectedTasks) {
       await syncTask(client, task, allowPublicWrites);
     }

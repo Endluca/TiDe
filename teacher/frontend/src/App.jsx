@@ -5757,7 +5757,7 @@ function buildOnboardingPreviewTasks(language) {
   const methods = {
     G01: "profile_credentials",
     G02: "document_reading",
-    G03: "content_pending",
+    G03: "external_course",
     G04: "readiness_photo",
     G05: "external_course",
     G06: "external_course",

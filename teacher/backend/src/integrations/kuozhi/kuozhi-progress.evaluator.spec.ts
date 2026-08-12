@@ -35,6 +35,87 @@ const resolved: KuozhiResolvedMapping = {
 };
 
 describe('evaluateKuozhiProgress', () => {
+  it('completes G03 only after its three videos and three assessments finish', () => {
+    const g03: KuozhiResolvedMapping = {
+      mappingVersion: 6,
+      taskCode: 'G03',
+      dataMode: 'REAL',
+      queryTeacherId: 'TEACHER-001',
+      mapping: {
+        integrationStatus: 'ACTIVE',
+        launchEnabled: true,
+        completionEnabled: true,
+        autoCompleteAssignment: true,
+        noHeader: true,
+        courses: [
+          {
+            courseId: '655',
+            tasks: [
+              {
+                courseTaskId: '3781',
+                type: 'VIDEO',
+                required: true,
+                completionPercent: 100,
+              },
+              { courseTaskId: '3783', type: 'TESTPAPER', required: true },
+              {
+                courseTaskId: '3784',
+                type: 'VIDEO',
+                required: true,
+                completionPercent: 100,
+              },
+              { courseTaskId: '3785', type: 'TESTPAPER', required: true },
+              {
+                courseTaskId: '3786',
+                type: 'VIDEO',
+                required: true,
+                completionPercent: 100,
+              },
+              { courseTaskId: '3787', type: 'TESTPAPER', required: true },
+            ],
+          },
+        ],
+      },
+    };
+    const complete = {
+      id: '655',
+      percent: 100,
+      task_list: {
+        '3781': { id: '3781', type: 'video', percent: 100 },
+        '3783': { id: '3783', type: 'testpaper', percent: 100 },
+        '3784': { id: '3784', type: 'video', percent: 100 },
+        '3785': { id: '3785', type: 'testpaper', percent: 100 },
+        '3786': { id: '3786', type: 'video', percent: 100 },
+        '3787': { id: '3787', type: 'testpaper', percent: 100 },
+      },
+    };
+
+    const passed = evaluateKuozhiProgress(
+      g03,
+      [complete],
+      '2026-08-12T00:00:00.000Z',
+    );
+    const incomplete = evaluateKuozhiProgress(
+      g03,
+      [
+        {
+          ...complete,
+          task_list: {
+            ...complete.task_list,
+            '3787': { id: '3787', type: 'testpaper', percent: 99 },
+          },
+        },
+      ],
+      '2026-08-12T00:00:00.000Z',
+    );
+
+    expect(passed.completion).toMatchObject({ completed: true });
+    expect(incomplete.completion).toMatchObject({
+      completed: false,
+      reasonCode: 'REQUIREMENTS_INCOMPLETE',
+    });
+  });
+
   it('uses 100 percent progress to complete an exam', () => {
     const result = evaluateKuozhiProgress(
       resolved,

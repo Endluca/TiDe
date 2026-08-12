@@ -51,7 +51,7 @@ const taskMappingSchema = z.object(taskMappingFields).strict();
 
 const configurationSchema = z
   .object({
-    version: z.literal(5),
+    version: z.literal(6),
     tasks: z.record(z.string().regex(/^G0[1-9]$/u), taskMappingSchema),
   })
   .strict();
