@@ -63,6 +63,28 @@ public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teac
 [`deploy/combined/README.md`](../deploy/combined/README.md)。只有不初始化 teacher Schema 的
 独立 public 数据库才可直接执行以下 `upgrade head`。
 
+已批准公司 TEST 库从 public 50 / teacher 0032 继续时，使用仓库根目录下的总控脚本。
+它默认只读：先硬校验固定主机、库名、owner、配置文件权限、public revision 链和 teacher
+canonical 账本 checksum，再输出剩余切换点。只有显式确认备份和维护窗口后才会逐段写入，
+每段写完都会重新读取双账本；失败后只能从脚本列出的中间切换点续跑。
+
+```bash
+cp backend/company-test-migration.env.example /Git工作区外/company-test-migration.env
+chmod 600 /Git工作区外/company-test-migration.env
+# 从批准的密钥系统填入密码；先执行只读检查。
+backend/.venv/bin/python backend/scripts/upgrade_company_test_database.py \
+  /Git工作区外/company-test-migration.env
+
+# 仅在备份可恢复、API/Worker/其他迁移器已停止写入后执行。
+backend/.venv/bin/python backend/scripts/upgrade_company_test_database.py \
+  /Git工作区外/company-test-migration.env \
+  --apply --backup-confirmed --maintenance-window-confirmed
+```
+
+总控脚本不会运行 teacher 初始化器、Mock/内容 Seed、发布 Gaea 或重启服务。到达 public 57 /
+teacher 0041 后，仍需使用包含 `tit_teacher_crud` 凭据的另一份 Git 外配置运行
+`teacher/backend/database/scripts/apply-company-test.sh`，再进行应用发布与端到端验收。
+
 ```bash
 cd backend
 # DATABASE_URL 必须使用单独的迁移/owner 角色，不能使用 tit_growth_app。

@@ -313,11 +313,15 @@ docker stop tide-camp-gaea-test
 ## 发布顺序
 
 1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041`；
+   已批准公司 TEST 库从 public 50 / teacher 0032 继续时，先在仓库根目录用
+   `backend/.venv/bin/python backend/scripts/upgrade_company_test_database.py /Git工作区外/company-test-migration.env`
+   只读预检；确认备份和维护窗口后才追加
+   `--apply --backup-confirmed --maintenance-window-confirmed`。该脚本不发布 Gaea、不重启服务，也不代替后续 teacher 初始化器；
    链内必须先包含 public `20260811_51_g01_tesol_only` / teacher `0033_g01_tesol_only`
    的 G01 TESOL-only 收窄，再包含 public `20260811_54_g04_remove_device_check` / teacher
    `0037_g04_remove_device_check` 的 G04 两模块收敛，并先执行 public
    `20260811_55_source_wide_v12` 再执行 public `20260811_56_p_fb_negative_copy`；当前 G04 不得恢复设备检测步骤。
-   确认 public head 为 `20260811_56_p_fb_negative_copy`、teacher 账本 head 为
+   确认 public head 为 `20260811_57_g02_document`、teacher 账本 head 为
    `0041_crm_sso_hybrid`（包含前序 `0038_personalized_environment_photo`），随后执行只读契约探针，并同时核对 G01 TESOL-only
    规则、G04 两模块、个性化任务零分文案、环境拍照步骤与 `TEACHING_ENVIRONMENT_V1` 审核档案。
 2. 配齐统一应用的运营、教师和两个 Worker 环境变量，确认密钥不在版本化配置中；

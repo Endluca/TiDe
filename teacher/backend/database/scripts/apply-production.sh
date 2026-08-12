@@ -14,7 +14,12 @@ APPROVED_COMPANY_TEST_DB_PORT="5432"
 APPROVED_COMPANY_TEST_DB_NAME="tit_growth_test_v2"
 APPROVED_COMPANY_TEST_DB_OWNER="postgres"
 APPROVED_COMPANY_TEST_SSLMODE="disable"
-APPROVED_COMPANY_TEST_TARGET="0040_g02_document_read_status"
+APPROVED_COMPANY_TEST_TARGETS=(
+  0037_g04_remove_device_check
+  0038_personalized_environment_photo
+  0040_g02_document_read_status
+  0041_crm_sso_hybrid
+)
 
 if [[ "${MIGRATION_TEST_MODE}" != "true" && "${MIGRATION_TEST_MODE}" != "false" ]]; then
   echo "TIDE_MIGRATION_TEST_MODE 只接受 true 或 false。" >&2
@@ -81,14 +86,21 @@ if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" ]]; then
       exit 1
       ;;
   esac
+  approved_company_test_target=false
+  for approved_target in "${APPROVED_COMPANY_TEST_TARGETS[@]}"; do
+    if [[ "${TARGET_MIGRATION}" == "${approved_target}" ]]; then
+      approved_company_test_target=true
+      break
+    fi
+  done
   if [[ "${COMPANY_TEST_DB_HOST}" != "${APPROVED_COMPANY_TEST_DB_HOST}" \
         || "${COMPANY_TEST_DB_PORT}" != "${APPROVED_COMPANY_TEST_DB_PORT}" \
         || "${COMPANY_TEST_DB_NAME}" != "${APPROVED_COMPANY_TEST_DB_NAME}" \
         || "${COMPANY_TEST_DB_USER}" != "${APPROVED_COMPANY_TEST_DB_OWNER}" \
         || "${COMPANY_TEST_DB_SSLMODE}" != "${APPROVED_COMPANY_TEST_SSLMODE}" \
         || "${EXPECTED_DATABASE}" != "${APPROVED_COMPANY_TEST_DB_NAME}" \
-        || "${TARGET_MIGRATION}" != "${APPROVED_COMPANY_TEST_TARGET}" ]]; then
-    echo "公司 TEST 增量迁移只允许已批准的 tit_growth_test_v2 / postgres / 0040 目标。" >&2
+        || "${approved_company_test_target}" != "true" ]]; then
+    echo "公司 TEST 增量迁移只允许已批准的 tit_growth_test_v2 / postgres，以及 0037、0038、0040、0041 切换点。" >&2
     exit 1
   fi
   if [[ -z "${PGPASSWORD:-}" ]]; then

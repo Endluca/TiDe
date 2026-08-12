@@ -61,8 +61,8 @@
 | `content/faq/51Talk Teacher FAQ - Canonical.md` | 全量 Canonical FAQ 的唯一版本化内容源；运行时不直接读取该文件 |
 | `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
 | `scripts/apply.sh` | 本地幂等升级至 0041，并应用当前 Seed/本地权限 |
-| `scripts/apply-company-test.sh` | 在 public rev56 + canonical Tide 0039 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
-| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；先校验运营端权威目录，在 0038 前精确验证 public rev56，在 0039/0040 前精确验证 public rev57，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0041 |
+| `scripts/apply-company-test.sh` | 在 public rev57 + canonical Tide 0041 已完成后，只读核对精确账本/checksum/实存结构，再初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
+| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；公司 TEST 特例也只放行 0037、0038、0040、0041 四个跨 Schema 切换点；先校验运营端权威目录，在 0038 前精确验证 public rev56，在 0039/0040 前精确验证 public rev57，再使用账本、SHA-256 和 PostgreSQL advisory lock 升级至 0041 |
 | `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 数据库显式构造共享目录，验证 fresh、managed upgrade、跨 Schema 分阶段顺序门禁、0022–0041、G01 TESOL-only、G02 原生文档、G04 两模块、个性化拍照、首次登录引导、CRM SSO、checksum、工单函数 owner 和生产连接保护 |
 | `scripts/verify.sh` | 验证共享表、过程关联、角色权限、乐观锁、审计/Outbox 和消息回写 |
 | `scripts/rollback-test.sh` | 在临时库验证空库升级和逐级回滚 |
@@ -184,8 +184,9 @@ bash database/scripts/test-production-migrator.sh
 
 ## 公司测试库
 
-- 公司测试库配置放在本地 `database/.env.company-test`，该文件不进入 Git，权限必须为 `600`。
+- 迁移配置必须放在 Git/镜像工作区之外，权限精确为 `600`；不要使用仓库内的 `database/.env.company-test` 作为迁移入口。
 - 代码侧初始化门禁面向 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041` 的完整十二阶段升级结果；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。当前公司测试库仍停在 public 50 / teacher 0032，本次未执行升级。
+- 从仓库根目录运行 `backend/scripts/upgrade_company_test_database.py`。省略 `--apply` 时只读检查并输出计划；提交时必须同时给出 `--backup-confirmed --maintenance-window-confirmed`。脚本按 public 54（含 rev51）→ teacher 0037（含 0033）→ public 55 → public 56 → teacher 0038 → public 57 → teacher 0040（含 0039）→ teacher 0041 逐段执行和读回；未知组合、错序、账本/checksum 漂移均失败关闭。
 - `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260811_57_g02_document` 与精确 36 条 canonical Tide 0041 账本。它逐项核对顺序、文件名、SHA-256 和最终实存结构后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL。
 - 初始化器不得与 public/Tide migrator 并发运行；受控部署必须先完成迁移并释放迁移窗口，再执行初始化器。
 - 日常应用账号固定为 `tit_teacher_crud`，只读教师身份资料和 `teacher_scorecard_current / teacher_lesson_score_current`，只获得契约允许的共享任务权限和 `tide` Schema 业务表权限；不读取原始积分、课程事实或评分配置表。
@@ -193,8 +194,14 @@ bash database/scripts/test-production-migrator.sh
 - 本地 `apply.sh` 会写 Mock Seed，不得用于公司测试库。
 
 ```bash
-bash database/scripts/apply-company-test.sh
-bash database/scripts/import-company-test-faq.sh
+cd ../../..
+backend/.venv/bin/python backend/scripts/upgrade_company_test_database.py \
+  /Git工作区外/company-test-migration.env
+# 完成备份和维护窗口后，再追加：
+# --apply --backup-confirmed --maintenance-window-confirmed
+bash teacher/backend/database/scripts/apply-company-test.sh \
+  /Git工作区外/company-test-initialize.env
+bash teacher/backend/database/scripts/import-company-test-faq.sh
 ```
 
 积分规则更新和历史数据重算由世文负责。教师端不再提供课程积分重算脚本；视图刷新后，应用下一次查询直接读取最新结果。
