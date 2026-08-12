@@ -156,6 +156,9 @@ run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
 run_sql "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
 run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
 run_sql "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql"
+run_sql "${DB_DIR}/migrations/0039_g02_policy_document.up.sql"
+run_sql "${DB_DIR}/migrations/0040_g02_document_read_status.up.sql"
+run_sql "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
@@ -192,6 +195,15 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     to_regclass('public.teacher_support_tickets') is not null,
     to_regclass('tide.job_leases') is not null,
     to_regclass('tide.account_onboarding_states') is not null,
+    (
+      to_regclass('tide.crm_sso_logins') is not null
+      and exists (
+        select 1 from information_schema.columns
+        where table_schema = 'tide'
+          and table_name = 'auth_sessions'
+          and column_name = 'auth_method'
+      )
+    ),
     exists (
       select 1
       from tide.task_execution_versions execution
@@ -258,7 +270,7 @@ final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     (select count(*) from public.task_templates where status = 'PUBLISHED')
   )
 ")"
-[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
+[[ "${final_state}" == "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|9|15|15" ]] || {
   echo "空库升级后状态异常: ${final_state}" >&2
   exit 1
 }
@@ -333,6 +345,40 @@ g04_second_apply_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   echo "二次本地 apply 未恢复 public G04 文案或破坏两段执行形状" >&2
   exit 1
 }
+
+run_sql "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql"
+crm_sso_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select
+    to_regclass('tide.crm_sso_logins') is null
+    and not exists (
+      select 1 from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'auth_sessions'
+        and column_name = 'auth_method'
+    )
+    and exists (
+      select 1 from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'user_accounts'
+        and column_name = 'password_hash'
+        and is_nullable = 'NO'
+    )
+)"
+[[ "${crm_sso_down_state}" == "t" ]] || {
+  echo "0041 down 未精确恢复本地认证结构" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql"
+crm_sso_up_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select to_regclass('tide.crm_sso_logins') is not null
+)"
+[[ "${crm_sso_up_state}" == "t" ]] || {
+  echo "0041 down-up 未恢复 CRM SSO 结构" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql"
+run_sql "${DB_DIR}/migrations/0040_g02_document_read_status.down.sql"
+run_sql "${DB_DIR}/migrations/0039_g02_policy_document.down.sql"
 
 run_sql "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql"
 run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.down.sql"
@@ -564,4 +610,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0038，验证 G01 TESOL-only、G04 两段结构与个性化拍照迁移后逐级回滚通过。"
+echo "空库升级至 0041，验证 G01 TESOL-only、G02 原生文档、G04 两段结构、个性化拍照与 CRM SSO 迁移后逐级回滚通过。"

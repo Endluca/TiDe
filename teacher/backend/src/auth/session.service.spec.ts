@@ -21,10 +21,19 @@ function createSessionService() {
     status: 'ACTIVE',
   });
   const createSession = jest.fn().mockResolvedValue(undefined);
+  const createSessionFromCrmExchange = jest.fn().mockResolvedValue({
+    accountId: 'account-001',
+    redirectPath: '/path',
+  });
+  const findByRefreshTokenHash = jest.fn();
+  const rotateRefreshToken = jest.fn().mockResolvedValue(true);
   const recordSecurityEvent = jest.fn().mockResolvedValue(undefined);
   const repository = {
     findLoginAccount,
     createSession,
+    createSessionFromCrmExchange,
+    findByRefreshTokenHash,
+    rotateRefreshToken,
     recordSecurityEvent,
   } as unknown as SessionRepository;
   const verify = jest.fn().mockResolvedValue(true);
@@ -35,6 +44,7 @@ function createSessionService() {
       .fn()
       .mockReturnValue({ raw: 'raw-refresh', hash: 'hash-refresh' }),
     hashPrivateValue: jest.fn().mockReturnValue('private-ip-hash'),
+    hash: jest.fn((value: string) => `hash:${value}`),
   } as unknown as AuthTokenService;
   const issue = jest.fn().mockResolvedValue('signed-access-token');
   const accessTokens = { issue } as unknown as AccessTokenService;
@@ -53,6 +63,10 @@ function createSessionService() {
     verify,
     verifyDummy,
     issue,
+    values,
+    createSessionFromCrmExchange,
+    findByRefreshTokenHash,
+    rotateRefreshToken,
   };
 }
 
@@ -88,6 +102,49 @@ describe('SessionService', () => {
     expect(fixture.recordSecurityEvent).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'SUCCESS' }),
     );
+  });
+
+  it('creates CRM sessions only while atomically consuming the exchange code', async () => {
+    const fixture = createSessionService();
+
+    await expect(
+      fixture.service.exchangeCrmSso({
+        exchangeCodeHash: 'exchange-hash',
+        ipAddress: '127.0.0.1',
+        deviceSummary: 'test-agent',
+      }),
+    ).resolves.toMatchObject({
+      accessToken: 'signed-access-token',
+      refreshToken: 'raw-refresh',
+      redirectPath: '/path',
+    });
+    expect(fixture.createSessionFromCrmExchange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        exchangeCodeHash: 'exchange-hash',
+        refreshTokenHash: 'hash-refresh',
+      }),
+    );
+  });
+
+  it('rejects password-created refresh sessions after switching to SSO-only', async () => {
+    const fixture = createSessionService();
+    fixture.values.TEACHER_AUTH_MODE = 'CRM_SSO_ONLY';
+    fixture.findByRefreshTokenHash.mockResolvedValue({
+      sessionId: 'session-001',
+      accountId: 'account-001',
+      accountStatus: 'ACTIVE',
+      authMethod: 'PASSWORD',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    await expect(
+      fixture.service.refresh({
+        refreshToken: 'old-refresh',
+        ipAddress: null,
+        deviceSummary: null,
+      }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(fixture.rotateRefreshToken).not.toHaveBeenCalled();
   });
 
   it('runs the same expensive password path for an unknown account', async () => {

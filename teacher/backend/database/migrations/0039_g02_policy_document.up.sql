@@ -3,7 +3,8 @@ BEGIN;
 SET LOCAL lock_timeout = '10s';
 
 -- Current G02 keeps the stable operations identity G03:v1. Upgrade only an
--- existing execution in place; an empty execution catalog remains empty.
+-- existing execution in place; a catalog containing only personalized
+-- executions still has no fixed-task catalog and therefore remains unchanged.
 DO $$
 BEGIN
     IF to_regclass('public.task_templates') IS NULL
@@ -51,7 +52,13 @@ BEGIN
     WHERE shared_template_row_id = 'G03:v1';
 
     IF execution_id IS NULL THEN
-        IF EXISTS (SELECT 1 FROM tide.task_execution_versions) THEN
+        IF EXISTS (
+            SELECT 1
+            FROM tide.task_execution_versions AS execution
+            JOIN public.task_templates AS template
+              ON template.row_id = execution.shared_template_row_id
+            WHERE template.payload->>'category' = 'MANDATORY_GROWTH'
+        ) THEN
             RAISE EXCEPTION
                 'existing execution catalog is missing the stable G02 execution G03:v1';
         END IF;
@@ -250,7 +257,13 @@ BEGIN
     WHERE shared_template_row_id = 'G03:v1';
 
     IF execution_id IS NULL THEN
-        IF EXISTS (SELECT 1 FROM tide.task_execution_versions) THEN
+        IF EXISTS (
+            SELECT 1
+            FROM tide.task_execution_versions AS execution
+            JOIN public.task_templates AS template
+              ON template.row_id = execution.shared_template_row_id
+            WHERE template.payload->>'category' = 'MANDATORY_GROWTH'
+        ) THEN
             RAISE EXCEPTION
                 'migration 0039 left a non-empty execution catalog without G02';
         END IF;

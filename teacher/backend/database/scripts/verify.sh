@@ -375,6 +375,32 @@ account_onboarding_states_ready="$("${PSQL[@]}" -Atqc "
         and contype = 'c'
     )
 ")"
+crm_sso_hybrid_ready="$("${PSQL[@]}" -Atqc "
+  select
+    to_regclass('tide.crm_sso_logins') is not null
+    and exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'user_accounts'
+        and column_name = 'created_via'
+    )
+    and exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'auth_sessions'
+        and column_name = 'auth_method'
+    )
+    and exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'tide'
+        and table_name = 'user_accounts'
+        and column_name = 'password_hash'
+        and is_nullable = 'YES'
+    )
+")"
 operator_reply_atomicity_ready="$("${PSQL[@]}" -Atqc "
   select position(
     'teacher_reply_deadline_at = reply_at + interval ''48 hours''' in
@@ -518,6 +544,7 @@ assert_equals "${growth_stage_notification_state_ready}" "t" "成长阶段通知
 assert_equals "${teacher_support_tickets_ready}" "t" "教师工单共享表或原子追加方法缺失"
 assert_equals "${performance_job_leases_ready}" "t" "后台任务租约结构缺失"
 assert_equals "${account_onboarding_states_ready}" "t" "首次登录引导状态表或幂等键约束缺失"
+assert_equals "${crm_sso_hybrid_ready}" "t" "CRM SSO 混合认证结构缺失"
 assert_equals "${operator_reply_atomicity_ready}" "t" "运营回复未原子维护状态和 48 小时窗口"
 assert_equals "${support_ticket_security_hardened}" "t" "工单 CAS 或 SECURITY DEFINER owner 未加固"
 assert_equals "${notification_event_dedupe_ready}" "t" "外部消息事件幂等索引缺失"
@@ -551,6 +578,10 @@ assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_cru
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'INSERT')")" "t" "教师角色缺少引导状态幂等写入权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'UPDATE')")" "f" "教师角色不应改写引导终态事实"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.account_onboarding_states', 'DELETE')")" "f" "教师角色不应删除引导终态事实"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.crm_sso_logins', 'SELECT')")" "t" "教师角色缺少 SSO 登录审计读取权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.crm_sso_logins', 'INSERT')")" "t" "教师角色缺少 SSO 登录创建权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.crm_sso_logins', 'UPDATE')")" "t" "教师角色缺少 SSO 兑换权限"
+assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'tide.crm_sso_logins', 'DELETE')")" "f" "教师角色不应删除 SSO 登录事实"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.notifications', 'read_at', 'UPDATE')")" "t" "教师角色缺少消息已读权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_column_privilege('tit_teacher_crud', 'public.notifications', 'clicked_at', 'UPDATE')")" "t" "教师角色缺少消息点击权限"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.notification_events', 'INSERT')")" "t" "教师角色缺少消息事件写入权限"

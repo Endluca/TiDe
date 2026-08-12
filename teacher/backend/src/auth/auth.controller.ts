@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   HttpCode,
   HttpStatus,
@@ -11,6 +12,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { AuthService } from './auth.service';
+import { AuthModeService } from './auth-mode.service';
 import type { AuthTokenPair } from './auth.models';
 import { PasswordResetService } from './password-reset.service';
 import {
@@ -32,7 +34,13 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly sessions: SessionService,
     private readonly passwordReset: PasswordResetService,
+    private readonly authMode: AuthModeService,
   ) {}
+
+  @Get('capabilities')
+  capabilities() {
+    return this.authMode.capabilities();
+  }
 
   @Post('register')
   @HttpCode(HttpStatus.ACCEPTED)
@@ -41,6 +49,7 @@ export class AuthController {
     @Body() input: RegisterDto,
     @Headers('x-tide-session-id') analyticsSessionId?: string,
   ) {
+    this.authMode.assertLocalAuthEnabled();
     return this.auth.register(input, analyticsSessionId);
   }
 
@@ -50,6 +59,7 @@ export class AuthController {
     @Body() input: ConfirmEmailDto,
     @Headers('x-tide-session-id') analyticsSessionId?: string,
   ) {
+    this.authMode.assertLocalAuthEnabled();
     return this.auth.confirmEmail(input.token, analyticsSessionId);
   }
 
@@ -57,6 +67,7 @@ export class AuthController {
   @HttpCode(HttpStatus.ACCEPTED)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   resendVerification(@Body() input: ResendVerificationDto) {
+    this.authMode.assertLocalAuthEnabled();
     return this.auth.resendVerification(input.email);
   }
 
@@ -68,6 +79,7 @@ export class AuthController {
     @Req() request: Request,
     @Headers('x-tide-session-id') analyticsSessionId?: string,
   ): Promise<AuthTokenPair> {
+    this.authMode.assertLocalAuthEnabled();
     return this.sessions.login({
       ...input,
       ipAddress: this.ipAddress(request),
@@ -104,6 +116,7 @@ export class AuthController {
     @Body() input: RequestPasswordResetDto,
     @Headers('x-tide-session-id') analyticsSessionId?: string,
   ) {
+    this.authMode.assertLocalAuthEnabled();
     return this.passwordReset.request(input.email, analyticsSessionId);
   }
 
@@ -114,6 +127,7 @@ export class AuthController {
     @Body() input: ConfirmPasswordResetDto,
     @Headers('x-tide-session-id') analyticsSessionId?: string,
   ) {
+    this.authMode.assertLocalAuthEnabled();
     return this.passwordReset.confirm(
       input.token,
       input.newPassword,

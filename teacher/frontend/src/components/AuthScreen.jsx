@@ -13,6 +13,8 @@ import {
 import {
   confirmEmail,
   confirmPasswordReset,
+  exchangeCrmSso,
+  getAuthCapabilities,
   loginTeacher,
   registerTeacher,
   requestPasswordReset,
@@ -65,6 +67,7 @@ export default function AuthScreen({ language, onLanguageChange, onAuthenticated
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [capabilities, setCapabilities] = useState(null);
 
   const updateField = (field) => (event) => {
     setFields((current) => ({ ...current, [field]: event.target.value }));
@@ -187,7 +190,28 @@ export default function AuthScreen({ language, onLanguageChange, onAuthenticated
 
   useEffect(() => {
     const path = window.location.pathname;
-    const token = new URLSearchParams(window.location.search).get("token") || "";
+    const search = new URLSearchParams(window.location.search);
+    const token = search.get("token") || "";
+    if (path === "/sso/callback") {
+      const code = search.get("code") || "";
+      const errorCode = search.get("error") || "";
+      window.history.replaceState({}, "", "/sso/callback");
+      setMode("sso-callback");
+      if (errorCode) {
+        setError(localizeApiError(
+          { code: errorCode },
+          language,
+          copy(language, "CRM sign-in failed. Open TIDE from CRM again.", "CRM 登录失败，请从 CRM 重新进入。"),
+        ));
+        return;
+      }
+      if (!code) {
+        setError(copy(language, "The CRM login link is invalid. Open TIDE from CRM again.", "CRM 登录链接无效，请从 CRM 重新进入。"));
+        return;
+      }
+      runRequest(() => exchangeCrmSso(code), onAuthenticated);
+      return;
+    }
     if (path === "/reset-password") {
       setLinkToken(token);
       setMode("reset");
@@ -209,6 +233,27 @@ export default function AuthScreen({ language, onLanguageChange, onAuthenticated
         },
       );
     }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    getAuthCapabilities()
+      .then((result) => {
+        if (!active) return;
+        setCapabilities(result);
+        if (
+          result.authMode === "CRM_SSO_ONLY"
+          && window.location.pathname !== "/sso/callback"
+        ) {
+          setMode("sso-only");
+        }
+      })
+      .catch(() => {
+        // 能力接口异常时保留现有登录入口，避免 HYBRID 模式被误锁。
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const modeContent = {
@@ -239,6 +284,14 @@ export default function AuthScreen({ language, onLanguageChange, onAuthenticated
     "reset-pending": {
       title: copy(language, "Check your email", "请查收邮件"),
       intro: copy(language, "Open the password reset link to continue.", "请打开邮件中的密码重置链接。"),
+    },
+    "sso-callback": {
+      title: copy(language, "Signing in from CRM", "正在从 CRM 登录"),
+      intro: copy(language, "Please wait while we create your TIDE session.", "正在建立 TIDE 登录状态，请稍候。"),
+    },
+    "sso-only": {
+      title: copy(language, "Open TIDE from CRM", "请从 CRM 进入"),
+      intro: copy(language, "Direct account sign-in is no longer available.", "当前仅支持通过 CRM 登录新师训练营。"),
     },
   }[mode];
 
@@ -321,6 +374,19 @@ export default function AuthScreen({ language, onLanguageChange, onAuthenticated
             <div className="auth-form-notice" role="status">{copy(language, "Verifying…", "验证中…")}</div>
           )}
 
+          {mode === "sso-callback" && submitting && (
+            <div className="auth-form-notice" role="status">{copy(language, "Signing in…", "登录中…")}</div>
+          )}
+
+          {mode === "sso-only" && capabilities?.crmEntryUrl && (
+            <div className="auth-form">
+              <a className="auth-submit-button" href={capabilities.crmEntryUrl}>
+                {copy(language, "Go to CRM", "前往 CRM")}
+                <ArrowRight size={19} weight="bold" />
+              </a>
+            </div>
+          )}
+
           {mode === "reset" && (
             <form className="auth-form" onSubmit={submitReset} noValidate>
               <PasswordField id="reset-password" label={copy(language, "New password", "新密码")} value={fields.password} onChange={updateField("password")} language={language} autoComplete="new-password" />
@@ -341,6 +407,13 @@ export default function AuthScreen({ language, onLanguageChange, onAuthenticated
               <button type="button" onClick={() => switchMode(mode === "login" ? "register" : "login")}>
                 {mode === "login" ? copy(language, "Create an account", "注册账户") : copy(language, "Back to sign in", "返回登录")}
               </button>
+            </div>
+          )}
+
+          {mode === "login" && capabilities?.crmEntryUrl && capabilities?.crmSsoEnabled && (
+            <div className="auth-mode-switch">
+              <span>{copy(language, "Already in CRM?", "已登录 CRM？")}</span>
+              <a href={capabilities.crmEntryUrl}>{copy(language, "Open from CRM", "从 CRM 进入")}</a>
             </div>
           )}
 

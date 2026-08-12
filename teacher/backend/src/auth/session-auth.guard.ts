@@ -5,6 +5,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { ConfigService } from '@nestjs/config';
+import type { AppEnvironment } from '../platform/config/environment';
 import { AccessTokenService } from './access-token.service';
 import type { AuthPrincipal } from './auth.models';
 import { SessionRepository } from './session.repository';
@@ -18,6 +20,7 @@ export class SessionAuthGuard implements CanActivate {
   constructor(
     private readonly accessTokens: AccessTokenService,
     private readonly sessions: SessionRepository,
+    private readonly config: ConfigService<AppEnvironment, true>,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -32,6 +35,9 @@ export class SessionAuthGuard implements CanActivate {
     const active = await this.sessions.isActive(
       principal.sessionId,
       principal.accountId,
+      this.config.get('TEACHER_AUTH_MODE', { infer: true }) === 'CRM_SSO_ONLY'
+        ? 'CRM_SSO'
+        : null,
     );
 
     if (!active) {

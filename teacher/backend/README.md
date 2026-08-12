@@ -36,6 +36,9 @@ pnpm start:dev
 
 ## 主要接口
 
+- `GET /api/v1/auth/crm-sso`：验证 CRM 短时 JWT，仅跳转到携带一次性兑换码的前端回调。
+- `POST /api/v1/auth/crm-sso/exchange`：一次性兑换 TIDE 自己的 access/refresh token；CRM JWT 不进入前端会话。
+- `GET /api/v1/auth/capabilities`：返回当前 `HYBRID` / `CRM_SSO_ONLY` 能力，供前端隐藏或保留旧入口。
 - `/api/v1/tasks`：共享任务列表、详情、开始、进度、提交、校验和重试。
 - `/api/v1/me/*`：教师资料、G01、My TIDE、课程和消息。
 - `/api/v1/files`：上传意图、校验和鉴权下载。

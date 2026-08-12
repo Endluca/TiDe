@@ -116,6 +116,36 @@ export const environmentSchema = z
     SHIWEN_ALLOW_TIDE_FIXTURE_FALLBACK: booleanFromEnvironment,
     SHIWEN_TEACHER_IDENTITY_VIEW: optionalQualifiedViewName,
     PUBLIC_APP_URL: z.string().url().default('http://localhost:5173'),
+    TEACHER_AUTH_MODE: z.enum(['HYBRID', 'CRM_SSO_ONLY']).default('HYBRID'),
+    CRM_SSO_JWT_SECRET_CURRENT: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().min(32).optional(),
+    ),
+    CRM_SSO_JWT_SECRET_PREVIOUS: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().min(32).optional(),
+    ),
+    CRM_SSO_ISSUER: z.string().min(1).max(64).default('crm'),
+    CRM_SSO_AUDIENCE: z.string().min(1).max(64).default('tide'),
+    CRM_SSO_MAX_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(30)
+      .max(300)
+      .default(120),
+    CRM_SSO_CLOCK_TOLERANCE_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(60)
+      .default(30),
+    CRM_SSO_EXCHANGE_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(15)
+      .max(120)
+      .default(60),
+    CRM_ENTRY_URL: optionalUrl,
     ALLOWED_EMAIL_DOMAINS: z.string().default(''),
     EMAIL_VERIFICATION_TTL_MINUTES: z.coerce
       .number()
@@ -426,6 +456,28 @@ export const environmentSchema = z
         code: 'custom',
         path: ['AUTH_JWT_SECRET'],
         message: '生产环境不能为空且至少 32 个字符',
+      });
+    }
+
+    if (
+      environment.TEACHER_AUTH_MODE === 'CRM_SSO_ONLY' &&
+      !environment.CRM_SSO_JWT_SECRET_CURRENT
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['CRM_SSO_JWT_SECRET_CURRENT'],
+        message: 'CRM_SSO_ONLY 模式必须配置当前 CRM SSO 密钥',
+      });
+    }
+
+    if (
+      environment.TEACHER_AUTH_MODE === 'CRM_SSO_ONLY' &&
+      !environment.CRM_ENTRY_URL
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['CRM_ENTRY_URL'],
+        message: 'CRM_SSO_ONLY 模式必须配置 CRM 入口地址',
       });
     }
 

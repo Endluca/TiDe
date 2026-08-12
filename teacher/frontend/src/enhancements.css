@@ -3253,6 +3253,7 @@ body {
   cursor: pointer;
   font-size: 15px;
   font-weight: 850;
+  text-decoration: none;
 }
 
 .auth-submit-button:hover,
@@ -3350,7 +3351,8 @@ body {
   font-size: 12px;
 }
 
-.auth-mode-switch button {
+.auth-mode-switch button,
+.auth-mode-switch a {
   padding: 2px;
   border: 0;
   color: var(--brand-blue);
@@ -3358,9 +3360,11 @@ body {
   cursor: pointer;
   font: inherit;
   font-weight: 800;
+  text-decoration: none;
 }
 
-.auth-mode-switch button:hover {
+.auth-mode-switch button:hover,
+.auth-mode-switch a:hover {
   text-decoration: underline;
   text-underline-offset: 3px;
 }

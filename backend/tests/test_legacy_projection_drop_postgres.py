@@ -578,6 +578,39 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
         # forward upgrade and ORM drift check only after the rev47-49
         # round-trip assertions have finished; the ephemeral cluster is then
         # discarded instead of pretending a rev54 rollback is possible.
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.task_templates (
+                        row_id, template_id, template_version, status, revision,
+                        output_type, execution_owner, integration_mode,
+                        external_task_template_code, source_mode, payload,
+                        created_by, updated_by, created_at, updated_at
+                    ) VALUES (
+                        'P-FB-NEGATIVE:v1', 'P-FB-NEGATIVE', 1, 'PUBLISHED', 5,
+                        'TEACHER_TASK', 'TEACHER_APP', 'INBOUND_STATUS_ONLY',
+                        'P-FB-NEGATIVE', 'MOCK',
+                        jsonb_build_object(
+                            'template_id', 'P-FB-NEGATIVE',
+                            'title', 'Feedback Improvement',
+                            'category', 'PERSONALIZED_IMPROVEMENT',
+                            'content_status', 'READY',
+                            'score_type', 'ZERO',
+                            'score_value', 0,
+                            'how_summary',
+                                'Complete the learning activity assigned for the feedback issue shown in the task reason.',
+                            'completion_standard',
+                                'The teacher app marks the matching learning activity as completed.'
+                        ),
+                        'POSTGRES_ROUND_TRIP_FIXTURE',
+                        'POSTGRES_ROUND_TRIP_FIXTURE',
+                        '2026-08-11T00:00:00+00',
+                        '2026-08-11T00:00:00+00'
+                    )
+                    """
+                )
+            )
         _run_alembic(backend_dir, database_url, "upgrade", "head")
         _run_alembic(backend_dir, database_url, "check")
     finally:

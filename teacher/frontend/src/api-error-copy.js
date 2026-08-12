@@ -40,6 +40,30 @@ const apiErrorCopy = {
     en: "The required source data is temporarily unavailable. Please try again later.",
     zh: "所需来源数据暂时不可用，请稍后重试。",
   },
+  CRM_SSO_TOKEN_INVALID: {
+    en: "The CRM login credential is invalid. Open TIDE from CRM again.",
+    zh: "CRM 登录凭证无效，请从 CRM 重新进入。",
+  },
+  CRM_SSO_TOKEN_EXPIRED: {
+    en: "The CRM login credential has expired. Open TIDE from CRM again.",
+    zh: "CRM 登录凭证已过期，请从 CRM 重新进入。",
+  },
+  CRM_SSO_REPLAYED: {
+    en: "This CRM login link has already been used. Open TIDE from CRM again.",
+    zh: "该 CRM 登录链接已使用，请从 CRM 重新进入。",
+  },
+  CRM_SSO_EXCHANGE_INVALID: {
+    en: "This CRM login link is invalid or has already been used. Open TIDE from CRM again.",
+    zh: "CRM 登录链接无效或已使用，请从 CRM 重新进入。",
+  },
+  ACCOUNT_NOT_ACTIVE: {
+    en: "This account cannot sign in. Contact support.",
+    zh: "账号当前不可登录，请联系支持人员。",
+  },
+  CRM_SSO_FAILED: {
+    en: "CRM sign-in failed. Open TIDE from CRM again.",
+    zh: "CRM 登录失败，请从 CRM 重新进入。",
+  },
 
   // Tasks
   TASK_NOT_FOUND: {

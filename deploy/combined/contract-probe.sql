@@ -85,6 +85,7 @@ BEGIN
        OR to_regclass('tide.task_step_definitions') IS NULL
        OR to_regclass('tide.task_validation_rules') IS NULL
        OR to_regclass('tide.account_onboarding_states') IS NULL
+       OR to_regclass('tide.crm_sso_logins') IS NULL
        OR to_regclass('tide.schema_migrations') IS NULL THEN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
@@ -199,10 +200,37 @@ BEGIN
             '0037_g04_remove_device_check',
             '0038_personalized_environment_photo',
             '0039_g02_policy_document',
-            '0040_g02_document_read_status'
+            '0040_g02_document_read_status',
+            '0041_crm_sso_hybrid'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0040';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0041';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'tide.user_accounts'::regclass
+          AND attname = 'password_hash'
+          AND attnum > 0
+          AND NOT attisdropped
+          AND NOT attnotnull
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'tide.user_accounts'::regclass
+          AND attname = 'created_via'
+          AND attnum > 0
+          AND NOT attisdropped
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'tide.auth_sessions'::regclass
+          AND attname = 'auth_method'
+          AND attnum > 0
+          AND NOT attisdropped
+    ) THEN
+        RAISE EXCEPTION 'CRM SSO account or session columns are incomplete';
     END IF;
 
     IF to_regclass('tide.analytics_task_business_change_v1') IS NOT NULL
@@ -970,6 +998,14 @@ BEGIN
         'tit_teacher_crud',
         'public.task_assignments',
         'SELECT'
+    ) OR NOT has_table_privilege(
+        'tit_teacher_crud',
+        'tide.crm_sso_logins',
+        'SELECT,INSERT,UPDATE'
+    ) OR has_table_privilege(
+        'tit_teacher_crud',
+        'tide.crm_sso_logins',
+        'DELETE'
     ) THEN
         RAISE EXCEPTION 'teacher runtime role cannot read required shared objects';
     END IF;

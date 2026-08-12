@@ -42,3 +42,4 @@
 \ir migrations/0038_personalized_environment_photo.up.sql
 \ir migrations/0039_g02_policy_document.up.sql
 \ir migrations/0040_g02_document_read_status.up.sql
+\ir migrations/0041_crm_sso_hybrid.up.sql

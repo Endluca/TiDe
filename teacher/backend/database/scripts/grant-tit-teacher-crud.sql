@@ -104,6 +104,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA tide
 REVOKE ALL ON tide.account_onboarding_states FROM tit_teacher_crud;
 GRANT SELECT, INSERT ON tide.account_onboarding_states TO tit_teacher_crud;
 
+-- SSO 登录事实允许创建、消费和审计读取，不允许运行账号删除。
+REVOKE ALL ON tide.crm_sso_logins FROM tit_teacher_crud;
+GRANT SELECT, INSERT, UPDATE ON tide.crm_sso_logins TO tit_teacher_crud;
+
 -- 迁移账本只存在于正式 migrator 管理的库。存在时只能由独立 migrator
 -- 写入，运行账号只允许 readiness 读取。
 DO $$

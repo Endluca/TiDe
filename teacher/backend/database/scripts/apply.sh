@@ -421,9 +421,16 @@ fi
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0039_g02_policy_document.up.sql"
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0040_g02_document_read_status.up.sql"
 
+crm_sso_logins_exists="$("${PSQL[@]}" -Atqc "
+  select to_regclass('tide.crm_sso_logins') is not null
+)"
+if [[ "${crm_sso_logins_exists}" != "t" ]]; then
+  "${PSQL[@]}" -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql"
+fi
+
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0040、共享表本地契约和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0041、共享表本地契约和当前 Seeds 已检查并执行。"

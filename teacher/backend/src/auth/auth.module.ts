@@ -6,9 +6,14 @@ import { MailModule } from '../integrations/mail/mail.module';
 import { ShiwenReadModule } from '../integrations/shiwen/shiwen-read.module';
 import { AppEventStoreModule } from '../app-events/app-event-store.module';
 import { AuthController } from './auth.controller';
+import { AuthModeService } from './auth-mode.service';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import { AuthTokenService } from './auth-token.service';
+import { CrmSsoController } from './crm-sso.controller';
+import { CrmSsoRepository } from './crm-sso.repository';
+import { CrmSsoService } from './crm-sso.service';
+import { CrmSsoTokenService } from './crm-sso-token.service';
 import { AccessTokenService } from './access-token.service';
 import { PasswordResetRepository } from './password-reset.repository';
 import { PasswordResetService } from './password-reset.service';
@@ -39,9 +44,13 @@ import { SessionService } from './session.service';
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, CrmSsoController],
   providers: [
     AuthService,
+    AuthModeService,
+    CrmSsoService,
+    CrmSsoRepository,
+    CrmSsoTokenService,
     AuthRepository,
     AuthTokenService,
     PasswordHasher,

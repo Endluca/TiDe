@@ -62,6 +62,7 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0038_personalized_environment_photo',
   '0039_g02_policy_document',
   '0040_g02_document_read_status',
+  '0041_crm_sso_hybrid',
 ] as const;
 
 @Injectable()
@@ -202,8 +203,13 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT (
             (SELECT count(*) FROM tide.user_accounts WHERE false) = 0
             AND (
+            SELECT count(*)
+            FROM tide.account_onboarding_states
+            WHERE false
+            ) = 0
+            AND (
               SELECT count(*)
-              FROM tide.account_onboarding_states
+              FROM tide.crm_sso_logins
               WHERE false
             ) = 0
             AND (
@@ -289,7 +295,7 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0040_g02_document_read_status'
+        ) = '0041_crm_sso_hybrid'
         AND public_migration_state.migration_count = 1
         AND public_migration_state.version_num =
           '20260811_57_g02_document'
@@ -447,6 +453,7 @@ export class DatabaseService implements OnModuleDestroy {
         )
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.account_onboarding_states') IS NOT NULL
+        AND to_regclass('tide.crm_sso_logins') IS NOT NULL
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
         AND EXISTS (
           SELECT 1
@@ -969,6 +976,26 @@ export class DatabaseService implements OnModuleDestroy {
         AND NOT has_table_privilege(
           current_user,
           to_regclass('tide.account_onboarding_states'),
+          'DELETE'
+        )
+        AND has_table_privilege(
+          current_user,
+          to_regclass('tide.crm_sso_logins'),
+          'SELECT'
+        )
+        AND has_table_privilege(
+          current_user,
+          to_regclass('tide.crm_sso_logins'),
+          'INSERT'
+        )
+        AND has_table_privilege(
+          current_user,
+          to_regclass('tide.crm_sso_logins'),
+          'UPDATE'
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('tide.crm_sso_logins'),
           'DELETE'
         )
         AND has_table_privilege(

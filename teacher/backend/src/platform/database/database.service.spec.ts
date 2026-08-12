@@ -235,10 +235,7 @@ describe('DatabaseService', () => {
       expect.stringContaining('0038_personalized_environment_photo'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('0040_g02_document_read_status'),
-    );
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('0039_g02_policy_document'),
+      expect.stringContaining('0041_crm_sso_hybrid'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0032_first_login_onboarding'),
@@ -343,6 +340,9 @@ describe('DatabaseService', () => {
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide.account_onboarding_states'),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('tide.crm_sso_logins'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('2026-08-11-g04-two-part'),
@@ -463,6 +463,18 @@ describe('DatabaseService', () => {
         ),
       );
     }
+    for (const privilege of ['SELECT', 'INSERT', 'UPDATE']) {
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining(
+          `to_regclass('tide.crm_sso_logins'),\n          '${privilege}'`,
+        ),
+      );
+    }
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "to_regclass('tide.crm_sso_logins'),\n          'DELETE'",
+      ),
+    );
     expect(query).not.toHaveBeenCalledWith(
       expect.stringContaining("'SELECT,INSERT,UPDATE"),
     );

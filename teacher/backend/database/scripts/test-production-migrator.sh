@@ -237,6 +237,29 @@ INSERT INTO public.task_templates (
 SQL
 }
 
+install_public_g02_contract() {
+  local database_name="$1"
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${database_name}" >/dev/null <<'SQL'
+UPDATE public.task_templates
+SET payload = jsonb_set(
+      jsonb_set(
+        payload,
+        '{how_summary}',
+        to_jsonb('Read the current Overseas NT Policies document in TIDE. Your reading progress is saved automatically.'::text)
+      ),
+      '{completion_standard}',
+      to_jsonb('G02 is completed automatically after you reach the end of the current published document.'::text)
+    ),
+    revision = revision + 1,
+    updated_by = 'production_migrator_test_g02'
+WHERE row_id = 'G03:v1'
+  AND template_id = 'G02'
+  AND status = 'PUBLISHED';
+SQL
+  set_public_head "${database_name}" "20260811_57_g02_document"
+}
+
 create_test_database "${PUBLIC_HEAD_FIRST_DB}"
 advance_public_g04_to_rev54 "${PUBLIC_HEAD_FIRST_DB}"
 set_public_head "${PUBLIC_HEAD_FIRST_DB}" "20260811_56_p_fb_negative_copy"
@@ -248,6 +271,7 @@ set +e
 public_head_first_output="$(
   TIDE_MIGRATION_DATABASE_URL="postgresql:///${PUBLIC_HEAD_FIRST_DB}" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${PUBLIC_HEAD_FIRST_DB}" \
+  TIDE_MIGRATION_TARGET="0038_personalized_environment_photo" \
   TIDE_MIGRATION_TEST_MODE="true" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
@@ -294,6 +318,7 @@ set +e
 fresh_missing_template_output="$(
   TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TARGET="0038_personalized_environment_photo" \
   TIDE_MIGRATION_TEST_MODE="true" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
@@ -332,6 +357,7 @@ set +e
 fresh_missing_public_copy_output="$(
   TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TARGET="0038_personalized_environment_photo" \
   TIDE_MIGRATION_TEST_MODE="true" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
@@ -392,6 +418,7 @@ set +e
 fresh_illegal_template_output="$(
   TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TARGET="0038_personalized_environment_photo" \
   TIDE_MIGRATION_TEST_MODE="true" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
@@ -442,6 +469,7 @@ set +e
 fresh_identity_collision_output="$(
   TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TARGET="0038_personalized_environment_photo" \
   TIDE_MIGRATION_TEST_MODE="true" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
@@ -481,6 +509,13 @@ psql -X --no-password -v ON_ERROR_STOP=1 \
 
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+TIDE_MIGRATION_TARGET="0038_personalized_environment_photo" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+install_public_g02_contract "${FRESH_DB}"
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+TIDE_MIGRATION_TARGET="0041_crm_sso_hybrid" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
 
@@ -598,8 +633,19 @@ SELECT
     ) AND to_regprocedure('tide.enforce_outbox_target()') IS NULL,
     to_regclass('tide.account_onboarding_states') IS NOT NULL,
     NOT EXISTS (SELECT 1 FROM tide.account_onboarding_states),
+    to_regclass('tide.crm_sso_logins') IS NOT NULL,
+    NOT EXISTS (SELECT 1 FROM tide.crm_sso_logins),
+    count(*) FILTER (
+        WHERE migration_id = '0041_crm_sso_hybrid'
+    ) = 1,
     count(*) FILTER (
         WHERE migration_id = '0038_personalized_environment_photo'
+    ) = 1,
+    count(*) FILTER (
+        WHERE migration_id = '0039_g02_policy_document'
+    ) = 1,
+    count(*) FILTER (
+        WHERE migration_id = '0040_g02_document_read_status'
     ) = 1,
     count(*) FILTER (
         WHERE migration_id = '0033_g01_tesol_only'
@@ -611,7 +657,7 @@ SELECT
 FROM tide.schema_migrations;
 SQL
 )"
-if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|33" ]]; then
+if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|36" ]]; then
   echo "生产 fresh 迁移状态异常：${fresh_state}" >&2
   exit 1
 fi
@@ -875,7 +921,7 @@ fi
 
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${FRESH_DB}" \
-  -c "DROP TABLE public.teacher_metric_snapshots" >/dev/null
+  -c "DROP TABLE IF EXISTS public.teacher_metric_snapshots" >/dev/null
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
 TIDE_MIGRATION_TEST_MODE="true" \
@@ -890,12 +936,12 @@ SELECT
         FROM tide.schema_migrations
         ORDER BY migration_order DESC
         LIMIT 1
-    ) = '0038_personalized_environment_photo',
-    (SELECT count(*) FROM tide.schema_migrations) = 33;
+    ) = '0041_crm_sso_hybrid',
+    (SELECT count(*) FROM tide.schema_migrations) = 36;
 SQL
 )"
 if [[ "${post_public_drop_state}" != "t|t|t|t" ]]; then
-  echo "teacher 0038 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
+  echo "teacher 0041 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
   exit 1
 fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
@@ -1084,7 +1130,7 @@ SELECT
     catalog.previous_task_code,
     'v1',
     CASE
-        WHEN catalog.row_id = 'G02:v1' THEN
+        WHEN catalog.row_id IN ('G02:v1', 'G03:v1') THEN
             '{"estimatedMinutes":15,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-30","pendingReason":null}'::jsonb
         ELSE jsonb_build_object('migration_test', true)
     END,
@@ -1919,7 +1965,7 @@ SQL
 
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
-TIDE_MIGRATION_TARGET="0033_g01_tesol_only" \
+TIDE_MIGRATION_TARGET="0032_first_login_onboarding" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
 
@@ -2267,11 +2313,12 @@ SELECT
          AND execution.task_code = expected.task_code
          AND execution.status = expected.expected_status
     ) = 9,
-    NOT EXISTS (
+    EXISTS (
         SELECT 1
         FROM tide.task_execution_versions
         WHERE shared_template_row_id = 'G05:v1'
-           OR task_code = 'G00'
+          AND task_code = 'G00'
+          AND status = 'RETIRED'
     ),
     NOT EXISTS (
         SELECT 1
@@ -2766,6 +2813,35 @@ if [[ "${g04_two_part_state}" != "t|t|t|t|t|t|t|t|t|t|t|t|t" ]]; then
 fi
 
 run_personalized_environment_upgrade_tests
+install_public_g02_contract "${UPGRADE_DB}"
+
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TARGET="0041_crm_sso_hybrid" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+crm_sso_migration_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    to_regclass('tide.crm_sso_logins') IS NOT NULL,
+    EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'tide'
+          AND table_name = 'auth_sessions'
+          AND column_name = 'auth_method'
+    ),
+    EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0041_crm_sso_hybrid'
+          AND migration_order = 36
+    );
+SQL
+)"
+if [[ "${crm_sso_migration_state}" != "t|t|t" ]]; then
+  echo "0041 CRM SSO 结构或迁移账本异常：${crm_sso_migration_state}" >&2
+  exit 1
+fi
 
 analytics_semantics_state="$(psql -X --no-password -AtF '|' "postgresql:///${UPGRADE_DB}" <<'SQL'
 SELECT
@@ -3113,6 +3189,38 @@ if [[ "${atomic_state}" != "WAITING_TEACHER|t|t|t|2|2|t|f|t|f|t|t|f|f" ]]; then
   echo "运营回复原子性或最小权限异常：${atomic_state}" >&2
   exit 1
 fi
+
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql" >/dev/null
+crm_sso_down_state="$(psql -X --no-password -Atqc "
+  SELECT
+    to_regclass('tide.crm_sso_logins') IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'tide'
+        AND table_name = 'auth_sessions'
+        AND column_name = 'auth_method'
+    )
+" "postgresql:///${UPGRADE_DB}")"
+if [[ "${crm_sso_down_state}" != "t" ]]; then
+  echo "0041 down 未恢复本地认证结构。" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql" >/dev/null
+crm_sso_down_up_state="$(psql -X --no-password -Atqc "
+  SELECT to_regclass('tide.crm_sso_logins') IS NOT NULL
+" "postgresql:///${UPGRADE_DB}")"
+if [[ "${crm_sso_down_up_state}" != "t" ]]; then
+  echo "0041 down-up 未恢复 CRM SSO 结构。" >&2
+  exit 1
+fi
+psql -X --no-password -v ON_ERROR_STOP=1 \
+  "postgresql:///${UPGRADE_DB}" \
+  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql" >/dev/null
 
 set +e
 personalized_evidence_down_output="$(
@@ -3780,4 +3888,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→public56→teacher0038 顺序门禁、旧表缺失权限探测、0022–0038、无用对象/字段/函数门禁与精确恢复、首次登录回填/down-up/幂等、G01 TESOL-only、G04 照片+课件两模块与历史设备证据保留、P-FB-NEGATIVE 环境拍照与回滚执行证据保护、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"
+echo "生产 migrator fresh/upgrade、public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→public56→teacher0038→public57→teacher0040→teacher0041 顺序门禁、旧表缺失权限探测、0022–0041、无用对象/字段/函数门禁与精确恢复、首次登录和 CRM SSO down-up/幂等、G01 TESOL-only、G02 原生文档、G04 照片+课件两模块与历史设备证据保留、P-FB-NEGATIVE 环境拍照与回滚执行证据保护、0/10 门禁、analytics v2、NULL CAS/message、固定 owner、连接守卫与 checksum 验证通过。"

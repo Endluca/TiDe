@@ -31,6 +31,23 @@ export async function loginTeacher(input) {
   return tokens;
 }
 
+export async function getAuthCapabilities() {
+  return apiRequest("/api/v1/auth/capabilities", {
+    method: "GET",
+    auth: false,
+  });
+}
+
+export async function exchangeCrmSso(code) {
+  const tokens = await apiRequest("/api/v1/auth/crm-sso/exchange", {
+    method: "POST",
+    body: { code },
+    auth: false,
+  });
+  saveTokenPair(tokens);
+  return tokens;
+}
+
 export async function logoutTeacher() {
   try {
     await apiRequest("/api/v1/auth/logout", { method: "POST" });

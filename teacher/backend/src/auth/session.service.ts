@@ -8,6 +8,7 @@ import type { AuthPrincipal, AuthTokenPair } from './auth.models';
 import { AuthTokenService } from './auth-token.service';
 import { PasswordHasher } from './password-hasher';
 import { SessionRepository } from './session.repository';
+import type { SessionAuthMethod } from './session.repository';
 
 @Injectable()
 export class SessionService {
@@ -34,7 +35,7 @@ export class SessionService {
     const anonymousActorId =
       this.tokenService.hashPrivateValue(normalizedEmail);
     const account = await this.repository.findLoginAccount(normalizedEmail);
-    const passwordMatches = account
+    const passwordMatches = account?.passwordHash
       ? await this.passwordHasher.verify(input.password, account.passwordHash)
       : await this.passwordHasher.verifyDummy(input.password);
     const ipHash = input.ipAddress
@@ -107,6 +108,7 @@ export class SessionService {
       accountId: account.accountId,
       ipHash,
       deviceSummary: input.deviceSummary,
+      authMethod: 'PASSWORD',
     });
     await this.repository.recordSecurityEvent({
       accountId: account.accountId,
@@ -134,6 +136,14 @@ export class SessionService {
     const session = await this.repository.findByRefreshTokenHash(previousHash);
 
     if (!session || session.accountStatus !== 'ACTIVE') {
+      throw this.invalidCredentials();
+    }
+
+    if (
+      this.config.get('TEACHER_AUTH_MODE', { infer: true }) ===
+        'CRM_SSO_ONLY' &&
+      session.authMethod !== 'CRM_SSO'
+    ) {
       throw this.invalidCredentials();
     }
 
@@ -172,21 +182,46 @@ export class SessionService {
     await this.repository.revoke(principal.sessionId, principal.accountId);
   }
 
+  async exchangeCrmSso(input: {
+    exchangeCodeHash: string;
+    ipAddress: string | null;
+    deviceSummary: string | null;
+  }): Promise<(AuthTokenPair & { redirectPath: string }) | null> {
+    const sessionId = randomUUID();
+    const refreshToken = this.tokenService.create();
+    const refreshTokenExpiresAt = this.refreshTokenExpiresAt();
+    const consumed = await this.repository.createSessionFromCrmExchange({
+      exchangeCodeHash: input.exchangeCodeHash,
+      sessionId,
+      refreshTokenHash: refreshToken.hash,
+      deviceSummary: input.deviceSummary,
+      ipHash: input.ipAddress
+        ? this.tokenService.hashPrivateValue(input.ipAddress)
+        : null,
+      expiresAt: refreshTokenExpiresAt,
+    });
+
+    if (!consumed) return null;
+
+    const accessToken = await this.accessTokens.issue({
+      accountId: consumed.accountId,
+      sessionId,
+    });
+    return {
+      ...this.tokenPair(accessToken, refreshToken.raw, refreshTokenExpiresAt),
+      redirectPath: consumed.redirectPath,
+    };
+  }
+
   private async createSessionTokenPair(input: {
     accountId: string;
     ipHash: string | null;
     deviceSummary: string | null;
+    authMethod: SessionAuthMethod;
   }): Promise<AuthTokenPair> {
     const sessionId = randomUUID();
     const refreshToken = this.tokenService.create();
-    const refreshTokenExpiresAt = new Date(
-      Date.now() +
-        this.config.get('REFRESH_TOKEN_TTL_DAYS', { infer: true }) *
-          24 *
-          60 *
-          60 *
-          1000,
-    );
+    const refreshTokenExpiresAt = this.refreshTokenExpiresAt();
 
     await this.repository.createSession({
       sessionId,
@@ -195,21 +230,41 @@ export class SessionService {
       deviceSummary: input.deviceSummary,
       ipHash: input.ipHash,
       expiresAt: refreshTokenExpiresAt,
+      authMethod: input.authMethod,
     });
     const accessToken = await this.accessTokens.issue({
       accountId: input.accountId,
       sessionId,
     });
 
+    return this.tokenPair(accessToken, refreshToken.raw, refreshTokenExpiresAt);
+  }
+
+  private tokenPair(
+    accessToken: string,
+    refreshToken: string,
+    refreshTokenExpiresAt: Date,
+  ): AuthTokenPair {
     return {
       tokenType: 'Bearer',
       accessToken,
       accessTokenExpiresIn: this.config.get('ACCESS_TOKEN_TTL_SECONDS', {
         infer: true,
       }),
-      refreshToken: refreshToken.raw,
+      refreshToken,
       refreshTokenExpiresAt: refreshTokenExpiresAt.toISOString(),
     };
+  }
+
+  private refreshTokenExpiresAt(): Date {
+    return new Date(
+      Date.now() +
+        this.config.get('REFRESH_TOKEN_TTL_DAYS', { infer: true }) *
+          24 *
+          60 *
+          60 *
+          1000,
+    );
   }
 
   private invalidCredentials(): UnauthorizedException {

@@ -33,6 +33,9 @@ describe('environment configuration', () => {
     expect(environment.FILE_STORAGE_PROVIDER).toBe('LOCAL');
     expect(environment.LOCAL_FILE_STORAGE_DIR).toBe('./storage/private');
     expect(environment.MAIL_DELIVERY_PROVIDER).toBe('UNAVAILABLE');
+    expect(environment.TEACHER_AUTH_MODE).toBe('HYBRID');
+    expect(environment.CRM_SSO_ISSUER).toBe('crm');
+    expect(environment.CRM_SSO_AUDIENCE).toBe('tide');
     expect(environment.MODELARK_ENABLED).toBe(false);
     expect(environment.BACKGROUND_JOBS_ENABLED).toBe(true);
     expect(environment.BACKGROUND_JOB_LEASE_MS).toBe(180_000);
@@ -56,6 +59,25 @@ describe('environment configuration', () => {
       'https://a.example',
       'https://b.example',
     ]);
+  });
+
+  it('requires SSO configuration before enabling SSO-only mode', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        TEACHER_AUTH_MODE: 'CRM_SSO_ONLY',
+      }),
+    ).toThrow(/CRM_SSO_JWT_SECRET_CURRENT/);
+
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'test',
+        TEACHER_AUTH_MODE: 'CRM_SSO_ONLY',
+        CRM_SSO_JWT_SECRET_CURRENT:
+          'crm-sso-current-secret-with-at-least-32-characters',
+        CRM_ENTRY_URL: 'https://crm.example.test/tide',
+      }).TEACHER_AUTH_MODE,
+    ).toBe('CRM_SSO_ONLY');
   });
 
   it('only accepts explicit wildcard or loopback bind hosts', () => {

@@ -55,6 +55,7 @@ EXPECTED_TEACHER_MIGRATIONS = (
     "0038_personalized_environment_photo",
     "0039_g02_policy_document",
     "0040_g02_document_read_status",
+    "0041_crm_sso_hybrid",
 )
 EXPECTED_FIXED_TASKS = (
     ("G01", "Profile & Credentials Completion", 3),
@@ -155,13 +156,13 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
         == "Dockerfile.migrate"
     )
     assert services["teacher-migrate"]["environment"]["TIDE_MIGRATION_TARGET"] == (
-        "${TIDE_TEACHER_MIGRATION_TARGET:-0040_g02_document_read_status}"
+        "${TIDE_TEACHER_MIGRATION_TARGET:-0041_crm_sso_hybrid}"
     )
     combined_environment_example = (DEPLOY / ".env.example").read_text(
         encoding="utf-8"
     )
     assert (
-        "TIDE_TEACHER_MIGRATION_TARGET=0040_g02_document_read_status"
+        "TIDE_TEACHER_MIGRATION_TARGET=0041_crm_sso_hybrid"
         in combined_environment_example
     )
     assert (
@@ -256,7 +257,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert (
         "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
-        "-> teacher 0038 -> public head 57 -> teacher 0040"
+        "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041"
     ) in preflight
     assert "product_analytics_recorded" in preflight
     assert "0031_g04_independent_sections" in preflight
@@ -266,6 +267,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "2026-08-11-tesol-only-v1" in preflight
     assert "TESOL 真实状态尚未通过。" in preflight
     assert "0038_personalized_environment_photo" in preflight
+    assert "0041_crm_sso_hybrid" in preflight
     assert "p-fb-negative-environment-photo" in preflight
     assert "TEACHING_ENVIRONMENT_V1" in preflight
     assert "tide.account_onboarding_states" in preflight
@@ -378,9 +380,8 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "'public.teacher_source_wide',\n        'is_self_introduce'" in probe
     assert "'public.teacher_source_wide',\n        'real_name'" in probe
     assert "0038_personalized_environment_photo" in probe
-    assert "0039_g02_policy_document" in probe
-    assert "0040_g02_document_read_status" in probe
-    assert "task_step_progress_g02_assignment_completion_check" in probe
+    assert "0041_crm_sso_hybrid" in probe
+    assert "tide.crm_sso_logins" in probe
     assert "P-FB-NEGATIVE is not the exact pending personalized photo execution" in probe
     assert "p-fb-negative-environment-photo" in probe
     assert "TEACHING_ENVIRONMENT_V1" in probe
@@ -609,7 +610,7 @@ def _teacher_migrator_fixture(
     cross_chain_gate = (
         "# public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
-        "-> teacher 0038 -> public head 57 -> teacher 0040\n"
+        "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041\n"
         "product_analytics_recorded=true\n"
         if include_cross_chain_gate
         else ""
@@ -696,11 +697,18 @@ def _make_preflight_environment(
             "SELECT '{\"contentStatus\":\"PENDING\"}';\n"
             "COMMIT;\n"
         ),
-        "backend/database/migrations/0039_g02_policy_document.up.sql": (
-            "BEGIN;\nCOMMIT;\n"
-        ),
-        "backend/database/migrations/0040_g02_document_read_status.up.sql": (
-            "BEGIN;\nCOMMIT;\n"
+        "backend/database/migrations/"
+        "0039_g02_policy_document.up.sql": "BEGIN;\nCOMMIT;\n",
+        "backend/database/migrations/"
+        "0040_g02_document_read_status.up.sql": "BEGIN;\nCOMMIT;\n",
+        "backend/database/migrations/"
+        "0041_crm_sso_hybrid.up.sql": (
+            "BEGIN;\n"
+            "ALTER TABLE tide.user_accounts "
+            "ALTER COLUMN password_hash DROP NOT NULL;\n"
+            "ALTER TABLE tide.auth_sessions ADD COLUMN auth_method text;\n"
+            "CREATE TABLE tide.crm_sso_logins (id integer);\n"
+            "COMMIT;\n"
         ),
         "backend/Dockerfile": "FROM scratch\n",
         "backend/Dockerfile.migrate": "FROM scratch\n",
@@ -815,7 +823,7 @@ def _run_preflight(environment: dict[str, str]) -> subprocess.CompletedProcess[s
     )
 
 
-def test_combined_preflight_rejects_teacher_chain_ending_before_0040(
+def test_combined_preflight_rejects_teacher_chain_ending_before_0041(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
@@ -828,7 +836,7 @@ def test_combined_preflight_rejects_teacher_chain_ending_before_0040(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0040 结尾的完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0041 结尾的完整有序生产链" in result.stderr
 
 
 def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
@@ -846,7 +854,7 @@ def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
     assert result.returncode != 0
     assert (
         "public46→teacher0028→public50→teacher0032→public54→teacher0037"
-        "→public55→public56→teacher0038→public57→teacher0040"
+        "→public55→public56→teacher0038→public57→teacher0040→teacher0041"
         in result.stderr
     )
 
@@ -1021,7 +1029,7 @@ def test_edge_canonicalizes_forwarded_headers_before_one_hop_backends() -> None:
     assert "set_real_ip_from ${TIDE_COMPANY_GATEWAY_CIDR};" in nginx
     assert "real_ip_header X-Forwarded-For;" in nginx
     assert "geo $realip_remote_addr $request_from_company_gateway" in nginx
-    assert nginx.count("proxy_set_header X-Forwarded-For $remote_addr;") == 2
+    assert nginx.count("proxy_set_header X-Forwarded-For $remote_addr;") == 3
     assert "$proxy_add_x_forwarded_for" not in nginx
     assert '"1:https" https;' in nginx
 

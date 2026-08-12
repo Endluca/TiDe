@@ -228,6 +228,14 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 | `KUOZHI_DETAIL_HOST_IP` | TEST 必填 | `172.16.0.54` | 仅后端覆盖详情域名解析；需验证 Gaea 网络可达 |
 | `DATA_HASH_SECRET` | 是 | 密钥管理注入 | 至少 32 字符 |
 | `AUTH_JWT_SECRET` | 是 | 密钥管理注入 | 至少 32 字符 |
+| `TEACHER_AUTH_MODE` | 是 | `HYBRID` | 当前保留旧登录；正式切换时改为 `CRM_SSO_ONLY` |
+| `CRM_SSO_JWT_SECRET_CURRENT` | 启用 SSO 时必填 | 密钥管理注入 | CRM/TIDE 共享 HS256 密钥，至少 32 字符，不得写入镜像或日志 |
+| `CRM_SSO_JWT_SECRET_PREVIOUS` | 否 | 无 | 密钥轮换过渡期使用，完成轮换后清空 |
+| `CRM_SSO_ISSUER` / `CRM_SSO_AUDIENCE` | 是 | `crm` / `tide` | 必须与 CRM JWT 一致 |
+| `CRM_SSO_MAX_TTL_SECONDS` | 是 | `120` | CRM JWT 最大存活时间 |
+| `CRM_SSO_CLOCK_TOLERANCE_SECONDS` | 是 | `30` | 双方时钟偏差容忍秒数 |
+| `CRM_SSO_EXCHANGE_TTL_SECONDS` | 是 | `60` | 前端一次性兑换码有效期 |
+| `CRM_ENTRY_URL` | SSO-only 必填 | 无 | 教师直接访问 TIDE 时展示的 CRM 返回入口 |
 | `FILE_STORAGE_PROVIDER` | 是 | `OSS` | 多副本首选 OSS；LOCAL 仅在所有 Pod 共享同一 RWX 卷时允许 |
 | `LOCAL_FILE_STORAGE_DIR` | 否 | `/var/lib/tide/uploads` | LOCAL 模式必须挂载同一 `ReadWriteMany` 共享卷 |
 | `OSS_REGION` / `OSS_ENDPOINT` / `OSS_BUCKET` | 条件必填 | 无 | `FILE_STORAGE_PROVIDER=OSS` 时必填 |
@@ -304,16 +312,14 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040`；
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041`；
    链内必须先包含 public `20260811_51_g01_tesol_only` / teacher `0033_g01_tesol_only`
    的 G01 TESOL-only 收窄，再包含 public `20260811_54_g04_remove_device_check` / teacher
    `0037_g04_remove_device_check` 的 G04 两模块收敛，并先执行 public
-   `20260811_55_source_wide_v12`、public `20260811_56_p_fb_negative_copy`、teacher
-   `0038_personalized_environment_photo`，再执行 public `20260811_57_g02_document` 与 teacher
-   `0039_g02_policy_document` / `0040_g02_document_read_status`；当前 G04 不得恢复设备检测步骤。
-   确认 public head 为 `20260811_57_g02_document`、teacher 账本 head 为
-   `0040_g02_document_read_status`，随后执行只读契约探针，并同时核对 G01 TESOL-only、
-   G02 原生文档与完成约束、G04 两模块、个性化任务零分文案、环境拍照步骤与 `TEACHING_ENVIRONMENT_V1` 审核档案。
+   `20260811_55_source_wide_v12` 再执行 public `20260811_56_p_fb_negative_copy`；当前 G04 不得恢复设备检测步骤。
+   确认 public head 为 `20260811_56_p_fb_negative_copy`、teacher 账本 head 为
+   `0041_crm_sso_hybrid`（包含前序 `0038_personalized_environment_photo`），随后执行只读契约探针，并同时核对 G01 TESOL-only
+   规则、G04 两模块、个性化任务零分文案、环境拍照步骤与 `TEACHING_ENVIRONMENT_V1` 审核档案。
 2. 配齐统一应用的运营、教师和两个 Worker 环境变量，确认密钥不在版本化配置中；
    `tit_source_worker_runtime` 必须是独立受限 LOGIN。
 3. 在 Gaea 将统一应用设置为至少 `2` 个副本并使用 `RollingUpdate`；若启用自动伸缩，设置

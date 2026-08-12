@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { requestLogLevel } from './logging.module';
+import { requestLogLevel, sanitizeRequestUrl } from './logging.module';
 
 describe('requestLogLevel', () => {
   afterEach(() => jest.restoreAllMocks());
@@ -14,5 +14,11 @@ describe('requestLogLevel', () => {
     expect(requestLogLevel(request, response)).toBe('silent');
     response.statusCode = 500;
     expect(requestLogLevel(request, response)).toBe('error');
+  });
+
+  it('removes credentials from request query strings before logging', () => {
+    expect(
+      sanitizeRequestUrl('/api/v1/auth/crm-sso?redirect=%2F&token=secret-jwt'),
+    ).toBe('/api/v1/auth/crm-sso');
   });
 });

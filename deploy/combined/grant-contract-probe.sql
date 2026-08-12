@@ -52,6 +52,7 @@ BEGIN
        OR to_regclass('tide.task_step_definitions') IS NULL
        OR to_regclass('tide.task_validation_rules') IS NULL
        OR to_regclass('tide.account_onboarding_states') IS NULL
+       OR to_regclass('tide.crm_sso_logins') IS NULL
        OR to_regclass('tide.schema_migrations') IS NULL THEN
         RAISE EXCEPTION
             'both migration chains must complete before probe grants';

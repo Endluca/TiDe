@@ -39,4 +39,13 @@ test("accepts the full support-ticket body without buffering it twice", () => {
     /sub_filter '__SITE_ORIGIN__' '\$tide_forwarded_proto:\/\/\$host';/,
   );
   assert.match(nginx, /default \$scheme;\s+http http;\s+https https;/);
+  assert.match(
+    nginx,
+    /location = \/api\/v1\/auth\/crm-sso \{\s+access_log off;/,
+  );
+  assert.match(nginx, /add_header Referrer-Policy "no-referrer" always;/);
+  assert.match(
+    nginx,
+    /location = \/sso\/callback \{\s+access_log off;[\s\S]*?try_files \/index\.html =404;/,
+  );
 });

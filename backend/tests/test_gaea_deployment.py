@@ -295,10 +295,10 @@ def test_company_test_initializer_requires_the_production_canonical_ledger() -> 
         "PRODUCTION_MIGRATIONS",
     )
     for contract in (
-        "count(*) = 35",
+        "count(*) = 36",
         "min(migration_order) = 1",
-        "max(migration_order) = 35",
-        "count(distinct migration_order) = 35",
+        "max(migration_order) = 36",
+        "count(distinct migration_order) = 36",
         "filename = migration_id || '.up.sql'",
         "select migration_order, migration_id, filename, sha256",
         '0032_first_login_onboarding',
@@ -307,12 +307,13 @@ def test_company_test_initializer_requires_the_production_canonical_ledger() -> 
         '0038_personalized_environment_photo',
         '0039_g02_policy_document',
         '0040_g02_document_read_status',
+        '0041_crm_sso_hybrid',
     ):
         assert contract in initializer
     assert (
         "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
-        "-> teacher 0038 -> public head 57 -> teacher 0040"
+        "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041"
     ) in initializer
 
 
@@ -511,7 +512,7 @@ def test_company_test_initializer_rejects_the_precanonical_ledger_before_writes(
     )
 
     assert result.returncode != 0
-    assert "不是精确 canonical 0040" in result.stderr
+    assert "不是精确 canonical 0041" in result.stderr
     assert psql_calls == 10
     assert not pnpm_called
     assert not any(
@@ -715,7 +716,7 @@ def test_gaea_exposes_two_domains_on_two_ports() -> None:
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in teacher_conf
     assert teacher_conf.count("add_header X-Content-Type-Options") == 3
     assert teacher_conf.count("add_header X-Frame-Options") == 3
-    assert teacher_conf.count("add_header Referrer-Policy") == 3
+    assert teacher_conf.count("add_header Referrer-Policy") == 5
     assert "/app/operations/scripts/run_api.py" in (
         S6_DIR / "operations" / "run"
     ).read_text(encoding="utf-8")
@@ -863,12 +864,11 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "0033_g01_tesol_only" in readme
     assert "20260811_56_p_fb_negative_copy" in readme
     assert "0038_personalized_environment_photo" in readme
-    assert "20260811_57_g02_document" in readme
-    assert "0040_g02_document_read_status" in readme
+    assert "0041_crm_sso_hybrid" in readme
     assert (
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
         "teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → "
-        "teacher 0040"
+        "teacher 0040 → teacher 0041"
     ) in readme
     assert "TEACHING_ENVIRONMENT_V1" in readme
     assert "settle_shared_task_scores.py --watch" in readme

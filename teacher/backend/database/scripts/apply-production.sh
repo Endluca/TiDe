@@ -5,7 +5,7 @@ set +x
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL:-}"
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0040_g02_document_read_status}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0041_crm_sso_hybrid}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 COMPANY_TEST_MIGRATION_MODE="${TIDE_COMPANY_TEST_MIGRATION_MODE:-false}"
 
@@ -171,6 +171,7 @@ PRODUCTION_MIGRATIONS=(
   0038_personalized_environment_photo
   0039_g02_policy_document
   0040_g02_document_read_status
+  0041_crm_sso_hybrid
 )
 
 target_found=false
@@ -198,18 +199,14 @@ if [[ "${target_found}" != "true" ]]; then
   echo "未知生产迁移目标：${TARGET_MIGRATION}" >&2
   exit 1
 fi
-if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" \
-      && "${TARGET_MIGRATION}" != "${APPROVED_COMPANY_TEST_TARGET}" ]]; then
-  echo "公司 TEST 增量迁移目标必须精确为 ${APPROVED_COMPANY_TEST_TARGET}。" >&2
-  exit 1
-fi
 if [[ "${TARGET_MIGRATION}" != "0028_retire_task_business_change_view" \
       && "${TARGET_MIGRATION}" != "0032_first_login_onboarding" \
       && "${TARGET_MIGRATION}" != "0037_g04_remove_device_check" \
       && "${TARGET_MIGRATION}" != "0038_personalized_environment_photo" \
       && "${TARGET_MIGRATION}" != "0040_g02_document_read_status" \
+      && "${TARGET_MIGRATION}" != "0041_crm_sso_hybrid" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037、0038 或最终版本 0040；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
+  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037、0038、0040 或最终版本 0041；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1
 fi
 
@@ -692,11 +689,13 @@ elif [[ "${TARGET_MIGRATION}" == "0037_g04_remove_device_check" ]]; then
     echo "teacher 0037 要求 public head 54 中同时存在 rev51 G01 TESOL-only 精确副本与 G04 两段精确副本。本次未写入任何 Tide 迁移。" >&2
     exit 1
   fi
-elif [[ "${TARGET_MIGRATION}" == "0040_g02_document_read_status" ]]; then
+elif [[ "${TARGET_MIGRATION}" == "0040_g02_document_read_status" \
+        || "${TARGET_MIGRATION}" == "0041_crm_sso_hybrid" ]]; then
   if [[ "${current_tide_head}" != "0038_personalized_environment_photo" \
         && "${current_tide_head}" != "0039_g02_policy_document" \
-        && "${current_tide_head}" != "0040_g02_document_read_status" ]]; then
-    echo "teacher 0040 只能从 teacher 0038 或 0039 的连续状态继续；必须先完成 public head 56 -> teacher 0038，再执行 public head 57 -> teacher 0040。本次未写入任何 Tide 迁移。" >&2
+        && "${current_tide_head}" != "0040_g02_document_read_status" \
+        && "${current_tide_head}" != "0041_crm_sso_hybrid" ]]; then
+    echo "teacher 0040/0041 只能从 teacher 0038、0039 或 0040 的连续状态继续；必须先完成 public head 56 -> teacher 0038，再执行 public head 57 -> teacher 0040 -> teacher 0041。本次未写入任何 Tide 迁移。" >&2
     exit 1
   fi
 fi

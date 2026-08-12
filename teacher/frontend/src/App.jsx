@@ -67,7 +67,7 @@ import { Toki as MotionToki } from "./components/UI";
 import KuozhiProgressCard from "./features/task-content/KuozhiProgressCard";
 import OnboardingGuide from "./components/OnboardingGuide";
 import GuideLibraryDialog from "./components/GuideLibraryDialog";
-import { logoutTeacher, requestPasswordReset } from "./api/auth-api";
+import { getAuthCapabilities, logoutTeacher, requestPasswordReset } from "./api/auth-api";
 import { restoreSession } from "./api/api-client";
 import {
   acknowledgeOnboarding,
@@ -736,17 +736,19 @@ function Header({ language, unreadCount, onHelp, onLanguageChange, onLogout, onM
                 <Sparkle size={18} />
                 {copy(language, "Feature guides", "功能引导")}
               </button>
-              <button
-                className="profile-security-button"
-                type="button"
-                onClick={() => {
-                  setProfileOpen(false);
-                  onResetPassword();
-                }}
-              >
-                <LockKey size={18} />
-                {copy(language, "Security and reset password", "修改密码")}
-              </button>
+              {onResetPassword && (
+                <button
+                  className="profile-security-button"
+                  type="button"
+                  onClick={() => {
+                    setProfileOpen(false);
+                    onResetPassword();
+                  }}
+                >
+                  <LockKey size={18} />
+                  {copy(language, "Security and reset password", "修改密码")}
+                </button>
+              )}
               <button className="profile-logout-button" type="button" onClick={onLogout}>
                 {copy(language, "Log out", "退出登录")}
               </button>
@@ -4375,6 +4377,7 @@ function AppShell() {
   );
   const [authenticated, setAuthenticated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
+  const [authCapabilities, setAuthCapabilities] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [messages, setMessages] = useState([]);
   const [messageTotalCount, setMessageTotalCount] = useState(0);
@@ -4493,6 +4496,17 @@ function AppShell() {
     scoreSyncAbortRef.current?.abort();
     coursePageAbortRef.current?.abort();
     clearTimeout(scoreSyncResetTimerRef.current);
+  }, []);
+  useEffect(() => {
+    let active = true;
+    getAuthCapabilities()
+      .then((result) => {
+        if (active) setAuthCapabilities(result);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
   }, []);
   useEffect(() => {
     if (!authReady || (authenticated && !dataReady)) return undefined;
@@ -5075,7 +5089,12 @@ function AppShell() {
     if (message.actionType === "HELP") {
       openHelp("MESSAGE");
     }
-    if (message.actionType === "ACCOUNT") setPasswordResetOpen(true);
+    if (
+      message.actionType === "ACCOUNT"
+      && authCapabilities?.passwordResetEnabled !== false
+    ) {
+      setPasswordResetOpen(true);
+    }
   };
   const onboardingCatalogByCode = useMemo(
     () => new Map(onboardingCatalog.map((guide) => [guide.guideCode, guide])),
@@ -5405,7 +5424,7 @@ function AppShell() {
       );
     });
   }, [refreshNotifications, startOnboardingGuide, tasks]);
-  const login = () => {
+  const login = (authResult) => {
     onboardingRequestRef.current = {
       checked: false,
       loading: false,
@@ -5424,7 +5443,10 @@ function AppShell() {
       guideCode: ONBOARDING_GUIDE_CODE,
       guideVersion: ONBOARDING_DEFAULT_VERSION,
     });
-    navigate("/", { replace: true });
+    const redirectPath = typeof authResult?.redirectPath === "string"
+      ? authResult.redirectPath
+      : "/";
+    navigate(redirectPath, { replace: true });
     authenticatedRef.current = true;
     setAuthenticated(true);
   };
@@ -5545,7 +5567,9 @@ function AppShell() {
           onLogout={logout}
           onMessagesOpen={openMessages}
           onQuickGuide={openGuideLibrary}
-          onResetPassword={() => setPasswordResetOpen(true)}
+          onResetPassword={authCapabilities?.passwordResetEnabled === false
+            ? null
+            : () => setPasswordResetOpen(true)}
         />
         <Routes>
           <Route

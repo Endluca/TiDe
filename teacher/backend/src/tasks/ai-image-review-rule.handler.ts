@@ -92,8 +92,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
     const config = parsedConfig.data;
     const isCurrentG04 = config.stepKey === currentG04PhotoStepKey;
     const usesTeachingEnvironmentProfile =
-      config.reviewProfile === teachingEnvironmentReviewProfile ||
-      isCurrentG04;
+      config.reviewProfile === teachingEnvironmentReviewProfile || isCurrentG04;
     const criteriaVersion = isCurrentG04
       ? TEACHER_PHOTO_CRITERIA_VERSION
       : config.criteriaVersion;
@@ -191,9 +190,7 @@ export class AiImageReviewRuleHandler extends TaskRuleHandler {
       systemPrompt: isCurrentG04
         ? TEACHER_PHOTO_SYSTEM_PROMPT
         : config.systemPrompt,
-      userText: isCurrentG04
-        ? TEACHER_PHOTO_USER_TEXT
-        : config.userText,
+      userText: isCurrentG04 ? TEACHER_PHOTO_USER_TEXT : config.userText,
       file: {
         content: reviewContent,
         filename: reviewFilename,

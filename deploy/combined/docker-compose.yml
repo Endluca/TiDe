@@ -47,7 +47,7 @@ services:
       - ${TIDE_TEACHER_MIGRATION_ENV_FILE:?Set TIDE_TEACHER_MIGRATION_ENV_FILE to a protected env file}
     environment:
       TIDE_MIGRATION_EXPECTED_DATABASE: ${TIDE_DATABASE_NAME:?Set TIDE_DATABASE_NAME}
-      TIDE_MIGRATION_TARGET: ${TIDE_TEACHER_MIGRATION_TARGET:-0040_g02_document_read_status}
+      TIDE_MIGRATION_TARGET: ${TIDE_TEACHER_MIGRATION_TARGET:-0041_crm_sso_hybrid}
     read_only: true
     tmpfs:
       - /tmp:size=32m

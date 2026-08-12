@@ -8,6 +8,10 @@ import { DependencyHealthRegistry } from './dependency-health.registry';
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
 
+export function sanitizeRequestUrl(value: unknown): string {
+  return typeof value === 'string' ? value.split('?')[0] : '';
+}
+
 export function requestLogLevel(
   request: IncomingMessage,
   response: ServerResponse,
@@ -16,7 +20,7 @@ export function requestLogLevel(
   const statusCode = response.statusCode || 0;
   if (error || statusCode >= 500) return 'error';
   if (statusCode >= 400) return 'warn';
-  const path = String(request.url || '').split('?')[0];
+  const path = sanitizeRequestUrl(request.url);
   if (path.startsWith('/api/v1/app-events')) {
     return Math.random() < 0.02 ? 'info' : 'silent';
   }
@@ -52,6 +56,21 @@ function resolveRequestId(
               : config.get('LOG_LEVEL', { infer: true }),
           genReqId: resolveRequestId,
           customLogLevel: requestLogLevel,
+          serializers: {
+            req: (request: {
+              id?: unknown;
+              method?: unknown;
+              url?: unknown;
+              remoteAddress?: unknown;
+              remotePort?: unknown;
+            }) => ({
+              id: request.id,
+              method: request.method,
+              url: sanitizeRequestUrl(request.url),
+              remoteAddress: request.remoteAddress,
+              remotePort: request.remotePort,
+            }),
+          },
           redact: {
             paths: [
               'req.headers.authorization',
