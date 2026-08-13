@@ -10,6 +10,7 @@ from app.dts_source_consumer import DtsConfigurationError
 from app.dts_wide_projector import DtsWideProjectionError
 from scripts import run_dts_ingest
 from scripts.run_dts_ingest import (
+    _diagnostic_sslmode,
     _env_flag,
     _projection_activation_settings,
     _safe_operational_error_payload,
@@ -81,6 +82,14 @@ def test_watch_waits_only_after_underfilled_or_idle_batch(
     )
 
 
+def test_diagnostic_sslmode_is_strict_and_safe() -> None:
+    assert _diagnostic_sslmode({}) == "verify-full"
+    assert _diagnostic_sslmode({"TIT_DTS_INGEST_DB_SSLMODE": "disable"}) == (
+        "disable"
+    )
+    assert _diagnostic_sslmode({"TIT_DTS_INGEST_DB_SSLMODE": "unexpected"}) is None
+
+
 @pytest.mark.parametrize(
     ("driver_message", "expected_code"),
     [
@@ -121,6 +130,47 @@ def test_operational_error_payload_is_stable_and_never_echoes_driver_message(
     assert driver_message not in json.dumps(payload)
 
 
+@pytest.mark.parametrize(
+    ("driver_message", "expected_code"),
+    [
+        (
+            'weak sslmode "disable" may not be used with sslrootcert=system',
+            "DTS_TARGET_LIBPQ_TRANSPORT_CONFIG_CONFLICT",
+        ),
+        (
+            "server policy requires SSL",
+            "DTS_TARGET_SERVER_REQUIRES_TLS",
+        ),
+        (
+            "server policy requires TLS",
+            "DTS_TARGET_SERVER_REQUIRES_TLS",
+        ),
+        (
+            "SSL handshake failed",
+            "DTS_TARGET_SSL_POLICY_CONFLICT",
+        ),
+        (
+            "relation pg_catalog.pg_stat_ssl is unavailable",
+            "DTS_TARGET_SSL_POLICY_CONFLICT",
+        ),
+    ],
+)
+def test_plaintext_mode_never_claims_a_tls_handshake(
+    driver_message: str,
+    expected_code: str,
+) -> None:
+    payload = _safe_operational_error_payload(
+        OperationalError("CONNECT", {}, RuntimeError(driver_message)),
+        sslmode="disable",
+    )
+
+    assert payload == {
+        "error_code": expected_code,
+        "error_type": "OperationalError",
+        "sslmode": "disable",
+    }
+
+
 def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> None:
     payload = _safe_operational_error_payload(
         RuntimeError("password=must-never-appear")
@@ -129,6 +179,31 @@ def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> N
     assert payload == {
         "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
         "error_type": "RuntimeError",
+    }
+
+
+def test_operational_error_payload_survives_broken_driver_error_object() -> None:
+    class BrokenDriverError(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("driver-string-must-not-escape")
+
+        @property
+        def sqlstate(self) -> str:
+            raise RuntimeError("driver-sqlstate-must-not-escape")
+
+        @property
+        def diag(self) -> object:
+            raise RuntimeError("driver-diag-must-not-escape")
+
+    payload = _safe_operational_error_payload(
+        OperationalError("CONNECT", {}, BrokenDriverError()),
+        sslmode="disable",
+    )
+
+    assert payload == {
+        "error_code": "DTS_TARGET_CONNECTION_FAILED",
+        "error_type": "OperationalError",
+        "sslmode": "disable",
     }
     assert "must-never-appear" not in json.dumps(payload)
 
@@ -190,6 +265,7 @@ def test_main_never_echoes_connection_error_text(
         "build_parser",
         lambda: SimpleNamespace(parse_args=lambda: SimpleNamespace()),
     )
+    monkeypatch.setenv("TIT_DTS_INGEST_DB_SSLMODE", "disable")
     monkeypatch.setattr(
         run_dts_ingest,
         "_run",
@@ -202,6 +278,7 @@ def test_main_never_echoes_connection_error_text(
     assert json.loads(stderr) == {
         "error_code": "DTS_TARGET_CONNECTION_REFUSED",
         "error_type": "OperationalError",
+        "sslmode": "disable",
         "status": "error",
     }
     assert all(fragment not in stderr for fragment in secret_fragments)

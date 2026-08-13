@@ -382,8 +382,12 @@ def test_dts_engine_revalidates_new_and_reused_physical_connections(
         "off",
         execute_error=query_error,
     )
-    with pytest.raises(RuntimeError, match="ssl-setting-query-failed"):
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="DTS_TARGET_TRANSPORT_INSPECTION_FAILED",
+    ) as caught:
         checkout_callback(broken_connection, object(), object())
+    assert "ssl-setting-query-failed" not in str(caught.value)
     assert broken_connection.transport_cursor.closed is True
     assert broken_connection.rollback_count == 1
 
@@ -643,6 +647,62 @@ def test_dts_runtime_requires_server_tls_for_verify_full() -> None:
 
     with pytest.raises(DtsIngestStoreError, match="DTS_TARGET_TLS_REQUIRED"):
         sink._validate_runtime()
+
+
+@pytest.mark.parametrize(
+    ("sqlstate", "expected_code"),
+    [
+        ("42501", "DTS_TARGET_TRANSPORT_INSPECTION_PERMISSION_DENIED"),
+        ("42P01", "DTS_TARGET_TRANSPORT_INSPECTION_UNAVAILABLE"),
+        ("42703", "DTS_TARGET_TRANSPORT_INSPECTION_UNAVAILABLE"),
+        ("42883", "DTS_TARGET_TRANSPORT_INSPECTION_UNAVAILABLE"),
+        ("0A000", "DTS_TARGET_TRANSPORT_INSPECTION_UNAVAILABLE"),
+        (None, "DTS_TARGET_TRANSPORT_INSPECTION_FAILED"),
+    ],
+)
+def test_transport_inspection_errors_are_phase_specific_and_safe(
+    sqlstate: str | None,
+    expected_code: str,
+) -> None:
+    class InspectionError(RuntimeError):
+        pass
+
+    error = InspectionError("permission denied for sensitive catalog query")
+    error.sqlstate = sqlstate  # type: ignore[attr-defined]
+
+    class Cursor:
+        def execute(self, _statement: str) -> None:
+            raise error
+
+        def close(self) -> None:
+            pass
+
+    class Connection:
+        rolled_back = False
+
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def rollback(self) -> None:
+            self.rolled_back = True
+
+    connection = Connection()
+    settings = DtsIngestDatabaseSettings(
+        host=APPROVED_INSECURE_PRE_HOST,
+        password="database-secret",
+        sslmode="disable",
+        allow_insecure_db=True,
+    )
+
+    with pytest.raises(DtsIngestStoreError, match=expected_code) as caught:
+        _validate_dts_physical_connection_transport(
+            connection,
+            settings=settings,
+        )
+
+    assert str(caught.value) == expected_code
+    assert "sensitive" not in str(caught.value)
+    assert connection.rolled_back is True
 
 
 def test_dts_runtime_rejects_invalid_privilege_boundaries() -> None:

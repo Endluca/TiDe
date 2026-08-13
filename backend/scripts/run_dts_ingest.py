@@ -73,7 +73,11 @@ def _should_wait_before_next_batch(*, seen: int, max_messages: int) -> bool:
     return seen < max_messages
 
 
-def _safe_operational_error_payload(exc: Exception) -> dict[str, str]:
+def _safe_operational_error_payload(
+    exc: Exception,
+    *,
+    sslmode: str | None = None,
+) -> dict[str, str]:
     """Classify connection failures without emitting driver error text."""
 
     payload = {
@@ -82,12 +86,23 @@ def _safe_operational_error_payload(exc: Exception) -> dict[str, str]:
     }
     if not isinstance(exc, OperationalError):
         return payload
+    if sslmode in {"verify-full", "disable"}:
+        payload["sslmode"] = sslmode
 
-    original: Any = getattr(exc, "orig", exc)
-    message = str(original).lower()
-    sqlstate = getattr(original, "sqlstate", None)
-    if sqlstate is None:
-        sqlstate = getattr(getattr(original, "diag", None), "sqlstate", None)
+    try:
+        original: Any = getattr(exc, "orig", exc)
+    except Exception:
+        original = None
+    try:
+        message = str(original).lower() if original is not None else ""
+    except Exception:
+        message = ""
+    try:
+        sqlstate = getattr(original, "sqlstate", None)
+        if sqlstate is None:
+            sqlstate = getattr(getattr(original, "diag", None), "sqlstate", None)
+    except Exception:
+        sqlstate = None
     normalized_sqlstate = None
     if isinstance(sqlstate, str):
         candidate_sqlstate = sqlstate.upper()
@@ -127,8 +142,46 @@ def _safe_operational_error_payload(exc: Exception) -> dict[str, str]:
         )
     ):
         error_code = "DTS_TARGET_CONNECTION_CLOSED"
-    elif "ssl" in message or "tls" in message:
+    elif any(
+        marker in message
+        for marker in (
+            "weak sslmode",
+            "sslrootcert",
+            "sslnegotiation",
+            "channel binding",
+        )
+    ):
+        error_code = "DTS_TARGET_LIBPQ_TRANSPORT_CONFIG_CONFLICT"
+    elif any(
+        marker in message
+        for marker in (
+            "ssl is required",
+            "ssl required",
+            "requires ssl",
+            "must use ssl",
+            "tls is required",
+            "tls required",
+            "requires tls",
+            "must use tls",
+        )
+    ):
+        error_code = "DTS_TARGET_SERVER_REQUIRES_TLS"
+    elif sslmode == "disable" and ("ssl" in message or "tls" in message):
+        # A plaintext connection performs no TLS handshake. Preserve the
+        # policy signal without claiming a handshake occurred.
+        error_code = "DTS_TARGET_SSL_POLICY_CONFLICT"
+    elif any(
+        marker in message
+        for marker in (
+            "ssl handshake",
+            "tls handshake",
+            "certificate verify failed",
+            "certificate verification failed",
+        )
+    ):
         error_code = "DTS_TARGET_SSL_HANDSHAKE_FAILED"
+    elif "ssl" in message or "tls" in message:
+        error_code = "DTS_TARGET_SSL_POLICY_CONFLICT"
     elif normalized_sqlstate == "57P03":
         error_code = "DTS_TARGET_CONNECTION_UNAVAILABLE"
     else:
@@ -138,6 +191,14 @@ def _safe_operational_error_payload(exc: Exception) -> dict[str, str]:
     if normalized_sqlstate is not None:
         payload["sqlstate"] = normalized_sqlstate
     return payload
+
+
+def _diagnostic_sslmode(
+    environ: dict[str, str] | None = None,
+) -> str | None:
+    values = os.environ if environ is None else environ
+    value = values.get("TIT_DTS_INGEST_DB_SSLMODE", "verify-full").strip()
+    return value if value in {"verify-full", "disable"} else None
 
 
 def _projection_activation_settings(
@@ -322,7 +383,10 @@ def main() -> int:
             json.dumps(
                 {
                     "status": "error",
-                    **_safe_operational_error_payload(exc),
+                    **_safe_operational_error_payload(
+                        exc,
+                        sslmode=_diagnostic_sslmode(),
+                    ),
                 },
                 ensure_ascii=False,
                 sort_keys=True,

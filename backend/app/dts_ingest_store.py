@@ -631,8 +631,8 @@ def _validate_dts_physical_connection_transport(
 ) -> None:
     """Validate a new session, and revalidate PRE plaintext on checkout."""
 
-    cursor = dbapi_connection.cursor()
     try:
+        cursor = dbapi_connection.cursor()
         try:
             cursor.execute(
                 "SELECT "
@@ -643,10 +643,29 @@ def _validate_dts_physical_connection_transport(
             row = cursor.fetchone()
         finally:
             cursor.close()
+    except DtsIngestStoreError:
+        raise
+    except Exception as exc:
+        sqlstate = getattr(exc, "sqlstate", None)
+        if sqlstate is None:
+            sqlstate = getattr(getattr(exc, "diag", None), "sqlstate", None)
+        error_code = {
+            "42501": "DTS_TARGET_TRANSPORT_INSPECTION_PERMISSION_DENIED",
+            "42P01": "DTS_TARGET_TRANSPORT_INSPECTION_UNAVAILABLE",
+            "42703": "DTS_TARGET_TRANSPORT_INSPECTION_UNAVAILABLE",
+            "42883": "DTS_TARGET_TRANSPORT_INSPECTION_UNAVAILABLE",
+            "0A000": "DTS_TARGET_TRANSPORT_INSPECTION_UNAVAILABLE",
+        }.get(sqlstate, "DTS_TARGET_TRANSPORT_INSPECTION_FAILED")
+        raise DtsIngestStoreError(error_code) from None
     finally:
         # The connect hook must not leave an implicit transaction open before
         # SQLAlchemy hands the new DBAPI connection to the pool.
-        dbapi_connection.rollback()
+        try:
+            dbapi_connection.rollback()
+        except Exception:
+            raise DtsIngestStoreError(
+                "DTS_TARGET_TRANSPORT_INSPECTION_ROLLBACK_FAILED"
+            ) from None
     if row is None or len(row) != 2:
         raise DtsIngestStoreError("DTS_TARGET_SSL_SETTING_UNAVAILABLE")
     _require_session_transport(
