@@ -49,6 +49,79 @@ def test_projection_flag_defaults_off_and_accepts_explicit_values(
         _env_flag("TIT_DTS_PROJECTION_ENABLED", False)
 
 
+def test_healthcheck_does_not_initialize_database_or_broker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    heartbeat = tmp_path / "heartbeat.json"
+    readiness = tmp_path / "readiness.json"
+    now = run_dts_ingest.datetime.now(run_dts_ingest.timezone.utc).isoformat()
+    heartbeat.write_text(
+        json.dumps({"status": "ok", "checked_at": now}),
+        encoding="utf-8",
+    )
+    readiness.write_text('{"status":"ready"}', encoding="utf-8")
+    monkeypatch.setattr(
+        run_dts_ingest.DtsConsumerSettings,
+        "from_env",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("healthcheck must not parse DTS runtime settings")
+        ),
+    )
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--healthcheck",
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    assert run_dts_ingest._run(args) == 0
+
+
+def test_domestic_projection_is_forbidden_before_sink_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream_settings = SimpleNamespace(
+        source_region="dom",
+        topic="dom-topic",
+        require_target_transport=lambda **_kwargs: None,
+        domestic_student_hmac_fingerprint=lambda: None,
+    )
+    database_settings = SimpleNamespace(
+        sslmode="verify-full",
+        host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+        port=5432,
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsConsumerSettings",
+        SimpleNamespace(from_env=lambda: stream_settings),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsIngestDatabaseSettings",
+        SimpleNamespace(from_env=lambda: database_settings),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "PostgresDtsEventSink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("domestic projection must fail before DB creation")
+        ),
+    )
+    monkeypatch.setenv("TIT_DTS_PROJECTION_ENABLED", "true")
+    args = run_dts_ingest.build_parser().parse_args([])
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_DOM_PROJECTION_FORBIDDEN$",
+    ):
+        run_dts_ingest._run(args)
+
+
 def test_projection_activation_variables_are_required_only_when_enabled() -> None:
     assert _projection_activation_settings(enabled=False, environ={}) is None
 
@@ -218,6 +291,11 @@ def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> N
         "error_type": "RuntimeError",
     }
 
+    assert _safe_operational_error_payload(TimeoutError("not kafka")) == {
+        "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
+        "error_type": "TimeoutError",
+    }
+
 
 @pytest.mark.parametrize(
     ("error", "expected_code"),
@@ -228,7 +306,7 @@ def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> N
         ),
         (
             socket.gaierror("broker.internal password=secret"),
-            "DTS_BROKER_DNS_FAILED",
+            "DTS_INGEST_UNEXPECTED_ERROR",
         ),
         (
             KafkaConnectionError("DNS failure broker.internal password=secret"),
@@ -242,11 +320,11 @@ def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> N
         ),
         (
             KafkaTimeoutError("broker.internal password=secret"),
-            "DTS_BROKER_CONNECTION_TIMEOUT",
+            "DTS_BROKER_KAFKA_REQUEST_TIMEOUT",
         ),
         (
             KafkaConnectionError("timeout broker.internal password=secret"),
-            "DTS_BROKER_CONNECTION_TIMEOUT",
+            "DTS_BROKER_KAFKA_REQUEST_TIMEOUT",
         ),
         (
             TopicAuthorizationFailedError("topic-v2 password=secret"),
@@ -449,9 +527,14 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
         topic="ovs-topic",
         partition=0,
         start_timestamp_seconds=1786550400,
+        require_target_transport=lambda **_kwargs: None,
+        domestic_student_hmac_fingerprint=lambda: None,
         safe_summary=lambda: {"source_region": "ovs", "topic": "ovs-topic"},
     )
     database_settings = SimpleNamespace(
+        sslmode="disable",
+        host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+        port=5432,
         safe_summary=lambda: {
             "database": "tide_system_test",
             "sslmode": "disable",
@@ -467,6 +550,14 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
 
         def resume_offset(self, **_kwargs: object) -> int:
             return 42
+
+        def validate_domestic_student_privacy_state(self) -> None:
+            pass
+
+        def validate_domestic_student_privacy_contract(
+            self, **_kwargs: object
+        ) -> None:
+            pass
 
         def acquire_projection_activation(self, _settings: object) -> None:
             self.activation_acquired = True
@@ -493,11 +584,24 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def startup_probe(self) -> dict[str, object]:
+        def startup_probe(
+            self,
+            *,
+            phase_callback: object,
+        ) -> dict[str, object]:
             assert not readiness.exists()
             self.startup_probed = True
+            assert callable(phase_callback)
+            phase_callback(
+                {
+                    "probe": "broker_tcp",
+                    "status": "ok",
+                    "broker_count": 1,
+                }
+            )
             return {
                 "status": "ok",
+                "tcp": "ok",
                 "partition": 0,
                 "initial_offset": 42,
             }
@@ -571,6 +675,7 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
         "initial_offset": 42,
         "partition": 0,
         "status": "ok",
+        "tcp": "ok",
     }
     assert not heartbeat.exists()
     assert sink.activation_acquired is True
@@ -587,16 +692,32 @@ def test_startup_probe_failure_prevents_readiness(
         topic="dom-topic",
         partition=0,
         start_timestamp_seconds=1786550400,
+        require_target_transport=lambda **_kwargs: None,
+        domestic_student_hmac_fingerprint=lambda: "a" * 64,
         safe_summary=lambda: {"source_region": "dom", "topic": "dom-topic"},
     )
-    database_settings = SimpleNamespace(safe_summary=lambda: {})
+    database_settings = SimpleNamespace(
+        sslmode="verify-full",
+        host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+        port=5432,
+        safe_summary=lambda: {},
+    )
 
     class Sink:
         engine = object()
         closed = False
+        privacy_contract_registered = False
 
         def resume_offset(self, **_kwargs: object) -> int:
             return 42
+
+        def validate_domestic_student_privacy_state(self) -> None:
+            pass
+
+        def validate_domestic_student_privacy_contract(
+            self, **_kwargs: object
+        ) -> None:
+            self.privacy_contract_registered = True
 
         def close(self) -> None:
             self.closed = True
@@ -610,7 +731,8 @@ def test_startup_probe_failure_prevents_readiness(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def startup_probe(self) -> object:
+        def startup_probe(self, *, phase_callback: object) -> object:
+            assert callable(phase_callback)
             raise NoBrokersAvailable("broker.internal password=secret")
 
         def run(self, **_kwargs: object) -> object:
@@ -658,4 +780,5 @@ def test_startup_probe_failure_prevents_readiness(
 
     assert not readiness.exists()
     assert not heartbeat.exists()
+    assert sink.privacy_contract_registered is False
     assert sink.closed is True

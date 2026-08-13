@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
@@ -49,7 +50,9 @@ from .dts_source_consumer import (
     DtsConfigurationError,
     DtsRecordError,
     _qa_appoint_ids,
+    assert_domestic_event_protected,
     source_table_suffix,
+    student_subject,
 )
 
 
@@ -71,6 +74,10 @@ MUTABLE_RELATIONS = frozenset(
 TEACHER_COURSE_SCOPE_FIELDS = frozenset({"course", "status_on_time"})
 DIRTY_KEY_UPSERT_BATCH_SIZE = 500
 PROJECTION_ADVISORY_LOCK_NAME = "tit-dts-wide-projector-v1"
+DOMESTIC_STUDENT_TOKEN_SQL_PATTERN = r"^dom:v1:[0-9a-f]{64}$"
+DOMESTIC_STUDENT_KEY_FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
+DOMESTIC_STUDENT_CONTRACT_VERSION = "dom_student_hmac_v1"
+DOMESTIC_STUDENT_CONTRACT_SOURCE_TABLE = "__dom_student_privacy_contract__"
 SOURCE_WIDE_TABLES = (
     TeacherSourceWideRecord.__table__,
     LessonSourceWideRecord.__table__,
@@ -252,7 +259,7 @@ EXPECTED_DTS_STATE_GUARD_TRIGGERS = tuple(
     (
         table.name,
         "guard_dts_runtime_state_write",
-        27,
+        31,
         "public",
         "guard_dts_runtime_state_write",
         "",
@@ -264,6 +271,18 @@ EXPECTED_DTS_STATE_GUARD_TRIGGERS = tuple(
     for table in DTS_STATE_TABLES
 )
 EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS = (
+    (
+        "lesson_source_wide",
+        "guard_dom_lesson_student_privacy_v1",
+        23,
+        "public",
+        "guard_dom_lesson_student_privacy_v1",
+        "",
+        False,
+        0,
+        "",
+        True,
+    ),
     (
         "lesson_source_wide",
         "trg_lesson_source_wide_outbox_v1",
@@ -287,6 +306,38 @@ EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS = (
         0,
         "",
         True,
+    ),
+)
+EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS = (
+    (
+        "dom_student_json_is_safe_v1",
+        "jsonb",
+        "plpgsql",
+        "i",
+        True,
+        False,
+        ("search_path=pg_catalog",),
+        "c8ec7cb970fdbc2f3c0fffce473fa7cefe5ea345e6380cd0c53713a24b2cce70",
+    ),
+    (
+        "guard_dts_runtime_state_write",
+        "",
+        "plpgsql",
+        "v",
+        False,
+        False,
+        ("search_path=pg_catalog, public",),
+        "d313d6dd40b98a4086d639e6582e4f8c7d1f64770af9fb4b14e457ae51fe6bff",
+    ),
+    (
+        "guard_dom_lesson_student_privacy_v1",
+        "",
+        "plpgsql",
+        "v",
+        False,
+        False,
+        ("search_path=pg_catalog, public",),
+        "cae4238b02a320b77ef43ab7764ee52881822a68c9d05406db56d57e116895ee",
     ),
 )
 
@@ -794,6 +845,7 @@ def _source_row_state(
     dict[str, Any],
     bool,
 ] | None:
+    assert_domestic_event_protected(event)
     suffix = source_table_suffix(event)
     if suffix is None or event.operation not in DATA_OPERATIONS:
         return None
@@ -870,12 +922,7 @@ def _dependency_keys(
         row.get("teacher_id"),
         row.get("tea_id"),
     )
-    student_ids = _normalized_ids(
-        row.get("s_id"),
-        row.get("student_id"),
-        row.get("stu_id"),
-        row.get("user_id"),
-    )
+    student_subjects = _normalized_ids(student_subject(row))
     label_ids = _normalized_ids(row.get("label_id"))
     category_ids = _normalized_ids(
         row.get("complaint_type"),
@@ -897,7 +944,7 @@ def _dependency_keys(
     return {
         "course_ids": course_ids,
         "teacher_ids": teacher_ids,
-        "student_ids": student_ids,
+        "student_subjects": student_subjects,
         "label_ids": label_ids,
         "category_ids": category_ids,
     }
@@ -926,7 +973,7 @@ def _dependency_dirty_key_rows(
 
     course_ids = dependency_keys.get("course_ids", [])
     teacher_ids = dependency_keys.get("teacher_ids", [])
-    student_ids = dependency_keys.get("student_ids", [])
+    student_subjects = dependency_keys.get("student_subjects", [])
     label_ids = dependency_keys.get("label_ids", [])
     category_ids = dependency_keys.get("category_ids", [])
     values: set[tuple[str, str, str]] = set()
@@ -937,7 +984,7 @@ def _dependency_dirty_key_rows(
     values.update(
         ("TEACHER_STUDENT", teacher_id, student_id)
         for teacher_id in teacher_ids
-        for student_id in student_ids
+        for student_id in student_subjects
     )
     return tuple(sorted(values))
 
@@ -1514,6 +1561,68 @@ class PostgresDtsEventSink:
                 raise DtsIngestStoreError(
                     "DTS_TARGET_SOURCE_WIDE_TRIGGER_MISMATCH"
                 )
+
+            privacy_function_rows = connection.execute(
+                text(
+                    """
+                    SELECT functions.proname,
+                           pg_catalog.pg_get_function_identity_arguments(
+                               functions.oid
+                           ),
+                           languages.lanname,
+                           functions.provolatile,
+                           functions.proisstrict,
+                           functions.prosecdef,
+                           COALESCE(functions.proconfig, ARRAY[]::text[]),
+                           pg_catalog.encode(
+                               pg_catalog.sha256(
+                                   pg_catalog.convert_to(
+                                       functions.prosrc,
+                                       'UTF8'
+                                   )
+                               ),
+                               'hex'
+                           ) AS prosrc_sha256
+                    FROM pg_catalog.pg_proc functions
+                    JOIN pg_catalog.pg_namespace namespaces
+                      ON namespaces.oid = functions.pronamespace
+                    JOIN pg_catalog.pg_language languages
+                      ON languages.oid = functions.prolang
+                    WHERE namespaces.nspname = :schema_name
+                      AND functions.proname = ANY(
+                          CAST(:function_names AS text[])
+                      )
+                    ORDER BY pg_catalog.array_position(
+                                 CAST(:function_names AS text[]),
+                                 functions.proname
+                             )
+                    """
+                ),
+                {
+                    "schema_name": EXPECTED_SCHEMA,
+                    "function_names": [
+                        definition[0]
+                        for definition in EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS
+                    ],
+                },
+            ).all()
+            actual_privacy_functions = tuple(
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    str(row[3]),
+                    bool(row[4]),
+                    bool(row[5]),
+                    tuple(str(value) for value in row[6]),
+                    str(row[7]),
+                )
+                for row in privacy_function_rows
+            )
+            if actual_privacy_functions != EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS:
+                raise DtsIngestStoreError(
+                    "DTS_TARGET_DOM_PRIVACY_FUNCTION_MISMATCH"
+                )
         self._validated = True
 
     def resume_offset(
@@ -1534,6 +1643,202 @@ class PostgresDtsEventSink:
                     table.c.partition_id == partition,
                 )
             ).scalar_one_or_none()
+
+    def validate_domestic_student_privacy_state(self) -> None:
+        """Refuse startup if an earlier domestic run persisted a raw ID."""
+
+        if self.source_region != "dom":
+            return
+        with self.engine.connect() as connection:
+            violation = connection.execute(
+                text(
+                    """
+                    WITH violations AS (
+                        SELECT 'SOURCE_ROW' AS violation
+                        FROM public.dts_source_rows rows
+                        WHERE rows.source_region = 'dom'
+                          AND (
+                              rows.source_row ?| CAST(:raw_fields AS text[])
+                              OR rows.dependency_keys ? 'student_ids'
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM jsonb_array_elements_text(
+                                      COALESCE(
+                                          rows.dependency_keys
+                                              -> 'student_subjects',
+                                          '[]'::jsonb
+                                      )
+                                  ) subjects(value)
+                                  WHERE subjects.value !~ :token_pattern
+                              )
+                              OR (
+                                  rows.source_row ? 'student_token'
+                                  AND rows.source_row ->> 'student_token'
+                                      !~ :token_pattern
+                              )
+                          )
+                        LIMIT 1
+                    ), dirty_violation AS (
+                        SELECT 'DIRTY_KEY' AS violation
+                        FROM public.dts_dirty_keys dirty
+                        WHERE dirty.last_source_region = 'dom'
+                          AND dirty.key_type = 'TEACHER_STUDENT'
+                          AND dirty.key_part_2 !~ :token_pattern
+                        LIMIT 1
+                    ), lesson_violation AS (
+                        SELECT 'LESSON_WIDE' AS violation
+                        FROM public.lesson_source_wide lessons
+                        JOIN public.dts_source_rows appoints
+                         ON appoints.source_region = 'dom'
+                         AND appoints.source_table = 'dom_appoint'
+                         AND appoints.source_row ->> 'id'
+                             = lessons."课程id"
+                        WHERE lessons."学员id" IS NOT NULL
+                          AND lessons."学员id" !~ :token_pattern
+                        LIMIT 1
+                    ), provenance_violation AS (
+                        SELECT 'LESSON_PROVENANCE' AS violation
+                        FROM public.lesson_source_wide lessons
+                        LEFT JOIN LATERAL (
+                            SELECT
+                                count(*) FILTER (
+                                    WHERE appoints.source_region = 'dom'
+                                ) AS dom_sources,
+                                count(*) FILTER (
+                                    WHERE appoints.source_region = 'ovs'
+                                ) AS ovs_sources
+                            FROM public.dts_source_rows appoints
+                            WHERE appoints.source_table IN (
+                                'dom_appoint',
+                                'ovs_appoint'
+                            )
+                              AND appoints.source_row ->> 'id'
+                                  = lessons."课程id"
+                        ) provenance ON TRUE
+                        WHERE (provenance.dom_sources > 0)::int
+                            + (provenance.ovs_sources > 0)::int <> 1
+                        LIMIT 1
+                    )
+                    SELECT violation FROM violations
+                    UNION ALL
+                    SELECT violation FROM dirty_violation
+                    UNION ALL
+                    SELECT violation FROM lesson_violation
+                    UNION ALL
+                    SELECT violation FROM provenance_violation
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "raw_fields": sorted(
+                        {"s_id", "student_id", "stu_id", "user_id"}
+                    ),
+                    "token_pattern": DOMESTIC_STUDENT_TOKEN_SQL_PATTERN,
+                },
+            ).first()
+        if violation is not None:
+            raise DtsIngestStoreError(
+                "DTS_DOM_STUDENT_PRIVACY_STATE_VIOLATION"
+            )
+
+    def validate_domestic_student_privacy_contract(
+        self,
+        *,
+        key_fingerprint: str | None,
+        topic: str,
+        partition: int,
+    ) -> None:
+        """Register one DOM HMAC key commitment and reject silent rotation."""
+
+        if self.source_region != "dom":
+            return
+        if (
+            key_fingerprint is None
+            or re.fullmatch(
+                DOMESTIC_STUDENT_KEY_FINGERPRINT_PATTERN,
+                key_fingerprint,
+            )
+            is None
+        ):
+            raise DtsIngestStoreError(
+                "DTS_DOM_STUDENT_HMAC_FINGERPRINT_INVALID"
+            )
+        contract_key_data = {"id": DOMESTIC_STUDENT_CONTRACT_VERSION}
+        contract_source_key = json.dumps(
+            contract_key_data,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        contract_source_row = {
+            "contract_version": DOMESTIC_STUDENT_CONTRACT_VERSION,
+            "key_fingerprint": key_fingerprint,
+        }
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.dts_source_rows (
+                        source_region, source_table, source_key,
+                        source_key_data, dependency_keys, source_row,
+                        is_deleted, source_timestamp, last_record_id,
+                        source_position, last_topic, last_partition,
+                        last_offset, row_version
+                    ) VALUES (
+                        'dom', :source_table, :source_key,
+                        CAST(:source_key_data AS jsonb), '{}'::jsonb,
+                        CAST(:source_row AS jsonb), FALSE, 0, 0,
+                        'runtime_contract', :topic, :partition, 0, 1
+                    )
+                    ON CONFLICT (source_region, source_table, source_key)
+                    DO NOTHING
+                    """
+                ),
+                {
+                    "source_table": DOMESTIC_STUDENT_CONTRACT_SOURCE_TABLE,
+                    "source_key": contract_source_key,
+                    "source_key_data": json.dumps(
+                        contract_key_data,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "source_row": json.dumps(
+                        contract_source_row,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "topic": topic,
+                    "partition": partition,
+                },
+            )
+            stored_contract = connection.execute(
+                text(
+                    """
+                    SELECT source_row ->> 'contract_version'
+                               AS contract_version,
+                           source_row ->> 'key_fingerprint'
+                               AS key_fingerprint
+                    FROM public.dts_source_rows
+                    WHERE source_region = 'dom'
+                      AND source_table = :source_table
+                      AND source_key = :source_key
+                    FOR UPDATE
+                    """
+                ),
+                {
+                    "source_table": DOMESTIC_STUDENT_CONTRACT_SOURCE_TABLE,
+                    "source_key": contract_source_key,
+                },
+            ).mappings().one_or_none()
+        if stored_contract is None or (
+            stored_contract.get("contract_version"),
+            stored_contract.get("key_fingerprint"),
+        ) != (DOMESTIC_STUDENT_CONTRACT_VERSION, key_fingerprint):
+            raise DtsIngestStoreError(
+                "DTS_DOM_STUDENT_HMAC_KEY_FINGERPRINT_MISMATCH"
+            )
 
     def apply(
         self,
@@ -1557,6 +1862,10 @@ class PostgresDtsEventSink:
         event: DtsChangeEvent,
         dirty_keys: DirtyKeySet,
     ) -> bool:
+        # This guard runs before any event value can become an overseas SQL
+        # bind parameter.  The database remains a second line of defense, not
+        # the first place where a domestic raw student ID is observed.
+        assert_domestic_event_protected(event)
         checkpoint = DtsIngestCheckpointRecord.__table__
         event_table = DtsIngestEventRecord.__table__
         source_table = DtsSourceRowRecord.__table__

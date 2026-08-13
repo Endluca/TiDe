@@ -15,6 +15,7 @@ from app.dts_ingest_store import (
     EXPECTED_DTS_STATE_CONSTRAINTS,
     EXPECTED_DTS_STATE_GUARD_TRIGGERS,
     EXPECTED_DTS_STATE_INDEXES,
+    EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS,
     EXPECTED_SOURCE_WIDE_COLUMNS,
     EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS,
     MUTABLE_RELATIONS,
@@ -456,6 +457,7 @@ def _validation_sink(
     state_triggers: list[tuple[object, ...]] | None = None,
     columns: list[tuple[object, ...]] | None = None,
     triggers: list[tuple[object, ...]] | None = None,
+    privacy_functions: list[tuple[object, ...]] | None = None,
     sslmode: str = "verify-full",
     server_ssl: str = "on",
     session_ssl: bool | None = None,
@@ -470,6 +472,10 @@ def _validation_sink(
     expected_state_triggers = [
         (*definition[:2], "O", *definition[2:])
         for definition in EXPECTED_DTS_STATE_GUARD_TRIGGERS
+    ]
+    expected_privacy_functions = [
+        (*definition[:7], definition[7])
+        for definition in EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS
     ]
     connection = _ValidationConnection(
         [
@@ -520,6 +526,13 @@ def _validation_sink(
             _ValidationResult(
                 all_rows=expected_triggers if triggers is None else triggers
             ),
+            _ValidationResult(
+                all_rows=(
+                    expected_privacy_functions
+                    if privacy_functions is None
+                    else privacy_functions
+                )
+            ),
         ]
     )
     sink = object.__new__(PostgresDtsEventSink)
@@ -544,7 +557,7 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
     sink._validate_runtime()
 
     assert sink._validated is True
-    assert len(connection.statements) == 10
+    assert len(connection.statements) == 11
     assert "pg_stat_ssl" in connection.statements[0][0]
     assert "current_setting('ssl')" in connection.statements[0][0]
     required_sql, required_parameters = connection.statements[1]
@@ -614,10 +627,57 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
         "schema_name": "public",
         "table_names": ["teacher_source_wide", "lesson_source_wide"],
     }
+    functions_sql, functions_parameters = connection.statements[10]
+    assert "functions.prosrc" in functions_sql
+    assert "pg_catalog.sha256" in functions_sql
+    assert "functions.proconfig" in functions_sql
+    assert "functions.provolatile" in functions_sql
+    assert "functions.proisstrict" in functions_sql
+    assert functions_parameters == {
+        "schema_name": "public",
+        "function_names": [
+            definition[0]
+            for definition in EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS
+        ],
+    }
     assert all(
         "alembic_version" not in sql
         for sql, _parameters in connection.statements
     )
+
+
+def test_domestic_database_privacy_triggers_are_part_of_the_exact_contract(
+) -> None:
+    assert all(
+        definition[2] == 31
+        for definition in EXPECTED_DTS_STATE_GUARD_TRIGGERS
+    )
+    assert (
+        "lesson_source_wide",
+        "guard_dom_lesson_student_privacy_v1",
+        23,
+        "public",
+        "guard_dom_lesson_student_privacy_v1",
+        "",
+        False,
+        0,
+        "",
+        True,
+    ) in EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS
+
+
+def test_dts_runtime_rejects_domestic_privacy_function_body_drift() -> None:
+    rows = [list(definition) for definition in EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS]
+    rows[0][-1] = "0" * 64
+    sink, _connection = _validation_sink(
+        privacy_functions=[tuple(row) for row in rows]
+    )
+
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="^DTS_TARGET_DOM_PRIVACY_FUNCTION_MISMATCH$",
+    ):
+        sink._validate_runtime()
 
 
 def test_dts_runtime_allows_approved_pre_plaintext_only_while_server_ssl_is_off(
@@ -921,7 +981,7 @@ def test_dts_runtime_rejects_outbox_trigger_definition_drift(drift: str) -> None
     elif drift == "function":
         row[5] = "unexpected_outbox_function"
     elif drift == "security":
-        row[7] = False
+        row[7] = not bool(row[7])
     else:
         row[10] = False
     rows[0] = tuple(row)
@@ -946,7 +1006,7 @@ def test_source_mirror_persists_only_confirmed_fields() -> None:
         "course_ids": ["99"],
         "label_ids": [],
         "teacher_ids": ["10"],
-        "student_ids": ["20"],
+        "student_subjects": ["20"],
     }
     assert deleted is False
     assert source_row["t_id"] == "10"
@@ -957,6 +1017,56 @@ def test_source_mirror_persists_only_confirmed_fields() -> None:
         assert "mobile" not in fields
         assert "phone" not in fields
         assert "certification_url" not in fields
+
+
+def test_source_mirror_rejects_raw_domestic_student_id_before_sql() -> None:
+    original = _event()
+    event = DtsChangeEvent(
+        **{
+            **original.__dict__,
+            "source_region": "dom",
+            "table_name": "dom_appoint",
+            "database_name": "dom_db",
+        }
+    )
+
+    with pytest.raises(
+        DtsRecordError,
+        match="^DTS_DOM_RAW_STUDENT_ID_FORBIDDEN$",
+    ):
+        _source_row_state(event)
+
+
+def test_source_mirror_persists_only_domestic_student_token() -> None:
+    token = "dom:v1:" + "a" * 64
+    original = _event()
+    event = DtsChangeEvent(
+        **{
+            **original.__dict__,
+            "source_region": "dom",
+            "table_name": "dom_appoint",
+            "database_name": "dom_db",
+            "before": {
+                "id": "99",
+                "t_id": "10",
+                "student_token": token,
+            },
+            "after": {
+                "id": "99",
+                "t_id": "10",
+                "student_token": token,
+                "status": "end",
+            },
+        }
+    )
+
+    state = _source_row_state(event)
+
+    assert state is not None
+    _source_key, _key_data, dependencies, source_row, _deleted = state
+    assert dependencies["student_subjects"] == [token]
+    assert source_row["student_token"] == token
+    assert not ({"s_id", "student_id", "stu_id", "user_id"} & source_row.keys())
 
 
 def test_source_mirror_merges_sparse_update_images_before_dependency_routing() -> None:
@@ -987,7 +1097,7 @@ def test_source_mirror_merges_sparse_update_images_before_dependency_routing() -
     assert dependency_keys == {
         "course_ids": ["99"],
         "teacher_ids": ["11"],
-        "student_ids": ["20"],
+        "student_subjects": ["20"],
         "label_ids": [],
         "category_ids": [],
     }
@@ -1120,8 +1230,131 @@ class _ActivationEngine:
     def connect(self) -> _Connection:
         return self.connection
 
+    def begin(self) -> _Connection:
+        return self.connection
+
     def dispose(self) -> None:
         self.disposed = True
+
+
+class _ContextConnection(_Connection):
+    def __enter__(self) -> _ContextConnection:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+@pytest.mark.parametrize(
+    ("source_region", "violation", "expected_error"),
+    [
+        ("dom", None, None),
+        (
+            "dom",
+            ("SOURCE_ROW",),
+            "DTS_DOM_STUDENT_PRIVACY_STATE_VIOLATION",
+        ),
+        ("ovs", ("SOURCE_ROW",), None),
+    ],
+)
+def test_domestic_privacy_state_gate_is_count_only_and_fail_closed(
+    source_region: str,
+    violation: object | None,
+    expected_error: str | None,
+) -> None:
+    connection = _ContextConnection([_Result(first=violation)])
+    sink = object.__new__(PostgresDtsEventSink)
+    sink.source_region = source_region
+    sink.engine = _ActivationEngine(connection)
+
+    if expected_error is None:
+        sink.validate_domestic_student_privacy_state()
+    else:
+        with pytest.raises(DtsIngestStoreError, match=f"^{expected_error}$"):
+            sink.validate_domestic_student_privacy_state()
+
+    if source_region == "dom":
+        assert len(connection.statements) == 1
+        sql = str(connection.statements[0])
+        assert "student_subjects" in sql
+        assert "lessons.\"学员id\"" in sql
+        assert "LESSON_PROVENANCE" in sql
+        assert "provenance.dom_sources > 0" in sql
+        assert "provenance.ovs_sources > 0" in sql
+        assert "dirty.key_part_2 <> ''" not in sql
+        assert connection.parameters[0] == {
+            "raw_fields": ["s_id", "stu_id", "student_id", "user_id"],
+            "token_pattern": r"^dom:v1:[0-9a-f]{64}$",
+        }
+    else:
+        assert connection.statements == []
+
+
+@pytest.mark.parametrize(
+    ("stored_contract", "expected_error"),
+    [
+        (("dom_student_hmac_v1", "a" * 64), None),
+        (
+            ("dom_student_hmac_v1", "b" * 64),
+            "DTS_DOM_STUDENT_HMAC_KEY_FINGERPRINT_MISMATCH",
+        ),
+    ],
+)
+def test_domestic_hmac_fingerprint_is_registered_once_and_must_stay_stable(
+    stored_contract: tuple[str, str],
+    expected_error: str | None,
+) -> None:
+    connection = _ContextConnection(
+        [
+            _Result(),
+            _Result(
+                mapping={
+                    "contract_version": stored_contract[0],
+                    "key_fingerprint": stored_contract[1],
+                }
+            ),
+        ]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+    sink.source_region = "dom"
+    sink.engine = _ActivationEngine(connection)
+
+    if expected_error is None:
+        sink.validate_domestic_student_privacy_contract(
+            key_fingerprint="a" * 64,
+            topic="dom-topic",
+            partition=0,
+        )
+    else:
+        with pytest.raises(DtsIngestStoreError, match=f"^{expected_error}$"):
+            sink.validate_domestic_student_privacy_contract(
+                key_fingerprint="a" * 64,
+                topic="dom-topic",
+                partition=0,
+            )
+
+    assert len(connection.statements) == 2
+    assert "ON CONFLICT" in str(connection.statements[0])
+    insert_parameters = connection.parameters[0]
+    assert isinstance(insert_parameters, dict)
+    assert "a" * 64 in str(insert_parameters["source_row"])
+    assert "runtime-only" not in str(insert_parameters)
+
+
+def test_domestic_hmac_fingerprint_validation_is_fail_closed() -> None:
+    sink = object.__new__(PostgresDtsEventSink)
+    sink.source_region = "dom"
+    sink.engine = _ActivationEngine(_ContextConnection([]))
+
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="^DTS_DOM_STUDENT_HMAC_FINGERPRINT_INVALID$",
+    ):
+        sink.validate_domestic_student_privacy_contract(
+            key_fingerprint="not-a-fingerprint",
+            topic="dom-topic",
+            partition=0,
+        )
 
 
 def _activation_settings() -> DtsProjectionActivationSettings:
@@ -1407,7 +1640,7 @@ def test_partial_update_recomputes_dependencies_and_dirties_old_and_new_owners()
     assert mirror_params["dependency_keys"] == {
         "course_ids": ["99"],
         "teacher_ids": ["11"],
-        "student_ids": ["20"],
+        "student_subjects": ["20"],
         "label_ids": [],
         "category_ids": [],
     }
@@ -1658,7 +1891,7 @@ def test_sparse_delete_keeps_tombstone_dependencies_and_routes_previous_owner() 
     assert mirror_params["dependency_keys"] == {
         "course_ids": ["99"],
         "teacher_ids": ["10"],
-        "student_ids": ["20"],
+        "student_subjects": ["20"],
         "label_ids": [],
         "category_ids": [],
     }

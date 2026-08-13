@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import errno
+import hashlib
+import hmac
 import io
+import json
+import socket
 from datetime import time
 from types import SimpleNamespace
 
@@ -8,6 +13,7 @@ import pytest
 from fastavro import schemaless_writer
 
 from app.dts_source_consumer import (
+    DOMESTIC_STUDENT_HMAC_DOMAIN,
     DtsConfigurationError,
     DtsConsumerSettings,
     DtsEventProcessor,
@@ -15,15 +21,31 @@ from app.dts_source_consumer import (
     DtsRecordError,
     InMemoryShadowSink,
     _parsed_avro_schema,
+    assert_domestic_event_protected,
     build_change_event,
     decode_dts_avro,
     derive_penalty_flags,
     is_peak_lesson,
     project_appoint_candidate,
+    probe_broker_tcp,
+    protect_domestic_student_ids,
     reduce_latest_complaints,
     route_dirty_keys,
     teacher_matches_region,
 )
+
+
+@pytest.fixture
+def successful_broker_tcp_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import dts_source_consumer as consumer_module
+
+    monkeypatch.setattr(
+        consumer_module,
+        "probe_broker_tcp",
+        lambda brokers: {"status": "ok", "broker_count": len(brokers)},
+    )
 
 
 def record(
@@ -66,6 +88,7 @@ def event_from_record(raw: dict[str, object], *, offset: int = 10):
 def test_settings_use_epoch_seconds_and_build_official_sasl_username() -> None:
     values = {
         "TIT_DTS_SOURCE_REGION": "ovs",
+        "TIT_DTS_EXECUTION_REGION": "sg",
         "TIT_DTS_BROKER_URL": "broker.internal:18003",
         "TIT_DTS_TOPIC": "topic-v2",
         "TIT_DTS_GROUP_ID": "tit-ovs-group",
@@ -93,6 +116,558 @@ def test_settings_use_epoch_seconds_and_build_official_sasl_username() -> None:
         match="TIT_DTS_START_AT_REQUIRES_TIMEZONE",
     ):
         DtsConsumerSettings.from_env(values)
+
+
+def test_domestic_settings_require_china_execution_and_hmac_key() -> None:
+    values = {
+        "TIT_DTS_SOURCE_REGION": "dom",
+        "TIT_DTS_EXECUTION_REGION": "cn",
+        "TIT_DTS_BROKER_URL": "broker.internal:18003",
+        "TIT_DTS_TOPIC": "dom-topic-v2",
+        "TIT_DTS_GROUP_ID": "tit-dom-group",
+        "TIT_DTS_ACCOUNT": "consumer",
+        "TIT_DTS_PASSWORD": "runtime-only",
+        "TIT_DTS_START_AT": "2026-08-12T16:30:00+08:00",
+        "TIT_DTS_DOM_STUDENT_HMAC_KEY": "a" * 64,
+    }
+
+    settings = DtsConsumerSettings.from_env(values)
+
+    assert settings.execution_region == "cn"
+    assert settings.safe_summary()["student_subject_mode"] == "dom_hmac_v1"
+    assert "domestic_student_hmac_key" not in repr(settings)
+    fingerprint = settings.domestic_student_hmac_fingerprint()
+    assert fingerprint is not None and len(fingerprint) == 64
+    assert "a" * 64 not in fingerprint
+    assert fingerprint == settings.domestic_student_hmac_fingerprint()
+    settings.require_target_transport(
+        sslmode="verify-full",
+        host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+        port=5432,
+        expected_host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+        expected_port=5432,
+    )
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_DOM_CROSS_BORDER_TLS_REQUIRED$",
+    ):
+        settings.require_target_transport(
+            sslmode="disable",
+            host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+            port=5432,
+            expected_host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+            expected_port=5432,
+        )
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_DOM_CROSS_BORDER_TARGET_NOT_APPROVED$",
+    ):
+        settings.require_target_transport(
+            sslmode="verify-full",
+            host="other.internal",
+            port=5432,
+            expected_host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+            expected_port=5432,
+        )
+
+    for name, value, error in (
+        (
+            "TIT_DTS_EXECUTION_REGION",
+            "sg",
+            "TIT_DTS_EXECUTION_REGION_SOURCE_MISMATCH",
+        ),
+        (
+            "TIT_DTS_DOM_STUDENT_HMAC_KEY",
+            "not-a-64-character-lowercase-hex-secret",
+            "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORMAT_INVALID",
+        ),
+    ):
+        invalid = {**values, name: value}
+        with pytest.raises(DtsConfigurationError, match=f"^{error}$"):
+            DtsConsumerSettings.from_env(invalid)
+
+
+def test_overseas_settings_reject_domestic_hmac_secret() -> None:
+    values = {
+        "TIT_DTS_SOURCE_REGION": "ovs",
+        "TIT_DTS_EXECUTION_REGION": "sg",
+        "TIT_DTS_BROKER_URL": "broker.internal:18003",
+        "TIT_DTS_TOPIC": "ovs-topic-v2",
+        "TIT_DTS_GROUP_ID": "tit-ovs-group",
+        "TIT_DTS_ACCOUNT": "consumer",
+        "TIT_DTS_PASSWORD": "runtime-only",
+        "TIT_DTS_START_AT": "2026-08-10T14:16:00+08:00",
+    }
+    assert DtsConsumerSettings.from_env(values).domestic_student_hmac_fingerprint() is None
+    values["TIT_DTS_DOM_STUDENT_HMAC_KEY"] = "a" * 64
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_DOM_STUDENT_HMAC_KEY_FORBIDDEN_FOR_OVS$",
+    ):
+        DtsConsumerSettings.from_env(values)
+
+
+def test_domestic_student_ids_are_hmac_protected_before_routing() -> None:
+    raw_student_id = "dom-student-987654"
+    event = build_change_event(
+        record(
+            object_name="tide_source_dom.public.dom_appoint",
+            fields=["id", "t_id", "s_id", "status", "use_point"],
+            after=["course-1", "teacher-1", raw_student_id, "end", "buy"],
+        ),
+        source_region="dom",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=10,
+    )
+    settings = DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.internal:18003",),
+        topic="dom-topic-v2",
+        group_id="tit-dom-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786523400,
+        execution_region="cn",
+        domestic_student_hmac_key="a" * 64,
+    )
+
+    protected = protect_domestic_student_ids(event, settings)
+
+    assert protected.after is not None
+    assert "s_id" not in protected.after
+    token = protected.after["student_token"]
+    assert isinstance(token, str) and token.startswith("dom:v1:")
+    assert len(token) == len("dom:v1:") + 64
+    assert token == "dom:v1:" + hmac.new(
+        bytes.fromhex("a" * 64),
+        DOMESTIC_STUDENT_HMAC_DOMAIN + raw_student_id.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    assert raw_student_id not in repr(protected)
+    dirty = route_dirty_keys(protected)
+    assert dirty.teacher_student_pairs == {("teacher-1", token)}
+    candidate = project_appoint_candidate(protected)
+    assert candidate is not None
+    assert candidate.target_values["学员id"] == token
+
+
+def test_domestic_student_protection_rejects_conflicting_aliases() -> None:
+    event = build_change_event(
+        record(
+            object_name="tide_source_dom.public.dom_complaint",
+            fields=["id", "stu_id", "user_id", "appoint_id"],
+            after=["record-1", "student-1", "student-2", "course-1"],
+        ),
+        source_region="dom",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=11,
+    )
+    settings = DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.internal:18003",),
+        topic="dom-topic-v2",
+        group_id="tit-dom-group",
+        account="consumer",
+        password="runtime-only",
+        execution_region="cn",
+        domestic_student_hmac_key="a" * 64,
+    )
+
+    with pytest.raises(
+        DtsRecordError,
+        match="^DTS_DOM_STUDENT_ID_ALIASES_CONFLICT$",
+    ):
+        protect_domestic_student_ids(event, settings)
+
+
+def test_domestic_source_cannot_supply_its_own_student_token() -> None:
+    event = build_change_event(
+        record(
+            object_name="tide_source_dom.public.dom_appoint",
+            fields=["id", "t_id", "student_token"],
+            after=["course-1", "teacher-1", "dom:v1:" + "b" * 64],
+        ),
+        source_region="dom",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=12,
+    )
+    settings = DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.internal:18003",),
+        topic="dom-topic-v2",
+        group_id="tit-dom-group",
+        account="consumer",
+        password="runtime-only",
+        execution_region="cn",
+        domestic_student_hmac_key="a" * 64,
+    )
+
+    with pytest.raises(
+        DtsRecordError,
+        match="^DTS_DOM_SOURCE_STUDENT_TOKEN_FORBIDDEN$",
+    ):
+        protect_domestic_student_ids(event, settings)
+
+
+def test_domestic_student_protection_recurses_into_json_info() -> None:
+    raw_student_id = "student-in-json"
+    event = build_change_event(
+        record(
+            object_name="tide_source_dom.public.dom_qa_ac_classroom_record",
+            fields=["id", "info"],
+            after=[
+                "record-1",
+                json.dumps(
+                    {
+                        "cpu": [
+                            {
+                                "appoint_id": "course-1",
+                                "student_id": raw_student_id,
+                            }
+                        ]
+                    }
+                ),
+            ],
+        ),
+        source_region="dom",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=12,
+    )
+    settings = DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.internal:18003",),
+        topic="dom-topic-v2",
+        group_id="tit-dom-group",
+        account="consumer",
+        password="runtime-only",
+        execution_region="cn",
+        domestic_student_hmac_key="a" * 64,
+    )
+
+    protected = protect_domestic_student_ids(event, settings)
+
+    assert protected.after is not None
+    protected_info = json.loads(str(protected.after["info"]))
+    protected_row = protected_info["cpu"][0]
+    assert "student_id" not in protected_row
+    assert protected_row["student_token"].startswith("dom:v1:")
+    assert raw_student_id not in str(protected.after)
+    assert_domestic_event_protected(protected)
+
+
+def test_domestic_student_protection_rejects_invalid_json_info() -> None:
+    event = build_change_event(
+        record(
+            object_name="tide_source_dom.public.dom_qa_ac_classroom_record",
+            fields=["id", "info"],
+            after=["record-1", '{"student_id":123'],
+        ),
+        source_region="dom",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=13,
+    )
+    settings = DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.internal:18003",),
+        topic="dom-topic-v2",
+        group_id="tit-dom-group",
+        account="consumer",
+        password="runtime-only",
+        execution_region="cn",
+        domestic_student_hmac_key="a" * 64,
+    )
+
+    with pytest.raises(DtsRecordError, match="^DTS_DOM_INFO_INVALID_JSON$"):
+        protect_domestic_student_ids(event, settings)
+
+
+def test_domestic_free_text_reasons_are_reduced_before_cross_border_write() -> None:
+    settings = DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.internal:18003",),
+        topic="dom-topic-v2",
+        group_id="tit-dom-group",
+        account="consumer",
+        password="runtime-only",
+        execution_region="cn",
+        domestic_student_hmac_key="a" * 64,
+    )
+    event = build_change_event(
+        record(
+            object_name="tide_source_dom.public.dom_teacher_absent_reason",
+            fields=["id", "appoint_id", "t_id", "reason_desc"],
+            after=[
+                "reason-1",
+                "course-1",
+                "teacher-1",
+                "student 987654, Unfilled Lesson Memo, private note",
+            ],
+        ),
+        source_region="dom",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=14,
+    )
+
+    protected = protect_domestic_student_ids(event, settings)
+
+    assert protected.after is not None
+    assert protected.after["reason_desc"] == "Unfilled Lesson Memo"
+    assert "987654" not in repr(protected)
+
+    appoint_event = build_change_event(
+        record(
+            object_name="tide_source_dom.public.dom_appoint",
+            fields=["id", "t_id", "s_id", "cancel_reason"],
+            after=["course-1", "teacher-1", "student-1", "call 123456"],
+        ),
+        source_region="dom",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=15,
+    )
+    protected_appoint = protect_domestic_student_ids(appoint_event, settings)
+    assert protected_appoint.after is not None
+    assert protected_appoint.after["cancel_reason"] == (
+        "Domestic reason redacted"
+    )
+    assert "123456" not in repr(protected_appoint)
+
+
+def test_broker_tcp_probe_connects_without_sending_application_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import dts_source_consumer as consumer_module
+
+    class Connection:
+        closed = False
+        timeout = None
+
+        def settimeout(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def connect(self, address: tuple[str, int]) -> None:
+            calls.append((address, self.timeout))
+
+        def close(self) -> None:
+            self.closed = True
+
+        def send(self, _payload: bytes) -> None:
+            raise AssertionError("TCP probe must not send bytes")
+
+        def recv(self, _size: int) -> bytes:
+            raise AssertionError("TCP probe must not receive bytes")
+
+    connection = Connection()
+    calls: list[tuple[tuple[str, int], float | None]] = []
+    monkeypatch.setattr(
+        consumer_module.socket,
+        "getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", (host, port))
+        ],
+    )
+    monkeypatch.setattr(
+        consumer_module.socket,
+        "socket",
+        lambda *_args: connection,
+    )
+
+    result = probe_broker_tcp(("100.103.7.163:18003",))
+
+    assert result == {"status": "ok", "broker_count": 1}
+    assert calls[0][0] == ("100.103.7.163", 18003)
+    assert calls[0][1] is not None and 0 < calls[0][1] <= 5.0
+    assert connection.closed is True
+
+
+def test_broker_tcp_probe_supports_ipv6_and_falls_back_to_second_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import dts_source_consumer as consumer_module
+
+    class Connection:
+        def __init__(self) -> None:
+            self.closed = False
+            self.timeout = None
+
+        def settimeout(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def connect(self, address: tuple[str, int]) -> None:
+            assert self.timeout is not None and self.timeout > 0
+            calls.append(address)
+            if len(calls) == 1:
+                raise TimeoutError("private endpoint omitted")
+
+        def close(self) -> None:
+            self.closed = True
+
+    calls: list[tuple[str, int]] = []
+    connections: list[Connection] = []
+    monkeypatch.setattr(
+        consumer_module.socket,
+        "getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (
+                socket.AF_INET6 if ":" in host else socket.AF_INET,
+                socket.SOCK_STREAM,
+                0,
+                "",
+                (host, port),
+            )
+        ],
+    )
+
+    def socket_factory(*_args: object) -> Connection:
+        connection = Connection()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(consumer_module.socket, "socket", socket_factory)
+
+    result = probe_broker_tcp(
+        ("broker.internal:18003", "[2001:db8::1]:18004")
+    )
+
+    assert result == {"status": "ok", "broker_count": 2}
+    assert calls == [
+        ("broker.internal", 18003),
+        ("2001:db8::1", 18004),
+    ]
+    assert all(connection.closed for connection in connections)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (socket.gaierror("private details"), "DTS_BROKER_TCP_DNS_FAILED"),
+        (TimeoutError("private details"), "DTS_BROKER_TCP_CONNECTION_TIMEOUT"),
+        (
+            ConnectionRefusedError("private details"),
+            "DTS_BROKER_TCP_CONNECTION_REFUSED",
+        ),
+        (
+            OSError(errno.EHOSTUNREACH, "private details"),
+            "DTS_BROKER_TCP_UNREACHABLE",
+        ),
+        (OSError(errno.EIO, "private details"), "DTS_BROKER_TCP_CONNECTION_FAILED"),
+    ],
+)
+def test_broker_tcp_probe_emits_stable_errors_without_endpoint_details(
+    monkeypatch: pytest.MonkeyPatch,
+    error: OSError,
+    expected_code: str,
+) -> None:
+    from app import dts_source_consumer as consumer_module
+
+    if isinstance(error, socket.gaierror):
+        monkeypatch.setattr(
+            consumer_module.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+        )
+    else:
+        monkeypatch.setattr(
+            consumer_module.socket,
+            "getaddrinfo",
+            lambda host, port, **_kwargs: [
+                (socket.AF_INET, socket.SOCK_STREAM, 0, "", (host, port))
+            ],
+        )
+
+        class FailingSocket:
+            def settimeout(self, timeout: float) -> None:
+                assert timeout > 0
+
+            def connect(self, _address: tuple[str, int]) -> None:
+                raise error
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr(
+            consumer_module.socket,
+            "socket",
+            lambda *_args: FailingSocket(),
+        )
+
+    with pytest.raises(DtsConfigurationError) as raised:
+        probe_broker_tcp(("broker.internal:18003",))
+
+    assert str(raised.value) == expected_code
+    assert "broker.internal" not in str(raised.value)
+    assert "private details" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "broker",
+    (
+        "broker.internal",
+        "https://broker.internal:18003",
+        "user@broker.internal:18003",
+        "broker.internal/path:18003",
+        "broker.internal?query:18003",
+        "2001:db8::1:18003",
+        "[2001:db8::1]18003",
+        "broker.internal:0",
+        "broker.internal:65536",
+    ),
+)
+def test_broker_tcp_probe_rejects_invalid_endpoint_syntax(broker: str) -> None:
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_BROKER_URL_INVALID$",
+    ):
+        probe_broker_tcp((broker,))
+
+
+def test_broker_tcp_probe_reports_mixed_endpoint_failures_safely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import dts_source_consumer as consumer_module
+
+    def resolve(host: str, port: int, **_kwargs: object) -> object:
+        if host == "first.internal":
+            raise socket.gaierror("first endpoint")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (host, port))]
+
+    class TimedOutSocket:
+        def settimeout(self, timeout: float) -> None:
+            assert timeout > 0
+
+        def connect(self, _address: tuple[str, int]) -> None:
+            raise TimeoutError("second endpoint")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(consumer_module.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(
+        consumer_module.socket,
+        "socket",
+        lambda *_args: TimedOutSocket(),
+    )
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_BROKER_TCP_ALL_ENDPOINTS_FAILED$",
+    ):
+        probe_broker_tcp(("first.internal:18003", "second.internal:18003"))
+
+
+@pytest.mark.parametrize("timeout", (0, -1, float("inf"), float("nan")))
+def test_broker_tcp_probe_rejects_invalid_timeout(timeout: float) -> None:
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_BROKER_TCP_TIMEOUT_INVALID$",
+    ):
+        probe_broker_tcp(("broker.internal:18003",), timeout_seconds=timeout)
 
 
 def test_official_avro_schema_round_trips_heartbeat() -> None:
@@ -481,8 +1056,94 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
     assert fake.closed is True
 
 
+def test_domestic_kafka_run_protects_student_id_before_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+
+    raw_student_id = "student-must-not-cross-border"
+    decoded = record(
+        operation="INSERT",
+        object_name="tide_source_dom.public.dom_appoint",
+        fields=["id", "t_id", "s_id", "status", "use_point"],
+        after=["course-1", "teacher-1", raw_student_id, "end", "buy"],
+    )
+    message = SimpleNamespace(
+        value=b"redacted",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=42,
+    )
+
+    class FakeConsumer:
+        config = {"request_timeout_ms": 15_000}
+
+        def committed(self, _partition: object, *, timeout_ms: int) -> None:
+            assert timeout_ms == 15_000
+            return None
+
+        def offsets_for_times(self, requested: dict[object, int]):
+            return {
+                partition: SimpleNamespace(offset=42)
+                for partition in requested
+            }
+
+        def assign(self, _partitions: list[object]) -> None:
+            pass
+
+        def seek(self, _partition: object, _offset: int) -> None:
+            pass
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+
+        def __iter__(self):
+            return iter([message])
+
+    monkeypatch.setattr(kafka, "KafkaConsumer", lambda **_kwargs: FakeConsumer())
+    monkeypatch.setattr(
+        "app.dts_source_consumer.decode_dts_avro",
+        lambda _payload: decoded,
+    )
+    captured: list[object] = []
+
+    class Processor:
+        authoritative_checkpoint = False
+
+        def resume_offset(self, **_kwargs: object) -> None:
+            return None
+
+        def process(self, event: object) -> object:
+            captured.append(event)
+            return SimpleNamespace(status="PROCESSED")
+
+    settings = DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.internal:18003",),
+        topic="dom-topic-v2",
+        group_id="tit-dom-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786523400,
+        execution_region="cn",
+        domestic_student_hmac_key="a" * 64,
+    )
+
+    result = DtsKafkaShadowConsumer(settings, Processor()).run(
+        max_messages=1,
+        commit_offsets=False,
+    )
+
+    assert result["processed"] == 1
+    protected = captured[0]
+    assert getattr(protected, "after")["student_token"].startswith("dom:v1:")
+    assert raw_student_id not in repr(protected)
+
+
 def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
     monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
 ) -> None:
     import kafka
 
@@ -551,6 +1212,7 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
     fake = holder["consumer"]
     assert result == {
         "status": "ok",
+        "tcp": "ok",
         "partition": 0,
         "initial_offset": 0,
     }
@@ -560,8 +1222,49 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
     assert fake.closed is True
 
 
+def test_kafka_startup_probe_stops_before_credentials_when_tcp_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+    from app import dts_source_consumer as consumer_module
+
+    def fail_tcp(_brokers: object) -> object:
+        raise DtsConfigurationError("DTS_BROKER_TCP_CONNECTION_TIMEOUT")
+
+    monkeypatch.setattr(consumer_module, "probe_broker_tcp", fail_tcp)
+    monkeypatch.setattr(
+        kafka,
+        "KafkaConsumer",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Kafka client must not receive credentials")
+        ),
+    )
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+    emitted: list[dict[str, int | str]] = []
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_BROKER_TCP_CONNECTION_TIMEOUT$",
+    ):
+        DtsKafkaShadowConsumer(
+            settings,
+            DtsEventProcessor(InMemoryShadowSink()),
+        ).startup_probe(phase_callback=emitted.append)
+
+    assert emitted == []
+
+
 def test_kafka_startup_probe_uses_database_boundary_for_new_durable_target(
     monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
 ) -> None:
     import kafka
 
@@ -602,6 +1305,7 @@ def test_kafka_startup_probe_uses_database_boundary_for_new_durable_target(
 
 def test_kafka_startup_probe_keeps_shadow_group_resume_behavior(
     monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
 ) -> None:
     import kafka
 
@@ -643,6 +1347,7 @@ def test_kafka_startup_probe_keeps_shadow_group_resume_behavior(
 )
 def test_kafka_startup_probe_rejects_unresolvable_initial_offset(
     monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
     resolved: object,
     expected_error: str,
 ) -> None:
@@ -687,8 +1392,86 @@ def test_kafka_startup_probe_rejects_unresolvable_initial_offset(
     assert fake.closed is True
 
 
+def test_kafka_startup_probe_distinguishes_l4_success_from_kafka_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
+) -> None:
+    import kafka
+    from kafka.errors import KafkaTimeoutError
+
+    class FakeConsumer:
+        closed = False
+
+        def committed(self, _partition: object, *, timeout_ms: int) -> None:
+            assert timeout_ms == 15_000
+            raise KafkaTimeoutError("endpoint and password omitted")
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+            self.closed = True
+
+    fake = FakeConsumer()
+    monkeypatch.setattr(kafka, "KafkaConsumer", lambda **_kwargs: fake)
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_BROKER_KAFKA_REQUEST_TIMEOUT$",
+    ):
+        DtsKafkaShadowConsumer(
+            settings,
+            DtsEventProcessor(InMemoryShadowSink()),
+        ).startup_probe()
+
+    assert fake.closed is True
+
+
+def test_kafka_startup_probe_classifies_consumer_construction_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
+) -> None:
+    import kafka
+    from kafka.errors import KafkaTimeoutError
+
+    monkeypatch.setattr(
+        kafka,
+        "KafkaConsumer",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            KafkaTimeoutError("private broker details omitted")
+        ),
+    )
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_BROKER_KAFKA_REQUEST_TIMEOUT$",
+    ):
+        DtsKafkaShadowConsumer(
+            settings,
+            DtsEventProcessor(InMemoryShadowSink()),
+        ).startup_probe()
+
+
 def test_kafka_startup_probe_validates_database_checkpoint_with_bounded_calls(
     monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
 ) -> None:
     import kafka
     from app import dts_source_consumer as consumer_module
@@ -773,6 +1556,7 @@ def test_kafka_startup_probe_validates_database_checkpoint_with_bounded_calls(
 )
 def test_kafka_startup_probe_rejects_checkpoint_outside_safe_range(
     monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
     checkpoint: int,
     committed: int,
     expected_error: str,

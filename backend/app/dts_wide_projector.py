@@ -30,6 +30,7 @@ from .dts_source_consumer import (
     derive_penalty_flags,
     is_peak_lesson,
     reduce_latest_complaints,
+    student_subject,
     teacher_matches_region,
 )
 
@@ -587,7 +588,7 @@ class DtsWideProjector:
         return [
             course_id
             for source in rows
-            if _string_id(source.row.get("s_id")) == student_id
+            if student_subject(source.row) == student_id
             and (course_id := _string_id(source.row.get("id"))) is not None
         ]
 
@@ -689,7 +690,7 @@ class DtsWideProjector:
 
         appoint = appoint_source.row
         teacher_id = _string_id(appoint.get("t_id"))
-        student_id = _string_id(appoint.get("s_id"))
+        student_id = student_subject(appoint)
         if teacher_id is None:
             raise DtsWideProjectionError("DTS_APPOINT_TEACHER_REQUIRED")
         lesson_date = _date_value(appoint.get("date")) or _date_value(
@@ -916,7 +917,7 @@ class DtsWideProjector:
         return (
             str(row.get("use_point") or "") == "buy"
             and str(row.get("status") or "") not in {"cancel", "on"}
-            and _string_id(row.get("s_id")) is not None
+            and student_subject(row) is not None
         )
 
     def _lesson_matches_teacher_window(
@@ -1087,12 +1088,7 @@ class DtsWideProjector:
         relationships = [
             item
             for item in relationships
-            if _string_id(
-                item.row.get("student_id")
-                if relation_suffix == "teacher_blacklist"
-                else item.row.get("stu_id")
-            )
-            == student_id
+            if student_subject(item.row) == student_id
             and (
                 relation_suffix != "teacher_blacklist"
                 or self._active_blacklist(item.row)
@@ -1107,7 +1103,7 @@ class DtsWideProjector:
                 dependency_value=teacher_id,
                 regions=(region,),
             )
-            if _string_id(item.row.get("s_id")) == student_id
+            if student_subject(item.row) == student_id
             and self._appoint_in_scope(item.row)
             and _datetime_value(item.row.get("end_time")) is not None
         ]
@@ -1607,7 +1603,7 @@ class DtsWideProjector:
                 )
             ]
             for row in (*user_rows, *complaint_rows):
-                student_id = _string_id(row.get("user_id") or row.get("stu_id")) or ""
+                student_id = student_subject(row) or ""
                 all_keys.add((student_id, course_id))
             if reduce_latest_complaints(user_rows, complaint_rows):
                 valid_courses.add(course_id)

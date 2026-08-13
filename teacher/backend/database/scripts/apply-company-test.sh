@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260812_59_simple_acl"
+EXPECTED_PUBLIC_HEAD="20260813_60_dom_privacy"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -896,6 +896,19 @@ final_acl_ready="$("${ADMIN_PSQL[@]}" -Atqc "
     )
     and exists (
       select 1 from pg_trigger
+      where tgrelid = 'public.lesson_source_wide'::regclass
+        and tgname = 'guard_dom_lesson_student_privacy_v1'
+        and tgfoid =
+          'public.guard_dom_lesson_student_privacy_v1()'::regprocedure
+        and tgenabled in ('O', 'A')
+        and tgtype = 23
+        and not tgisinternal
+    )
+    and to_regprocedure(
+      'public.dom_student_json_is_safe_v1(jsonb)'
+    ) is not null
+    and exists (
+      select 1 from pg_trigger
       where tgrelid = 'tide.schema_migrations'::regclass
         and tgname = 'guard_runtime_schema_migration_write'
         and not tgisinternal
@@ -1190,4 +1203,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：public 59 与 canonical Tide 0041 账本/checksum/实存结构只读门禁、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL 与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public 60 与 canonical Tide 0041 账本/checksum/实存结构只读门禁、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、国内学生隐私边界与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"

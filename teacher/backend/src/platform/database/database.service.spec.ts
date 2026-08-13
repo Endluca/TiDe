@@ -247,8 +247,14 @@ describe('DatabaseService', () => {
       expect.stringContaining('FROM public.alembic_version'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('20260812_59_simple_acl'),
+      expect.stringContaining('20260813_60_dom_privacy'),
     );
+    expect(productionQuery).toContain(
+      'public.dom_student_json_is_safe_v1(jsonb)',
+    );
+    expect(productionQuery).toContain('guard_dom_lesson_student_privacy_v1');
+    expect(productionQuery).toContain("tgenabled IN ('O', 'A')");
+    expect(productionQuery).toContain('tgtype = 23');
     expect(productionQuery).toContain('AS read_relation(relation_name)');
     for (const relation of [
       'public.alembic_version',

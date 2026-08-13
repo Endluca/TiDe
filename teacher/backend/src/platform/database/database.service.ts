@@ -298,7 +298,23 @@ export class DatabaseService implements OnModuleDestroy {
         ) = '0041_crm_sso_hybrid'
         AND public_migration_state.migration_count = 1
         AND public_migration_state.version_num =
-          '20260812_59_simple_acl'
+          '20260813_60_dom_privacy'
+        AND to_regprocedure(
+          'public.dom_student_json_is_safe_v1(jsonb)'
+        ) IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM pg_trigger AS privacy_trigger
+          WHERE privacy_trigger.tgrelid =
+              'public.lesson_source_wide'::regclass
+            AND privacy_trigger.tgname =
+              'guard_dom_lesson_student_privacy_v1'
+            AND privacy_trigger.tgfoid =
+              'public.guard_dom_lesson_student_privacy_v1()'::regprocedure
+            AND privacy_trigger.tgenabled IN ('O', 'A')
+            AND privacy_trigger.tgtype = 23
+            AND NOT privacy_trigger.tgisinternal
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM unnest(

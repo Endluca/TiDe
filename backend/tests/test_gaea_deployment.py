@@ -357,7 +357,7 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260812_59_simple_acl"',
+        'EXPECTED_PUBLIC_HEAD="20260813_60_dom_privacy"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -507,7 +507,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260812_59_simple_acl\\n' ;;
+  6) printf '20260813_60_dom_privacy\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -1053,6 +1053,9 @@ def test_source_wide_enable_gate_defaults_true_and_rejects_invalid_values() -> N
 def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     readme = README.read_text(encoding="utf-8")
 
+    assert "`tida-camp`" in readme
+    assert "`pre-tida-camp`" in readme
+    assert "tide-camp-api" not in readme
     assert "两种构建形态、三个运行项目" in readme
     assert "`dts-ingest`" in readme
     assert "轻量 DTS 镜像" in readme
@@ -1081,7 +1084,19 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "探针不读取消息" in readme
     assert "不提交 offset" in readme
     assert "不能用 readiness 代替接入证据" in readme
+    assert "DTS_BROKER_TCP_*" in readme
+    assert "DTS_BROKER_KAFKA_REQUEST_TIMEOUT" in readme
+    assert "每次容器进程启动/重启" in readme
+    assert "不在镜像构建或周期 healthcheck" in readme
     assert "TIT_DTS_REQUIRED_DOM_TOPIC" in readme
+    assert "海外项目必须位于新加坡" in readme
+    assert "国内项目必须位于中国大陆" in readme
+    assert "TIT_DTS_EXECUTION_REGION=sg" in readme
+    assert "TIT_DTS_EXECUTION_REGION=cn" in readme
+    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" in readme
+    assert "dom:v1:<HMAC-SHA256>" in readme
+    assert "国内项目无论 PRE/生产都要求 `verify-full/false`" in readme
+    assert "只允许海外项目启用全局宽表投影" in readme
     assert "pg_try_advisory_lock" not in readme
     assert "session advisory" in readme
     assert "session advisory lock" in readme
@@ -1096,7 +1111,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "tide_sys_admin" in readme
     assert "tit_growth_migrator" not in readme
     assert "tide_migrator" not in readme
-    assert "20260812_59_simple_acl" in readme
+    assert "20260813_60_dom_privacy" in readme
     assert "20260811_55_source_wide_v12" in readme
     assert "0037_g04_remove_device_check" in readme
     assert "20260811_51_g01_tesol_only" in readme
@@ -1134,6 +1149,10 @@ def test_application_examples_enable_source_wide_by_default() -> None:
             "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED=false"
         ) == 1
 
+    application = APPLICATION_ENV.read_text(encoding="utf-8")
+    assert application.count("TIT_DB_STATEMENT_TIMEOUT_MS=30000") == 1
+    assert "TIT_DB_STATEMENT_TIMEOUT_MS=0" not in application
+
 
 def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     overseas = DTS_OVS_ENV.read_text(encoding="utf-8")
@@ -1157,10 +1176,22 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
         assert content.count("TIT_DTS_ALLOW_INSECURE_DB=false") == 1
         assert "TIT_DTS_INGEST_DB_SSLMODE=disable" not in content
 
+    assert "TIT_DTS_EXECUTION_REGION=sg" in overseas
+    assert "TIT_DTS_EXECUTION_REGION=cn" in domestic
+    assert "TIT_DTS_EXECUTION_REGION=" in generic
+    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in overseas
+    assert domestic.count("TIT_DTS_DOM_STUDENT_HMAC_KEY=") == 1
+    assert generic.count("TIT_DTS_DOM_STUDENT_HMAC_KEY=") == 1
+    assert domestic.count("TIT_DTS_PROJECTION_ENABLED=false") == 1
+    assert "TIT_DTS_PROJECTION_ENABLED=true" not in domestic
+    assert "Never\n# apply dts-ingest.pre-ssl-off.env.example" in domestic
+
     pre_override = DTS_PRE_SSL_OFF_ENV.read_text(encoding="utf-8")
     assert pre_override.count("TIT_DTS_INGEST_DB_SSLMODE=disable") == 1
     assert pre_override.count("TIT_DTS_ALLOW_INSECURE_DB=true") == 1
     assert "tide-system.rwlb.singapore.rds.aliyuncs.com:5432" in pre_override
+    assert "overseas DTS PRE project" in pre_override
+    assert "domestic cross-border project must remain" in pre_override
 
     assert "TIT_DTS_INGEST_DB_SSLMODE" not in APPLICATION_ENV.read_text(
         encoding="utf-8"
@@ -1198,6 +1229,16 @@ def test_current_deployment_docs_do_not_restore_single_replica_mode() -> None:
     assert "ReadWriteMany (RWX)" in documents[ROOT_README]
     assert "application Pod 可以水平复制" in documents[ARCHITECTURE]
     assert "2 个或更多副本及 RollingUpdate" in documents[RUNTIME_SECURITY]
+    assert "国内项目必须选择中国大陆数据中心" in documents[ROOT_README]
+    assert "国内项目必须位于中国大陆" in documents[README]
+    assert "国内 DTS 项目放在中国大陆" in documents[ARCHITECTURE]
+    assert "国内项目必须位于中国大陆" in documents[RUNTIME_SECURITY]
+    for path, document in documents.items():
+        assert "dom:v1:<HMAC-SHA256>" in document, path
+
+    assert "`DB → TCP → Kafka`" in documents[ARCHITECTURE]
+    assert "TCP 探针的 5 秒连接预算不覆盖前置" in documents[ARCHITECTURE]
+    assert "`DB → TCP → Kafka`" in documents[RUNTIME_SECURITY]
 
 
 def test_gaea_build_context_includes_teacher_but_excludes_secrets() -> None:

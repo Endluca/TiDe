@@ -109,7 +109,7 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码迁移 head 为 public `20260812_59_simple_acl` 与 teacher
+- 当前代码迁移 head 为 public `20260813_60_dom_privacy` 与 teacher
   `0041_crm_sso_hybrid`，最终 teacher canonical 账本为 36 条，其中
   `20260811_51_g01_tesol_only` / `0033_g01_tesol_only`
   将 G01 收窄为 TESOL-only，`20260811_54_g04_remove_device_check` /
@@ -117,13 +117,14 @@ Tide_teachers_camp/
   `20260811_55_source_wide_v12` 将教师源表收敛为确认的 55 列，
   `20260811_56_p_fb_negative_copy` / `0038_personalized_environment_photo`
   追加个性化环境拍照，`20260811_57_g02_document` / 0039 / 0040 发布 G02
-  原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 再汇合
-  release 内容链与 ACL/DTS 分支。
+  原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 汇合
+  release 内容链与 ACL/DTS 分支，public 60 再增加海外目标库的国内学生隐私
+  fail-closed Trigger。
   公司 TEST 库 `tit_growth_test_v2` 已于 2026-08-11 按七阶段顺序受控升级至
   public `20260812_56_lean_roles` 与 teacher `0037_g04_remove_device_check`，
   teacher 为精确 32 条 canonical 账本；升级保留 public
   `20260810_50_g04_sections` / teacher `0032_first_login_onboarding` 中间切换点，
-  G01、G04 与源宽表均已应用对应契约，但这不是 public 59 / teacher 0041 的完成证明。
+  G01、G04 与源宽表均已应用对应契约，但这不是 public 60 / teacher 0041 的完成证明。
   重建前旧库封存为
   `tit_growth_test_v2_pre0030_20260810`，仅保留 DBA 回滚连接。代码目标结构中
   `teacher_source_wide` 为确认映射的 53 个教师字段加 2 个可空教师资料状态字段（G01 只消费 TESOL），
@@ -136,7 +137,7 @@ Tide_teachers_camp/
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
-- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；两条订阅的非敏感参数已固化，`tide_system_test` 已迁移至 public 59，两个独立 Gaea DTS 项目与各自密钥也已配置。国内 PRE 已通过目标 PostgreSQL 连接及传输核验；同 Pod 探针确认 broker DNS 正常、到 `18003` 的 TCP 连接超时，当前阻断在 Gaea PRE 到国内 DTS VPC 的网络路径，尚无 checkpoint、目标写入或真实字段对账。海外项目虽保持运行，但在取得本次进程成功 heartbeat 前也不能认定已通。当前增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；两条流先只接入追平，投影通过显式开关在单一项目启用。外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
+- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；两条订阅的非敏感参数已固化，`tide_system_test` 当前已迁移至 public 59，但在应用 public 60 隐私迁移并通过只读契约探针前仍不满足最新运行门禁。部署边界现已收紧为：海外消费者运行在新加坡，国内消费者通过“AI 效率中心”团队的独立 Gaea 项目 `tida-camp-dts-dom` 运行在中国大陆集群；平台项目选择和 `TIT_DTS_EXECUTION_REGION=cn` 都必须在新 Pod 上读回，不能只凭变量声明推断地理放置。国内消费者在构造任何发往海外 PostgreSQL 的 SQL 参数前，使用仅注入国内项目的密钥把原始学生 ID 转为 `dom:v1:<HMAC-SHA256>`，海外项目和海外数据库均不得持有该密钥或原始国内学生 ID；稳定 token 仍按伪名数据受限管理。国内跨境写入固定要求 `sslmode=verify-full`，不得复用 PRE 的明文数据库例外；全局 23/55 宽表投影只允许由海外消费者持有，国内消费者固定 `projection=false`。当前仍无国内新 Pod 的成功 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账，不能视为链路联调完成。增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
 
 ## Gaea 部署骨架（双构建入口、三项目）
 
@@ -153,13 +154,20 @@ docker build -f gaea/dts-ingest/Dockerfile -t tide-camp-dts:gaea .
 ```
 
 现有 application 项目可暂时继续使用根兼容入口，切换多模块后选择 `application`，并支持整套
-Pod 设置为 `2` 个或更多副本；海外、国内 DTS 分别使用独立 Gaea 项目，两个项目都选择同一个
+Pod 设置为 `2` 个或更多副本；海外、国内 DTS 分别使用独立 Gaea 项目，海外项目必须选择新加坡
+数据中心，国内项目必须选择中国大陆数据中心，两个项目都选择同一个
 `dts-ingest` 构建模块并各自保持 1 个
 副本。两套 DTS 项目的镜像内容相同，但 Gaea 仍会为两个项目分别构建和推送；broker、消费组、
-账号、密码和接入位点通过彼此隔离的运行变量注入。模块选择是项目构建配置，不是运行时环境变量。
-每个 DTS 进程启动时先只读校验目标库和 Kafka 的 SASL/topic/partition/初始位点，全部通过后才
-写 readiness；探针不读取消息、不写目标库、不提交 offset，因此 Pod Ready 只表示“具备开始
-消费的条件”，不表示已经完成 CDC 接入或字段对账。
+账号、密码和接入位点通过彼此隔离的运行变量注入。国内 HMAC 密钥只注入国内项目；国内项目固定
+关闭投影并以 `verify-full` 写海外目标库，海外项目是唯一投影 owner。模块选择是项目构建配置，
+不是运行时环境变量，也不会自动把项目放到正确数据中心。
+每个 DTS 进程启动时先只读校验目标库，再从该 Pod 做无凭据的 bootstrap TCP 探针，最后校验
+Kafka 的 SASL/topic/partition/初始位点，全部通过后才写 readiness；探针不读取消息、不写目标库、
+不提交 offset。国内进程在 Kafka 探针成功后、readiness 之前幂等登记一条只含契约版本和 HMAC
+密钥 fingerprint 的受限状态行；该行不含密钥或学生标识。TCP 失败输出 `DTS_BROKER_TCP_*`
+稳定错误码；TCP 已通但 Kafka 请求超时输出
+`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。这些检查在每次容器进程启动/重启时执行，不在镜像构建或
+周期健康检查中重复执行。Pod Ready 只表示“具备开始消费的条件”，不表示已经完成 CDC 接入或字段对账。
 
 application 的两个 Worker 分别通过 PostgreSQL session advisory lock 保持逻辑单活，未持锁的
 standby 仍刷新本 Pod heartbeat，并用数据库探测维持 readiness。教师全局调度使用
@@ -235,14 +243,14 @@ docker compose -f docker-compose.production.yml up -d api score-settlement sourc
 [联合部署说明](deploy/combined/README.md) 和
 [联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
 独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
-联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041` 完成跨 Schema 迁移，再升级 ACL 分支并合并到 public 59，最终到达
-public `20260812_59_simple_acl` 和教师端 `0041_crm_sso_hybrid`，并同时通过
+联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60` 完成跨 Schema 迁移和最终隐私加固，最终到达
+public `20260813_60_dom_privacy` 和教师端 `0041_crm_sso_hybrid`，并同时通过
 固定提交源码中的精确 `G01–G09` 标题/分值预检和目标数据库契约探针。
 其中 public 54 阶段包含 rev51 G01 TESOL-only，teacher 37 阶段包含 0033 G01 规则迁移，
 public 55 收敛教师源字段，release public 56 / teacher 0038 追加个性化拍照，
 release public 57 / teacher 0039–0040 发布 G02 原生文档，teacher 0041 增加 CRM SSO；
 public 59 合并 release 内容链与 ACL/DTS 分支，将运行权限统一为最终表级 ACL，并用
-Trigger/受限视图保留业务所有权。
+Trigger/受限视图保留业务所有权；public 60 在其后强制国内学生 HMAC token 的数据库边界。
 教师端未到 0041、最终 canonical 账本不是精确 36 条、目录缺项或语义错误都会失败关闭；在 public 47 及之后的空库直接
 回放 teacher 历史链同样会失败关闭。即使门禁通过，也不能把“已有 Compose”解释为
 已完成生产切流。

@@ -3,7 +3,7 @@
 ## 当前结论
 
 - 国内与海外同步业务库是一个逻辑数据集的两部分，不把国内共享表当作海外缺失数据。
-- 国内和海外使用同一套消费、持久化与投影代码，但各自运行一个独立消费者进程；两条链路通过目标库中的当前态和脏键队列汇合，不能共用消费组、位点或 SASL 密码。
+- 国内和海外使用同一套消费、持久化与投影代码，但各自运行一个独立消费者进程；海外消费者必须部署在新加坡，国内消费者必须部署在中国大陆。两条链路通过海外目标库中的当前态和脏键队列汇合，不能共用消费组、位点、SASL 密码或学生 HMAC 密钥。
 - 海外 DTS 开始时间为 `2026-08-10 14:16:00+08:00`；国内 DTS 开始时间为 `2026-08-12 16:30:00+08:00`（北京时间）。它们是新消费状态首次解析 offset 的回放边界，不要求等于服务真正启动时间；已有数据库 checkpoint 时始终从 checkpoint 续跑。
 - 业务已确认不做教师/课程全量基线。目标人群是国内 `dom_teacher.status_on_time` 在北京时间 `2026-08-13`（含）以后入职的新教师，结束边界开放；两条订阅起点都早于人群起点。只有国内教师主记录已到达、命中地区与入职 30 天窗口的课程才可物化。
 - 课程目标契约固定为 23 列，教师目标契约固定为 55 列；字段逻辑以当前映射表和两份 OBS 脚本为准。
@@ -18,19 +18,19 @@
 3. SASL 使用 `PLAIN` + `SASL_PLAINTEXT`，实际用户名按 `<账号>-<消费组ID>` 生成；密码只从运行时环境读取，不进入日志或仓库。
 4. 按 `source_region + topic + partition + offset` 定义幂等键，并把已确认的 17 类国内共享/区域业务表事件路由为课程、教师、师生组合、标签或投诉分类脏键。
 5. 已实现海外/国内教师筛选差异、Peak 时段差异、投诉两表各取最新一条、处罚时间差大于 30 秒的迟到/早退规则。
-6. 目标固定为 `tide_system_test.public`，数据库身份固定为 `tit_dts_ingest_runtime`。SSL 默认 `verify-full`。当前 PRE 库已现场确认 `SHOW ssl=off`，临时例外必须同时设置 `TIT_DTS_INGEST_DB_SSLMODE=disable` 和 `TIT_DTS_ALLOW_INSECURE_DB=true`，并且只允许已批准的 `tide-system.rwlb.singapore.rds.aliyuncs.com:5432` 端点；其他 SSL 模式、端点以及库名、Schema、角色或有效权限不一致时启动失败。每条新建的 PostgreSQL 物理连接都以 `pg_stat_ssl` 核验当前会话是否实际使用 TLS，并同时核验服务端 SSL 状态；临时 `disable` 例外还会在每次连接池 checkout 时复核，服务端一旦启用 TLS 便立即失败关闭并要求恢复 `verify-full`。长期持有的投影锁会话也在每批投影前执行同一核验。
+6. 目标固定为 `tide_system_test.public`，数据库身份固定为 `tit_dts_ingest_runtime`。SSL 默认 `verify-full`。当前 PRE 库已现场确认 `SHOW ssl=off`；同时设置 `TIT_DTS_INGEST_DB_SSLMODE=disable` 和 `TIT_DTS_ALLOW_INSECURE_DB=true` 的临时例外只允许海外 PRE 项目使用，并且只允许已批准的 `tide-system.rwlb.singapore.rds.aliyuncs.com:5432` 端点。国内到海外的跨境写入无论 PRE/生产都强制 `verify-full/false`，服务端没有可验证 TLS 时国内消费者必须失败关闭，不得降级绕过。其他 SSL 模式、端点以及库名、Schema、角色或有效权限不一致时启动失败。每条新建的 PostgreSQL 物理连接都以 `pg_stat_ssl` 核验当前会话是否实际使用 TLS，并同时核验服务端 SSL 状态；海外 PRE 的临时 `disable` 例外还会在每次连接池 checkout 时复核，服务端一旦启用 TLS 便立即失败关闭并要求恢复 `verify-full`。长期持有的投影锁会话也在每批投影前执行同一核验。
 7. 每条消息在一个 PostgreSQL 事务内依次写接入账本、字段白名单当前态、脏键和数据库位点；事务成功后才提交 Kafka offset。数据库位点领先 Kafka 时从数据库续跑，Kafka 位点领先数据库时失败关闭。
 8. 脏键投影器按课程、教师、师生组合、评价标签和投诉分类重算；课程必须等待国内共享教师主数据并通过开放式新师 cohort、地区及入职 30 天窗口校验。国内教师事件晚到时，会把当前镜像中该教师的国内/海外预约重新置脏；缺主记录时重试，不把“尚未到达”解释成删除。
 9. `lesson_source_wide`、`teacher_source_wide` 采用有差异才更新的 UPSERT；源事实删除或退出范围时删除对应宽表行。宽表写入、派生教师脏键和当前脏键完成在同一事务内，失败则进入退避重试。
 10. 课程实现国内/海外 Peak 差异（海外含 `00:00–05:30` 与 `18:00–23:30`）、最新评价、评价标签、投诉最新记录、收藏/拉黑最近课程归因、摄像头/CPU/网络/假早退和处罚时间差规则；教师实现入职 30 天窗口内课程、可靠性、反馈、档期、比例、TESOL 与 `is_self_introduce=NULL`。
 11. 稀疏 UPDATE 先合并已持久化当前态、before 与 after，再重算反向依赖；归属键变化时旧键、新键都重新投影。
-12. `TIT_DTS_PROJECTION_ENABLED` 默认关闭。国内、海外先只写账本/镜像/脏键并追平到同一激活时刻，之后只在一个项目开启全局投影，避免回放未完成时产生暂态 `0/false` 和双项目配置漂移。
+12. `TIT_DTS_PROJECTION_ENABLED` 默认关闭。国内、海外先只写账本/镜像/脏键并追平到同一激活时刻，之后只允许海外项目开启全局投影；国内项目固定为 `false`，避免回放未完成时产生暂态 `0/false`、双项目配置漂移或让国内跨境链路持有投影 owner 权限。
 13. `TIT_DTS_PROJECTION_MAX_ATTEMPTS` 默认 `8`（允许 `1–100`）。按 `10/20/40/80/160/300/300` 秒累计提供约 15 分钟跨 Topic 暂态依赖窗口；达到阈值后投影进程以 `DTS_WIDE_PROJECTION_RETRY_EXHAUSTED` 失败关闭且不刷新成功 heartbeat。重启不能清除该状态，只有对应新源事件重新置脏并清零尝试次数后才能恢复。
-14. 每个持久化进程绑定唯一 `source_region`；入库事件区域与运行配置不一致时以 `DTS_SOURCE_REGION_MISMATCH` 失败关闭。两条 PostgreSQL 连接分别使用 `tit-dts-ingest-ovs`、`tit-dts-ingest-dom` 标识，健康状态也带安全的订阅摘要。
+14. 每个持久化进程绑定唯一 `source_region` 与运行区域：`ovs/sg`、`dom/cn`；订阅区域、运行区域或入库事件区域不一致时失败关闭。国内消息完成 Avro 解码后、构造任何海外 PostgreSQL SQL 参数前，必须删除 `s_id/student_id/stu_id/user_id` 原值，并使用只存在于国内容器的 `TIT_DTS_DOM_STUDENT_HMAC_KEY` 生成 `dom:v1:<HMAC-SHA256>`。可能由人工录入的 `cancel_reason/reason_desc` 也不得原样出境：只保留精确业务值 `Unfilled Lesson Memo`，其他非空内容降为 `Domestic reason redacted`。海外项目与海外目标库不得持有该密钥或原始国内学生 ID。两条 PostgreSQL 连接分别使用 `tit-dts-ingest-ovs`、`tit-dts-ingest-dom` 标识，健康状态也带安全的订阅摘要。
 15. 启动时通过 PostgreSQL Catalog 精确校验教师 55 列、课程 23 列的顺序、类型、长度和可空性，以及四张 DTS 状态表的 57 列、15 个关键约束、4 个必要索引和 4 个 guard Trigger。两个 SourceWide Outbox Trigger 还会校验事件类型、绑定函数、参数、WHEN 和启用状态；任一漂移都在连接 broker 之前失败关闭。
-16. 每次持久化进程启动都先清除上一进程留下的 heartbeat/readiness，再依次完成目标库连接、传输、身份、Schema/ACL 校验和 Kafka 端到端只读探针。Kafka 探针使用与正式消费相同的 SASL 配置，验证 topic、partition 0 以及真实初始位点：没有数据库 checkpoint 时按 `TIT_DTS_START_AT` 解析 offset；已有 checkpoint 时验证它没有落后于 Kafka 最早可用位点、没有超过当前末端，并继续执行 Kafka 位点领先数据库的保护。整轮 Kafka 位点探针共享 15 秒总预算，关闭连接另有 1 秒上限。任一步失败都不写 `ready` 或成功 heartbeat，进程非零退出，由 Gaea 重新拉起后再次完整检查。
-17. 启动 Kafka 探针只读取 metadata/offset，不迭代消息、不执行 Avro 解码、不调用事件处理器、不写接入账本/镜像/脏键/宽表，也不提交消费组 offset。探针成功只证明当前具备开始消费的条件，不等于已经消费到一条消息；实际接入必须另看事件账本、数据库 checkpoint 和消费组位点。
-18. 开启投影时，代码同时校验国内/海外两个 partition 0 的数据库 checkpoint 已达到统一激活时刻、投诉分类字典非空且引用完整，并通过全局 PostgreSQL session advisory lock 保证只有一个投影器。
+16. 每次持久化进程启动都先清除上一进程留下的 heartbeat/readiness，再依次完成目标库连接、传输、身份、Schema/ACL 校验，完成 bootstrap DNS 解析后对解析结果执行 TCP 探针，最后执行 Kafka 端到端只读探针。TCP 探针只做三次握手，解析出的多个地址共享 5 秒连接预算；DNS 解析发生在该 socket 连接预算之前，不能把“5 秒”描述为覆盖 DNS 的整轮硬超时。探针不接收账号/密码且不收发应用数据；四层失败输出 `DTS_BROKER_TCP_*` 稳定错误码。TCP 成功后立即输出不含 endpoint/IP 的安全阶段日志；后续 Kafka 请求超时输出 `DTS_BROKER_KAFKA_REQUEST_TIMEOUT`，由此区分 Pod 网络与 SASL/metadata/消费组/位点层。Kafka 探针使用与正式消费相同的 SASL 配置，验证 topic、partition 0 以及真实初始位点：没有数据库 checkpoint 时按 `TIT_DTS_START_AT` 解析 offset；已有 checkpoint 时验证它没有落后于 Kafka 最早可用位点、没有超过当前末端，并继续执行 Kafka 位点领先数据库的保护。整轮 Kafka 位点探针共享 15 秒总预算，关闭连接另有 1 秒上限。任一步失败都不写 `ready` 或成功 heartbeat，进程非零退出，由 Gaea 重新拉起后再次完整检查。该整套门禁在容器进程启动/重启时执行，不在镜像构建或周期 healthcheck 中重复执行。
+17. 启动 TCP 探针只建立并立即关闭 socket；Kafka 探针只读取 metadata/offset，不迭代消息、不执行 Avro 解码、不调用事件处理器、不写接入账本/镜像/脏键/宽表，也不提交消费组 offset。探针成功只证明当前具备开始消费的条件，不等于已经消费到一条消息；实际接入必须另看事件账本、数据库 checkpoint 和消费组位点。
+18. 海外项目开启投影时，代码同时校验国内/海外两个 partition 0 的数据库 checkpoint 已达到统一激活时刻、投诉分类字典非空且引用完整，并通过全局 PostgreSQL session advisory lock 保证只有一个投影器；国内项目请求开启投影直接失败关闭。
 19. 首次投影排空期间，application Profile 必须显式设置 `TIT_SOURCE_WIDE_ENABLED=false`，防止下游在宽表中间态上计分或固化不可逆资格。待脏键清零、两轮稳定且宽表抽样对账后，再恢复为 `true` 并验证 SourceWide 单 leader 与 Outbox 排空。
 20. `TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED` 默认且在当前预发布保持 `false`。该门禁不停止积分和当前门槛刷新，只禁止尚未获得的出营/金牌资格首次变为 `true`；既有资格继续保留。非法布尔值失败关闭。业务终态与双流水位门禁完成前不得开启。
 
@@ -45,20 +45,29 @@ CDC 事件来自多张表。一个评价、投诉或质检事件只能给出局�
 - 脏键队列：保存需要重算的课程、教师、师生组合和标签键及重试状态。
 - 数据库位点：保存每个区域/topic/partition 的下一 offset，是 Kafka ACK 落后时的恢复下限。
 
+国内事件写入上述状态表、脏键或 `lesson_source_wide` 时只能出现 `dom:v1:` token，不能出现原始
+学生 ID 或旧版 `student_ids` 依赖键；token 前缀同时提供来源识别，不能被解释为原始业务 ID。
+稳定 token 可支持不同学员数、收藏和拉黑归因，但仍属于伪名数据而非匿名数据。若安全评审禁止
+稳定个体 token 跨境，必须另建国内状态库和国内聚合服务，海外只接收按教师/课程聚合且无法回链
+到个体的结果；不能把密钥搬到海外或改用可逆加密绕过该边界。
+
 这些表不能由消费者运行时账号建表。DDL 只由 Alembic/`tide_sys_admin` 创建；为简化运维，`tit_dts_ingest_runtime` 对四张状态表和两张宽表统一获得表级 CRUD。四张状态表的物理删除、事件账本改写和位点回退仍由数据库 Trigger 拒绝；其他运行角色不能读取状态镜像。
 
 ## Gaea 预发布配置
 
 DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国内、海外仍分别建立独立 Gaea
-项目。Gaea 会为两个项目分别构建和推送内容相同的镜像；模块选择不提供跨项目 digest 复用。
+项目。海外项目必须选择新加坡数据中心，国内项目必须选择中国大陆数据中心；模块或环境变量不会
+替平台完成地理放置。Gaea 会为两个项目分别构建和推送内容相同的镜像；模块选择不提供跨项目 digest 复用。
 该结构避免两条订阅互相继承密码、共享进程生命周期，也避免运营/教师进程继承 DTS 和数据库
 密码。两个项目的构建类型都必须是 `multi_module`、构建模块都必须是 `dts-ingest`，每个项目
 只配置一组：
 
 - `TIT_PROCESS_PROFILE=dts-ingest`；
-- DTS 非敏感连接参数：`TIT_DTS_SOURCE_REGION/BROKER_URL/TOPIC/GROUP_ID/ACCOUNT/START_AT`；
+- DTS 非敏感连接参数：`TIT_DTS_SOURCE_REGION/EXECUTION_REGION/BROKER_URL/TOPIC/GROUP_ID/ACCOUNT/START_AT`；
 - Gaea 密钥：`TIT_DTS_PASSWORD`，只用于 DTS SASL；
-- PostgreSQL 非敏感参数：`TIT_DTS_INGEST_DB_HOST/PORT/SSLMODE`；当前 PRE 两项目从 `backend/dts-ingest.pre-ssl-off.env.example` 同时显式覆盖 `TIT_DTS_INGEST_DB_SSLMODE=disable` 与 `TIT_DTS_ALLOW_INSECURE_DB=true`，生产模板保持 `verify-full/false`；
+- 国内项目额外 Gaea 密钥：`TIT_DTS_DOM_STUDENT_HMAC_KEY`，由 CSPRNG 生成 32 bytes 并精确编码为 64 位小写 hex，只在国内消息仍位于国内容器时生成稳定 token；海外项目禁止配置；
+- 国内 HMAC 密钥首次启动时只把单向 fingerprint 登记到受限 DTS 状态表；之后 fingerprint 不一致即失败关闭。禁止直接替换密钥，轮换必须新增 token 版本并迁移全部存量关联后另行发布；
+- PostgreSQL 非敏感参数：`TIT_DTS_INGEST_DB_HOST/PORT/SSLMODE`；当前 PRE 的 `backend/dts-ingest.pre-ssl-off.env.example` 只允许海外项目显式覆盖 `disable/true`，国内跨境写入固定 `verify-full/false`；
 - Gaea 密钥：`TIT_DTS_INGEST_DB_PASSWORD`，只用于 `tit_dts_ingest_runtime`。
 
 两个密码不是同一个密码，不允许复用。`TIT_DTS_INGEST_DB_NAME=tide_system_test`、
@@ -68,14 +77,17 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 | 配置 | 海外 | 国内 |
 |---|---|---|
 | `TIT_DTS_SOURCE_REGION` | `ovs` | `dom` |
+| Gaea 数据中心 | 新加坡 | 中国大陆 |
+| `TIT_DTS_EXECUTION_REGION` | `sg` | `cn` |
 | `TIT_DTS_BROKER_URL` | `100.103.7.163:18003` | `dts-cn-beijing-vpc.aliyuncs.com:18003` |
 | `TIT_DTS_TOPIC` | `ap_southeast_1_vpc_pc_gs5986x4885426aej_dba_tide_source_ovs_version2` | `cn_beijing_vpc_pc_2ze5w28lmdr8f626y_dba_tide_source_dom_version2` |
 | `TIT_DTS_GROUP_ID` | `tit-ovs-group` | `tit-dom-group` |
 | `TIT_DTS_ACCOUNT` | `titconsumeovs` | `titconsumedom` |
 | `TIT_DTS_START_AT` | `2026-08-10T14:16:00+08:00` | `2026-08-12T16:30:00+08:00` |
+| `TIT_DTS_DOM_STUDENT_HMAC_KEY` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex |
 | `TIT_DTS_COHORT_START` | `2026-08-13` | `2026-08-13` |
 | `TIT_DTS_COHORT_END_EXCLUSIVE` | 空（开放式） | 空（开放式） |
-| `TIT_DTS_PROJECTION_ENABLED` | 首次追平时 `false`；激活后两项目中仅一个为 `true` | 首次追平时 `false`；激活后两项目中仅一个为 `true` |
+| `TIT_DTS_PROJECTION_ENABLED` | 首次追平时 `false`；激活后由本项目改为 `true` | 固定 `false`，禁止成为投影 owner |
 | `TIT_DTS_PROJECTION_MAX_ATTEMPTS` | `8` | `8` |
 | `TIT_DTS_ACTIVATION_AT` | 开启投影时必填，显式带时区 | 与海外相同 |
 | `TIT_DTS_REQUIRED_OVS_TOPIC` | 海外 topic | 海外 topic |
@@ -84,18 +96,19 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 两个可版本化的生产安全配置入口分别是
 `backend/.env.dts-ingest.ovs.production.example` 和
 `backend/.env.dts-ingest.dom.production.example`；PRE 的临时非 TLS 覆盖单独位于
-`backend/dts-ingest.pre-ssl-off.env.example`。三份文件都故意不含 `TIT_DTS_PASSWORD` 和
-`TIT_DTS_INGEST_DB_PASSWORD` 的值。正式环境若目标不再是当前固定 test 库，还必须同步修改
+`backend/dts-ingest.pre-ssl-off.env.example`，且只可加载到海外 PRE 项目。三份文件都故意不含
+`TIT_DTS_PASSWORD`、`TIT_DTS_INGEST_DB_PASSWORD` 和国内 HMAC 密钥的值。正式环境若目标不再是当前固定 test 库，还必须同步修改
 数据库身份契约、迁移和 ACL 并重新验收，不能只把 SSL 改回 `verify-full`。
 
 ## 当前未完成的是实联与上线
 
 23/55 字段投影和国内/海外双运行配置已经进入持久化进程，不再停留在候选字段或影子输出。
-`tide_system_test` 已迁移至 public 59 / teacher 0041；国内、海外两个独立 PRE Gaea 项目已经创建并
-注入各自密钥。当前国内项目已通过目标 PostgreSQL 连接及传输核验；同 Pod 只读探针确认 broker
-域名解析成功，但到 `18003` 的 TCP 连接超时，因此阻断在 Gaea PRE 到国内 DTS VPC 的网络路径，
-尚未进入 SASL、topic 或位点验证，也未产生 checkpoint、目标写入或真实字段对账。海外项目当前
-保持运行，但在取得本次进程的成功 heartbeat 前也不能写成“链路已跑通”。
+`tide_system_test` 当前已迁移至 public 59 / teacher 0041，但仍须应用 public 60 隐私迁移并通过
+只读契约探针，才能满足最新运行门禁。国内订阅已明确使用“AI 效率中心”团队的独立 Gaea 项目
+`tida-camp-dts-dom` 并选择中国大陆集群；仍须从新 Pod 读回平台地域和运行配置。国内跨境写入还要求目标 PostgreSQL
+提供可由 `verify-full` 验证的 TLS，当前已确认的 `ssl=off` 不能作为国内链路上线条件。海外项目仍需
+完成所在 Pod 到海外 DTS endpoint 的 Kafka 启动门禁。当前尚无合规国内 Pod 的成功
+readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账。
 投诉分类是早于新教师长期存在的静态共享字典，不受“新教师
 入职前无个体数据”覆盖；开启投影前必须通过 DTS 变更事件或受控小型 Seed 将字典装入当前态，并验证
 引用完整性。启动门禁可拒绝不满足这些条件的投影进程，但不能代替真实 DTS 认证、Avro 解码、位点恢复和下游业务对账。

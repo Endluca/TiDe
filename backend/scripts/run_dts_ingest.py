@@ -17,6 +17,8 @@ from sqlalchemy.exc import OperationalError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.dts_ingest_store import (  # noqa: E402
+    APPROVED_INSECURE_PRE_HOST,
+    APPROVED_INSECURE_PRE_PORT,
     DtsIngestDatabaseSettings,
     DtsIngestStoreError,
     DtsProjectionActivationSettings,
@@ -61,6 +63,19 @@ def _clear_health_files(*paths: str | None) -> None:
     for path in paths:
         if path:
             Path(path).unlink(missing_ok=True)
+
+
+def _emit_startup_probe(payload: dict[str, int | str]) -> None:
+    """Emit only phase names and counts, never endpoints or credentials."""
+
+    print(
+        json.dumps(
+            {"mode": "DTS_STARTUP_PROBE", **payload},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -255,6 +270,12 @@ def _safe_kafka_error_code(exc: Exception) -> str | None:
         ):
             return error_code
 
+    kafka_error_type = getattr(kafka_errors, "KafkaError", ())
+    if not isinstance(kafka_error_type, type) or not any(
+        isinstance(error, kafka_error_type) for error in chain
+    ):
+        return None
+
     if any(isinstance(error, socket.gaierror) for error in chain):
         return "DTS_BROKER_DNS_FAILED"
 
@@ -270,7 +291,7 @@ def _safe_kafka_error_code(exc: Exception) -> str | None:
         if "dns failure" in message:
             return "DTS_BROKER_DNS_FAILED"
         if "timeout" in message or "timed out" in message:
-            return "DTS_BROKER_CONNECTION_TIMEOUT"
+            return "DTS_BROKER_KAFKA_REQUEST_TIMEOUT"
 
     timeout_types = tuple(
         error_type
@@ -282,7 +303,7 @@ def _safe_kafka_error_code(exc: Exception) -> str | None:
         if isinstance(error_type, type)
     )
     if any(isinstance(error, timeout_types) for error in chain):
-        return "DTS_BROKER_CONNECTION_TIMEOUT"
+        return "DTS_BROKER_KAFKA_REQUEST_TIMEOUT"
 
     no_brokers_type = getattr(kafka_errors, "NoBrokersAvailable", ())
     if any(isinstance(error, no_brokers_type) for error in chain):
@@ -380,7 +401,16 @@ def _run(args: argparse.Namespace) -> int:
         raise DtsConfigurationError("DTS_INTERVAL_SECONDS_INVALID")
     stream_settings = DtsConsumerSettings.from_env()
     database_settings = DtsIngestDatabaseSettings.from_env()
+    stream_settings.require_target_transport(
+        sslmode=database_settings.sslmode,
+        host=database_settings.host,
+        port=database_settings.port,
+        expected_host=APPROVED_INSECURE_PRE_HOST,
+        expected_port=APPROVED_INSECURE_PRE_PORT,
+    )
     projection_enabled = _env_flag("TIT_DTS_PROJECTION_ENABLED", False)
+    if stream_settings.source_region == "dom" and projection_enabled:
+        raise DtsConfigurationError("DTS_DOM_PROJECTION_FORBIDDEN")
     activation_settings = _projection_activation_settings(
         enabled=projection_enabled,
     )
@@ -405,21 +435,35 @@ def _run(args: argparse.Namespace) -> int:
         projector.settings.require_subscription_boundary(
             stream_settings.start_timestamp_seconds
         )
-        # Validate database identity and exact ACL before the first broker
-        # connection.  This creates no rows and does not advance either offset.
+        # Validate database identity, exact ACL and existing privacy state
+        # before the first broker connection. These checks create no rows and
+        # do not advance either offset.
         checkpoint = sink.resume_offset(
             source_region=stream_settings.source_region,
             topic=stream_settings.topic,
             partition=stream_settings.partition,
         )
-        if activation_settings is not None:
-            sink.acquire_projection_activation(activation_settings)
+        sink.validate_domestic_student_privacy_state()
         consumer = DtsKafkaConsumer(
             stream_settings,
             processor,
             idle_timeout_ms=args.idle_timeout_ms,
         )
-        broker_probe = consumer.startup_probe()
+        broker_probe = consumer.startup_probe(
+            phase_callback=_emit_startup_probe,
+        )
+        # Only after the read-only Kafka probe succeeds, register the one
+        # non-secret DOM key commitment. This is idempotent and must complete
+        # before readiness or any message consumption.
+        sink.validate_domestic_student_privacy_contract(
+            key_fingerprint=(
+                stream_settings.domestic_student_hmac_fingerprint()
+            ),
+            topic=stream_settings.topic,
+            partition=stream_settings.partition,
+        )
+        if activation_settings is not None:
+            sink.acquire_projection_activation(activation_settings)
         started_at = datetime.now(timezone.utc).isoformat()
         _write_health(
             args.readiness_path,

@@ -53,7 +53,8 @@ PostgreSQL
 ```
 
 Gaea 的 application 测试交付使用一个项目和一个完整镜像；海外、国内 DTS 则分别使用两个
-独立项目和同一个轻量构建模块。application Pod 可以水平复制，每个 Pod 保留五个逻辑
+独立项目和同一个轻量构建模块。海外 DTS 项目放在新加坡数据中心，国内 DTS 项目放在中国大陆
+数据中心；同一镜像与环境变量不能替代平台地理放置。application Pod 可以水平复制，每个 Pod 保留五个逻辑
 进程：FastAPI 在 `8010` 同源提供运营 React 与 API，教师 Nginx 在 `8080` 提供教师 React 并代理到
 Pod 内 `3000` 的 NestJS，积分 Worker 与 SourceWide Worker 都不暴露端口。Gaea 分别把运营、教师域名绑定到
 `8010/8080`。s6 负责进程生命周期，聚合健康检查同时覆盖两端 HTTP 与 Worker heartbeat。
@@ -65,10 +66,19 @@ Alembic 和教师端 migration 仍是发布前独立作业，数据库角色与�
 ReadWriteMany 共享卷。这个受控 TEST 形态不提供进程级秘密隔离：同 UID 进程可接触容器级
 环境变量，生产信任边界成立前仍应拆容器或 Pod。
 
-两个轻量 DTS 容器在每次进程启动时先执行只读门禁：目标数据库契约和 Kafka
-SASL/topic/partition/初始位点全部通过后才写 readiness。该探针不读取业务消息、不提交 offset，
+两个轻量 DTS 容器在每次进程启动时按 `DB → TCP → Kafka` 执行只读门禁：先核验目标数据库
+契约和传输，再完成 bootstrap DNS 解析并对解析结果执行无凭据 TCP 连接，最后核验 Kafka
+SASL/topic/partition/初始位点，全部通过后才写 readiness。TCP 探针的 5 秒连接预算不覆盖前置
+DNS 解析；TCP 不收发应用数据，Kafka 探针不读取业务消息、不提交 offset，
+国内进程只在 Kafka 探针通过后、ready 前登记不含密钥或学生标识的 HMAC fingerprint 契约行。
 因此 Pod Ready 只代表具备开始消费的条件；CDC 是否实际进入系统仍以事件账本、数据库 checkpoint、
 消费组位点和字段对账为准。
+
+国内消息的原始学生 ID 只允许存在于国内容器内存。消费者在构造任何发往海外 PostgreSQL 的 SQL
+参数前，使用国内项目独占密钥生成 `dom:v1:<HMAC-SHA256>` 并移除原值；海外项目与海外库不持有
+密钥或原始国内学生 ID。该稳定 token 仍是伪名数据，只用于必要的去重和归因。如果安全边界不允许
+稳定 token 跨境，架构必须改为国内状态库完成聚合、海外仅接收不可回链的指标，不能把本方案当作
+匿名化。
 
 ## 3. 任务事实与写入责任
 
@@ -142,7 +152,9 @@ SASL/topic/partition/初始位点全部通过后才写 readiness。该探针不�
 - Gaea 通过 `gaea.yml` 声明 `application` 与 `dts-ingest` 两个构建模块，并暂时保留根
   `gaea/Dockerfile` 作为 application 兼容入口。application 把两套 Web、两套 API 和 heartbeat Worker 收入同一镜像
   并用 `8010/8080` 承载不同域名；海外和国内两个独立 DTS 项目都选择同一个轻量模块，从构建
-  图上跳过全部 Node/Nginx 阶段。两个项目仍分别构建和推送镜像，模块本身不会让跨项目复用
+  图上跳过全部 Node/Nginx 阶段。海外项目必须在新加坡、国内项目必须在中国大陆；国内固定关闭
+  投影并通过 `verify-full` 写海外库，只有海外项目可以在双 checkpoint 门禁后成为投影 owner。
+  两个项目仍分别构建和推送镜像，模块本身不会让跨项目复用
   digest。该配置只证明源码具备构建入口，不代表内部镜像已在 Gaea 构建成功，也不代表双端口
   Ingress、DTS broker、迁移作业或生产切流已经完成。
 - 经营总览使用数据库聚合，不读取全部教师 JSON；教师列表、任务明细、输出和审计均为

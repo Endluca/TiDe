@@ -100,6 +100,21 @@ def test_lesson_scope_requires_confirmed_teacher_region_and_30_day_window() -> N
     )
 
 
+def test_domestic_appoint_scope_accepts_only_protected_student_subject() -> None:
+    token = "dom:v1:" + "a" * 64
+
+    assert DtsWideProjector._appoint_in_scope(
+        {
+            "use_point": "buy",
+            "status": "end",
+            "student_token": token,
+        }
+    )
+    assert not DtsWideProjector._appoint_in_scope(
+        {"use_point": "buy", "status": "end"}
+    )
+
+
 class _FirstResult:
     def __init__(self, first_value: object = None, *, rowcount: int = 0) -> None:
         self.first_value = first_value

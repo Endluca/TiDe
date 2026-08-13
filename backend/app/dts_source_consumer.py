@@ -7,11 +7,17 @@ it does not calculate TiDe scores.  The selected sink controls persistence.
 
 from __future__ import annotations
 
+import errno
+import hashlib
+import hmac
 import io
 import json
+import math
 import os
+import re
+import socket
 from time import monotonic
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from functools import lru_cache
@@ -77,6 +83,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
         {
             "id", "t_id", "s_id", "date", "time", "start_time", "end_time",
             "week", "status", "use_point", "cancel_reason", "dt",
+            "student_token",
         }
     ),
     "complaint": frozenset(
@@ -84,6 +91,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
             "id", "stu_id", "user_id", "appoint_id", "tea_id", "teacher_id",
             "complaint_type", "complaint_type_child", "complaint_type_grandson",
             "approve", "validity", "course_date", "add_time", "tag_id",
+            "student_token",
         }
     ),
     "complaint_cate": frozenset(
@@ -123,6 +131,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
         {
             "id", "teacher_id", "student_id", "valid_start_time",
             "valid_end_time", "is_valid_forever", "add_time", "update_time",
+            "student_token",
         }
     ),
     "teacher_certification": frozenset(
@@ -138,7 +147,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
         }
     ),
     "teacher_favorite": frozenset(
-        {"id", "tea_id", "stu_id", "add_time"}
+        {"id", "tea_id", "stu_id", "add_time", "student_token"}
     ),
     "teacher_penalty": frozenset(
         {
@@ -150,6 +159,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
         {
             "id", "user_id", "appoint_id", "teacher_id", "complaint_type",
             "complaint_type_child", "complaint_type_grandson", "status", "add_time",
+            "student_token",
         }
     ),
     "user_teacher_grading": frozenset(
@@ -164,6 +174,22 @@ SCHEMA_BUNDLE_PATH = Path(__file__).with_name("dts_record_schemas.json")
 KAFKA_API_VERSION = (2, 7)
 KAFKA_REQUEST_TIMEOUT_MS = 15_000
 KAFKA_CLOSE_TIMEOUT_MS = 1_000
+BROKER_TCP_PROBE_TIMEOUT_SECONDS = 5.0
+DOMESTIC_STUDENT_HMAC_DOMAIN = b"tit-dom-student-subject:v1\x00"
+DOMESTIC_STUDENT_HMAC_FINGERPRINT_DOMAIN = (
+    b"tit-dom-student-hmac-fingerprint:v1\x00"
+)
+DOMESTIC_STUDENT_TOKEN_PREFIX = "dom:v1:"
+DOMESTIC_STUDENT_ID_FIELDS = frozenset(
+    {"s_id", "student_id", "stu_id", "user_id"}
+)
+DOMESTIC_FREE_TEXT_REASON_FIELDS = frozenset({"cancel_reason", "reason_desc"})
+DOMESTIC_ALLOWED_REASON_DETAIL = "Unfilled Lesson Memo"
+DOMESTIC_REDACTED_REASON_DETAIL = "Domestic reason redacted"
+_DOMESTIC_STUDENT_TOKEN_PATTERN = re.compile(r"^dom:v1:[0-9a-f]{64}$")
+_DOMESTIC_STUDENT_HMAC_KEY_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_BROKER_HOST_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+_BROKER_IPV6_PATTERN = re.compile(r"^[0-9A-Fa-f:.%]+$")
 
 
 class DtsConfigurationError(RuntimeError):
@@ -186,6 +212,33 @@ class DtsConsumerSettings:
     password: str = field(repr=False)
     start_timestamp_seconds: int | None = None
     partition: int = 0
+    execution_region: str = "sg"
+    domestic_student_hmac_key: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        expected_execution_region = {"ovs": "sg", "dom": "cn"}.get(
+            self.source_region
+        )
+        if expected_execution_region is None:
+            raise DtsConfigurationError("TIT_DTS_SOURCE_REGION_UNSUPPORTED")
+        if self.execution_region != expected_execution_region:
+            raise DtsConfigurationError(
+                "TIT_DTS_EXECUTION_REGION_SOURCE_MISMATCH"
+            )
+        if self.source_region == "dom":
+            key = self.domestic_student_hmac_key
+            if key is None:
+                raise DtsConfigurationError(
+                    "TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED"
+                )
+            if _DOMESTIC_STUDENT_HMAC_KEY_PATTERN.fullmatch(key) is None:
+                raise DtsConfigurationError(
+                    "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORMAT_INVALID"
+                )
+        elif self.domestic_student_hmac_key is not None:
+            raise DtsConfigurationError(
+                "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORBIDDEN_FOR_OVS"
+            )
 
     @property
     def sasl_username(self) -> str:
@@ -222,6 +275,11 @@ class DtsConsumerSettings:
         if not brokers:
             raise DtsConfigurationError("TIT_DTS_BROKER_URL_REQUIRED")
         start_at = values.get("TIT_DTS_START_AT", "").strip()
+        domestic_student_hmac_key = values.get(
+            "TIT_DTS_DOM_STUDENT_HMAC_KEY"
+        )
+        if domestic_student_hmac_key == "":
+            domestic_student_hmac_key = None
         return cls(
             source_region=source_region,
             broker_urls=brokers,
@@ -230,6 +288,8 @@ class DtsConsumerSettings:
             account=required("TIT_DTS_ACCOUNT"),
             password=required_secret("TIT_DTS_PASSWORD"),
             start_timestamp_seconds=_parse_start_timestamp_seconds(start_at),
+            execution_region=required("TIT_DTS_EXECUTION_REGION").lower(),
+            domestic_student_hmac_key=domestic_student_hmac_key,
         )
 
     def safe_summary(self) -> dict[str, Any]:
@@ -242,7 +302,47 @@ class DtsConsumerSettings:
             "group_id": self.group_id,
             "partition": self.partition,
             "start_timestamp_seconds": self.start_timestamp_seconds,
+            "execution_region": self.execution_region,
+            "student_subject_mode": (
+                "dom_hmac_v1" if self.source_region == "dom" else "source_id"
+            ),
         }
+
+    def require_target_transport(
+        self,
+        *,
+        sslmode: str,
+        host: str,
+        port: int,
+        expected_host: str,
+        expected_port: int,
+    ) -> None:
+        """Fix the domestic cross-border destination and require verified TLS."""
+
+        if self.source_region != "dom":
+            return
+        if sslmode != "verify-full":
+            raise DtsConfigurationError("DTS_DOM_CROSS_BORDER_TLS_REQUIRED")
+        if host != expected_host or port != expected_port:
+            raise DtsConfigurationError(
+                "DTS_DOM_CROSS_BORDER_TARGET_NOT_APPROVED"
+            )
+
+    def domestic_student_hmac_fingerprint(self) -> str | None:
+        """Return a non-secret commitment used to reject accidental key changes."""
+
+        if self.source_region != "dom":
+            return None
+        key = self.domestic_student_hmac_key
+        if key is None:  # pragma: no cover - settings validation is fail closed
+            raise DtsConfigurationError(
+                "TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED"
+            )
+        return hmac.new(
+            bytes.fromhex(key),
+            DOMESTIC_STUDENT_HMAC_FINGERPRINT_DOMAIN,
+            hashlib.sha256,
+        ).hexdigest()
 
 
 def _parse_start_timestamp_seconds(raw: str) -> int | None:
@@ -259,6 +359,303 @@ def _parse_start_timestamp_seconds(raw: str) -> int | None:
     # contract: its broker interprets this timestamp lookup value as epoch
     # seconds, matching Aliyun's Java SDK and ten-digit initCheckpoint examples.
     return int(parsed.timestamp())
+
+
+def _domestic_student_token(raw_value: Any, hmac_key: str) -> str:
+    normalized = str(raw_value).strip()
+    if not normalized:
+        raise DtsRecordError("DTS_DOM_STUDENT_ID_EMPTY")
+    digest = hmac.new(
+        bytes.fromhex(hmac_key),
+        DOMESTIC_STUDENT_HMAC_DOMAIN + normalized.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{DOMESTIC_STUDENT_TOKEN_PREFIX}{digest}"
+
+
+def _is_domestic_student_token(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and _DOMESTIC_STUDENT_TOKEN_PATTERN.fullmatch(value)
+    )
+
+
+def _protect_domestic_mapping(
+    value: Mapping[str, Any],
+    *,
+    hmac_key: str,
+) -> dict[str, Any]:
+    protected: dict[str, Any] = {}
+    raw_values: set[str] = set()
+    for raw_key, item in value.items():
+        key = str(raw_key)
+        if key in DOMESTIC_STUDENT_ID_FIELDS:
+            if item is not None and str(item).strip():
+                raw_values.add(str(item).strip())
+            continue
+        if key == "student_token":
+            # A source record must never be able to choose its own stable
+            # subject.  Only this process may derive the token from a raw
+            # alias using the domestic runtime key.
+            raise DtsRecordError("DTS_DOM_SOURCE_STUDENT_TOKEN_FORBIDDEN")
+        if key in DOMESTIC_FREE_TEXT_REASON_FIELDS and item is not None:
+            # These source fields are operational free text. Preserve only the
+            # one exact value used by the confirmed routing contract; all
+            # other content is reduced to a non-identifying presence marker.
+            normalized_reason = str(item).strip()
+            if not normalized_reason:
+                protected[key] = ""
+            elif DOMESTIC_ALLOWED_REASON_DETAIL in normalized_reason:
+                protected[key] = DOMESTIC_ALLOWED_REASON_DETAIL
+            else:
+                protected[key] = DOMESTIC_REDACTED_REASON_DETAIL
+            continue
+        if isinstance(item, Mapping):
+            protected[key] = _protect_domestic_mapping(
+                item,
+                hmac_key=hmac_key,
+            )
+        elif isinstance(item, list):
+            protected[key] = [
+                _protect_domestic_value(child, hmac_key=hmac_key)
+                for child in item
+            ]
+        elif key == "info" and isinstance(item, str):
+            try:
+                parsed_info = json.loads(item)
+            except json.JSONDecodeError:
+                raise DtsRecordError("DTS_DOM_INFO_INVALID_JSON")
+            else:
+                protected[key] = json.dumps(
+                    _protect_domestic_value(parsed_info, hmac_key=hmac_key),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+        else:
+            protected[key] = item
+    if len(raw_values) > 1:
+        raise DtsRecordError("DTS_DOM_STUDENT_ID_ALIASES_CONFLICT")
+    token = (
+        _domestic_student_token(next(iter(raw_values)), hmac_key)
+        if raw_values
+        else None
+    )
+    if token is not None:
+        protected["student_token"] = token
+    return protected
+
+
+def _protect_domestic_value(value: Any, *, hmac_key: str) -> Any:
+    if isinstance(value, Mapping):
+        return _protect_domestic_mapping(value, hmac_key=hmac_key)
+    if isinstance(value, list):
+        return [
+            _protect_domestic_value(item, hmac_key=hmac_key)
+            for item in value
+        ]
+    return value
+
+
+def protect_domestic_student_ids(
+    event: DtsChangeEvent,
+    settings: DtsConsumerSettings,
+) -> DtsChangeEvent:
+    """Replace domestic student IDs before any overseas SQL is constructed."""
+
+    if event.source_region != settings.source_region:
+        raise DtsRecordError("DTS_SOURCE_REGION_MISMATCH")
+    if event.source_region != "dom":
+        return event
+    key = settings.domestic_student_hmac_key
+    if key is None:  # pragma: no cover - settings validation is fail closed
+        raise DtsConfigurationError("TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED")
+    return DtsChangeEvent(
+        source_region=event.source_region,
+        topic=event.topic,
+        partition=event.partition,
+        offset=event.offset,
+        record_id=event.record_id,
+        source_timestamp=event.source_timestamp,
+        source_txid=event.source_txid,
+        source_position=event.source_position,
+        operation=event.operation,
+        database_name=event.database_name,
+        schema_name=event.schema_name,
+        table_name=event.table_name,
+        before=(
+            _protect_domestic_mapping(event.before, hmac_key=key)
+            if event.before is not None
+            else None
+        ),
+        after=(
+            _protect_domestic_mapping(event.after, hmac_key=key)
+            if event.after is not None
+            else None
+        ),
+    )
+
+
+def assert_domestic_event_protected(event: DtsChangeEvent) -> None:
+    """Second-line guard at the database boundary, before any row bind."""
+
+    if event.source_region != "dom":
+        return
+
+    def inspect(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for raw_key, item in value.items():
+                key = str(raw_key)
+                if key in DOMESTIC_STUDENT_ID_FIELDS:
+                    raise DtsRecordError("DTS_DOM_RAW_STUDENT_ID_FORBIDDEN")
+                if key == "student_token" and not _is_domestic_student_token(item):
+                    raise DtsRecordError("DTS_DOM_STUDENT_TOKEN_INVALID")
+                if key == "info" and isinstance(item, str):
+                    try:
+                        inspect(json.loads(item))
+                    except json.JSONDecodeError as exc:
+                        raise DtsRecordError(
+                            "DTS_DOM_INFO_INVALID_JSON"
+                        ) from exc
+                else:
+                    inspect(item)
+        elif isinstance(value, list):
+            for item in value:
+                inspect(item)
+
+    inspect(event.before)
+    inspect(event.after)
+
+
+def student_subject(row: Mapping[str, Any]) -> str | None:
+    """Return a raw overseas ID or protected domestic subject token."""
+
+    return _row_id(
+        row,
+        "student_token",
+        "s_id",
+        "student_id",
+        "stu_id",
+        "user_id",
+    )
+
+
+def _parse_broker_endpoint(raw: str) -> tuple[str, int]:
+    """Parse one Kafka bootstrap endpoint without accepting URL syntax."""
+
+    if raw.startswith("["):
+        closing = raw.find("]")
+        if closing < 2 or raw[closing + 1 : closing + 2] != ":":
+            raise DtsConfigurationError("TIT_DTS_BROKER_URL_INVALID")
+        host = raw[1:closing]
+        port_text = raw[closing + 2 :]
+        host_valid = bool(_BROKER_IPV6_PATTERN.fullmatch(host))
+    else:
+        host, separator, port_text = raw.rpartition(":")
+        if not separator or not host or ":" in host:
+            raise DtsConfigurationError("TIT_DTS_BROKER_URL_INVALID")
+        host_valid = bool(_BROKER_HOST_PATTERN.fullmatch(host))
+    if (
+        not host
+        or not host_valid
+        or not port_text.isascii()
+        or not port_text.isdecimal()
+        or any(character.isspace() for character in host)
+    ):
+        raise DtsConfigurationError("TIT_DTS_BROKER_URL_INVALID")
+    port = int(port_text)
+    if not 1 <= port <= 65_535:
+        raise DtsConfigurationError("TIT_DTS_BROKER_URL_INVALID")
+    return host, port
+
+
+def _broker_tcp_error_code(exc: OSError) -> str:
+    if isinstance(exc, socket.gaierror):
+        return "DTS_BROKER_TCP_DNS_FAILED"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "DTS_BROKER_TCP_CONNECTION_TIMEOUT"
+    if isinstance(exc, ConnectionRefusedError) or exc.errno == errno.ECONNREFUSED:
+        return "DTS_BROKER_TCP_CONNECTION_REFUSED"
+    if exc.errno in {
+        errno.EACCES,
+        errno.EHOSTDOWN,
+        errno.EHOSTUNREACH,
+        errno.ENETDOWN,
+        errno.ENETUNREACH,
+        errno.EPERM,
+    }:
+        return "DTS_BROKER_TCP_UNREACHABLE"
+    return "DTS_BROKER_TCP_CONNECTION_FAILED"
+
+
+def probe_broker_tcp(
+    broker_urls: Sequence[str],
+    *,
+    timeout_seconds: float = BROKER_TCP_PROBE_TIMEOUT_SECONDS,
+) -> dict[str, int | str]:
+    """Prove that this process can open one bootstrap TCP connection.
+
+    The probe sends and receives no application bytes and never receives DTS
+    credentials.  After system DNS resolution, every configured address shares
+    one connection deadline.
+    """
+
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise DtsConfigurationError("DTS_BROKER_TCP_TIMEOUT_INVALID")
+    endpoints = tuple(_parse_broker_endpoint(raw) for raw in broker_urls)
+    if not endpoints:
+        raise DtsConfigurationError("TIT_DTS_BROKER_URL_REQUIRED")
+    deadline = monotonic() + timeout_seconds
+    failures: list[str] = []
+    for host, port in endpoints:
+        try:
+            addresses = socket.getaddrinfo(
+                host,
+                port,
+                type=socket.SOCK_STREAM,
+            )
+        except OSError as exc:
+            failures.append(_broker_tcp_error_code(exc))
+            continue
+        for family, socktype, protocol, _canonical, address in addresses:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                failures.append("DTS_BROKER_TCP_CONNECTION_TIMEOUT")
+                break
+            connection = socket.socket(family, socktype, protocol)
+            try:
+                connection.settimeout(remaining)
+                connection.connect(address)
+            except OSError as exc:
+                failures.append(_broker_tcp_error_code(exc))
+                continue
+            finally:
+                connection.close()
+            return {
+                "status": "ok",
+                "broker_count": len(endpoints),
+            }
+    if failures and len(set(failures)) == 1:
+        raise DtsConfigurationError(failures[0])
+    raise DtsConfigurationError("DTS_BROKER_TCP_ALL_ENDPOINTS_FAILED")
+
+
+def _is_kafka_request_timeout(exc: Exception) -> bool:
+    try:
+        from kafka.errors import KafkaTimeoutError
+    except ImportError:  # pragma: no cover - runtime dependency guard
+        return False
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while isinstance(current, Exception) and len(seen) < 8:
+        identity = id(current)
+        if identity in seen:
+            break
+        seen.add(identity)
+        if isinstance(current, KafkaTimeoutError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 @lru_cache(maxsize=1)
@@ -536,7 +933,7 @@ def route_dirty_keys(event: DtsChangeEvent) -> DirtyKeySet:
         teacher_id = _row_id(row, "t_id", "teacher_id", "tea_id")
         if suffix == "teacher":
             teacher_id = _row_id(row, "id")
-        student_id = _row_id(row, "s_id", "student_id", "stu_id", "user_id")
+        student_id = student_subject(row)
         if teacher_id:
             teacher_ids.add(teacher_id)
         if teacher_id and student_id:
@@ -752,7 +1149,7 @@ def project_appoint_candidate(event: DtsChangeEvent) -> AppointProjectionCandida
     if (
         str(row.get("use_point")) != "buy"
         or str(row.get("status")) in {"cancel", "on"}
-        or row.get("s_id") is None
+        or student_subject(row) is None
     ):
         return AppointProjectionCandidate(
             action="DELETE",
@@ -778,7 +1175,7 @@ def project_appoint_candidate(event: DtsChangeEvent) -> AppointProjectionCandida
                 lesson_time,
             ),
             "老师id": _row_id(row, "t_id"),
-            "学员id": _row_id(row, "s_id"),
+            "学员id": student_subject(row),
             "课程状态": str(row.get("status")),
         },
         required_sources=("dom_teacher",),
@@ -792,17 +1189,20 @@ def reduce_latest_complaints(
 ) -> list[dict[str, Any]]:
     """Apply the confirmed OBS complaint latest-row and validity rules."""
 
-    latest_user = _latest_rows(user_rows, student_names=("user_id",))
+    latest_user = _latest_rows(
+        user_rows,
+        student_names=("student_token", "user_id"),
+    )
     latest_complaint = _latest_rows(
         complaint_rows,
-        student_names=("stu_id", "user_id"),
+        student_names=("student_token", "stu_id", "user_id"),
     )
     result: list[dict[str, Any]] = []
     for key in sorted(set(latest_user) | set(latest_complaint)):
         user = latest_user.get(key, {})
         complaint = latest_complaint.get(key, {})
         merged = {
-            "user_id": key[0],
+            "student_subject": key[0],
             "appoint_id": key[1],
             "teacher_id": _coalesce(
                 user.get("teacher_id"),
@@ -1026,7 +1426,11 @@ class DtsKafkaConsumer:
         self.processor = processor
         self.idle_timeout_ms = idle_timeout_ms
 
-    def startup_probe(self) -> dict[str, int | str]:
+    def startup_probe(
+        self,
+        *,
+        phase_callback: Callable[[dict[str, int | str]], None] | None = None,
+    ) -> dict[str, int | str]:
         """Resolve the guarded start offset without changing consumer state."""
 
         try:
@@ -1034,8 +1438,12 @@ class DtsKafkaConsumer:
         except ImportError as exc:  # pragma: no cover - runtime dependency guard
             raise DtsConfigurationError("KAFKA_PYTHON_DEPENDENCY_REQUIRED") from exc
 
-        consumer = self._open_consumer()
+        tcp_probe = probe_broker_tcp(self.settings.broker_urls)
+        if phase_callback is not None:
+            phase_callback({"probe": "broker_tcp", **tcp_probe})
+        consumer: Any | None = None
         try:
+            consumer = self._open_consumer()
             topic_partition = TopicPartition(
                 self.settings.topic,
                 self.settings.partition,
@@ -1049,14 +1457,22 @@ class DtsKafkaConsumer:
             )
             return {
                 "status": "ok",
+                "tcp": "ok",
                 "partition": self.settings.partition,
                 "initial_offset": initial_offset,
             }
+        except Exception as exc:
+            if _is_kafka_request_timeout(exc):
+                raise DtsConfigurationError(
+                    "DTS_BROKER_KAFKA_REQUEST_TIMEOUT"
+                ) from exc
+            raise
         finally:
-            consumer.close(
-                autocommit=False,
-                timeout_ms=KAFKA_CLOSE_TIMEOUT_MS,
-            )
+            if consumer is not None:
+                consumer.close(
+                    autocommit=False,
+                    timeout_ms=KAFKA_CLOSE_TIMEOUT_MS,
+                )
 
     def run(self, *, max_messages: int, commit_offsets: bool) -> dict[str, int]:
         if max_messages < 1:
@@ -1092,6 +1508,7 @@ class DtsKafkaConsumer:
                     partition=message.partition,
                     offset=message.offset,
                 )
+                event = protect_domestic_student_ids(event, self.settings)
                 result = self.processor.process(event)
                 counters["seen"] += 1
                 if result.status == "PROCESSED":
@@ -1304,13 +1721,17 @@ __all__ = [
     "InMemoryShadowSink",
     "ProcessResult",
     "SOURCE_FIELD_WHITELIST",
+    "assert_domestic_event_protected",
     "build_change_event",
     "decode_dts_avro",
     "derive_penalty_flags",
     "is_peak_lesson",
     "project_appoint_candidate",
+    "protect_domestic_student_ids",
     "reduce_latest_complaints",
     "route_dirty_keys",
+    "probe_broker_tcp",
     "source_table_suffix",
+    "student_subject",
     "teacher_matches_region",
 ]

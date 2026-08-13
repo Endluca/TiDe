@@ -74,12 +74,14 @@ BEGIN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
 
-    -- Final public 59 must include the reviewed release content through
-    -- 20260811_57_g02_document; the concrete G02 rows and guards are checked below.
+    -- Final public 60 must include the reviewed release content through
+    -- 20260811_57_g02_document, the public 59 ACL/DTS merge, and the
+    -- domestic-student privacy boundary; concrete rows and guards are checked
+    -- below.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260812_59_simple_acl' THEN
+    ) IS DISTINCT FROM '20260813_60_dom_privacy' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -1171,6 +1173,17 @@ BEGIN
           AND tgname = 'guard_dts_runtime_state_write'
           AND NOT tgisinternal
     ) <> 4 OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.lesson_source_wide'::regclass
+          AND tgname = 'guard_dom_lesson_student_privacy_v1'
+          AND tgfoid =
+              'public.guard_dom_lesson_student_privacy_v1()'::regprocedure
+          AND tgenabled IN ('O', 'A')
+          AND tgtype = 23
+          AND NOT tgisinternal
+    ) OR to_regprocedure(
+        'public.dom_student_json_is_safe_v1(jsonb)'
+    ) IS NULL OR NOT EXISTS (
         SELECT 1 FROM pg_trigger
         WHERE tgrelid = 'tide.schema_migrations'::regclass
           AND tgname = 'guard_runtime_schema_migration_write'

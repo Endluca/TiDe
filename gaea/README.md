@@ -8,9 +8,10 @@
   继续读取根级 `gaea/Dockerfile`，切换多模块后选择 `gaea/application/Dockerfile`；两者内容
   由测试强制保持完全一致；
 - 海外和国内两个独立 DTS 项目都选择 `gaea/dts-ingest/Dockerfile`，但仍由 Gaea 分别构建、
-  推送和发布；
-- 三个项目使用不同密钥集合。模块选择不会自动创建 Gaea 项目，也不会让海外和国内跨项目
-  复用同一个 image digest。
+  推送和发布；海外项目必须位于新加坡数据中心，国内项目必须位于中国大陆数据中心；
+- 三个项目使用不同密钥集合。国内学生 ID 的 HMAC 密钥只允许注入国内项目。
+  模块选择不会自动创建 Gaea 项目，也不会自动选择正确数据中心或让海外和国内跨项目复用同一个
+  image digest。
 
 application 镜像由 s6-overlay 管理五个业务进程入口：
 
@@ -34,8 +35,8 @@ API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker �
 
 因此 DTS 不能把密码注入 `application` 项目。完整 application 镜像内的多个业务进程仍以
 同一 UID `1001` 运行，因此其中一个进程被利用后可能读取同 Pod 的数据库、JWT、OSS 或邮件
-凭据；海外和国内 DTS 则通过独立项目、轻量镜像和独立密钥集合与 application 隔离。两个 DTS
-项目也不得合并，因为 broker、消费组、账号、密码和位点不同。
+凭据；海外和国内 DTS 则通过独立项目、轻量镜像、独立密钥集合和强制数据中心放置与 application
+隔离。两个 DTS 项目也不得合并，因为 broker、消费组、账号、密码、位点和数据合规边界不同。
 
 ## 多副本执行模型
 
@@ -111,7 +112,7 @@ Nginx 按当前请求 Host 提供页面、把 `/api/*` 代理到本 Pod NestJS�
 
 ## Gaea 端口与域名
 
-在唯一应用（建议继续使用现有 `tide-camp-api` 项目）中配置两个端口：
+在唯一 application 应用（现有 Gaea 项目 `tida-camp`、PRE 应用 `pre-tida-camp`）中配置两个端口：
 
 | 容器端口 | 访问方式 | TEST 域名 | 用途 |
 |---:|---|---|---|
@@ -236,33 +237,50 @@ SourceWide 健康探针会使用同一个受限数据库身份直接读取 Outbo
 ## DTS ingest 独立 Profile
 
 国内和海外分别建立一个独立 Gaea 项目，两个项目都选择 `dts-ingest` 构建模块并固定
-`TIT_PROCESS_PROFILE=dts-ingest`。Gaea 仍会为两个项目分别构建和推送内容相同的轻量镜像；
+`TIT_PROCESS_PROFILE=dts-ingest`。海外项目选择新加坡数据中心并声明
+`TIT_DTS_EXECUTION_REGION=sg`；国内项目选择中国大陆数据中心并声明
+`TIT_DTS_EXECUTION_REGION=cn`。区域声明与 `TIT_DTS_SOURCE_REGION` 不匹配时进程失败关闭，但它
+不能替代在 Gaea 现场核对项目数据中心。`tida-camp-dts-dom` 必须在中国大陆集群发布，并在新 Pod
+上读回实际数据中心；不能只通过修改环境变量宣称完成国内部署。Gaea 仍会为两个项目分别构建和推送内容相同的轻量镜像；
 模块选择本身不提供跨项目 digest 复用。每个项目只消费一条订阅，不能在同一进程混放两套
 broker、消费组或 SASL 密码。两个项目都不配置运营、教师、JWT、OSS 或邮件密钥；默认
 application 项目也不配置任何 DTS 变量。
 
 当前消费者固定 partition 0，每个 DTS 项目先使用 1 个副本。两个项目可以同时把各自事件写入
 同一个 `tide_system_test.public`：接入幂等键包含 `source_region + topic + partition + offset`。
-首次追平阶段两个项目都必须关闭投影；激活后只能在一个项目启用全局宽表投影，另一个继续
-只做 ingest。启用项目必须先通过数据库激活门禁，并持有全局 PostgreSQL session advisory
-lock；第二个误开启投影的项目会失败关闭。每个 DTS Pod 的数据库池固定为 2 条连接，其中
+国内消息仍在国内容器内时，代码必须在构造任何海外 PostgreSQL SQL 参数前删除原始学生 ID，
+并使用仅注入国内项目的 `TIT_DTS_DOM_STUDENT_HMAC_KEY` 生成
+`dom:v1:<HMAC-SHA256>`；海外项目、海外数据库、日志和错误 payload 都不得持有该密钥或原始国内
+学生 ID。稳定 token 用于师生去重、收藏/拉黑归因和课程宽表关联，但仍属于伪名数据，必须继续
+限制访问。若合规边界连稳定 token 都不允许跨境，则当前 23/55 投影协议不适用，必须改为国内
+状态库完成按教师聚合，只向海外发送不含个体稳定标识的指标结果。
+国内密钥首次启动会登记单向 fingerprint，后续不匹配即退出；不得直接修改密钥值“轮换”，否则
+同一学生会被拆成多个身份。轮换必须单独评审 token 版本和存量迁移。
+
+首次追平阶段两个项目都必须关闭投影；激活后只允许海外项目启用全局宽表投影，国内项目固定
+`TIT_DTS_PROJECTION_ENABLED=false` 并只做 ingest。海外项目必须先通过数据库激活门禁，并持有
+全局 PostgreSQL session advisory lock；国内项目误开启投影会在启动时失败关闭。每个 DTS Pod
+的数据库池固定为 2 条连接，其中
 1 条由投影锁专用连接持续占用，另 1 条供接入事务和投影事务串行复用。PostgreSQL
 `application_name` 分别为 `tit-dts-ingest-ovs` 和 `tit-dts-ingest-dom`，便于现场区分连接。
 
 两套非敏感订阅配置如下；对应的生产安全基线文件是
 `backend/.env.dts-ingest.ovs.production.example` 和
 `backend/.env.dts-ingest.dom.production.example`。当前 PRE 数据库的临时
-`ssl=off` 例外只使用
-`backend/dts-ingest.pre-ssl-off.env.example` 中的两项覆盖，不修改生产基线：
+`ssl=off` 例外只允许海外项目使用
+`backend/dts-ingest.pre-ssl-off.env.example` 中的两项覆盖，不修改生产基线；国内跨境写入不接受
+该例外，目标库没有可验证 TLS 时国内项目必须失败关闭：
 
 | 变量名 | 海外项目 | 国内项目 |
 |---|---|---|
 | `TIT_DTS_SOURCE_REGION` | `ovs` | `dom` |
+| `TIT_DTS_EXECUTION_REGION` | `sg` | `cn` |
 | `TIT_DTS_BROKER_URL` | `100.103.7.163:18003` | `dts-cn-beijing-vpc.aliyuncs.com:18003` |
 | `TIT_DTS_TOPIC` | `ap_southeast_1_vpc_pc_gs5986x4885426aej_dba_tide_source_ovs_version2` | `cn_beijing_vpc_pc_2ze5w28lmdr8f626y_dba_tide_source_dom_version2` |
 | `TIT_DTS_GROUP_ID` | `tit-ovs-group` | `tit-dom-group` |
 | `TIT_DTS_ACCOUNT` | `titconsumeovs` | `titconsumedom` |
 | `TIT_DTS_START_AT` | `2026-08-10T14:16:00+08:00` | `2026-08-12T16:30:00+08:00` |
+| `TIT_DTS_DOM_STUDENT_HMAC_KEY` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex，并作为敏感变量注入 |
 
 每个项目还需要以下共同变量：
 
@@ -272,33 +290,42 @@ lock；第二个误开启投影的项目会失败关闭。每个 DTS Pod 的数�
 | `TIT_DTS_PASSWORD` | 是 | 各自 Gaea 密钥 | 只用于本项目对应订阅的 DTS SASL |
 | `TIT_DTS_COHORT_START` | 否 | `2026-08-13` | 北京时间新教师 cohort 起点，按 `dom_teacher.status_on_time` 日期筛选；两项目必须一致 |
 | `TIT_DTS_COHORT_END_EXCLUSIVE` | 否 | 空 | 开放式人群；需要封闭批次时才设置不含当天的结束边界 |
-| `TIT_DTS_PROJECTION_ENABLED` | 否 | `false` | 首次追平时两项目均关闭；激活后只能有一个项目设为 `true` |
+| `TIT_DTS_PROJECTION_ENABLED` | 否 | `false` | 国内项目始终为 `false`；双流追平并通过激活门禁后，只允许海外项目改为 `true` |
 | `TIT_DTS_PROJECTION_MAX_ATTEMPTS` | 否 | `8` | 同一脏键周期的投影尝试上限，范围 `1–100`；默认约 15 分钟退避窗口后失败关闭 |
 | `TIT_DTS_ACTIVATION_AT` | 投影开启时 | 显式带时区时间 | 两条订阅都必须追平到该 source time；两个项目使用同一值 |
 | `TIT_DTS_REQUIRED_OVS_TOPIC` | 投影开启时 | 海外 topic | 激活门禁核对海外 partition 0 数据库 checkpoint |
 | `TIT_DTS_REQUIRED_DOM_TOPIC` | 投影开启时 | 国内 topic | 激活门禁核对国内 partition 0 数据库 checkpoint |
 | `TIT_DTS_INGEST_DB_HOST` | 是 | `tide-system.rwlb.singapore.rds.aliyuncs.com` | 不含端口或 scheme |
 | `TIT_DTS_INGEST_DB_PORT` | 否 | `5432` | PostgreSQL 端口 |
-| `TIT_DTS_INGEST_DB_SSLMODE` | 否 | 生产基线 `verify-full`；当前 PRE 显式覆盖为 `disable` | 仅允许 `verify-full/disable`。`tide_system_test` 已现场确认 `SHOW ssl=off` |
-| `TIT_DTS_ALLOW_INSECURE_DB` | 否 | 生产基线 `false`；当前 PRE 与 `disable` 同时覆盖为 `true` | 仅精确接受小写 `true/false`；没有显式授权时禁止非 TLS 连接 |
+| `TIT_DTS_INGEST_DB_SSLMODE` | 否 | `verify-full`；仅海外 PRE 可临时覆盖为 `disable` | 国内跨境写入强制 `verify-full`；`tide_system_test` 当前已现场确认 `SHOW ssl=off`，因此启用 TLS 前国内项目必须停止 |
+| `TIT_DTS_ALLOW_INSECURE_DB` | 否 | `false`；仅海外 PRE 与 `disable` 同时覆盖为 `true` | 国内项目固定为 `false`；没有显式授权时禁止非 TLS 连接 |
 | `TIT_DTS_INGEST_DB_PASSWORD` | 是 | 各项目 Gaea 密钥 | `tit_dts_ingest_runtime` 的数据库密码，不得复用 DTS 密码 |
 
 数据库名、Schema 和角色在代码中失败关闭为
-`tide_system_test / public / tit_dts_ingest_runtime`。SSL 默认 `verify-full`。只有同时设置
+`tide_system_test / public / tit_dts_ingest_runtime`。SSL 默认 `verify-full`。以下明文例外只适用于
+海外 PRE 项目：只有同时设置
 `TIT_DTS_INGEST_DB_SSLMODE=disable` 与 `TIT_DTS_ALLOW_INSECURE_DB=true`，且目标精确等于已批准的
 `tide-system.rwlb.singapore.rds.aliyuncs.com:5432 / tide_system_test`，才允许当前 PRE 例外；其他
 模式、端点或缺少显式授权都会在连接前拒绝启动。每条新建的 PostgreSQL 物理连接都会通过
 `pg_stat_ssl` 核验当前会话的实际 TLS 状态，并同时读取服务端 `current_setting('ssl')`；临时 `disable` 例外还会在每次连接池 checkout 时复核。服务端一旦启用 TLS，遗留的 `disable` 配置会立即失败关闭，长期持有的投影锁会话也会在每批投影前复核。此时必须删除两项 PRE 覆盖并恢复生产基线
-`verify-full/false`。该例外不得复制到生产。正式业务库若不再是当前固定 test 目标，还必须同步
-修改数据库身份契约、迁移和 ACL 并重新验收，不能只改 SSL 变量。revision
-`20260812_59_simple_acl` 必须先由
+`verify-full/false`。国内项目无论 PRE/生产都要求 `verify-full/false`，不得加载该覆盖文件；当前
+目标服务端 `ssl=off` 时，国内项目连接失败是合规门禁的预期行为，不得降级绕过。该例外不得复制
+到生产。正式业务库若不再是当前固定 test 目标，还必须同步
+修改数据库身份契约、迁移和 ACL 并重新验收，不能只改 SSL 变量。最终 revision
+`20260813_60_dom_privacy` 必须在 `20260812_59_simple_acl` 之后由
 `tide_sys_admin` 应用；运行账号没有建表权限，接入状态的删除/回退由 Trigger 拒绝。
 
 DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`。进程启动时先删除
-上一进程留下的两个文件；目标数据库连接/身份/Schema/ACL 与 Kafka SASL、topic、partition 0、
-初始位点的只读探针全部通过后，才写本次进程的 `readiness=ready`。Kafka 位点探针共享 15 秒
-总预算，关闭连接另有 1 秒上限；探针不读取消息、不写目标库、不提交 offset，任一步失败都由
-进程非零退出且不会短暂变绿。首轮以及后续消费循环成功完成后才
+上一进程留下的两个文件；目标数据库连接/身份/Schema/ACL、bootstrap DNS 解析、当前 Pod 对解析
+结果执行的 5 秒共享连接预算无凭据 TCP 探针，以及 Kafka SASL、topic、partition 0、初始位点的
+只读探针全部通过后，才写本次进程的
+`readiness=ready`。TCP 探针不收发应用数据；TCP 失败输出 `DTS_BROKER_TCP_*`，TCP 成功会先打印
+`DTS_STARTUP_PROBE/broker_tcp status=ok`，之后 Kafka 请求超时输出
+`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 位点探针共享 15 秒总预算，关闭连接另有 1 秒上限；
+探针不读取消息、不写目标库、不提交 offset，任一步失败都由进程非零退出且不会短暂变绿。该门禁
+成功后，国内进程会在写 readiness 前幂等登记一条仅含契约版本与 HMAC key fingerprint 的受限
+状态行；它不包含密钥或学生标识，fingerprint 不匹配会失败关闭。
+在每次容器进程启动/重启时执行，不在镜像构建或周期 healthcheck 中重复执行。首轮以及后续消费循环成功完成后才
 刷新 heartbeat，其中包含本轮接入和宽表投影计数。两者同时健康只证明服务具备消费条件并持续
 运行，不证明至少消费到一条业务消息或字段值已通过对账。国内项目的起始边界已固定为
 `2026-08-12T16:30:00+08:00`；任一项目未注入
@@ -431,8 +458,8 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041`，
-   先完成 release 内容链到 public 57 / teacher 0041，再应用 ACL/DTS 分支并合并到 public 59；
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60`，
+   先完成 release 内容链到 public 57 / teacher 0041，再应用 ACL/DTS 分支并合并到 public 59，最后应用 public 60 国内学生隐私边界；
    已批准公司 TEST 库从 public 50 / teacher 0032 继续时，先在仓库根目录用
    `backend/.venv/bin/python backend/scripts/upgrade_company_test_database.py /Git工作区外/company-test-migration.env`
    只读预检；确认备份和维护窗口后才追加
@@ -441,7 +468,7 @@ docker stop tide-camp-gaea-test
    的 G01 TESOL-only 收窄，再包含 public `20260811_54_g04_remove_device_check` / teacher
    `0037_g04_remove_device_check` 的 G04 两模块收敛，并先执行 public
    `20260811_55_source_wide_v12` 再执行 public `20260811_56_p_fb_negative_copy`；当前 G04 不得恢复设备检测步骤。
-   确认 public head 为 `20260812_59_simple_acl`、teacher 账本 head 为
+   确认 public head 为 `20260813_60_dom_privacy`、teacher 账本 head 为
    `0041_crm_sso_hybrid`（包含前序 `0038_personalized_environment_photo`）；其中
    G01 TESOL-only、G04 两模块、G02 原生政策文档与阅读状态、CRM SSO 都必须完成。
    随后执行只读契约探针，并核对个性化任务零分文案、环境拍照步骤与
@@ -454,21 +481,25 @@ docker stop tide-camp-gaea-test
    `minReplicas >= 2`，并按最大副本数核对数据库连接预算。同时确认平台允许 root `/init`，
    配置 `8010` 运营域名、`8080` 教师域名，以及 OSS 或同一块 RWX 共享卷。
 4. 停止旧 `test-tide-camp-worker`，避免它与新镜像内的 Worker 同时常驻。
-5. 向现有 `tide-camp-api` 项目发布 application 镜像，现场读回 replicas、自动伸缩、RollingUpdate、
+5. 向现有 `tida-camp` 项目的 `pre-tida-camp` 应用发布 application 镜像，现场读回 replicas、自动伸缩、RollingUpdate、
    两个端口、两个域名、共享存储权限和每个 Pod 的健康状态；此时应确认积分 Worker 有且仅有
    一个 leader、SourceWide s6 服务因显式门禁保持暂停，聚合健康检查只跳过它的
    heartbeat/readiness，而不是把其他进程故障伪装成健康。
 6. 从两个外部 HTTPS 域名先验证运营登录、教师登录、工单往返和跨 Pod 文件读写；
    `TIT_SOURCE_WIDE_ENABLED=false` 期间不得把任务、积分或资格结果记为全流程验收通过。
 7. 分别建立海外、国内两个 DTS TEST 项目，构建类型均选择 `multi_module`、构建模块均选择
-   `dts-ingest`，设置 `TIT_PROCESS_PROFILE=dts-ingest`、副本数 1，并只注入本项目对应的 DTS
-   密码与 `tit_dts_ingest_runtime` 数据库密码。使用各自固化的
-   区域回放边界和相同的 `2026-08-13` 开放式 cohort，先保持
-   `TIT_DTS_PROJECTION_ENABLED=false`。先确认两套 readiness 表明 DB 与 Broker 启动探针通过，
+   `dts-ingest`，设置 `TIT_PROCESS_PROFILE=dts-ingest`、副本数 1。海外项目选择新加坡数据中心并
+   配置 `TIT_DTS_EXECUTION_REGION=sg`；国内项目选择中国大陆数据中心并配置
+   `TIT_DTS_EXECUTION_REGION=cn`。停止并废弃任何位于新加坡数据中心的国内 DTS Pod。两个项目只
+   注入各自 DTS 密码与 `tit_dts_ingest_runtime` 数据库密码；国内项目另行注入专用
+   `TIT_DTS_DOM_STUDENT_HMAC_KEY`，海外项目禁止持有该密钥。国内跨境数据库连接必须先具备
+   `verify-full` 的真实 TLS 证据，不允许使用 PRE `ssl=off` 覆盖。使用各自固化的区域回放边界和
+   相同的 `2026-08-13` 开放式 cohort；国内始终保持
+   `TIT_DTS_PROJECTION_ENABLED=false`，海外在首次追平阶段也保持 `false`。先确认两套 readiness 表明 DB 与 Broker 启动探针通过，
    再单独读回 heartbeat、事件账本、数据库 checkpoint 和消费组位点，证明真实消息已经进入正式
    消费事务；不能用 readiness 代替接入证据。完成静态投诉分类字典装载与引用完整性检查后，
-   两条流追平同一激活时刻，仅在
-   一个项目配置相同的两个 required topic 和带时区 `TIT_DTS_ACTIVATION_AT` 后打开投影。确认
+   两条流追平同一激活时刻，仅在海外项目配置相同的两个 required topic 和带时区
+   `TIT_DTS_ACTIVATION_AT` 后打开投影。确认
    双 checkpoint、投诉字典门禁和全局投影锁均通过，再等待 `PENDING/RETRY/PROCESSING`
    脏键清零且连续两轮稳定，并抽样核对两张宽表。随后把 application 项目的
    `TIT_SOURCE_WIDE_ENABLED` 恢复为 `true` 并完成 RollingUpdate；确认 SourceWide 有且仅有

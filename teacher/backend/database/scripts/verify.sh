@@ -34,7 +34,7 @@ server_version="$("${PSQL[@]}" -Atqc "show server_version")"
 deployment_heads_ready="$("${PSQL[@]}" -Atqc "
   select
     (select version_num from public.alembic_version)
-      = '20260812_59_simple_acl'
+      = '20260813_60_dom_privacy'
     and (
       select array_agg(migration_id order by migration_order)
       from tide.schema_migrations
@@ -688,6 +688,19 @@ final_acl_ready="$("${PSQL[@]}" -Atqc "
     )
     and exists (
       select 1 from pg_trigger
+      where tgrelid = 'public.lesson_source_wide'::regclass
+        and tgname = 'guard_dom_lesson_student_privacy_v1'
+        and tgfoid =
+          'public.guard_dom_lesson_student_privacy_v1()'::regprocedure
+        and tgenabled in ('O', 'A')
+        and tgtype = 23
+        and not tgisinternal
+    )
+    and to_regprocedure(
+      'public.dom_student_json_is_safe_v1(jsonb)'
+    ) is not null
+    and exists (
+      select 1 from pg_trigger
       where tgrelid = 'tide.schema_migrations'::regclass
         and tgname = 'guard_runtime_schema_migration_write'
         and not tgisinternal
@@ -699,7 +712,7 @@ final_acl_ready="$("${PSQL[@]}" -Atqc "
         and not tgisinternal
     )
 ")"
-assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 59 + Tide canonical 0041"
+assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 60 + Tide canonical 0041"
 assert_equals "${template_count}" "9" "共享 G01-G09 任务模板数异常"
 assert_equals "${score_total}" "30" "G01-G09 分值合计异常"
 assert_equals "${assignment_count}" "9" "Mock 当前固定任务数异常"
@@ -743,7 +756,7 @@ assert_equals "${shared_trigger_count}" "3" "共享任务写入触发器数异�
 assert_equals "${assignment_teacher_response_column_count}" "0" "共享任务仍残留教师事实说明字段"
 assert_equals "${assignment_teacher_response_constraint_count}" "0" "共享任务仍残留教师事实说明约束"
 
-assert_equals "${final_acl_ready}" "t" "教师端最终三列表 ACL 或 rev59 Trigger 不完整"
+assert_equals "${final_acl_ready}" "t" "教师端最终三列表 ACL、rev59 ACL Trigger 或 rev60 隐私 Trigger 不完整"
 assert_equals "$("${PSQL[@]}" -Atqc "select rolinherit from pg_roles where rolname = 'tit_teacher_crud'")" "f" "教师应用角色必须保持 NOINHERIT"
 assert_equals "$("${PSQL[@]}" -Atqc "select has_table_privilege('tit_teacher_crud', 'public.score_entries', 'INSERT')")" "f" "教师角色不应写积分表"
 assert_equals "$("${PSQL[@]}" -Atqc "select to_regclass('public.teacher_scorecard_current') is not null")" "t" "教师积分当前视图缺失"
@@ -1418,4 +1431,4 @@ $verify$;
 ROLLBACK;
 SQL
 
-echo "PostgreSQL ${server_version}：public 59、Tide 0041、最终表级 ACL、运行时 Trigger、审计/Outbox 和消息回写验证通过。"
+echo "PostgreSQL ${server_version}：public 60、Tide 0041、最终表级 ACL、国内学生隐私边界、运行时 Trigger、审计/Outbox 和消息回写验证通过。"
