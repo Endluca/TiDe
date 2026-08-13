@@ -10,10 +10,12 @@ from __future__ import annotations
 import io
 import json
 import os
+from time import monotonic
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from functools import lru_cache
+from math import ceil
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -159,6 +161,9 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
 }
 INFRASTRUCTURE_TABLES = frozenset({"dts_postgres_heartbeat"})
 SCHEMA_BUNDLE_PATH = Path(__file__).with_name("dts_record_schemas.json")
+KAFKA_API_VERSION = (2, 7)
+KAFKA_REQUEST_TIMEOUT_MS = 15_000
+KAFKA_CLOSE_TIMEOUT_MS = 1_000
 
 
 class DtsConfigurationError(RuntimeError):
@@ -1021,33 +1026,63 @@ class DtsKafkaConsumer:
         self.processor = processor
         self.idle_timeout_ms = idle_timeout_ms
 
+    def startup_probe(self) -> dict[str, int | str]:
+        """Resolve the guarded start offset without changing consumer state."""
+
+        try:
+            from kafka import TopicPartition
+        except ImportError as exc:  # pragma: no cover - runtime dependency guard
+            raise DtsConfigurationError("KAFKA_PYTHON_DEPENDENCY_REQUIRED") from exc
+
+        consumer = self._open_consumer()
+        try:
+            topic_partition = TopicPartition(
+                self.settings.topic,
+                self.settings.partition,
+            )
+            initial_offset = self._resolve_initial_offset(
+                consumer,
+                topic_partition,
+                deadline_monotonic=(
+                    monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
+                ),
+            )
+            return {
+                "status": "ok",
+                "partition": self.settings.partition,
+                "initial_offset": initial_offset,
+            }
+        finally:
+            consumer.close(
+                autocommit=False,
+                timeout_ms=KAFKA_CLOSE_TIMEOUT_MS,
+            )
+
     def run(self, *, max_messages: int, commit_offsets: bool) -> dict[str, int]:
         if max_messages < 1:
             raise ValueError("max_messages must be positive")
         try:
-            from kafka import KafkaConsumer, TopicPartition
+            from kafka import TopicPartition
             from kafka.structs import OffsetAndMetadata
         except ImportError as exc:  # pragma: no cover - runtime dependency guard
             raise DtsConfigurationError("KAFKA_PYTHON_DEPENDENCY_REQUIRED") from exc
 
-        consumer = KafkaConsumer(
-            bootstrap_servers=list(self.settings.broker_urls),
-            enable_auto_commit=False,
-            group_id=self.settings.group_id,
-            sasl_mechanism="PLAIN",
-            security_protocol="SASL_PLAINTEXT",
-            sasl_plain_username=self.settings.sasl_username,
-            sasl_plain_password=self.settings.password,
-            consumer_timeout_ms=self.idle_timeout_ms,
-        )
+        consumer = self._open_consumer()
         topic_partition = TopicPartition(
             self.settings.topic,
             self.settings.partition,
         )
         counters = {"seen": 0, "processed": 0, "ignored": 0, "duplicates": 0, "committed": 0}
         try:
+            initial_offset = self._resolve_initial_offset(
+                consumer,
+                topic_partition,
+                deadline_monotonic=(
+                    monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
+                ),
+            )
             consumer.assign([topic_partition])
-            self._seek_initial_position(consumer, topic_partition)
+            consumer.seek(topic_partition, initial_offset)
             for message in consumer:
                 record = decode_dts_avro(message.value)
                 event = build_change_event(
@@ -1079,39 +1114,175 @@ class DtsKafkaConsumer:
                 if counters["seen"] >= max_messages:
                     break
         finally:
-            consumer.close()
+            consumer.close(
+                autocommit=False,
+                timeout_ms=KAFKA_CLOSE_TIMEOUT_MS,
+            )
         return counters
 
-    def _seek_initial_position(self, consumer: Any, topic_partition: Any) -> None:
-        committed = consumer.committed(topic_partition)
+    def _open_consumer(self) -> Any:
+        try:
+            from kafka import KafkaConsumer
+        except ImportError as exc:  # pragma: no cover - runtime dependency guard
+            raise DtsConfigurationError("KAFKA_PYTHON_DEPENDENCY_REQUIRED") from exc
+
+        return KafkaConsumer(
+            bootstrap_servers=list(self.settings.broker_urls),
+            # Aliyun DTS exposes the Kafka 2.7 protocol.  Pinning the broker
+            # version avoids kafka-python's blocking auto-detection probe,
+            # which otherwise turns every unreachable-broker startup into an
+            # additional opaque NoBrokersAvailable delay.
+            api_version=KAFKA_API_VERSION,
+            # Metadata, coordinator and timestamp lookups must fail within a
+            # bounded startup budget instead of kafka-python's 305s default.
+            request_timeout_ms=KAFKA_REQUEST_TIMEOUT_MS,
+            enable_auto_commit=False,
+            group_id=self.settings.group_id,
+            sasl_mechanism="PLAIN",
+            security_protocol="SASL_PLAINTEXT",
+            sasl_plain_username=self.settings.sasl_username,
+            sasl_plain_password=self.settings.password,
+            consumer_timeout_ms=self.idle_timeout_ms,
+        )
+
+    def _resolve_initial_offset(
+        self,
+        consumer: Any,
+        topic_partition: Any,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> int:
+        deadline = (
+            monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
+            if deadline_monotonic is None
+            else deadline_monotonic
+        )
+        committed = consumer.committed(
+            topic_partition,
+            timeout_ms=self._remaining_kafka_timeout_ms(deadline),
+        )
+        committed_offset = None
+        if committed is not None:
+            committed_offset = self._normalize_offset(
+                committed,
+                "DTS_KAFKA_COMMITTED_OFFSET_INVALID",
+            )
+
+        database_offset = None
         if self.processor.authoritative_checkpoint:
             database_offset = self.processor.resume_offset(
                 source_region=self.settings.source_region,
                 topic=self.settings.topic,
                 partition=self.settings.partition,
             )
-            if database_offset is not None:
-                if committed is not None and committed > database_offset:
-                    raise DtsConfigurationError(
-                        "DTS_KAFKA_OFFSET_AHEAD_OF_DATABASE"
-                    )
-                consumer.seek(topic_partition, database_offset)
-                return
-            # A new target ledger must replay from the explicit subscription
-            # boundary even if an earlier shadow run advanced this group.
-            committed = None
-        if committed is not None:
-            consumer.seek(topic_partition, committed)
-            return
-        if self.settings.start_timestamp_seconds is None:
-            raise DtsConfigurationError("TIT_DTS_START_AT_REQUIRED_FOR_NEW_GROUP")
-        offsets = consumer.offsets_for_times(
-            {topic_partition: self.settings.start_timestamp_seconds}
+        if database_offset is None:
+            # A durable sink with no database checkpoint must replay from the
+            # explicit subscription boundary even if an earlier shadow run
+            # advanced this consumer group. A shadow consumer keeps its normal
+            # group resume behavior.
+            if (
+                not self.processor.authoritative_checkpoint
+                and committed_offset is not None
+            ):
+                return committed_offset
+            if self.settings.start_timestamp_seconds is None:
+                raise DtsConfigurationError(
+                    "TIT_DTS_START_AT_REQUIRED_FOR_NEW_GROUP"
+                )
+            offsets = consumer.offsets_for_times(
+                self._with_remaining_request_timeout(
+                    consumer,
+                    deadline,
+                    {topic_partition: self.settings.start_timestamp_seconds},
+                )
+            )
+            resolved = offsets.get(topic_partition)
+            if resolved is None:
+                raise DtsConfigurationError(
+                    "DTS_START_AT_OUTSIDE_AVAILABLE_RANGE"
+                )
+            return self._normalize_offset(
+                getattr(resolved, "offset", None),
+                "DTS_KAFKA_INITIAL_OFFSET_INVALID",
+            )
+
+        target_offset = self._normalize_offset(
+            database_offset,
+            "DTS_KAFKA_DATABASE_OFFSET_INVALID",
         )
-        resolved = offsets.get(topic_partition)
-        if resolved is None:
-            raise DtsConfigurationError("DTS_START_AT_OUTSIDE_AVAILABLE_RANGE")
-        consumer.seek(topic_partition, resolved.offset)
+        if committed_offset is not None:
+            if committed_offset > target_offset:
+                raise DtsConfigurationError(
+                    "DTS_KAFKA_OFFSET_AHEAD_OF_DATABASE"
+                )
+
+        self._set_remaining_request_timeout(consumer, deadline)
+        beginning_offsets = consumer.beginning_offsets([topic_partition])
+        self._set_remaining_request_timeout(consumer, deadline)
+        end_offsets = consumer.end_offsets([topic_partition])
+        if (
+            topic_partition not in beginning_offsets
+            or topic_partition not in end_offsets
+        ):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_OFFSET_RANGE_UNAVAILABLE"
+            )
+        beginning_offset = self._normalize_offset(
+            beginning_offsets[topic_partition],
+            "DTS_KAFKA_OFFSET_RANGE_INVALID",
+        )
+        end_offset = self._normalize_offset(
+            end_offsets[topic_partition],
+            "DTS_KAFKA_OFFSET_RANGE_INVALID",
+        )
+        if beginning_offset > end_offset:
+            raise DtsConfigurationError("DTS_KAFKA_OFFSET_RANGE_INVALID")
+        if not beginning_offset <= target_offset <= end_offset:
+            raise DtsConfigurationError(
+                "DTS_KAFKA_DATABASE_OFFSET_OUTSIDE_AVAILABLE_RANGE"
+            )
+        return target_offset
+
+    @staticmethod
+    def _remaining_kafka_timeout_ms(deadline_monotonic: float) -> int:
+        remaining_ms = ceil((deadline_monotonic - monotonic()) * 1000)
+        if remaining_ms < 1:
+            raise DtsConfigurationError("DTS_KAFKA_STARTUP_PROBE_TIMEOUT")
+        return min(remaining_ms, KAFKA_REQUEST_TIMEOUT_MS)
+
+    @classmethod
+    def _set_remaining_request_timeout(
+        cls,
+        consumer: Any,
+        deadline_monotonic: float,
+    ) -> None:
+        timeout_ms = cls._remaining_kafka_timeout_ms(deadline_monotonic)
+        config = getattr(consumer, "config", None)
+        if isinstance(config, dict):
+            config["request_timeout_ms"] = timeout_ms
+
+    @classmethod
+    def _with_remaining_request_timeout(
+        cls,
+        consumer: Any,
+        deadline_monotonic: float,
+        request: dict[Any, int],
+    ) -> dict[Any, int]:
+        cls._set_remaining_request_timeout(consumer, deadline_monotonic)
+        return request
+
+    @staticmethod
+    def _normalize_offset(
+        raw_offset: Any,
+        error_code: str,
+    ) -> int:
+        try:
+            offset = int(raw_offset)
+        except (TypeError, ValueError) as exc:
+            raise DtsConfigurationError(error_code) from exc
+        if offset < 0:
+            raise DtsConfigurationError(error_code)
+        return offset
 
 
 # Compatibility name for the no-write command and existing callers.  The

@@ -8,7 +8,7 @@
 | 页面布局和文案 | `frontend/src/pages/*.tsx` |
 | 全局视觉 | `frontend/src/styles.css`、`frontend/src/components/Common.tsx` |
 | 前端接口与类型 | `frontend/src/api.ts`、`frontend/src/types.ts` |
-| 前端静态托管与 Gaea 打包 | `backend/app/frontend_static.py`、`teacher/frontend/nginx.conf`、`gaea/Dockerfile`、`gaea/nginx/`、`gaea/s6-rc.d/`、`gaea/README.md` |
+| 前端静态托管与 Gaea 打包 | `backend/app/frontend_static.py`、`teacher/frontend/nginx.conf`、`gaea/Dockerfile`、`gaea/gaea.yml`、`gaea/application/Dockerfile`、`gaea/dts-ingest/Dockerfile`、`gaea/nginx/`、`gaea/s6-rc.d/`、`gaea/README.md` |
 | 任务目录 | `backend/app/task_catalog.py`、`backend/app/task_seed.py` |
 | 个性化触发 | `backend/app/personalized_rules.py`、`backend/app/lesson_ingestion.py` |
 | 积分与资格 | `backend/app/services.py`、`backend/app/config_service.py` |

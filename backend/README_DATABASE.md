@@ -196,6 +196,10 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   `tit_growth_app`，将 DTS 源事实写入限定为 `tit_dts_ingest_runtime`，并撤销旧
   SourceWide group-role 对相关表的授权；教师端继续独立使用 `tit_teacher_crud`。
 - `20260812_57_dts_state` 新增 DTS 事件账本、字段白名单当前态、反向依赖 GIN 索引、脏键和数据库位点；`run_dts_ingest.py` 在接入事务后调用投影器重算两张源宽表。
+- DTS 持久化进程每次启动先只读校验目标库身份、Catalog、ACL 和 checkpoint，再以相同运行密钥
+  校验 Kafka SASL/topic/partition/初始位点；全部通过后才写 readiness。该启动探针不会创建
+  `dts_ingest_events/source_rows/dirty_keys/checkpoints` 记录，也不会消费消息或提交 Kafka offset；
+  四张状态表的首次变化只能来自正式消息事务。
 - `20260812_58_table_acl` 撤销运行账号的显式列级 ACL，改用表级权限；任务、Outbox、
   账号、通知、工单和逐课结果的字段边界由 Trigger 强制，教师 G01 只读两列受限视图。
 - `20260812_59_simple_acl` 合并 release 内容分支与 ACL 分支，落实最终三列表中的表级权限；DTS 状态表虽授予 CRUD，物理删除、事件账本改写和位点回退仍由 Trigger 拒绝。

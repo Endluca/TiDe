@@ -1715,13 +1715,16 @@ def test_durable_checkpoint_wins_over_a_lagging_kafka_commit() -> None:
     class Consumer:
         def __init__(self, committed: int) -> None:
             self._committed = committed
-            self.seek_calls: list[tuple[object, int]] = []
 
-        def committed(self, _partition: object) -> int:
+        def committed(self, _partition: object, *, timeout_ms: int) -> int:
+            assert timeout_ms == 15_000
             return self._committed
 
-        def seek(self, partition: object, offset: int) -> None:
-            self.seek_calls.append((partition, offset))
+        def beginning_offsets(self, partitions: list[object]):
+            return {partition: 0 for partition in partitions}
+
+        def end_offsets(self, partitions: list[object]):
+            return {partition: 100 for partition in partitions}
 
     settings = SimpleNamespace(
         source_region="ovs",
@@ -1731,9 +1734,7 @@ def test_durable_checkpoint_wins_over_a_lagging_kafka_commit() -> None:
     runner = DtsKafkaShadowConsumer(settings, DtsEventProcessor(Sink()))
     consumer = Consumer(41)
 
-    runner._seek_initial_position(consumer, "partition-0")
-
-    assert consumer.seek_calls == [("partition-0", 42)]
+    assert runner._resolve_initial_offset(consumer, "partition-0") == 42
 
     with pytest.raises(DtsConfigurationError, match="AHEAD_OF_DATABASE"):
-        runner._seek_initial_position(Consumer(43), "partition-0")
+        runner._resolve_initial_offset(Consumer(43), "partition-0")

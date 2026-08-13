@@ -95,7 +95,7 @@ Tide_teachers_camp/
 ├── teacher/           # 教师端 NestJS API、React Web App 及其文档
 ├── contracts/         # 两端共享任务和课程数据契约
 ├── deploy/combined/   # 两端同机、不同域名的联合部署入口
-├── gaea/              # 运营端、教师端与两个数据库选主 Worker 的单镜像 Gaea 配置
+├── gaea/              # application / DTS 双构建图与三个 Gaea 项目的统一构建入口
 ├── docs/              # 架构、数据、积分、认证和配置说明
 ├── project-context/   # 业务方与 AI 的项目背景
 └── scripts/           # 运营端一键安装和启动
@@ -136,29 +136,40 @@ Tide_teachers_camp/
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
-- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；两条订阅的非敏感参数已固化，`tide_system_test` 已迁移至 public 59，但两个 Gaea DTS 项目、运行时密钥和真实 broker 消费均尚未配置。当前增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；两条流先只接入追平，投影通过显式开关在单一项目启用。外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
+- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；两条订阅的非敏感参数已固化，`tide_system_test` 已迁移至 public 59，两个独立 Gaea DTS 项目与各自密钥也已配置。国内 PRE 已通过目标 PostgreSQL 连接及传输核验；同 Pod 探针确认 broker DNS 正常、到 `18003` 的 TCP 连接超时，当前阻断在 Gaea PRE 到国内 DTS VPC 的网络路径，尚无 checkpoint、目标写入或真实字段对账。海外项目虽保持运行，但在取得本次进程成功 heartbeat 前也不能认定已通。当前增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；两条流先只接入追平，投影通过显式开关在单一项目启用。外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
 
-## Gaea 部署骨架（单项目、单镜像、双域名）
+## Gaea 部署骨架（双构建入口、三项目）
 
-[`gaea/Dockerfile`](gaea/Dockerfile) 同时构建运营 React、教师 React、运营 FastAPI 和
-教师 NestJS，并用 s6-overlay 在一个 Pod 中管理运营 API、教师 API、教师 Nginx、积分
-结算 Worker 与 SourceWide Worker 五个进程。运营域名指向容器 `8010`，教师域名指向 `8080`；教师 NestJS
-监听 `3000`，只供同 Pod 的 Nginx 代理：
+[`gaea/gaea.yml`](gaea/gaea.yml) 声明 `application` 和 `dts-ingest` 两个构建模块。
+`application` 构建运营 React、教师 React、运营 FastAPI 和教师 NestJS，并用 s6-overlay 在
+一个 Pod 中管理运营 API、教师 API、教师 Nginx、积分结算 Worker 与 SourceWide Worker 五个
+进程；`dts-ingest` 只安装 DTS 的 Python 依赖并直接运行接入进程，不构建两个前端、教师
+NestJS 或 Nginx。根 [`gaea/Dockerfile`](gaea/Dockerfile) 暂时保留为 application 的兼容入口：
 
 ```bash
 docker build -f gaea/Dockerfile -t tide-camp:gaea .
+docker build -f gaea/application/Dockerfile -t tide-camp:gaea .
+docker build -f gaea/dts-ingest/Dockerfile -t tide-camp-dts:gaea .
 ```
 
-同一 Gaea 项目和镜像支持整套 Pod 设置为 `2` 个或更多副本，并使用 `RollingUpdate`：每个
-Pod 都启动五个进程；两个 Worker 分别通过 PostgreSQL session advisory lock 保持逻辑单活，
-未持锁的 standby 仍刷新本 Pod heartbeat，并用数据库探测维持 readiness。教师全局调度使用
+现有 application 项目可暂时继续使用根兼容入口，切换多模块后选择 `application`，并支持整套
+Pod 设置为 `2` 个或更多副本；海外、国内 DTS 分别使用独立 Gaea 项目，两个项目都选择同一个
+`dts-ingest` 构建模块并各自保持 1 个
+副本。两套 DTS 项目的镜像内容相同，但 Gaea 仍会为两个项目分别构建和推送；broker、消费组、
+账号、密码和接入位点通过彼此隔离的运行变量注入。模块选择是项目构建配置，不是运行时环境变量。
+每个 DTS 进程启动时先只读校验目标库和 Kafka 的 SASL/topic/partition/初始位点，全部通过后才
+写 readiness；探针不读取消息、不写目标库、不提交 offset，因此 Pod Ready 只表示“具备开始
+消费的条件”，不表示已经完成 CDC 接入或字段对账。
+
+application 的两个 Worker 分别通过 PostgreSQL session advisory lock 保持逻辑单活，未持锁的
+standby 仍刷新本 Pod heartbeat，并用数据库探测维持 readiness。教师全局调度使用
 `tide.job_leases`；G04 图片审核属于任务提交校验，不再运行独立照片 Worker。
 
 多副本的私有文件首选 OSS；`FILE_STORAGE_PROVIDER=LOCAL` 只允许所有 Pod 共享同一块
 `ReadWriteMany (RWX)` 卷。视频预热脚本的本地幂等账本若被执行，也必须使用跨执行节点可见
 的 RWX 状态目录；Worker heartbeat 必须留在各 Pod 的 `/tmp`，不能共享。完整环境变量、
-双域名、健康检查、连接预算和发布验收见 [Gaea 部署说明](gaea/README.md)。逻辑服务与数据库
-角色仍然独立；TiDe Alembic 和教师端 migration 仍须作为发布前独立作业执行。该单容器形态
+双域名、DTS 模块选择、健康检查、连接预算和发布验收见 [Gaea 部署说明](gaea/README.md)。逻辑服务与数据库
+角色仍然独立；TiDe Alembic 和教师端 migration 仍须作为发布前独立作业执行。application 的单容器形态
 只用于受控 TEST：同一 UID 的进程仍能接触整套容器密钥，不具备生产级秘密隔离。
 教师 Web 固定请求同源 `/api` 并由 Nginx 代理，后续更换教师域名不再需要重建前端镜像。
 

@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import json
+import socket
 from types import SimpleNamespace
 
 import pytest
+from kafka.errors import (
+    GroupAuthorizationFailedError,
+    KafkaConnectionError,
+    KafkaTimeoutError,
+    NoBrokersAvailable,
+    SaslAuthenticationFailedError,
+    TopicAuthorizationFailedError,
+    UnknownTopicOrPartitionError,
+    UnsupportedVersionError,
+)
 from sqlalchemy.exc import OperationalError
 
 from app.dts_source_consumer import DtsConfigurationError
@@ -80,6 +91,32 @@ def test_watch_waits_only_after_underfilled_or_idle_batch(
         )
         is expected
     )
+
+
+def test_invalid_runtime_arguments_clear_previous_health_evidence(tmp_path) -> None:
+    readiness = tmp_path / "readiness.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    readiness.write_text('{"status":"ready"}', encoding="utf-8")
+    heartbeat.write_text('{"status":"ok"}', encoding="utf-8")
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--interval-seconds",
+            "-1",
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^DTS_INTERVAL_SECONDS_INVALID$",
+    ):
+        run_dts_ingest._run(args)
+
+    assert not readiness.exists()
+    assert not heartbeat.exists()
 
 
 def test_diagnostic_sslmode_is_strict_and_safe() -> None:
@@ -180,6 +217,93 @@ def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> N
         "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
         "error_type": "RuntimeError",
     }
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (
+            NoBrokersAvailable("broker.internal account=consumer password=secret"),
+            "DTS_BROKER_UNAVAILABLE",
+        ),
+        (
+            socket.gaierror("broker.internal password=secret"),
+            "DTS_BROKER_DNS_FAILED",
+        ),
+        (
+            KafkaConnectionError("DNS failure broker.internal password=secret"),
+            "DTS_BROKER_DNS_FAILED",
+        ),
+        (
+            SaslAuthenticationFailedError(
+                "account=consumer password=secret"
+            ),
+            "DTS_BROKER_SASL_AUTHENTICATION_FAILED",
+        ),
+        (
+            KafkaTimeoutError("broker.internal password=secret"),
+            "DTS_BROKER_CONNECTION_TIMEOUT",
+        ),
+        (
+            KafkaConnectionError("timeout broker.internal password=secret"),
+            "DTS_BROKER_CONNECTION_TIMEOUT",
+        ),
+        (
+            TopicAuthorizationFailedError("topic-v2 password=secret"),
+            "DTS_BROKER_TOPIC_AUTHORIZATION_FAILED",
+        ),
+        (
+            GroupAuthorizationFailedError("tit-dom-group password=secret"),
+            "DTS_BROKER_GROUP_AUTHORIZATION_FAILED",
+        ),
+        (
+            UnknownTopicOrPartitionError("topic-v2 password=secret"),
+            "DTS_BROKER_TOPIC_PARTITION_UNAVAILABLE",
+        ),
+        (
+            UnsupportedVersionError("broker.internal password=secret"),
+            "DTS_BROKER_PROTOCOL_UNSUPPORTED",
+        ),
+    ],
+)
+def test_kafka_error_payload_is_stable_and_never_echoes_connection_details(
+    error: Exception,
+    expected_code: str,
+) -> None:
+    payload = _safe_operational_error_payload(error)
+
+    assert payload == {
+        "error_code": expected_code,
+        "error_type": type(error).__name__,
+    }
+    rendered = json.dumps(payload)
+    assert "broker.internal" not in rendered
+    assert "consumer" not in rendered
+    assert "secret" not in rendered
+
+
+def test_nested_kafka_authentication_failure_keeps_outer_error_text_private(
+) -> None:
+    try:
+        try:
+            raise SaslAuthenticationFailedError(
+                "account=consumer password=secret"
+            )
+        except SaslAuthenticationFailedError as cause:
+            raise RuntimeError(
+                "broker.internal account=consumer password=secret"
+            ) from cause
+    except RuntimeError as error:
+        payload = _safe_operational_error_payload(error)
+
+    assert payload == {
+        "error_code": "DTS_BROKER_SASL_AUTHENTICATION_FAILED",
+        "error_type": "RuntimeError",
+    }
+    rendered = json.dumps(payload)
+    assert "broker.internal" not in rendered
+    assert "consumer" not in rendered
+    assert "secret" not in rendered
 
 
 def test_operational_error_payload_survives_broken_driver_error_object() -> None:
@@ -284,6 +408,38 @@ def test_main_never_echoes_connection_error_text(
     assert all(fragment not in stderr for fragment in secret_fragments)
 
 
+def test_main_emits_safe_broker_unavailable_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret_fragments = (
+        "broker.internal",
+        "account=consumer",
+        "password=runtime-secret",
+    )
+    error = NoBrokersAvailable(" ".join(secret_fragments))
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "build_parser",
+        lambda: SimpleNamespace(parse_args=lambda: SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "_run",
+        lambda _args: (_ for _ in ()).throw(error),
+    )
+
+    assert run_dts_ingest.main() == 1
+
+    stderr = capsys.readouterr().err
+    assert json.loads(stderr) == {
+        "error_code": "DTS_BROKER_UNAVAILABLE",
+        "error_type": "NoBrokersAvailable",
+        "status": "error",
+    }
+    assert all(fragment not in stderr for fragment in secret_fragments)
+
+
 def test_exhausted_projection_prevents_a_success_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -332,10 +488,22 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
             )
 
     class Consumer:
+        startup_probed = False
+
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
+        def startup_probe(self) -> dict[str, object]:
+            assert not readiness.exists()
+            self.startup_probed = True
+            return {
+                "status": "ok",
+                "partition": 0,
+                "initial_offset": 42,
+            }
+
         def run(self, **_kwargs: object) -> dict[str, int]:
+            assert self.startup_probed is True
             return {
                 "seen": 1,
                 "processed": 1,
@@ -399,7 +567,95 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
         "sslmode": "disable",
         "insecure_transport_authorized": True,
     }
+    assert json.loads(readiness.read_text(encoding="utf-8"))["broker_probe"] == {
+        "initial_offset": 42,
+        "partition": 0,
+        "status": "ok",
+    }
     assert not heartbeat.exists()
     assert sink.activation_acquired is True
     assert sink.lock_checked is True
+    assert sink.closed is True
+
+
+def test_startup_probe_failure_prevents_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    stream_settings = SimpleNamespace(
+        source_region="dom",
+        topic="dom-topic",
+        partition=0,
+        start_timestamp_seconds=1786550400,
+        safe_summary=lambda: {"source_region": "dom", "topic": "dom-topic"},
+    )
+    database_settings = SimpleNamespace(safe_summary=lambda: {})
+
+    class Sink:
+        engine = object()
+        closed = False
+
+        def resume_offset(self, **_kwargs: object) -> int:
+            return 42
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Projector:
+        settings = SimpleNamespace(
+            require_subscription_boundary=lambda _value: None
+        )
+
+    class Consumer:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def startup_probe(self) -> object:
+            raise NoBrokersAvailable("broker.internal password=secret")
+
+        def run(self, **_kwargs: object) -> object:
+            raise AssertionError("ingest must not run after a failed probe")
+
+    sink = Sink()
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsConsumerSettings",
+        SimpleNamespace(from_env=lambda: stream_settings),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsIngestDatabaseSettings",
+        SimpleNamespace(from_env=lambda: database_settings),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "PostgresDtsEventSink",
+        lambda *_args, **_kwargs: sink,
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsWideProjector",
+        lambda *_args, **_kwargs: Projector(),
+    )
+    monkeypatch.setattr(run_dts_ingest, "DtsKafkaConsumer", Consumer)
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    monkeypatch.setenv("TIT_DTS_PROJECTION_ENABLED", "false")
+    readiness = tmp_path / "readiness.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    readiness.write_text('{"status":"ready"}', encoding="utf-8")
+    heartbeat.write_text('{"status":"ok"}', encoding="utf-8")
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    with pytest.raises(NoBrokersAvailable):
+        run_dts_ingest._run(args)
+
+    assert not readiness.exists()
+    assert not heartbeat.exists()
     assert sink.closed is True

@@ -1,0 +1,6 @@
+multmod: true
+gaeamod:
+  enable: true
+  name:
+    - application
+    - dts-ingest

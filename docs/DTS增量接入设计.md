@@ -28,11 +28,13 @@
 13. `TIT_DTS_PROJECTION_MAX_ATTEMPTS` 默认 `8`（允许 `1–100`）。按 `10/20/40/80/160/300/300` 秒累计提供约 15 分钟跨 Topic 暂态依赖窗口；达到阈值后投影进程以 `DTS_WIDE_PROJECTION_RETRY_EXHAUSTED` 失败关闭且不刷新成功 heartbeat。重启不能清除该状态，只有对应新源事件重新置脏并清零尝试次数后才能恢复。
 14. 每个持久化进程绑定唯一 `source_region`；入库事件区域与运行配置不一致时以 `DTS_SOURCE_REGION_MISMATCH` 失败关闭。两条 PostgreSQL 连接分别使用 `tit-dts-ingest-ovs`、`tit-dts-ingest-dom` 标识，健康状态也带安全的订阅摘要。
 15. 启动时通过 PostgreSQL Catalog 精确校验教师 55 列、课程 23 列的顺序、类型、长度和可空性，以及四张 DTS 状态表的 57 列、15 个关键约束、4 个必要索引和 4 个 guard Trigger。两个 SourceWide Outbox Trigger 还会校验事件类型、绑定函数、参数、WHEN 和启用状态；任一漂移都在连接 broker 之前失败关闭。
-16. 开启投影时，代码同时校验国内/海外两个 partition 0 的数据库 checkpoint 已达到统一激活时刻、投诉分类字典非空且引用完整，并通过全局 PostgreSQL session advisory lock 保证只有一个投影器。
-17. 首次投影排空期间，application Profile 必须显式设置 `TIT_SOURCE_WIDE_ENABLED=false`，防止下游在宽表中间态上计分或固化不可逆资格。待脏键清零、两轮稳定且宽表抽样对账后，再恢复为 `true` 并验证 SourceWide 单 leader 与 Outbox 排空。
-18. `TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED` 默认且在当前预发布保持 `false`。该门禁不停止积分和当前门槛刷新，只禁止尚未获得的出营/金牌资格首次变为 `true`；既有资格继续保留。非法布尔值失败关闭。业务终态与双流水位门禁完成前不得开启。
+16. 每次持久化进程启动都先清除上一进程留下的 heartbeat/readiness，再依次完成目标库连接、传输、身份、Schema/ACL 校验和 Kafka 端到端只读探针。Kafka 探针使用与正式消费相同的 SASL 配置，验证 topic、partition 0 以及真实初始位点：没有数据库 checkpoint 时按 `TIT_DTS_START_AT` 解析 offset；已有 checkpoint 时验证它没有落后于 Kafka 最早可用位点、没有超过当前末端，并继续执行 Kafka 位点领先数据库的保护。整轮 Kafka 位点探针共享 15 秒总预算，关闭连接另有 1 秒上限。任一步失败都不写 `ready` 或成功 heartbeat，进程非零退出，由 Gaea 重新拉起后再次完整检查。
+17. 启动 Kafka 探针只读取 metadata/offset，不迭代消息、不执行 Avro 解码、不调用事件处理器、不写接入账本/镜像/脏键/宽表，也不提交消费组 offset。探针成功只证明当前具备开始消费的条件，不等于已经消费到一条消息；实际接入必须另看事件账本、数据库 checkpoint 和消费组位点。
+18. 开启投影时，代码同时校验国内/海外两个 partition 0 的数据库 checkpoint 已达到统一激活时刻、投诉分类字典非空且引用完整，并通过全局 PostgreSQL session advisory lock 保证只有一个投影器。
+19. 首次投影排空期间，application Profile 必须显式设置 `TIT_SOURCE_WIDE_ENABLED=false`，防止下游在宽表中间态上计分或固化不可逆资格。待脏键清零、两轮稳定且宽表抽样对账后，再恢复为 `true` 并验证 SourceWide 单 leader 与 Outbox 排空。
+20. `TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED` 默认且在当前预发布保持 `false`。该门禁不停止积分和当前门槛刷新，只禁止尚未获得的出营/金牌资格首次变为 `true`；既有资格继续保留。非法布尔值失败关闭。业务终态与双流水位门禁完成前不得开启。
 
-`scripts/run_dts_source_consumer.py` 保留为不连接目标库的影子验证；只有显式传入 `--commit-offsets` 才会推进消费组位点。`scripts/run_dts_ingest.py` 是持久化进程，数据库事务成功后始终提交 offset。
+`scripts/run_dts_source_consumer.py` 保留为不连接目标库的影子验证；它会真实读取并解码消息，只有显式传入 `--commit-offsets` 才会推进消费组位点。`scripts/run_dts_ingest.py` 的启动探针不读取消息、不提交 offset；进入正式消费循环后，只有对应消息的数据库事务成功才提交该条 offset。
 
 ## 为什么目标宽表之外还需要接入状态
 
@@ -47,8 +49,11 @@ CDC 事件来自多张表。一个评价、投诉或质检事件只能给出局�
 
 ## Gaea 预发布配置
 
-DTS 使用同一镜像，但国内、海外分别建立独立 Gaea 项目，避免两条订阅互相继承密码、共享
-进程生命周期，也避免运营/教师进程继承 DTS 和数据库密码。每个项目只配置一组：
+DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国内、海外仍分别建立独立 Gaea
+项目。Gaea 会为两个项目分别构建和推送内容相同的镜像；模块选择不提供跨项目 digest 复用。
+该结构避免两条订阅互相继承密码、共享进程生命周期，也避免运营/教师进程继承 DTS 和数据库
+密码。两个项目的构建类型都必须是 `multi_module`、构建模块都必须是 `dts-ingest`，每个项目
+只配置一组：
 
 - `TIT_PROCESS_PROFILE=dts-ingest`；
 - DTS 非敏感连接参数：`TIT_DTS_SOURCE_REGION/BROKER_URL/TOPIC/GROUP_ID/ACCOUNT/START_AT`；
@@ -87,9 +92,10 @@ DTS 使用同一镜像，但国内、海外分别建立独立 Gaea 项目，避�
 
 23/55 字段投影和国内/海外双运行配置已经进入持久化进程，不再停留在候选字段或影子输出。
 `tide_system_test` 已迁移至 public 59 / teacher 0041；国内、海外两个独立 PRE Gaea 项目已经创建并
-注入各自密钥。首次 release 镜像实启时，两项目均在连接 broker 前因目标 PostgreSQL
-`SHOW ssl=off` 与旧代码固定 `verify-full` 冲突而失败，尚未产生 checkpoint、目标写入或真实字段
-对账；当前代码已增加受控 PRE 例外，仍须发布新镜像并现场验证，因此不能表述为“链路已跑通”。
+注入各自密钥。当前国内项目已通过目标 PostgreSQL 连接及传输核验；同 Pod 只读探针确认 broker
+域名解析成功，但到 `18003` 的 TCP 连接超时，因此阻断在 Gaea PRE 到国内 DTS VPC 的网络路径，
+尚未进入 SASL、topic 或位点验证，也未产生 checkpoint、目标写入或真实字段对账。海外项目当前
+保持运行，但在取得本次进程的成功 heartbeat 前也不能写成“链路已跑通”。
 投诉分类是早于新教师长期存在的静态共享字典，不受“新教师
 入职前无个体数据”覆盖；开启投影前必须通过 DTS 变更事件或受控小型 Seed 将字典装入当前态，并验证
 引用完整性。启动门禁可拒绝不满足这些条件的投影进程，但不能代替真实 DTS 认证、Avro 解码、位点恢复和下游业务对账。

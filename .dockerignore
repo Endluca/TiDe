@@ -28,5 +28,7 @@ teacher/frontend/public/assets/tasks/**/*.mp4
 teacher/frontend/public/assets/tasks/**/*.webm
 teacher/frontend/public/assets/tasks/**/*.mov
 output
+outputs/
+.tmp_*/
 test-results
 playwright-report

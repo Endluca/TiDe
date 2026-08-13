@@ -1,12 +1,18 @@
-# TiDe — Gaea 单镜像、双运行 Profile 配置
+# TiDe — Gaea application 根构建与轻量 DTS 模块
 
 ## 部署模式
 
-这是 Gaea 单模块、单镜像的受控 TEST 部署。镜像有两个互斥运行 Profile：默认
-`application` 承载现有 TiDe 应用，`dts-ingest` 只承载 DTS 接入。两者使用不同 Gaea
-项目和不同密钥集合，Gaea 都直接读取根级 `gaea/Dockerfile`，不使用 `gaea.yml` 或子模块 Dockerfile。
+这是两种构建形态、三个运行项目的受控 TEST 部署：
 
-镜像由 s6-overlay 管理六个进程入口；每个 Profile 只运行自己的业务进程，另一侧入口保持休眠：
+- `gaea/gaea.yml` 声明 `application` 与 `dts-ingest` 两个模块；现有 application 项目可暂时
+  继续读取根级 `gaea/Dockerfile`，切换多模块后选择 `gaea/application/Dockerfile`；两者内容
+  由测试强制保持完全一致；
+- 海外和国内两个独立 DTS 项目都选择 `gaea/dts-ingest/Dockerfile`，但仍由 Gaea 分别构建、
+  推送和发布；
+- 三个项目使用不同密钥集合。模块选择不会自动创建 Gaea 项目，也不会让海外和国内跨项目
+  复用同一个 image digest。
+
+application 镜像由 s6-overlay 管理五个业务进程入口：
 
 | 进程 | 监听端口 | 职责 |
 |---|---:|---|
@@ -15,18 +21,21 @@
 | `teacher-api` | `3000` | NestJS 教师端 API；只在 Pod 内访问，不配置 Gaea Ingress |
 | `score-settlement` | 无 | 固定任务积分结算候选进程、数据库选主和本 Pod heartbeat |
 | `source-wide` | 无 | 字段级源事件消费候选进程、数据库选主和本 Pod heartbeat/readiness |
-| `dts-ingest` | 无 | DTS Avro 消费、接入状态事务、数据库位点、事务后 ACK 和 23/55 字段宽表投影；只在 `dts-ingest` Profile 运行 |
+
+轻量 DTS 镜像不包含上述五个进程、Node、两个前端、教师 NestJS 或 Nginx，只以非 root
+Python PID 1 运行 `run_dts_ingest.py`，负责 DTS Avro 消费、接入状态事务、数据库位点、事务后
+ACK 和 23/55 字段宽表投影。脚本自身处理 SIGTERM/SIGINT，并通过 Pod 本地 heartbeat/readiness
+执行 Docker HEALTHCHECK。
 
 运营端与教师端仍是两套独立 HTTP 服务，只在 `application` Profile 共享 Pod。运营、教师、SourceWide
 数据库角色以及两套
 API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker 任一非零退出，s6 都会
 终止整个容器，让 Kubernetes 重建完整 Pod。
 
-因此 DTS 不能把密码注入 `application` 项目。若塞进同一项目，`S6_KEEP_ENV=1` 会让进程继承整套运行变量，多个业务进程又以
-同一 UID `1001` 运行，因此其中一个进程被利用后可能读取另一个进程的数据库、JWT、OSS
-或邮件凭据。这个结构性取舍只为尽快完成办公室 TEST；需要生产级秘密隔离时必须重新拆分
-容器或 Pod，不能把“数据库角色不同”解释成“密钥彼此不可见”。独立 `dts-ingest` Gaea
-项目正是本次 TEST 的最低秘密隔离边界。
+因此 DTS 不能把密码注入 `application` 项目。完整 application 镜像内的多个业务进程仍以
+同一 UID `1001` 运行，因此其中一个进程被利用后可能读取同 Pod 的数据库、JWT、OSS 或邮件
+凭据；海外和国内 DTS 则通过独立项目、轻量镜像和独立密钥集合与 application 隔离。两个 DTS
+项目也不得合并，因为 broker、消费组、账号、密码和位点不同。
 
 ## 多副本执行模型
 
@@ -52,10 +61,10 @@ PostgreSQL 或使用 session pooling；transaction pooling 不能承载 session 
 
 - Gaea 应用建议从 `2` 个副本开始，可以设置为 `2` 或更高，并使用 `RollingUpdate`。自动伸缩
   也必须保留至少 2 个副本，并先按“每 Pod 数据库连接上限 × 最大副本数”核对公共 PG 配额。
-- `3000` 已由统一镜像强制绑定 `127.0.0.1`，不得再配置 Ingress、SLB 或 Service 端口；
+- `3000` 已由 application 镜像强制绑定 `127.0.0.1`，不得再配置 Ingress、SLB 或 Service 端口；
   教师 API 只能经 `8080/api/*` 访问。
 - Alembic 和教师端 migration 都是发布前独立作业，不能放进 Pod 启动流程。
-- 单镜像不代表跨服务共用数据库账号：运营 API、积分和 SourceWide 计算统一使用
+- application 单 Pod 不代表跨服务共用数据库账号：运营 API、积分和 SourceWide 计算统一使用
   `tit_growth_app`；教师端两个连接池统一使用 `tit_teacher_crud`；迁移和只读契约探针
   统一使用现有管理账号 `tide_sys_admin`。
 - Gaea 高级设置必须允许 root PID 1 启动 `/init`；s6 随后把业务进程降权到 UID `1001`。
@@ -167,7 +176,7 @@ Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两
 
 `TIT_FRONTEND_REQUIRED=true` 已固定在镜像中，禁止覆盖为 `false`。
 
-统一镜像还读取 Gaea 注入的 `MEMORY_SIZE`，只用于把 Nginx worker 数渲染到 2–16 的有界
+application 镜像还读取 Gaea 注入的 `MEMORY_SIZE`，只用于把 Nginx worker 数渲染到 2–16 的有界
 范围；未设置时按 8 个 worker 渲染，未知档位安全回退到 2。
 
 ## 积分 Worker 进程级变量
@@ -226,8 +235,9 @@ SourceWide 健康探针会使用同一个受限数据库身份直接读取 Outbo
 
 ## DTS ingest 独立 Profile
 
-国内和海外分别建立一个独立 Gaea 项目，两个项目使用同一镜像并固定
-`TIT_PROCESS_PROFILE=dts-ingest`。每个项目只消费一条订阅，不能在同一进程混放两套
+国内和海外分别建立一个独立 Gaea 项目，两个项目都选择 `dts-ingest` 构建模块并固定
+`TIT_PROCESS_PROFILE=dts-ingest`。Gaea 仍会为两个项目分别构建和推送内容相同的轻量镜像；
+模块选择本身不提供跨项目 digest 复用。每个项目只消费一条订阅，不能在同一进程混放两套
 broker、消费组或 SASL 密码。两个项目都不配置运营、教师、JWT、OSS 或邮件密钥；默认
 application 项目也不配置任何 DTS 变量。
 
@@ -284,9 +294,14 @@ lock；第二个误开启投影的项目会失败关闭。每个 DTS Pod 的数�
 `20260812_59_simple_acl` 必须先由
 `tide_sys_admin` 应用；运行账号没有建表权限，接入状态的删除/回退由 Trigger 拒绝。
 
-DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`，包含订阅区域、
-topic、本轮接入和宽表投影计数，只证明该项目的进程与数据库身份检查持续成功，不证明字段值
-已通过业务对账。国内项目的起始边界已固定为 `2026-08-12T16:30:00+08:00`；任一项目未注入
+DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`。进程启动时先删除
+上一进程留下的两个文件；目标数据库连接/身份/Schema/ACL 与 Kafka SASL、topic、partition 0、
+初始位点的只读探针全部通过后，才写本次进程的 `readiness=ready`。Kafka 位点探针共享 15 秒
+总预算，关闭连接另有 1 秒上限；探针不读取消息、不写目标库、不提交 offset，任一步失败都由
+进程非零退出且不会短暂变绿。首轮以及后续消费循环成功完成后才
+刷新 heartbeat，其中包含本轮接入和宽表投影计数。两者同时健康只证明服务具备消费条件并持续
+运行，不证明至少消费到一条业务消息或字段值已通过对账。国内项目的起始边界已固定为
+`2026-08-12T16:30:00+08:00`；任一项目未注入
 本项目 `TIT_DTS_PASSWORD` 时失败关闭。`TIT_DTS_START_AT` 是首次回放边界，不是 Pod 启动
 时间；海外、国内起点均早于 `2026-08-13` cohort。两条链路先追平到同一激活时刻并完成静态
 投诉分类字典装载/引用完整性检查。开启投影时，代码要求两地区指定 topic 的 partition 0
@@ -348,7 +363,7 @@ checkpoint 均存在且 `source_timestamp >= TIT_DTS_ACTIVATION_AT`，要求未�
 | `MODELARK_MODEL` | 否 | `seed-2-0-lite-260228` | BytePlus ModelArk 模型 ID |
 | `ARK_API_KEY` | 条件必填 | 密钥管理注入 | 仅教师后端模型调用使用，不进入镜像或业务表 |
 
-统一镜像会把教师 `BIND_HOST` 固定为 `127.0.0.1`、`PORT` 固定为 `3000`，并把单文件
+application 镜像会把教师 `BIND_HOST` 固定为 `127.0.0.1`、`PORT` 固定为 `3000`，并把单文件
 `FILE_UPLOAD_MAX_BYTES` 固定为 10 MiB，以保持在 Nginx 26 MiB 请求上限内；这些值不要在
 Gaea 另行配置。教师 Nginx 只从 `TIDE_TRUSTED_PROXY_CIDRS`（未设时复用
 `TIT_TRUSTED_PROXY_IPS`）指定的入口解析 `X-Forwarded-For`。仍需平台确认 Ingress 会覆盖
@@ -376,7 +391,14 @@ TEST 只验收当前教师绑定的正式阔知课程；不存在示例账号或
 
 ```bash
 docker build -f gaea/Dockerfile -t tide-camp:gaea .
+docker build -f gaea/dts-ingest/Dockerfile -t tide-camp-dts:gaea .
 ```
+
+Gaea 中现有 application 项目可以暂时保持根构建方式，也可切换 `multi_module/application`；
+海外与国内 DTS 项目必须把构建类型切换为 `multi_module` 并都选择 `dts-ingest`。不要在运行
+变量区添加所谓“镜像口味”变量，它不会改变 Docker 构建。根 Dockerfile 暂时保留 application
+及 DTS Profile 兼容入口，便于尚未切换模块的既有项目回滚；三个项目均完成模块化构建验收后，
+再单独决定是否删除该兼容入口。
 
 使用隔离测试环境文件启动并暴露两个页面端口：
 
@@ -432,17 +454,20 @@ docker stop tide-camp-gaea-test
    `minReplicas >= 2`，并按最大副本数核对数据库连接预算。同时确认平台允许 root `/init`，
    配置 `8010` 运营域名、`8080` 教师域名，以及 OSS 或同一块 RWX 共享卷。
 4. 停止旧 `test-tide-camp-worker`，避免它与新镜像内的 Worker 同时常驻。
-5. 向现有 `tide-camp-api` 项目发布统一镜像，现场读回 replicas、自动伸缩、RollingUpdate、
+5. 向现有 `tide-camp-api` 项目发布 application 镜像，现场读回 replicas、自动伸缩、RollingUpdate、
    两个端口、两个域名、共享存储权限和每个 Pod 的健康状态；此时应确认积分 Worker 有且仅有
    一个 leader、SourceWide s6 服务因显式门禁保持暂停，聚合健康检查只跳过它的
    heartbeat/readiness，而不是把其他进程故障伪装成健康。
 6. 从两个外部 HTTPS 域名先验证运营登录、教师登录、工单往返和跨 Pod 文件读写；
    `TIT_SOURCE_WIDE_ENABLED=false` 期间不得把任务、积分或资格结果记为全流程验收通过。
-7. 分别建立海外、国内两个 DTS TEST 项目，均设置 `TIT_PROCESS_PROFILE=dts-ingest`、副本数
-   1，并只注入本项目对应的 DTS 密码与 `tit_dts_ingest_runtime` 数据库密码。使用各自固化的
+7. 分别建立海外、国内两个 DTS TEST 项目，构建类型均选择 `multi_module`、构建模块均选择
+   `dts-ingest`，设置 `TIT_PROCESS_PROFILE=dts-ingest`、副本数 1，并只注入本项目对应的 DTS
+   密码与 `tit_dts_ingest_runtime` 数据库密码。使用各自固化的
    区域回放边界和相同的 `2026-08-13` 开放式 cohort，先保持
-   `TIT_DTS_PROJECTION_ENABLED=false`，读回两套 readiness/heartbeat、事件账本、数据库位点
-   和消费组位点，完成静态投诉分类字典装载与引用完整性检查；两条流追平同一激活时刻后，仅在
+   `TIT_DTS_PROJECTION_ENABLED=false`。先确认两套 readiness 表明 DB 与 Broker 启动探针通过，
+   再单独读回 heartbeat、事件账本、数据库 checkpoint 和消费组位点，证明真实消息已经进入正式
+   消费事务；不能用 readiness 代替接入证据。完成静态投诉分类字典装载与引用完整性检查后，
+   两条流追平同一激活时刻，仅在
    一个项目配置相同的两个 required topic 和带时区 `TIT_DTS_ACTIVATION_AT` 后打开投影。确认
    双 checkpoint、投诉字典门禁和全局投影锁均通过，再等待 `PENDING/RETRY/PROCESSING`
    脏键清零且连续两轮稳定，并抽样核对两张宽表。随后把 application 项目的
@@ -454,7 +479,7 @@ docker stop tide-camp-gaea-test
 8. 业务验收完成后再下线旧 Worker 项目；不要用“Pod 运行中”代替端到端验收，也不要把
    “DTS 已消费”写成“两张宽表已闭环”。
 
-统一镜像可通过 `RollingUpdate` 回滚到上一个版本；旧、新版本短暂并存时仍由同一数据库锁
+application 镜像可通过 `RollingUpdate` 回滚到上一个版本；旧、新版本短暂并存时仍由同一数据库锁
 保证积分逻辑单活。旧的独立 `test-tide-camp-worker` 必须保持关闭，不能与统一项目使用不
 兼容的旧版结算协议。迁移回滚继续遵循向前修复和一致性备份，不由容器启动脚本执行
 destructive down。
@@ -466,7 +491,7 @@ destructive down。
 
 ## 当前证明边界
 
-单镜像构建、静态检查、测试和 Pod 健康都不代表生产可用。外部日更、真实通知回执、生产
+镜像构建、静态检查、测试和 Pod 健康都不代表生产可用。外部日更、真实通知回执、生产
 账号生命周期、监控、备份、恢复、灰度与业务方验收仍是独立门槛。
 
 ## 目录结构
@@ -474,7 +499,12 @@ destructive down。
 ```text
 gaea/
 ├── Dockerfile
+├── gaea.yml
 ├── README.md
+├── application/
+│   └── Dockerfile
+├── dts-ingest/
+│   └── Dockerfile
 ├── bin/
 │   ├── healthcheck.sh
 │   ├── render-nginx-conf.sh

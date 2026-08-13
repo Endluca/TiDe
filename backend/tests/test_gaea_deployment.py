@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 ROOT_README = ROOT / "README.md"
 GAEA_DIR = ROOT / "gaea"
 DOCKERFILE = GAEA_DIR / "Dockerfile"
+APPLICATION_DOCKERFILE = GAEA_DIR / "application" / "Dockerfile"
+DTS_DOCKERFILE = GAEA_DIR / "dts-ingest" / "Dockerfile"
+GAEA_MODULES = GAEA_DIR / "gaea.yml"
 README = GAEA_DIR / "README.md"
 HEALTHCHECK = GAEA_DIR / "bin" / "healthcheck.sh"
 SOURCE_WIDE_ENABLED = GAEA_DIR / "bin" / "source-wide-enabled.sh"
@@ -26,6 +29,7 @@ DTS_GENERIC_ENV = ROOT / "backend" / ".env.dts-ingest.production.example"
 DTS_PRE_SSL_OFF_ENV = (
     ROOT / "backend" / "dts-ingest.pre-ssl-off.env.example"
 )
+DTS_REQUIREMENTS = ROOT / "backend" / "requirements-dts-ingest.txt"
 APPLICATION_ENV = ROOT / "backend" / ".env.production.example"
 COMBINED_ENV = ROOT / "deploy" / "combined" / ".env.example"
 TEACHER_COMPANY_TEST_MIGRATOR = (
@@ -62,13 +66,104 @@ ARCHITECTURE = ROOT / "docs" / "architecture.md"
 RUNTIME_SECURITY = ROOT / "project-context" / "RUNTIME_DATA_SECURITY.md"
 
 
-def test_gaea_uses_one_project_and_one_image() -> None:
+def test_gaea_keeps_the_application_root_and_routes_one_dts_module() -> None:
     assert DOCKERFILE.is_file()
-    assert not (GAEA_DIR / "gaea.yml").exists()
+    assert GAEA_MODULES.read_text(encoding="utf-8") == (
+        "multmod: true\n"
+        "gaeamod:\n"
+        "  enable: true\n"
+        "  name:\n"
+        "    - application\n"
+        "    - dts-ingest\n"
+    )
+    assert APPLICATION_DOCKERFILE.read_bytes() == DOCKERFILE.read_bytes()
+    assert DTS_DOCKERFILE.is_file()
     assert not (GAEA_DIR / "operations" / "Dockerfile").exists()
     assert not (GAEA_DIR / "score-settlement" / "Dockerfile").exists()
     assert not (GAEA_DIR / "source-wide" / "Dockerfile").exists()
-    assert list(GAEA_DIR.glob("*/Dockerfile")) == []
+    assert set(GAEA_DIR.glob("*/Dockerfile")) == {
+        APPLICATION_DOCKERFILE,
+        DTS_DOCKERFILE,
+    }
+
+
+def test_gaea_dts_module_omits_the_application_build_graph() -> None:
+    dockerfile = DTS_DOCKERFILE.read_text(encoding="utf-8")
+    full_requirements = {
+        line.strip()
+        for line in (ROOT / "backend" / "requirements.txt").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    dts_requirements = {
+        line.strip()
+        for line in DTS_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert dts_requirements == {
+        "SQLAlchemy==2.0.36",
+        "psycopg[binary]==3.2.4",
+        "fastavro==1.12.2",
+        "kafka-python==2.2.20",
+        "lz4==4.4.5",
+    }
+    assert dts_requirements < full_requirements
+
+    dts_build = dockerfile.split(
+        "FROM hub.51talk.biz/library/python:3.12-alpine AS python-build",
+        1,
+    )[1]
+    dts_runtime = dts_build.split(
+        "FROM hub.51talk.biz/library/python:3.12-alpine AS runtime",
+        1,
+    )[1]
+    assert "COPY backend/requirements-dts-ingest.txt" in dts_build
+    assert "COPY backend/requirements.txt" not in dts_build
+    assert "COPY --chown=gaea:gaea backend/app ./app" in dts_runtime
+    assert "run_dts_ingest.py" in dts_runtime
+    assert "TIT_PROCESS_PROFILE=dts-ingest" in dts_runtime
+    assert "USER gaea" in dts_runtime
+    assert "HEALTHCHECK" in dts_runtime
+    assert "STOPSIGNAL SIGTERM" in dts_runtime
+    assert "node_modules" not in dts_runtime
+    assert "nginx" not in dts_runtime.lower()
+    assert "s6-overlay" not in dts_runtime
+    assert "frontend" not in dts_runtime.lower()
+    assert dockerfile.count("FROM ") == 2
+
+
+def test_gaea_dts_module_uses_internal_sources_and_non_root_runtime() -> None:
+    dockerfile = DTS_DOCKERFILE.read_text(encoding="utf-8")
+    from_lines = [
+        line for line in dockerfile.splitlines() if line.startswith("FROM ")
+    ]
+
+    assert len(from_lines) == 2
+    assert all("hub.51talk.biz/" in line for line in from_lines)
+    assert "https://mirrors.aliyun.com/pypi/simple/" in dockerfile
+    assert "mirrors.ustc.edu.cn" in dockerfile
+    assert "addgroup -g 1001 gaea" in dockerfile
+    assert "adduser -u 1001 -G gaea -D gaea" in dockerfile
+    assert "ENV TZ=Asia/Shanghai" in dockerfile
+    assert "USER gaea" in dockerfile
+    assert 'ENTRYPOINT ["/init"]' not in dockerfile
+    assert "HEALTHCHECK --interval=30s --timeout=20s" in dockerfile
+    assert 'CMD ["/opt/venv/bin/python"' in dockerfile
+    assert "STOPSIGNAL SIGTERM" in dockerfile
+    for excluded in (
+        "repo.bjtest.51talk.biz/repository/npm/",
+        "pnpm",
+        "npm ci",
+        "nginx",
+        "s6-overlay",
+        "teacher/frontend",
+        "teacher/backend",
+        "frontend/package.json",
+        "backend/migrations",
+    ):
+        assert excluded not in dockerfile
 
 
 def _bash_array(script: str, name: str) -> tuple[str, ...]:
@@ -958,9 +1053,15 @@ def test_source_wide_enable_gate_defaults_true_and_rejects_invalid_values() -> N
 def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     readme = README.read_text(encoding="utf-8")
 
-    assert "单模块" in readme
-    assert "单镜像" in readme
-    assert "六个进程入口" in readme
+    assert "两种构建形态、三个运行项目" in readme
+    assert "`dts-ingest`" in readme
+    assert "轻量 DTS 镜像" in readme
+    assert "分别构建、" in readme
+    assert "推送和发布" in readme
+    assert "模块选择不会自动创建 Gaea 项目" in readme
+    assert "五个业务进程入口" in readme
+    assert "非 root" in readme
+    assert "multi_module" in readme
     assert "8010" in readme and "8080" in readme and "3000" in readme
     assert "设置为 `2` 或更高" in readme
     assert "RollingUpdate" in readme
@@ -977,6 +1078,9 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "TIT_DTS_PROJECTION_ENABLED=false" in readme
     assert "TIT_DTS_ACTIVATION_AT" in readme
     assert "TIT_DTS_REQUIRED_OVS_TOPIC" in readme
+    assert "探针不读取消息" in readme
+    assert "不提交 offset" in readme
+    assert "不能用 readiness 代替接入证据" in readme
     assert "TIT_DTS_REQUIRED_DOM_TOPIC" in readme
     assert "pg_try_advisory_lock" not in readme
     assert "session advisory" in readme
@@ -1092,7 +1196,7 @@ def test_current_deployment_docs_do_not_restore_single_replica_mode() -> None:
 
     assert "`2` 个或更多副本" in documents[ROOT_README]
     assert "ReadWriteMany (RWX)" in documents[ROOT_README]
-    assert "整套 Pod 可以水平复制" in documents[ARCHITECTURE]
+    assert "application Pod 可以水平复制" in documents[ARCHITECTURE]
     assert "2 个或更多副本及 RollingUpdate" in documents[RUNTIME_SECURITY]
 
 
@@ -1110,4 +1214,6 @@ def test_gaea_build_context_includes_teacher_but_excludes_secrets() -> None:
     assert "teacher/tmp" in dockerignore
     assert "teacher/frontend/.openai" in dockerignore
     assert "teacher/frontend/public/assets/tasks/**/*.mp4" in dockerignore
+    assert "outputs/" in dockerignore
+    assert ".tmp_*/" in dockerignore
     assert "teacher" not in dockerignore.splitlines()

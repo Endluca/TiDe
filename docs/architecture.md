@@ -52,7 +52,8 @@ PostgreSQL
 └── 按状态机只更新执行状态
 ```
 
-Gaea 测试交付使用一个项目和一个镜像，整套 Pod 可以水平复制。每个 Pod 保留五个逻辑
+Gaea 的 application 测试交付使用一个项目和一个完整镜像；海外、国内 DTS 则分别使用两个
+独立项目和同一个轻量构建模块。application Pod 可以水平复制，每个 Pod 保留五个逻辑
 进程：FastAPI 在 `8010` 同源提供运营 React 与 API，教师 Nginx 在 `8080` 提供教师 React 并代理到
 Pod 内 `3000` 的 NestJS，积分 Worker 与 SourceWide Worker 都不暴露端口。Gaea 分别把运营、教师域名绑定到
 `8010/8080`。s6 负责进程生命周期，聚合健康检查同时覆盖两端 HTTP 与 Worker heartbeat。
@@ -63,6 +64,11 @@ Alembic 和教师端 migration 仍是发布前独立作业，数据库角色与�
 而合并。私有文件优先使用 OSS；LOCAL 模式和视频预热本地账本必须使用所有 Pod 可见的
 ReadWriteMany 共享卷。这个受控 TEST 形态不提供进程级秘密隔离：同 UID 进程可接触容器级
 环境变量，生产信任边界成立前仍应拆容器或 Pod。
+
+两个轻量 DTS 容器在每次进程启动时先执行只读门禁：目标数据库契约和 Kafka
+SASL/topic/partition/初始位点全部通过后才写 readiness。该探针不读取业务消息、不提交 offset，
+因此 Pod Ready 只代表具备开始消费的条件；CDC 是否实际进入系统仍以事件账本、数据库 checkpoint、
+消费组位点和字段对账为准。
 
 ## 3. 任务事实与写入责任
 
@@ -133,9 +139,12 @@ ReadWriteMany 共享卷。这个受控 TEST 形态不提供进程级秘密隔离
   进程，但同一时刻只有持 PostgreSQL advisory lock 的 leader 执行结算；教师全局任务和
   照片处理分别由全局租约、行租约协调。真实触达 Worker、外部日更、生产监控和恢复演练
   尚未完成。
-- Gaea 单模块骨架已把两套 Web、两套 API 和 heartbeat 结算 Worker 收入同一镜像，并用
-  `8010/8080` 两个端口承载不同域名；该配置只证明源码具备统一构建入口，不代表内部镜像
-  已在 Gaea 构建成功，也不代表双端口 Ingress、迁移作业或生产切流已经完成。
+- Gaea 通过 `gaea.yml` 声明 `application` 与 `dts-ingest` 两个构建模块，并暂时保留根
+  `gaea/Dockerfile` 作为 application 兼容入口。application 把两套 Web、两套 API 和 heartbeat Worker 收入同一镜像
+  并用 `8010/8080` 承载不同域名；海外和国内两个独立 DTS 项目都选择同一个轻量模块，从构建
+  图上跳过全部 Node/Nginx 阶段。两个项目仍分别构建和推送镜像，模块本身不会让跨项目复用
+  digest。该配置只证明源码具备构建入口，不代表内部镜像已在 Gaea 构建成功，也不代表双端口
+  Ingress、DTS broker、迁移作业或生产切流已经完成。
 - 经营总览使用数据库聚合，不读取全部教师 JSON；教师列表、任务明细、输出和审计均为
   服务端分页，首次进入页面不自动读取业务数据。
 

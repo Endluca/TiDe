@@ -55,6 +55,14 @@ def _write_health(path: str | None, payload: dict[str, object]) -> None:
     temporary.replace(target)
 
 
+def _clear_health_files(*paths: str | None) -> None:
+    """Remove prior-process health evidence before any startup validation."""
+
+    for path in paths:
+        if path:
+            Path(path).unlink(missing_ok=True)
+
+
 def _env_flag(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -78,12 +86,16 @@ def _safe_operational_error_payload(
     *,
     sslmode: str | None = None,
 ) -> dict[str, str]:
-    """Classify connection failures without emitting driver error text."""
+    """Classify database and broker failures without emitting error text."""
 
     payload = {
         "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
         "error_type": type(exc).__name__,
     }
+    kafka_error_code = _safe_kafka_error_code(exc)
+    if kafka_error_code is not None:
+        payload["error_code"] = kafka_error_code
+        return payload
     if not isinstance(exc, OperationalError):
         return payload
     if sslmode in {"verify-full", "disable"}:
@@ -193,6 +205,121 @@ def _safe_operational_error_payload(
     return payload
 
 
+def _safe_kafka_error_code(exc: Exception) -> str | None:
+    """Return a stable Kafka connection code without returning its details."""
+
+    try:
+        from kafka import errors as kafka_errors
+    except ImportError:  # pragma: no cover - runtime dependency guard
+        return None
+
+    chain = tuple(_exception_chain(exc))
+    authentication_types = tuple(
+        error_type
+        for name in (
+            "SaslAuthenticationFailedError",
+            "AuthenticationFailedError",
+        )
+        if isinstance(
+            error_type := getattr(kafka_errors, name, None),
+            type,
+        )
+    )
+    if authentication_types and any(
+        isinstance(error, authentication_types) for error in chain
+    ):
+        return "DTS_BROKER_SASL_AUTHENTICATION_FAILED"
+
+    stable_kafka_errors = (
+        (
+            "TopicAuthorizationFailedError",
+            "DTS_BROKER_TOPIC_AUTHORIZATION_FAILED",
+        ),
+        (
+            "GroupAuthorizationFailedError",
+            "DTS_BROKER_GROUP_AUTHORIZATION_FAILED",
+        ),
+        (
+            "UnknownTopicOrPartitionError",
+            "DTS_BROKER_TOPIC_PARTITION_UNAVAILABLE",
+        ),
+        (
+            "UnsupportedVersionError",
+            "DTS_BROKER_PROTOCOL_UNSUPPORTED",
+        ),
+    )
+    for error_name, error_code in stable_kafka_errors:
+        error_type = getattr(kafka_errors, error_name, None)
+        if isinstance(error_type, type) and any(
+            isinstance(error, error_type) for error in chain
+        ):
+            return error_code
+
+    if any(isinstance(error, socket.gaierror) for error in chain):
+        return "DTS_BROKER_DNS_FAILED"
+
+    connection_error_type = getattr(
+        kafka_errors,
+        "KafkaConnectionError",
+        (),
+    )
+    for error in chain:
+        if not isinstance(error, connection_error_type):
+            continue
+        message = _safe_exception_text(error)
+        if "dns failure" in message:
+            return "DTS_BROKER_DNS_FAILED"
+        if "timeout" in message or "timed out" in message:
+            return "DTS_BROKER_CONNECTION_TIMEOUT"
+
+    timeout_types = tuple(
+        error_type
+        for error_type in (
+            getattr(kafka_errors, "KafkaTimeoutError", None),
+            TimeoutError,
+            socket.timeout,
+        )
+        if isinstance(error_type, type)
+    )
+    if any(isinstance(error, timeout_types) for error in chain):
+        return "DTS_BROKER_CONNECTION_TIMEOUT"
+
+    no_brokers_type = getattr(kafka_errors, "NoBrokersAvailable", ())
+    if any(isinstance(error, no_brokers_type) for error in chain):
+        return "DTS_BROKER_UNAVAILABLE"
+    if any(isinstance(error, connection_error_type) for error in chain):
+        return "DTS_BROKER_CONNECTION_FAILED"
+    return None
+
+
+def _exception_chain(exc: Exception) -> tuple[Exception, ...]:
+    """Traverse bounded explicit/implicit causes without rendering them."""
+
+    result: list[Exception] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while isinstance(current, Exception) and len(result) < 8:
+        identity = id(current)
+        if identity in seen:
+            break
+        seen.add(identity)
+        result.append(current)
+        try:
+            current = current.__cause__ or current.__context__
+        except Exception:
+            break
+    return tuple(result)
+
+
+def _safe_exception_text(exc: Exception) -> str:
+    """Inspect known kafka-python markers; callers never emit this value."""
+
+    try:
+        return str(exc).lower()
+    except Exception:
+        return ""
+
+
 def _diagnostic_sslmode(
     environ: dict[str, str] | None = None,
 ) -> str | None:
@@ -248,6 +375,7 @@ def _healthcheck(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     if args.healthcheck:
         return _healthcheck(args)
+    _clear_health_files(args.heartbeat_path, args.readiness_path)
     if args.interval_seconds < 0:
         raise DtsConfigurationError("DTS_INTERVAL_SECONDS_INVALID")
     stream_settings = DtsConsumerSettings.from_env()
@@ -286,6 +414,12 @@ def _run(args: argparse.Namespace) -> int:
         )
         if activation_settings is not None:
             sink.acquire_projection_activation(activation_settings)
+        consumer = DtsKafkaConsumer(
+            stream_settings,
+            processor,
+            idle_timeout_ms=args.idle_timeout_ms,
+        )
+        broker_probe = consumer.startup_probe()
         started_at = datetime.now(timezone.utc).isoformat()
         _write_health(
             args.readiness_path,
@@ -293,16 +427,12 @@ def _run(args: argparse.Namespace) -> int:
                 "status": "ready",
                 "started_at": started_at,
                 "checkpoint": checkpoint,
+                "broker_probe": broker_probe,
                 "connection": stream_settings.safe_summary(),
                 "target": database_settings.safe_summary(),
             },
         )
         while not _stop_requested:
-            consumer = DtsKafkaConsumer(
-                stream_settings,
-                processor,
-                idle_timeout_ms=args.idle_timeout_ms,
-            )
             result = consumer.run(
                 max_messages=args.max_messages,
                 commit_offsets=True,

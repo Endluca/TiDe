@@ -412,7 +412,8 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
         def assign(self, partitions: list[object]) -> None:
             self.assigned = partitions
 
-        def committed(self, _partition: object) -> None:
+        def committed(self, _partition: object, *, timeout_ms: int) -> None:
+            assert timeout_ms == 15_000
             return None
 
         def offsets_for_times(self, requested: dict[object, int]):
@@ -425,7 +426,9 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
         def commit(self, *, offsets: dict[object, object]) -> None:
             self.commit_calls.append(offsets)
 
-        def close(self) -> None:
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
             self.closed = True
 
         def __iter__(self):
@@ -472,5 +475,348 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
     assert committed.offset == 42
     assert committed.leader_epoch == -1
     assert fake.kwargs["enable_auto_commit"] is False
+    assert fake.kwargs["api_version"] == (2, 7)
+    assert fake.kwargs["request_timeout_ms"] == 15_000
     assert fake.kwargs["sasl_plain_username"] == "consumer-tit-ovs-group"
+    assert fake.closed is True
+
+
+def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+
+    class FakeConsumer:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+            self.closed = False
+            self.close_autocommit = None
+
+        def offsets_for_times(self, requested: dict[object, int]):
+            return {
+                partition: SimpleNamespace(offset=0)
+                for partition in requested
+            }
+
+        def committed(self, _partition: object, *, timeout_ms: int) -> None:
+            assert timeout_ms == 15_000
+            return None
+
+        def partitions_for_topic(self, _topic: str) -> object:
+            raise AssertionError("startup probe must not query topic metadata")
+
+        def assign(self, _partitions: list[object]) -> None:
+            raise AssertionError("startup probe must not assign")
+
+        def seek(self, _partition: object, _offset: int) -> None:
+            raise AssertionError("startup probe must not seek")
+
+        def poll(self, **_kwargs: object) -> object:
+            raise AssertionError("startup probe must not poll")
+
+        def commit(self, **_kwargs: object) -> None:
+            raise AssertionError("startup probe must not commit")
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            self.close_autocommit = autocommit
+            assert timeout_ms == 1_000
+            self.closed = True
+
+        def __iter__(self):
+            raise AssertionError("startup probe must not consume")
+
+    holder: dict[str, FakeConsumer] = {}
+
+    def factory(**kwargs: object) -> FakeConsumer:
+        holder["consumer"] = FakeConsumer(**kwargs)
+        return holder["consumer"]
+
+    monkeypatch.setattr(kafka, "KafkaConsumer", factory)
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+    consumer = DtsKafkaShadowConsumer(
+        settings,
+        DtsEventProcessor(InMemoryShadowSink()),
+    )
+
+    result = consumer.startup_probe()
+
+    fake = holder["consumer"]
+    assert result == {
+        "status": "ok",
+        "partition": 0,
+        "initial_offset": 0,
+    }
+    assert fake.kwargs["api_version"] == (2, 7)
+    assert fake.kwargs["request_timeout_ms"] == 15_000
+    assert fake.close_autocommit is False
+    assert fake.closed is True
+
+
+def test_kafka_startup_probe_uses_database_boundary_for_new_durable_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+
+    class FakeConsumer:
+        def committed(self, _partition: object, *, timeout_ms: int) -> int:
+            assert timeout_ms == 15_000
+            return 99
+
+        def offsets_for_times(self, requested: dict[object, int]):
+            return {
+                partition: SimpleNamespace(offset=40)
+                for partition in requested
+            }
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+
+    monkeypatch.setattr(kafka, "KafkaConsumer", lambda **_kwargs: FakeConsumer())
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+    processor = SimpleNamespace(
+        authoritative_checkpoint=True,
+        resume_offset=lambda **_kwargs: None,
+    )
+
+    assert DtsKafkaShadowConsumer(settings, processor).startup_probe()[
+        "initial_offset"
+    ] == 40
+
+
+def test_kafka_startup_probe_keeps_shadow_group_resume_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+
+    class FakeConsumer:
+        def committed(self, _partition: object, *, timeout_ms: int) -> int:
+            assert timeout_ms == 15_000
+            return 12
+
+        def offsets_for_times(self, _requested: dict[object, int]) -> object:
+            raise AssertionError("a shadow group with a commit must resume it")
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+
+    monkeypatch.setattr(kafka, "KafkaConsumer", lambda **_kwargs: FakeConsumer())
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+
+    assert DtsKafkaShadowConsumer(
+        settings,
+        DtsEventProcessor(InMemoryShadowSink()),
+    ).startup_probe()["initial_offset"] == 12
+
+
+@pytest.mark.parametrize(
+    ("resolved", "expected_error"),
+    [
+        (None, "DTS_START_AT_OUTSIDE_AVAILABLE_RANGE"),
+        (SimpleNamespace(offset="invalid"), "DTS_KAFKA_INITIAL_OFFSET_INVALID"),
+    ],
+)
+def test_kafka_startup_probe_rejects_unresolvable_initial_offset(
+    monkeypatch: pytest.MonkeyPatch,
+    resolved: object,
+    expected_error: str,
+) -> None:
+    import kafka
+
+    class FakeConsumer:
+        closed = False
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def offsets_for_times(self, requested: dict[object, int]):
+            return {partition: resolved for partition in requested}
+
+        def committed(self, _partition: object, *, timeout_ms: int) -> None:
+            assert timeout_ms == 15_000
+            return None
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+            self.closed = True
+
+    fake = FakeConsumer()
+    monkeypatch.setattr(kafka, "KafkaConsumer", lambda **_kwargs: fake)
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+
+    with pytest.raises(DtsConfigurationError, match=f"^{expected_error}$"):
+        DtsKafkaShadowConsumer(
+            settings,
+            DtsEventProcessor(InMemoryShadowSink()),
+        ).startup_probe()
+
+    assert fake.closed is True
+
+
+def test_kafka_startup_probe_validates_database_checkpoint_with_bounded_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+    from app import dts_source_consumer as consumer_module
+
+    class FakeConsumer:
+        def __init__(self, **_kwargs: object) -> None:
+            self.config = {"request_timeout_ms": 15_000}
+            self.committed_timeout_ms = None
+            self.beginning_timeout_ms = None
+            self.end_timeout_ms = None
+            self.closed = False
+
+        def committed(self, _partition: object, *, timeout_ms: int) -> int:
+            self.committed_timeout_ms = timeout_ms
+            return 0
+
+        def beginning_offsets(self, partitions: list[object]):
+            self.beginning_timeout_ms = self.config["request_timeout_ms"]
+            return {partition: 0 for partition in partitions}
+
+        def end_offsets(self, partitions: list[object]):
+            self.end_timeout_ms = self.config["request_timeout_ms"]
+            return {partition: 10 for partition in partitions}
+
+        def offsets_for_times(self, _requested: dict[object, int]) -> object:
+            raise AssertionError("checkpoint must not resolve by timestamp")
+
+        def assign(self, _partitions: list[object]) -> None:
+            raise AssertionError("startup probe must not assign")
+
+        def seek(self, _partition: object, _offset: int) -> None:
+            raise AssertionError("startup probe must not seek")
+
+        def poll(self, **_kwargs: object) -> object:
+            raise AssertionError("startup probe must not poll")
+
+        def commit(self, **_kwargs: object) -> None:
+            raise AssertionError("startup probe must not commit")
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+            self.closed = True
+
+    fake = FakeConsumer()
+    monkeypatch.setattr(kafka, "KafkaConsumer", lambda **_kwargs: fake)
+    monotonic_values = iter((100.0, 100.0, 105.0, 110.0))
+    monkeypatch.setattr(
+        consumer_module,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+    processor = SimpleNamespace(
+        authoritative_checkpoint=True,
+        resume_offset=lambda **_kwargs: 0,
+    )
+
+    result = DtsKafkaShadowConsumer(settings, processor).startup_probe()
+
+    assert result["initial_offset"] == 0
+    assert fake.committed_timeout_ms == 15_000
+    assert fake.beginning_timeout_ms == 10_000
+    assert fake.end_timeout_ms == 5_000
+    assert fake.closed is True
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "committed", "expected_error"),
+    [
+        (11, 10, "DTS_KAFKA_DATABASE_OFFSET_OUTSIDE_AVAILABLE_RANGE"),
+        (5, 6, "DTS_KAFKA_OFFSET_AHEAD_OF_DATABASE"),
+    ],
+)
+def test_kafka_startup_probe_rejects_checkpoint_outside_safe_range(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint: int,
+    committed: int,
+    expected_error: str,
+) -> None:
+    import kafka
+
+    class FakeConsumer:
+        closed = False
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def committed(self, _partition: object, *, timeout_ms: int) -> int:
+            assert timeout_ms == 15_000
+            return committed
+
+        def beginning_offsets(self, partitions: list[object]):
+            return {partition: 0 for partition in partitions}
+
+        def end_offsets(self, partitions: list[object]):
+            return {partition: 10 for partition in partitions}
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+            self.closed = True
+
+    fake = FakeConsumer()
+    monkeypatch.setattr(kafka, "KafkaConsumer", lambda **_kwargs: fake)
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="tit-ovs-group",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+    processor = SimpleNamespace(
+        authoritative_checkpoint=True,
+        resume_offset=lambda **_kwargs: checkpoint,
+    )
+
+    with pytest.raises(DtsConfigurationError, match=f"^{expected_error}$"):
+        DtsKafkaShadowConsumer(settings, processor).startup_probe()
+
     assert fake.closed is True
