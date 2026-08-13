@@ -278,7 +278,7 @@ application 项目也不配置任何 DTS 变量。
 | `TIT_DTS_EXECUTION_REGION` | `sg` | `cn` |
 | `TIT_DTS_BROKER_URL` | `100.103.7.163:18003` | `dts-cn-beijing-vpc.aliyuncs.com:18003` |
 | `TIT_DTS_TOPIC` | `ap_southeast_1_vpc_pc_gs5986x4885426aej_dba_tide_source_ovs_version2` | `cn_beijing_vpc_pc_2ze5w28lmdr8f626y_dba_tide_source_dom_version2` |
-| `TIT_DTS_GROUP_ID` | `tit-ovs-group` | `tit-dom-group` |
+| `TIT_DTS_GROUP_ID` | 海外订阅“数据消费”页生成的消费组 ID（sid） | 国内订阅“数据消费”页生成的消费组 ID（sid） |
 | `TIT_DTS_ACCOUNT` | `titconsumeovs` | `titconsumedom` |
 | `TIT_DTS_START_AT` | `2026-08-10T14:16:00+08:00` | `2026-08-12T16:30:00+08:00` |
 | `TIT_DTS_DOM_STUDENT_HMAC_KEY` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex，并作为敏感变量注入 |
@@ -301,6 +301,10 @@ application 项目也不配置任何 DTS 变量。
 | `TIT_DTS_INGEST_DB_SSLMODE` | 否 | `verify-full`；固定 PRE 专线端点可覆盖为 `disable` | 国内、海外 PRE 使用相同数据库传输例外；正式环境固定 `verify-full` |
 | `TIT_DTS_ALLOW_INSECURE_DB` | 否 | `false`；固定 PRE 专线端点与 `disable` 同时覆盖为 `true` | 必须和 `disable` 成对配置；没有固定 PRE 目标时禁止非 TLS 连接 |
 | `TIT_DTS_INGEST_DB_PASSWORD` | 是 | 各项目 Gaea 密钥 | `tit_dts_ingest_runtime` 的数据库密码，不得复用 DTS 密码 |
+
+`TIT_DTS_GROUP_ID` 必须复制各自 DTS 订阅“数据消费”页的系统生成 ID（sid），不能填写可编辑的
+消费组名称。运行时会在任何网络连接前拒绝仓库曾误发的名称占位值；SASL 用户名仍由代码按
+`<TIT_DTS_ACCOUNT>-<TIT_DTS_GROUP_ID>` 生成。
 
 数据库名、Schema 和角色在代码中失败关闭为
 `tide_system_test / public / tit_dts_ingest_runtime`。SSL 默认 `verify-full`。以下明文例外只适用于

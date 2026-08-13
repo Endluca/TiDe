@@ -81,7 +81,7 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 | `TIT_DTS_EXECUTION_REGION` | `sg` | `cn` |
 | `TIT_DTS_BROKER_URL` | `100.103.7.163:18003` | `dts-cn-beijing-vpc.aliyuncs.com:18003` |
 | `TIT_DTS_TOPIC` | `ap_southeast_1_vpc_pc_gs5986x4885426aej_dba_tide_source_ovs_version2` | `cn_beijing_vpc_pc_2ze5w28lmdr8f626y_dba_tide_source_dom_version2` |
-| `TIT_DTS_GROUP_ID` | `tit-ovs-group` | `tit-dom-group` |
+| `TIT_DTS_GROUP_ID` | 海外订阅“数据消费”页生成的消费组 ID（sid） | 国内订阅“数据消费”页生成的消费组 ID（sid） |
 | `TIT_DTS_ACCOUNT` | `titconsumeovs` | `titconsumedom` |
 | `TIT_DTS_START_AT` | `2026-08-10T14:16:00+08:00` | `2026-08-12T16:30:00+08:00` |
 | `TIT_DTS_DOM_STUDENT_HMAC_KEY` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex |
@@ -129,5 +129,8 @@ export TIT_DTS_PASSWORD='<secret>'
 export TIT_DTS_START_AT='2026-08-10T14:16:00+08:00'
 python scripts/run_dts_source_consumer.py --max-messages 100
 ```
+
+`<group-id>` 必须复制 DTS“数据消费”页的系统生成消费组 ID（sid），不是可编辑的消费组名称；
+代码会按 `<账号>-<消费组 ID>` 生成 SASL 用户名，并在连接前拒绝仓库曾误发的名称占位值。
 
 先不带 `--commit-offsets` 验证网络、认证、Avro 解码和表路由；确认输出计数正常后，再在明确接受推进测试消费组位点时加该参数。

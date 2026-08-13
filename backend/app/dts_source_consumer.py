@@ -188,6 +188,9 @@ DOMESTIC_ALLOWED_REASON_DETAIL = "Unfilled Lesson Memo"
 DOMESTIC_REDACTED_REASON_DETAIL = "Domestic reason redacted"
 _DOMESTIC_STUDENT_TOKEN_PATTERN = re.compile(r"^dom:v1:[0-9a-f]{64}$")
 _DOMESTIC_STUDENT_HMAC_KEY_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_KNOWN_DTS_CONSUMER_GROUP_NAME_PLACEHOLDERS = frozenset(
+    {"tit-ovs-group", "tit-dom-group"}
+)
 _BROKER_HOST_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 _BROKER_IPV6_PATTERN = re.compile(r"^[0-9A-Fa-f:.%]+$")
 
@@ -224,6 +227,10 @@ class DtsConsumerSettings:
         if self.execution_region != expected_execution_region:
             raise DtsConfigurationError(
                 "TIT_DTS_EXECUTION_REGION_SOURCE_MISMATCH"
+            )
+        if self.group_id in _KNOWN_DTS_CONSUMER_GROUP_NAME_PLACEHOLDERS:
+            raise DtsConfigurationError(
+                "TIT_DTS_GROUP_ID_PLACEHOLDER_FORBIDDEN"
             )
         if self.source_region == "dom":
             key = self.domestic_student_hmac_key

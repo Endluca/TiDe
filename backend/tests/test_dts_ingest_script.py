@@ -130,7 +130,7 @@ def test_domestic_private_line_plaintext_reuses_existing_database_gate(
         "TIT_DTS_EXECUTION_REGION": "cn",
         "TIT_DTS_BROKER_URL": "broker.internal:18003",
         "TIT_DTS_TOPIC": "dom-topic",
-        "TIT_DTS_GROUP_ID": "dom-group",
+        "TIT_DTS_GROUP_ID": "dtsdom1234567890",
         "TIT_DTS_ACCOUNT": "consumer",
         "TIT_DTS_PASSWORD": "runtime-only",
         "TIT_DTS_DOM_STUDENT_HMAC_KEY": "a" * 64,
@@ -369,7 +369,7 @@ def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> N
             "DTS_BROKER_TOPIC_AUTHORIZATION_FAILED",
         ),
         (
-            GroupAuthorizationFailedError("tit-dom-group password=secret"),
+            GroupAuthorizationFailedError("dtsdom1234567890 password=secret"),
             "DTS_BROKER_GROUP_AUTHORIZATION_FAILED",
         ),
         (

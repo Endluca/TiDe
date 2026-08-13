@@ -91,7 +91,7 @@ def test_settings_use_epoch_seconds_and_build_official_sasl_username() -> None:
         "TIT_DTS_EXECUTION_REGION": "sg",
         "TIT_DTS_BROKER_URL": "broker.internal:18003",
         "TIT_DTS_TOPIC": "topic-v2",
-        "TIT_DTS_GROUP_ID": "tit-ovs-group",
+        "TIT_DTS_GROUP_ID": "opaque-provider-group-id-01",
         "TIT_DTS_ACCOUNT": "consumer",
         "TIT_DTS_PASSWORD": "runtime-only",
         "TIT_DTS_START_AT": "2026-08-13T00:00:00+08:00",
@@ -99,7 +99,7 @@ def test_settings_use_epoch_seconds_and_build_official_sasl_username() -> None:
 
     settings = DtsConsumerSettings.from_env(values)
 
-    assert settings.sasl_username == "consumer-tit-ovs-group"
+    assert settings.sasl_username == "consumer-opaque-provider-group-id-01"
     assert settings.start_timestamp_seconds == 1786550400
     summary = settings.safe_summary()
     assert summary["start_timestamp_seconds"] == 1786550400
@@ -118,13 +118,35 @@ def test_settings_use_epoch_seconds_and_build_official_sasl_username() -> None:
         DtsConsumerSettings.from_env(values)
 
 
+@pytest.mark.parametrize("group_id", ["tit-ovs-group", "tit-dom-group"])
+def test_settings_reject_consumer_group_names_in_place_of_generated_ids(
+    group_id: str,
+) -> None:
+    values = {
+        "TIT_DTS_SOURCE_REGION": "ovs",
+        "TIT_DTS_EXECUTION_REGION": "sg",
+        "TIT_DTS_BROKER_URL": "broker.internal:18003",
+        "TIT_DTS_TOPIC": "topic-v2",
+        "TIT_DTS_GROUP_ID": group_id,
+        "TIT_DTS_ACCOUNT": "consumer",
+        "TIT_DTS_PASSWORD": "runtime-only",
+        "TIT_DTS_START_AT": "2026-08-13T00:00:00+08:00",
+    }
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_GROUP_ID_PLACEHOLDER_FORBIDDEN$",
+    ):
+        DtsConsumerSettings.from_env(values)
+
+
 def test_domestic_settings_require_china_execution_and_hmac_key() -> None:
     values = {
         "TIT_DTS_SOURCE_REGION": "dom",
         "TIT_DTS_EXECUTION_REGION": "cn",
         "TIT_DTS_BROKER_URL": "broker.internal:18003",
         "TIT_DTS_TOPIC": "dom-topic-v2",
-        "TIT_DTS_GROUP_ID": "tit-dom-group",
+        "TIT_DTS_GROUP_ID": "dtsdom1234567890",
         "TIT_DTS_ACCOUNT": "consumer",
         "TIT_DTS_PASSWORD": "runtime-only",
         "TIT_DTS_START_AT": "2026-08-12T16:30:00+08:00",
@@ -180,7 +202,7 @@ def test_overseas_settings_reject_domestic_hmac_secret() -> None:
         "TIT_DTS_EXECUTION_REGION": "sg",
         "TIT_DTS_BROKER_URL": "broker.internal:18003",
         "TIT_DTS_TOPIC": "ovs-topic-v2",
-        "TIT_DTS_GROUP_ID": "tit-ovs-group",
+        "TIT_DTS_GROUP_ID": "dtsovs1234567890",
         "TIT_DTS_ACCOUNT": "consumer",
         "TIT_DTS_PASSWORD": "runtime-only",
         "TIT_DTS_START_AT": "2026-08-10T14:16:00+08:00",
@@ -211,7 +233,7 @@ def test_domestic_student_ids_are_hmac_protected_before_routing() -> None:
         source_region="dom",
         broker_urls=("broker.internal:18003",),
         topic="dom-topic-v2",
-        group_id="tit-dom-group",
+        group_id="dtsdom1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786523400,
@@ -255,7 +277,7 @@ def test_domestic_student_protection_rejects_conflicting_aliases() -> None:
         source_region="dom",
         broker_urls=("broker.internal:18003",),
         topic="dom-topic-v2",
-        group_id="tit-dom-group",
+        group_id="dtsdom1234567890",
         account="consumer",
         password="runtime-only",
         execution_region="cn",
@@ -285,7 +307,7 @@ def test_domestic_source_cannot_supply_its_own_student_token() -> None:
         source_region="dom",
         broker_urls=("broker.internal:18003",),
         topic="dom-topic-v2",
-        group_id="tit-dom-group",
+        group_id="dtsdom1234567890",
         account="consumer",
         password="runtime-only",
         execution_region="cn",
@@ -328,7 +350,7 @@ def test_domestic_student_protection_recurses_into_json_info() -> None:
         source_region="dom",
         broker_urls=("broker.internal:18003",),
         topic="dom-topic-v2",
-        group_id="tit-dom-group",
+        group_id="dtsdom1234567890",
         account="consumer",
         password="runtime-only",
         execution_region="cn",
@@ -362,7 +384,7 @@ def test_domestic_student_protection_rejects_invalid_json_info() -> None:
         source_region="dom",
         broker_urls=("broker.internal:18003",),
         topic="dom-topic-v2",
-        group_id="tit-dom-group",
+        group_id="dtsdom1234567890",
         account="consumer",
         password="runtime-only",
         execution_region="cn",
@@ -378,7 +400,7 @@ def test_domestic_free_text_reasons_are_reduced_before_cross_border_write() -> N
         source_region="dom",
         broker_urls=("broker.internal:18003",),
         topic="dom-topic-v2",
-        group_id="tit-dom-group",
+        group_id="dtsdom1234567890",
         account="consumer",
         password="runtime-only",
         execution_region="cn",
@@ -1011,7 +1033,7 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1040,7 +1062,7 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
     assert fake.kwargs["enable_auto_commit"] is False
     assert fake.kwargs["api_version"] == (2, 7)
     assert fake.kwargs["request_timeout_ms"] == 15_000
-    assert fake.kwargs["sasl_plain_username"] == "consumer-tit-ovs-group"
+    assert fake.kwargs["sasl_plain_username"] == "consumer-dtsovs1234567890"
     assert fake.closed is True
 
 
@@ -1110,7 +1132,7 @@ def test_domestic_kafka_run_protects_student_id_before_processor(
         source_region="dom",
         broker_urls=("broker.internal:18003",),
         topic="dom-topic-v2",
-        group_id="tit-dom-group",
+        group_id="dtsdom1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786523400,
@@ -1185,7 +1207,7 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1231,7 +1253,7 @@ def test_kafka_startup_probe_stops_before_credentials_when_tcp_fails(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1276,7 +1298,7 @@ def test_kafka_startup_probe_uses_database_boundary_for_new_durable_target(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1314,7 +1336,7 @@ def test_kafka_startup_probe_keeps_shadow_group_resume_behavior(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1365,7 +1387,7 @@ def test_kafka_startup_probe_rejects_unresolvable_initial_offset(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1405,7 +1427,7 @@ def test_kafka_startup_probe_distinguishes_l4_success_from_kafka_timeout(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1441,7 +1463,7 @@ def test_kafka_startup_probe_classifies_consumer_construction_timeout(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1516,7 +1538,7 @@ def test_kafka_startup_probe_validates_database_checkpoint_with_bounded_calls(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
@@ -1578,7 +1600,7 @@ def test_kafka_startup_probe_rejects_checkpoint_outside_safe_range(
         source_region="ovs",
         broker_urls=("broker.internal:18003",),
         topic="topic-v2",
-        group_id="tit-ovs-group",
+        group_id="dtsovs1234567890",
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,

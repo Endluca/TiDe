@@ -1220,6 +1220,12 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
 
     assert "TIT_DTS_EXECUTION_REGION=sg" in overseas
     assert "TIT_DTS_EXECUTION_REGION=cn" in domestic
+    assert overseas.count("TIT_DTS_GROUP_ID=\n") == 1
+    assert domestic.count("TIT_DTS_GROUP_ID=\n") == 1
+    assert "consumer-group name" in overseas
+    assert "consumer-group name" in domestic
+    assert "tit-ovs-group" not in overseas
+    assert "tit-dom-group" not in domestic
     assert "TIT_DTS_EXECUTION_REGION=" in generic
     assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in overseas
     assert domestic.count("TIT_DTS_DOM_STUDENT_HMAC_KEY=") == 1
