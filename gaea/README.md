@@ -239,9 +239,11 @@ lock；第二个误开启投影的项目会失败关闭。每个 DTS Pod 的数�
 1 条由投影锁专用连接持续占用，另 1 条供接入事务和投影事务串行复用。PostgreSQL
 `application_name` 分别为 `tit-dts-ingest-ovs` 和 `tit-dts-ingest-dom`，便于现场区分连接。
 
-两套非敏感订阅配置如下；对应的可复制文件是
+两套非敏感订阅配置如下；对应的生产安全基线文件是
 `backend/.env.dts-ingest.ovs.production.example` 和
-`backend/.env.dts-ingest.dom.production.example`：
+`backend/.env.dts-ingest.dom.production.example`。当前 PRE 数据库的临时
+`ssl=off` 例外只使用
+`backend/dts-ingest.pre-ssl-off.env.example` 中的两项覆盖，不修改生产基线：
 
 | 变量名 | 海外项目 | 国内项目 |
 |---|---|---|
@@ -267,11 +269,19 @@ lock；第二个误开启投影的项目会失败关闭。每个 DTS Pod 的数�
 | `TIT_DTS_REQUIRED_DOM_TOPIC` | 投影开启时 | 国内 topic | 激活门禁核对国内 partition 0 数据库 checkpoint |
 | `TIT_DTS_INGEST_DB_HOST` | 是 | `tide-system.rwlb.singapore.rds.aliyuncs.com` | 不含端口或 scheme |
 | `TIT_DTS_INGEST_DB_PORT` | 否 | `5432` | PostgreSQL 端口 |
+| `TIT_DTS_INGEST_DB_SSLMODE` | 否 | 生产基线 `verify-full`；当前 PRE 显式覆盖为 `disable` | 仅允许 `verify-full/disable`。`tide_system_test` 已现场确认 `SHOW ssl=off` |
+| `TIT_DTS_ALLOW_INSECURE_DB` | 否 | 生产基线 `false`；当前 PRE 与 `disable` 同时覆盖为 `true` | 仅精确接受小写 `true/false`；没有显式授权时禁止非 TLS 连接 |
 | `TIT_DTS_INGEST_DB_PASSWORD` | 是 | 各项目 Gaea 密钥 | `tit_dts_ingest_runtime` 的数据库密码，不得复用 DTS 密码 |
 
-数据库名、Schema、角色和 SSL 在代码中失败关闭为
-`tide_system_test / public / tit_dts_ingest_runtime / verify-full`。可显式配置对应变量，但值
-不一致会在连接前拒绝启动。revision `20260812_59_simple_acl` 必须先由
+数据库名、Schema 和角色在代码中失败关闭为
+`tide_system_test / public / tit_dts_ingest_runtime`。SSL 默认 `verify-full`。只有同时设置
+`TIT_DTS_INGEST_DB_SSLMODE=disable` 与 `TIT_DTS_ALLOW_INSECURE_DB=true`，且目标精确等于已批准的
+`tide-system.rwlb.singapore.rds.aliyuncs.com:5432 / tide_system_test`，才允许当前 PRE 例外；其他
+模式、端点或缺少显式授权都会在连接前拒绝启动。每条新建的 PostgreSQL 物理连接都会通过
+`pg_stat_ssl` 核验当前会话的实际 TLS 状态，并同时读取服务端 `current_setting('ssl')`；临时 `disable` 例外还会在每次连接池 checkout 时复核。服务端一旦启用 TLS，遗留的 `disable` 配置会立即失败关闭，长期持有的投影锁会话也会在每批投影前复核。此时必须删除两项 PRE 覆盖并恢复生产基线
+`verify-full/false`。该例外不得复制到生产。正式业务库若不再是当前固定 test 目标，还必须同步
+修改数据库身份契约、迁移和 ACL 并重新验收，不能只改 SSL 变量。revision
+`20260812_59_simple_acl` 必须先由
 `tide_sys_admin` 应用；运行账号没有建表权限，接入状态的删除/回退由 Trigger 拒绝。
 
 DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`，包含订阅区域、

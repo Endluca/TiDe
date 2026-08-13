@@ -106,8 +106,12 @@ ENV TZ=Asia/Shanghai \
     VIDEO_PREFETCH_STATE_DIR=/var/lib/tide/video-prefetch-runs \
     S6_KEEP_ENV=1 \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
-    S6_CMD_WAIT_FOR_SERVICES_MAXTIME=60000 \
-    S6_CMD_RECEIVE_SIGNALS=1
+    S6_CMD_WAIT_FOR_SERVICES_MAXTIME=60000
+
+# Keep s6-overlay's default signal handling. The image CMD is only an idle
+# sentinel; SIGTERM must reach pid 1 so s6 performs its ordered shutdown.
+# Setting S6_CMD_RECEIVE_SIGNALS to 1 routes SIGTERM through an upstream wrapper
+# whose `kill -s TERM -- PID` form is noisy with Alpine BusyBox ash.
 
 ARG S6_OVERLAY_VERSION=3.1.6.2
 ENV GAEA_BASE_URL=https://flow.51talk.biz/pkg/ci/files/files

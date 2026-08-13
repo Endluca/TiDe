@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.dts_ingest_store import (
+    APPROVED_INSECURE_PRE_HOST,
     DtsIngestDatabaseSettings,
     DtsIngestStoreError,
     DtsProjectionActivationSettings,
@@ -19,6 +21,7 @@ from app.dts_ingest_store import (
     PROJECTION_ADVISORY_LOCK_NAME,
     PostgresDtsEventSink,
     _validate_projection_activation_state,
+    _validate_dts_physical_connection_transport,
     build_dts_ingest_engine,
     _dirty_key_rows,
     _source_row_state,
@@ -78,10 +81,114 @@ def test_database_settings_are_fixed_to_the_confirmed_test_target() -> None:
     summary = settings.safe_summary()
     assert "password" not in summary
     assert "host" not in summary
+    assert "database-secret" not in json.dumps(summary)
+    assert summary["sslmode"] == "verify-full"
 
     values["TIT_DTS_INGEST_DB_NAME"] = "tide_system"
     with pytest.raises(DtsConfigurationError, match="DB_NAME_MUST_EQUAL"):
         DtsIngestDatabaseSettings.from_env(values)
+
+
+def test_database_settings_allow_only_explicit_test_ssl_disable() -> None:
+    values = {
+        "TIT_DTS_INGEST_DB_HOST": APPROVED_INSECURE_PRE_HOST,
+        "TIT_DTS_INGEST_DB_PASSWORD": "database-secret",
+        "TIT_DTS_INGEST_DB_SSLMODE": "disable",
+        "TIT_DTS_ALLOW_INSECURE_DB": "true",
+    }
+
+    settings = DtsIngestDatabaseSettings.from_env(values)
+
+    assert settings.sslmode == "disable"
+    assert settings.allow_insecure_db is True
+    assert settings.sqlalchemy_url().query == {"sslmode": "disable"}
+    assert settings.safe_summary()["sslmode"] == "disable"
+    assert settings.safe_summary()["insecure_transport_authorized"] is True
+
+    for invalid in ("", "require", "verify-ca", "VERIFY-FULL"):
+        values["TIT_DTS_INGEST_DB_SSLMODE"] = invalid
+        with pytest.raises(
+            DtsConfigurationError,
+            match="TIT_DTS_INGEST_DB_SSLMODE_INVALID",
+        ):
+            DtsIngestDatabaseSettings.from_env(values)
+
+    values["TIT_DTS_INGEST_DB_SSLMODE"] = "disable"
+    for invalid in ("", "TRUE", "1", "yes"):
+        values["TIT_DTS_ALLOW_INSECURE_DB"] = invalid
+        with pytest.raises(
+            DtsConfigurationError,
+            match="TIT_DTS_ALLOW_INSECURE_DB_INVALID",
+        ):
+            DtsIngestDatabaseSettings.from_env(values)
+
+    values["TIT_DTS_ALLOW_INSECURE_DB"] = "false"
+    with pytest.raises(
+        DtsConfigurationError,
+        match="TIT_DTS_ALLOW_INSECURE_DB_REQUIRED_FOR_SSLMODE_DISABLE",
+    ):
+        DtsIngestDatabaseSettings.from_env(values)
+
+    values["TIT_DTS_ALLOW_INSECURE_DB"] = "true"
+    values["TIT_DTS_INGEST_DB_HOST"] = "other.internal"
+    with pytest.raises(
+        DtsConfigurationError,
+        match="TIT_DTS_INGEST_DB_SSLMODE_DISABLE_ENDPOINT_NOT_APPROVED",
+    ):
+        DtsIngestDatabaseSettings.from_env(values)
+
+    values["TIT_DTS_INGEST_DB_HOST"] = APPROVED_INSECURE_PRE_HOST
+    values["TIT_DTS_INGEST_DB_PORT"] = "5433"
+    with pytest.raises(
+        DtsConfigurationError,
+        match="TIT_DTS_INGEST_DB_SSLMODE_DISABLE_ENDPOINT_NOT_APPROVED",
+    ):
+        DtsIngestDatabaseSettings.from_env(values)
+
+    values["TIT_DTS_INGEST_DB_PORT"] = "5432"
+    values["TIT_DTS_INGEST_DB_SSLMODE"] = "verify-full"
+    with pytest.raises(
+        DtsConfigurationError,
+        match="TIT_DTS_ALLOW_INSECURE_DB_REQUIRES_SSLMODE_DISABLE",
+    ):
+        DtsIngestDatabaseSettings.from_env(values)
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="TIT_DTS_ALLOW_INSECURE_DB_INVALID",
+    ):
+        DtsIngestDatabaseSettings(
+            host=APPROVED_INSECURE_PRE_HOST,
+            password="database-secret",
+            sslmode="disable",
+            allow_insecure_db="true",  # type: ignore[arg-type]
+        )
+
+    for setting_name, override, error in (
+        (
+            "database",
+            "tide_system",
+            "TIT_DTS_INGEST_DB_NAME_MUST_EQUAL_tide_system_test",
+        ),
+        (
+            "username",
+            "other_role",
+            "TIT_DTS_INGEST_DB_USER_MUST_EQUAL_tit_dts_ingest_runtime",
+        ),
+        (
+            "schema",
+            "other_schema",
+            "TIT_DTS_INGEST_DB_SCHEMA_MUST_EQUAL_public",
+        ),
+    ):
+        with pytest.raises(DtsConfigurationError, match=error):
+            DtsIngestDatabaseSettings(
+                host=APPROVED_INSECURE_PRE_HOST,
+                password="database-secret",
+                sslmode="disable",
+                allow_insecure_db=True,
+                **{setting_name: override},
+            )
 
 
 def test_projection_activation_settings_require_timezone_and_bind_stream() -> None:
@@ -114,13 +221,26 @@ def test_dts_engine_reserves_a_second_connection_for_projection_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    fake_engine = object()
 
     def fake_create_engine(url: object, **kwargs: object) -> object:
         captured["url"] = url
         captured.update(kwargs)
-        return object()
+        return fake_engine
+
+    def fake_listen(
+        target: object,
+        event_name: str,
+        callback: object,
+    ) -> None:
+        captured.setdefault("event_callbacks", {})[event_name] = callback
+        captured.setdefault("event_targets", {})[event_name] = target
 
     monkeypatch.setattr("app.dts_ingest_store.create_engine", fake_create_engine)
+    monkeypatch.setattr(
+        "app.dts_ingest_store.sqlalchemy_event.listen",
+        fake_listen,
+    )
     settings = DtsIngestDatabaseSettings(
         host="db.internal",
         password="runtime-only",
@@ -128,8 +248,144 @@ def test_dts_engine_reserves_a_second_connection_for_projection_lock(
 
     build_dts_ingest_engine(settings, source_region="ovs")
 
+    assert captured["url"].query == {"sslmode": "verify-full"}
     assert captured["pool_size"] == 2
     assert captured["max_overflow"] == 0
+    assert captured["event_targets"] == {"connect": fake_engine}
+    assert set(captured["event_callbacks"]) == {"connect"}
+
+
+class _TransportCursor:
+    def __init__(
+        self,
+        session_ssl: bool | None,
+        server_ssl: str,
+        *,
+        execute_error: Exception | None = None,
+    ) -> None:
+        self.session_ssl = session_ssl
+        self.server_ssl = server_ssl
+        self.execute_error = execute_error
+        self.executed: list[str] = []
+        self.closed = False
+
+    def execute(self, statement: str) -> None:
+        self.executed.append(statement)
+        if self.execute_error is not None:
+            raise self.execute_error
+
+    def fetchone(self) -> tuple[bool | None, str]:
+        return (self.session_ssl, self.server_ssl)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _TransportConnection:
+    def __init__(
+        self,
+        session_ssl: bool | None,
+        server_ssl: str,
+        *,
+        execute_error: Exception | None = None,
+    ) -> None:
+        self.transport_cursor = _TransportCursor(
+            session_ssl,
+            server_ssl,
+            execute_error=execute_error,
+        )
+        self.rollback_count = 0
+
+    def cursor(self) -> _TransportCursor:
+        return self.transport_cursor
+
+    def rollback(self) -> None:
+        self.rollback_count += 1
+
+
+def test_dts_engine_revalidates_new_and_reused_physical_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    fake_engine = object()
+
+    monkeypatch.setattr(
+        "app.dts_ingest_store.create_engine",
+        lambda *_args, **_kwargs: fake_engine,
+    )
+
+    def fake_listen(
+        target: object,
+        event_name: str,
+        callback: object,
+    ) -> None:
+        assert target is fake_engine
+        assert event_name in {"connect", "checkout"}
+        captured[event_name] = callback
+
+    monkeypatch.setattr(
+        "app.dts_ingest_store.sqlalchemy_event.listen",
+        fake_listen,
+    )
+    settings = DtsIngestDatabaseSettings(
+        host=APPROVED_INSECURE_PRE_HOST,
+        password="runtime-only",
+        sslmode="disable",
+        allow_insecure_db=True,
+    )
+
+    build_dts_ingest_engine(settings, source_region="ovs")
+
+    connect_callback = captured["connect"]
+    checkout_callback = captured["checkout"]
+    assert callable(connect_callback)
+    assert callable(checkout_callback)
+    initial_connection = _TransportConnection(False, "off")
+    connect_callback(initial_connection, object())
+    assert initial_connection.transport_cursor.executed == [
+        "SELECT (SELECT ssl FROM pg_catalog.pg_stat_ssl "
+        "WHERE pid = pg_catalog.pg_backend_pid()), current_setting('ssl')"
+    ]
+    assert initial_connection.transport_cursor.closed is True
+    assert initial_connection.rollback_count == 1
+
+    reused_connection = _TransportConnection(False, "on")
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="DTS_TARGET_TLS_AVAILABLE_REQUIRES_VERIFY_FULL",
+    ):
+        checkout_callback(reused_connection, object(), object())
+    assert reused_connection.transport_cursor.closed is True
+    assert reused_connection.rollback_count == 1
+
+    plaintext_verify_full = _TransportConnection(False, "on")
+    verify_full_settings = DtsIngestDatabaseSettings(
+        host="db.internal",
+        password="runtime-only",
+    )
+    with pytest.raises(DtsIngestStoreError, match="DTS_TARGET_TLS_REQUIRED"):
+        _validate_dts_physical_connection_transport(
+            plaintext_verify_full,
+            settings=verify_full_settings,
+        )
+
+    missing_session_state = _TransportConnection(None, "off")
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="DTS_TARGET_SSL_SETTING_UNAVAILABLE",
+    ):
+        connect_callback(missing_session_state, object())
+
+    query_error = RuntimeError("ssl-setting-query-failed")
+    broken_connection = _TransportConnection(
+        False,
+        "off",
+        execute_error=query_error,
+    )
+    with pytest.raises(RuntimeError, match="ssl-setting-query-failed"):
+        checkout_callback(broken_connection, object(), object())
+    assert broken_connection.transport_cursor.closed is True
+    assert broken_connection.rollback_count == 1
 
 
 class _ValidationResult:
@@ -196,7 +452,12 @@ def _validation_sink(
     state_triggers: list[tuple[object, ...]] | None = None,
     columns: list[tuple[object, ...]] | None = None,
     triggers: list[tuple[object, ...]] | None = None,
+    sslmode: str = "verify-full",
+    server_ssl: str = "on",
+    session_ssl: bool | None = None,
 ) -> tuple[PostgresDtsEventSink, _ValidationConnection]:
+    if session_ssl is None:
+        session_ssl = sslmode == "verify-full"
     expected_columns = list(EXPECTED_SOURCE_WIDE_COLUMNS)
     expected_triggers = [
         (*definition[:2], "O", *definition[2:])
@@ -209,7 +470,14 @@ def _validation_sink(
     connection = _ValidationConnection(
         [
             _ValidationResult(
-                one=("tide_system_test", "tit_dts_ingest_runtime", "public", "off")
+                one=(
+                    "tide_system_test",
+                    "tit_dts_ingest_runtime",
+                    "public",
+                    "off",
+                    session_ssl,
+                    server_ssl,
+                )
             ),
             _ValidationResult(all_rows=[] if missing is None else missing),
             _ValidationResult(first=invalid),
@@ -251,6 +519,16 @@ def _validation_sink(
         ]
     )
     sink = object.__new__(PostgresDtsEventSink)
+    sink.settings = DtsIngestDatabaseSettings(
+        host=(
+            APPROVED_INSECURE_PRE_HOST
+            if sslmode == "disable"
+            else "db.internal"
+        ),
+        password="database-secret",
+        sslmode=sslmode,
+        allow_insecure_db=sslmode == "disable",
+    )
     sink.engine = _ValidationEngine(connection)
     sink._validated = False
     return sink, connection
@@ -263,6 +541,8 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
 
     assert sink._validated is True
     assert len(connection.statements) == 10
+    assert "pg_stat_ssl" in connection.statements[0][0]
+    assert "current_setting('ssl')" in connection.statements[0][0]
     required_sql, required_parameters = connection.statements[1]
     assert "ARRAY['SELECT','INSERT','UPDATE','DELETE']" in required_sql
     assert required_parameters == {"relations": sorted(MUTABLE_RELATIONS)}
@@ -334,6 +614,35 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
         "alembic_version" not in sql
         for sql, _parameters in connection.statements
     )
+
+
+def test_dts_runtime_allows_approved_pre_plaintext_only_while_server_ssl_is_off(
+) -> None:
+    sink, _connection = _validation_sink(sslmode="disable", server_ssl="off")
+
+    sink._validate_runtime()
+
+    assert sink._validated is True
+
+    stale_sink, _connection = _validation_sink(
+        sslmode="disable",
+        server_ssl="on",
+    )
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="DTS_TARGET_TLS_AVAILABLE_REQUIRES_VERIFY_FULL",
+    ):
+        stale_sink._validate_runtime()
+
+
+def test_dts_runtime_requires_server_tls_for_verify_full() -> None:
+    sink, _connection = _validation_sink(
+        sslmode="verify-full",
+        server_ssl="off",
+    )
+
+    with pytest.raises(DtsIngestStoreError, match="DTS_TARGET_TLS_REQUIRED"):
+        sink._validate_runtime()
 
 
 def test_dts_runtime_rejects_invalid_privilege_boundaries() -> None:
@@ -770,13 +1079,17 @@ def test_projection_activation_holds_one_global_session_lock_until_close() -> No
             _Result(first=None),
             _Result(scalar=3),
             _Result(first=None),
-            _Result(scalar=42001),
+            _Result(one=(42001, True, "on")),
             _Result(scalar=True),
         ]
     )
     engine = _ActivationEngine(connection)
     sink = object.__new__(PostgresDtsEventSink)
     sink.engine = engine
+    sink.settings = DtsIngestDatabaseSettings(
+        host="db.internal",
+        password="runtime-only",
+    )
     sink._validated = True
     sink._projection_lock_connection = None
 

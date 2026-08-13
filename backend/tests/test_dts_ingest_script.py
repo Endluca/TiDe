@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -90,7 +91,11 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
         safe_summary=lambda: {"source_region": "ovs", "topic": "ovs-topic"},
     )
     database_settings = SimpleNamespace(
-        safe_summary=lambda: {"database": "tide_system_test"}
+        safe_summary=lambda: {
+            "database": "tide_system_test",
+            "sslmode": "disable",
+            "insecure_transport_authorized": True,
+        }
     )
 
     class Sink:
@@ -184,6 +189,11 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
         run_dts_ingest._run(args)
 
     assert readiness.exists()
+    assert json.loads(readiness.read_text(encoding="utf-8"))["target"] == {
+        "database": "tide_system_test",
+        "sslmode": "disable",
+        "insecure_transport_authorized": True,
+    }
     assert not heartbeat.exists()
     assert sink.activation_acquired is True
     assert sink.lock_checked is True

@@ -18,7 +18,7 @@
 3. SASL 使用 `PLAIN` + `SASL_PLAINTEXT`，实际用户名按 `<账号>-<消费组ID>` 生成；密码只从运行时环境读取，不进入日志或仓库。
 4. 按 `source_region + topic + partition + offset` 定义幂等键，并把已确认的 17 类国内共享/区域业务表事件路由为课程、教师、师生组合、标签或投诉分类脏键。
 5. 已实现海外/国内教师筛选差异、Peak 时段差异、投诉两表各取最新一条、处罚时间差大于 30 秒的迟到/早退规则。
-6. 目标固定为 `tide_system_test.public`，数据库身份固定为 `tit_dts_ingest_runtime`，SSL 固定为 `verify-full`；库名、Schema、角色或有效权限不一致时启动失败。
+6. 目标固定为 `tide_system_test.public`，数据库身份固定为 `tit_dts_ingest_runtime`。SSL 默认 `verify-full`。当前 PRE 库已现场确认 `SHOW ssl=off`，临时例外必须同时设置 `TIT_DTS_INGEST_DB_SSLMODE=disable` 和 `TIT_DTS_ALLOW_INSECURE_DB=true`，并且只允许已批准的 `tide-system.rwlb.singapore.rds.aliyuncs.com:5432` 端点；其他 SSL 模式、端点以及库名、Schema、角色或有效权限不一致时启动失败。每条新建的 PostgreSQL 物理连接都以 `pg_stat_ssl` 核验当前会话是否实际使用 TLS，并同时核验服务端 SSL 状态；临时 `disable` 例外还会在每次连接池 checkout 时复核，服务端一旦启用 TLS 便立即失败关闭并要求恢复 `verify-full`。长期持有的投影锁会话也在每批投影前执行同一核验。
 7. 每条消息在一个 PostgreSQL 事务内依次写接入账本、字段白名单当前态、脏键和数据库位点；事务成功后才提交 Kafka offset。数据库位点领先 Kafka 时从数据库续跑，Kafka 位点领先数据库时失败关闭。
 8. 脏键投影器按课程、教师、师生组合、评价标签和投诉分类重算；课程必须等待国内共享教师主数据并通过开放式新师 cohort、地区及入职 30 天窗口校验。国内教师事件晚到时，会把当前镜像中该教师的国内/海外预约重新置脏；缺主记录时重试，不把“尚未到达”解释成删除。
 9. `lesson_source_wide`、`teacher_source_wide` 采用有差异才更新的 UPSERT；源事实删除或退出范围时删除对应宽表行。宽表写入、派生教师脏键和当前脏键完成在同一事务内，失败则进入退避重试。
@@ -53,7 +53,7 @@ DTS 使用同一镜像，但国内、海外分别建立独立 Gaea 项目，避�
 - `TIT_PROCESS_PROFILE=dts-ingest`；
 - DTS 非敏感连接参数：`TIT_DTS_SOURCE_REGION/BROKER_URL/TOPIC/GROUP_ID/ACCOUNT/START_AT`；
 - Gaea 密钥：`TIT_DTS_PASSWORD`，只用于 DTS SASL；
-- PostgreSQL 非敏感参数：`TIT_DTS_INGEST_DB_HOST/PORT`；
+- PostgreSQL 非敏感参数：`TIT_DTS_INGEST_DB_HOST/PORT/SSLMODE`；当前 PRE 两项目从 `backend/dts-ingest.pre-ssl-off.env.example` 同时显式覆盖 `TIT_DTS_INGEST_DB_SSLMODE=disable` 与 `TIT_DTS_ALLOW_INSECURE_DB=true`，生产模板保持 `verify-full/false`；
 - Gaea 密钥：`TIT_DTS_INGEST_DB_PASSWORD`，只用于 `tit_dts_ingest_runtime`。
 
 两个密码不是同一个密码，不允许复用。`TIT_DTS_INGEST_DB_NAME=tide_system_test`、
@@ -76,17 +76,21 @@ DTS 使用同一镜像，但国内、海外分别建立独立 Gaea 项目，避�
 | `TIT_DTS_REQUIRED_OVS_TOPIC` | 海外 topic | 海外 topic |
 | `TIT_DTS_REQUIRED_DOM_TOPIC` | 国内 topic | 国内 topic |
 
-两个可版本化的非敏感配置入口分别是
+两个可版本化的生产安全配置入口分别是
 `backend/.env.dts-ingest.ovs.production.example` 和
-`backend/.env.dts-ingest.dom.production.example`。两份文件都故意不含 `TIT_DTS_PASSWORD` 和
-`TIT_DTS_INGEST_DB_PASSWORD` 的值。
+`backend/.env.dts-ingest.dom.production.example`；PRE 的临时非 TLS 覆盖单独位于
+`backend/dts-ingest.pre-ssl-off.env.example`。三份文件都故意不含 `TIT_DTS_PASSWORD` 和
+`TIT_DTS_INGEST_DB_PASSWORD` 的值。正式环境若目标不再是当前固定 test 库，还必须同步修改
+数据库身份契约、迁移和 ACL 并重新验收，不能只把 SSL 改回 `verify-full`。
 
 ## 当前未完成的是实联与上线
 
 23/55 字段投影和国内/海外双运行配置已经进入持久化进程，不再停留在候选字段或影子输出。
-`tide_system_test` 已迁移至 public 59 / teacher 0041；本次仍没有连接任一 broker、配置 DTS
-Gaea 项目或执行真实业务对账，因此不能表述为“链路已跑通”。两项目的 DTS 密码和数据库密码
-仍必须由盖娅密钥环境分别注入。投诉分类是早于新教师长期存在的静态共享字典，不受“新教师
+`tide_system_test` 已迁移至 public 59 / teacher 0041；国内、海外两个独立 PRE Gaea 项目已经创建并
+注入各自密钥。首次 release 镜像实启时，两项目均在连接 broker 前因目标 PostgreSQL
+`SHOW ssl=off` 与旧代码固定 `verify-full` 冲突而失败，尚未产生 checkpoint、目标写入或真实字段
+对账；当前代码已增加受控 PRE 例外，仍须发布新镜像并现场验证，因此不能表述为“链路已跑通”。
+投诉分类是早于新教师长期存在的静态共享字典，不受“新教师
 入职前无个体数据”覆盖；开启投影前必须通过 DTS 变更事件或受控小型 Seed 将字典装入当前态，并验证
 引用完整性。启动门禁可拒绝不满足这些条件的投影进程，但不能代替真实 DTS 认证、Avro 解码、位点恢复和下游业务对账。
 

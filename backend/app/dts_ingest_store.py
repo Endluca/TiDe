@@ -28,6 +28,7 @@ from sqlalchemy import (
     select,
     text,
 )
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB, insert
 
@@ -55,6 +56,8 @@ from .dts_source_consumer import (
 EXPECTED_DATABASE = "tide_system_test"
 EXPECTED_SCHEMA = "public"
 EXPECTED_ROLE = "tit_dts_ingest_runtime"
+APPROVED_INSECURE_PRE_HOST = "tide-system.rwlb.singapore.rds.aliyuncs.com"
+APPROVED_INSECURE_PRE_PORT = 5432
 MUTABLE_RELATIONS = frozenset(
     {
         "public.dts_ingest_checkpoints",
@@ -359,6 +362,53 @@ class DtsIngestDatabaseSettings:
     database: str = EXPECTED_DATABASE
     username: str = EXPECTED_ROLE
     schema: str = EXPECTED_SCHEMA
+    sslmode: str = "verify-full"
+    allow_insecure_db: bool = False
+
+    def __post_init__(self) -> None:
+        for configured, expected, error_code in (
+            (
+                self.database,
+                EXPECTED_DATABASE,
+                f"TIT_DTS_INGEST_DB_NAME_MUST_EQUAL_{EXPECTED_DATABASE}",
+            ),
+            (
+                self.username,
+                EXPECTED_ROLE,
+                f"TIT_DTS_INGEST_DB_USER_MUST_EQUAL_{EXPECTED_ROLE}",
+            ),
+            (
+                self.schema,
+                EXPECTED_SCHEMA,
+                f"TIT_DTS_INGEST_DB_SCHEMA_MUST_EQUAL_{EXPECTED_SCHEMA}",
+            ),
+        ):
+            if configured != expected:
+                raise DtsConfigurationError(error_code)
+        if self.sslmode not in {"verify-full", "disable"}:
+            raise DtsConfigurationError(
+                "TIT_DTS_INGEST_DB_SSLMODE_INVALID"
+            )
+        if not isinstance(self.allow_insecure_db, bool):
+            raise DtsConfigurationError(
+                "TIT_DTS_ALLOW_INSECURE_DB_INVALID"
+            )
+        if self.sslmode == "disable":
+            if not self.allow_insecure_db:
+                raise DtsConfigurationError(
+                    "TIT_DTS_ALLOW_INSECURE_DB_REQUIRED_FOR_SSLMODE_DISABLE"
+                )
+            if (
+                self.host != APPROVED_INSECURE_PRE_HOST
+                or self.port != APPROVED_INSECURE_PRE_PORT
+            ):
+                raise DtsConfigurationError(
+                    "TIT_DTS_INGEST_DB_SSLMODE_DISABLE_ENDPOINT_NOT_APPROVED"
+                )
+        elif self.allow_insecure_db:
+            raise DtsConfigurationError(
+                "TIT_DTS_ALLOW_INSECURE_DB_REQUIRES_SSLMODE_DISABLE"
+            )
 
     @classmethod
     def from_env(
@@ -387,6 +437,25 @@ class DtsIngestDatabaseSettings:
         if not 1 <= port <= 65535:
             raise DtsConfigurationError("TIT_DTS_INGEST_DB_PORT_INVALID")
 
+        sslmode = values.get(
+            "TIT_DTS_INGEST_DB_SSLMODE",
+            "verify-full",
+        ).strip()
+        if sslmode not in {"verify-full", "disable"}:
+            raise DtsConfigurationError(
+                "TIT_DTS_INGEST_DB_SSLMODE_INVALID"
+            )
+
+        raw_allow_insecure = values.get(
+            "TIT_DTS_ALLOW_INSECURE_DB",
+            "false",
+        ).strip()
+        if raw_allow_insecure not in {"true", "false"}:
+            raise DtsConfigurationError(
+                "TIT_DTS_ALLOW_INSECURE_DB_INVALID"
+            )
+        allow_insecure_db = raw_allow_insecure == "true"
+
         for name, expected in (
             ("TIT_DTS_INGEST_DB_NAME", EXPECTED_DATABASE),
             ("TIT_DTS_INGEST_DB_USER", EXPECTED_ROLE),
@@ -400,6 +469,8 @@ class DtsIngestDatabaseSettings:
             host=required("TIT_DTS_INGEST_DB_HOST"),
             port=port,
             password=required_secret("TIT_DTS_INGEST_DB_PASSWORD"),
+            sslmode=sslmode,
+            allow_insecure_db=allow_insecure_db,
         )
 
     def sqlalchemy_url(self) -> URL:
@@ -410,7 +481,7 @@ class DtsIngestDatabaseSettings:
             host=self.host,
             port=self.port,
             database=self.database,
-            query={"sslmode": "verify-full"},
+            query={"sslmode": self.sslmode},
         )
 
     def safe_summary(self) -> dict[str, Any]:
@@ -419,7 +490,8 @@ class DtsIngestDatabaseSettings:
             "schema": self.schema,
             "role": self.username,
             "port": self.port,
-            "sslmode": "verify-full",
+            "sslmode": self.sslmode,
+            "insecure_transport_authorized": self.allow_insecure_db,
         }
 
 
@@ -480,7 +552,7 @@ def build_dts_ingest_engine(
         if source_region is not None
         else "tit-dts-ingest"
     )
-    return create_engine(
+    engine = create_engine(
         settings.sqlalchemy_url(),
         future=True,
         pool_pre_ping=True,
@@ -500,6 +572,87 @@ def build_dts_ingest_engine(
                 "-c statement_timeout=60000"
             ),
         },
+    )
+    sqlalchemy_event.listen(
+        engine,
+        "connect",
+        lambda dbapi_connection, _connection_record: (
+            _validate_dts_physical_connection_transport(
+                dbapi_connection,
+                settings=settings,
+            )
+        ),
+    )
+    # An established TLS session cannot turn plaintext while it is pooled.
+    # The temporary PRE plaintext exception is different: re-check every
+    # checkout so enabling server TLS expires the exception immediately.
+    if settings.sslmode == "disable":
+        sqlalchemy_event.listen(
+            engine,
+            "checkout",
+            lambda dbapi_connection, _connection_record, _connection_proxy: (
+                _validate_dts_physical_connection_transport(
+                    dbapi_connection,
+                    settings=settings,
+                )
+            ),
+        )
+    return engine
+
+
+def _require_session_transport(
+    *,
+    sslmode: str,
+    session_ssl: object,
+    server_ssl: str,
+) -> None:
+    normalized_server_ssl = server_ssl.lower()
+    if (
+        not isinstance(session_ssl, bool)
+        or normalized_server_ssl not in {"on", "off"}
+    ):
+        raise DtsIngestStoreError("DTS_TARGET_SSL_SETTING_UNAVAILABLE")
+    if sslmode == "disable" and (
+        session_ssl is not False or normalized_server_ssl != "off"
+    ):
+        raise DtsIngestStoreError(
+            "DTS_TARGET_TLS_AVAILABLE_REQUIRES_VERIFY_FULL"
+        )
+    if sslmode == "verify-full" and (
+        session_ssl is not True or normalized_server_ssl != "on"
+    ):
+        raise DtsIngestStoreError("DTS_TARGET_TLS_REQUIRED")
+
+
+def _validate_dts_physical_connection_transport(
+    dbapi_connection: Any,
+    *,
+    settings: DtsIngestDatabaseSettings,
+) -> None:
+    """Validate a new session, and revalidate PRE plaintext on checkout."""
+
+    cursor = dbapi_connection.cursor()
+    try:
+        try:
+            cursor.execute(
+                "SELECT "
+                "(SELECT ssl FROM pg_catalog.pg_stat_ssl "
+                "WHERE pid = pg_catalog.pg_backend_pid()), "
+                "current_setting('ssl')"
+            )
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+    finally:
+        # The connect hook must not leave an implicit transaction open before
+        # SQLAlchemy hands the new DBAPI connection to the pool.
+        dbapi_connection.rollback()
+    if row is None or len(row) != 2:
+        raise DtsIngestStoreError("DTS_TARGET_SSL_SETTING_UNAVAILABLE")
+    _require_session_transport(
+        sslmode=settings.sslmode,
+        session_ssl=row[0],
+        server_ssl=str(row[1]),
     )
 
 
@@ -871,10 +1024,27 @@ class PostgresDtsEventSink:
         if connection is None or expected_backend_pid is None:
             raise DtsIngestStoreError("DTS_PROJECTION_LOCK_NOT_ACQUIRED")
         try:
-            actual_backend_pid = connection.execute(
-                text("SELECT pg_catalog.pg_backend_pid()")
-            ).scalar_one_or_none()
+            lock_session = connection.execute(
+                text(
+                    "SELECT pg_catalog.pg_backend_pid(), "
+                    "(SELECT ssl FROM pg_catalog.pg_stat_ssl "
+                    "WHERE pid = pg_catalog.pg_backend_pid()), "
+                    "current_setting('ssl')"
+                )
+            ).one()
+            actual_backend_pid = lock_session[0]
+            _require_session_transport(
+                sslmode=self.settings.sslmode,
+                session_ssl=lock_session[1],
+                server_ssl=str(lock_session[2]),
+            )
             connection.commit()
+        except DtsIngestStoreError:
+            self._projection_lock_connection = None
+            self._projection_lock_backend_pid = None
+            connection.invalidate()
+            connection.close()
+            raise
         except Exception as exc:
             self._projection_lock_connection = None
             self._projection_lock_backend_pid = None
@@ -898,7 +1068,10 @@ class PostgresDtsEventSink:
                 text(
                     """
                     SELECT current_database(), current_user, current_schema(),
-                           current_setting('transaction_read_only')
+                           current_setting('transaction_read_only'),
+                           (SELECT ssl FROM pg_catalog.pg_stat_ssl
+                            WHERE pid = pg_catalog.pg_backend_pid()),
+                           current_setting('ssl')
                     """
                 )
             ).one()
@@ -910,6 +1083,11 @@ class PostgresDtsEventSink:
                 raise DtsIngestStoreError("DTS_TARGET_IDENTITY_MISMATCH")
             if str(identity[3]).lower() != "off":
                 raise DtsIngestStoreError("DTS_TARGET_IS_READ_ONLY")
+            _require_session_transport(
+                sslmode=self.settings.sslmode,
+                session_ssl=identity[4],
+                server_ssl=str(identity[5]),
+            )
 
             missing = connection.execute(
                 text(

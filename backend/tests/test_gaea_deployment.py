@@ -22,6 +22,10 @@ RENDER_REAL_IP = GAEA_DIR / "bin" / "render-real-ip-conf.py"
 S6_DIR = GAEA_DIR / "s6-rc.d"
 DTS_OVS_ENV = ROOT / "backend" / ".env.dts-ingest.ovs.production.example"
 DTS_DOM_ENV = ROOT / "backend" / ".env.dts-ingest.dom.production.example"
+DTS_GENERIC_ENV = ROOT / "backend" / ".env.dts-ingest.production.example"
+DTS_PRE_SSL_OFF_ENV = (
+    ROOT / "backend" / "dts-ingest.pre-ssl-off.env.example"
+)
 APPLICATION_ENV = ROOT / "backend" / ".env.production.example"
 COMBINED_ENV = ROOT / "deploy" / "combined" / ".env.example"
 TEACHER_COMPANY_TEST_MIGRATOR = (
@@ -653,7 +657,8 @@ def test_gaea_image_uses_internal_sources_and_s6_supervision() -> None:
     assert "adduser -u 1001 -G gaea -D gaea" in dockerfile
     assert "ENV TZ=Asia/Shanghai" in dockerfile
     assert "S6_KEEP_ENV=1" in dockerfile
-    assert "S6_CMD_RECEIVE_SIGNALS=1" in dockerfile
+    assert "S6_CMD_RECEIVE_SIGNALS=" not in dockerfile
+    assert "SIGTERM must reach pid 1" in dockerfile
     assert 'ENTRYPOINT ["/init"]' in dockerfile
     assert 'CMD ["sleep", "infinity"]' in dockerfile
     assert "USER gaea" not in dockerfile
@@ -725,6 +730,16 @@ def test_gaea_renders_bounded_nginx_workers_at_runtime() -> None:
     assert "NGINX_WORKER_PROCESSES=2" in renderer
     assert "envsubst '${NGINX_WORKER_PROCESSES}'" in renderer
     assert "render-nginx-conf.sh" in teacher_web_run
+
+    rendered = subprocess.run(
+        [str(RENDER_NGINX), str(NGINX_CONF), "/dev/stdout"],
+        check=True,
+        capture_output=True,
+        env=os.environ | {"MEMORY_SIZE": "--"},
+        text=True,
+    )
+    assert "worker_processes 2;" in rendered.stdout
+    assert "invalid number" not in rendered.stderr
 
 
 def test_gaea_exposes_two_domains_on_two_ports() -> None:
@@ -882,6 +897,7 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "TIT_PROCESS_PROFILE" in dts_run
     assert "TIT_DTS_PASSWORD is required" in dts_run
     assert "TIT_DTS_INGEST_DB_PASSWORD is required" in dts_run
+    assert "TIT_DTS_INGEST_DB_SSLMODE is required" not in dts_run
     assert "--watch --max-messages 100" in dts_run
     assert (S6_DIR / "dts-ingest" / "timeout-kill").read_text(
         encoding="utf-8"
@@ -897,6 +913,8 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
             encoding="utf-8"
         )
     assert "STOPSIGNAL SIGTERM" in dockerfile
+    assert "S6_CMD_RECEIVE_SIGNALS=" not in dockerfile
+    assert "SIGTERM must reach pid 1" in dockerfile
 
 
 def test_source_wide_enable_gate_defaults_true_and_rejects_invalid_values() -> None:
@@ -950,6 +968,10 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "不再为积分或 SourceWide Worker 新建" in readme
     assert "TIT_PROCESS_PROFILE=dts-ingest" in readme
     assert "TIT_DTS_INGEST_DB_PASSWORD" in readme
+    assert "TIT_DTS_INGEST_DB_SSLMODE" in readme
+    assert "TIT_DTS_ALLOW_INSECURE_DB" in readme
+    assert "SHOW ssl=off" in readme
+    assert "dts-ingest.pre-ssl-off.env.example" in readme
     assert "TIT_DTS_COHORT_START" in readme
     assert "2026-08-13" in readme
     assert "TIT_DTS_PROJECTION_ENABLED=false" in readme
@@ -1012,6 +1034,7 @@ def test_application_examples_enable_source_wide_by_default() -> None:
 def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     overseas = DTS_OVS_ENV.read_text(encoding="utf-8")
     domestic = DTS_DOM_ENV.read_text(encoding="utf-8")
+    generic = DTS_GENERIC_ENV.read_text(encoding="utf-8")
     expected_topics = {
         "TIT_DTS_REQUIRED_OVS_TOPIC=ap_southeast_1_vpc_pc_"
         "gs5986x4885426aej_dba_tide_source_ovs_version2",
@@ -1024,6 +1047,35 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
         assert "TIT_DTS_ACTIVATION_AT=" in content
         for topic in expected_topics:
             assert topic in content
+
+    for content in (generic, overseas, domestic):
+        assert content.count("TIT_DTS_INGEST_DB_SSLMODE=verify-full") == 1
+        assert content.count("TIT_DTS_ALLOW_INSECURE_DB=false") == 1
+        assert "TIT_DTS_INGEST_DB_SSLMODE=disable" not in content
+
+    pre_override = DTS_PRE_SSL_OFF_ENV.read_text(encoding="utf-8")
+    assert pre_override.count("TIT_DTS_INGEST_DB_SSLMODE=disable") == 1
+    assert pre_override.count("TIT_DTS_ALLOW_INSECURE_DB=true") == 1
+    assert "tide-system.rwlb.singapore.rds.aliyuncs.com:5432" in pre_override
+
+    assert "TIT_DTS_INGEST_DB_SSLMODE" not in APPLICATION_ENV.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_INGEST_DB_SSLMODE" not in COMBINED_ENV.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_INGEST_DB_SSLMODE" not in DOCKERFILE.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_ALLOW_INSECURE_DB" not in APPLICATION_ENV.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_ALLOW_INSECURE_DB" not in COMBINED_ENV.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_ALLOW_INSECURE_DB" not in DOCKERFILE.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_current_deployment_docs_do_not_restore_single_replica_mode() -> None:
