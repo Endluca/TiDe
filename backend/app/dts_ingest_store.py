@@ -312,7 +312,7 @@ EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS = (
 EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS = (
     (
         "dom_student_json_is_safe_v1",
-        "jsonb",
+        "payload jsonb",
         "plpgsql",
         "i",
         True,

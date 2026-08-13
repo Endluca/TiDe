@@ -667,6 +667,7 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
 
 def test_domestic_database_privacy_triggers_are_part_of_the_exact_contract(
 ) -> None:
+    assert EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS[0][1] == "payload jsonb"
     assert all(
         definition[2] == 31
         for definition in EXPECTED_DTS_STATE_GUARD_TRIGGERS
