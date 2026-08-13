@@ -350,7 +350,7 @@ services:
       PGCONNECT_TIMEOUT: "8"
       PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=60000 -c lock_timeout=5000"
       TIDE_CONTRACT_PROBE_EXPECTED_DATABASE: ${TIDE_DATABASE_NAME:?Set TIDE_DATABASE_NAME}
-      TIDE_CONTRACT_PROBE_REQUIRE_SSL: "true"
+      TIDE_CONTRACT_PROBE_REQUIRE_SSL: ${TIDE_CONTRACT_PROBE_REQUIRE_SSL:-true}
     volumes:
       - ./contract-probe.sql:/contract-probe.sql:ro
       - ./run-contract-probe.sh:/run-contract-probe.sh:ro

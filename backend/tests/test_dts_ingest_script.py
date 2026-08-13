@@ -122,6 +122,44 @@ def test_domestic_projection_is_forbidden_before_sink_creation(
         run_dts_ingest._run(args)
 
 
+def test_domestic_private_line_plaintext_reuses_existing_database_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = {
+        "TIT_DTS_SOURCE_REGION": "dom",
+        "TIT_DTS_EXECUTION_REGION": "cn",
+        "TIT_DTS_BROKER_URL": "broker.internal:18003",
+        "TIT_DTS_TOPIC": "dom-topic",
+        "TIT_DTS_GROUP_ID": "dom-group",
+        "TIT_DTS_ACCOUNT": "consumer",
+        "TIT_DTS_PASSWORD": "runtime-only",
+        "TIT_DTS_DOM_STUDENT_HMAC_KEY": "a" * 64,
+        "TIT_DTS_INGEST_DB_HOST": (
+            "tide-system.rwlb.singapore.rds.aliyuncs.com"
+        ),
+        "TIT_DTS_INGEST_DB_PASSWORD": "database-secret",
+        "TIT_DTS_INGEST_DB_SSLMODE": "disable",
+        "TIT_DTS_ALLOW_INSECURE_DB": "true",
+        "TIT_DTS_PROJECTION_ENABLED": "false",
+    }
+    for name, value in runtime.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "PostgresDtsEventSink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("plaintext passed the pre-connection gates")
+        ),
+    )
+    args = run_dts_ingest.build_parser().parse_args([])
+
+    with pytest.raises(
+        AssertionError,
+        match="^plaintext passed the pre-connection gates$",
+    ):
+        run_dts_ingest._run(args)
+
+
 def test_projection_activation_variables_are_required_only_when_enabled() -> None:
     assert _projection_activation_settings(enabled=False, environ={}) is None
 

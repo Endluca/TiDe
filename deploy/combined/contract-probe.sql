@@ -21,6 +21,7 @@ DECLARE
     total_score integer;
     support_reply_definition text;
     teacher_reply_definition text;
+    session_uses_ssl boolean;
 BEGIN
     IF current_user IS DISTINCT FROM 'tide_sys_admin'
        OR session_user IS DISTINCT FROM 'tide_sys_admin' THEN
@@ -38,16 +39,28 @@ BEGIN
         RAISE EXCEPTION 'contract probe transaction is not read-only';
     END IF;
 
-    IF current_setting('tide.contract_probe_require_ssl')::boolean
-       AND NOT COALESCE(
-           (
-               SELECT ssl
-               FROM pg_stat_ssl
-               WHERE pid = pg_backend_pid()
-           ),
-           false
-       ) THEN
-        RAISE EXCEPTION 'contract probe database session is not using TLS';
+    SELECT COALESCE(
+        (
+            SELECT ssl
+            FROM pg_stat_ssl
+            WHERE pid = pg_backend_pid()
+        ),
+        false
+    ) INTO session_uses_ssl;
+
+    IF current_setting('tide.contract_probe_require_ssl')::boolean THEN
+        IF NOT session_uses_ssl
+           OR current_setting('ssl') IS DISTINCT FROM 'on' THEN
+            RAISE EXCEPTION
+                'contract probe database session is not using required TLS';
+        END IF;
+    ELSE
+        IF session_uses_ssl
+           OR current_setting('ssl') IS DISTINCT FROM 'off' THEN
+            RAISE EXCEPTION
+                'private-line contract probe requires session TLS off '
+                'and server ssl=off';
+        END IF;
     END IF;
 
     IF to_regclass('public.task_templates') IS NULL

@@ -9,7 +9,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 from typing import Any
 
 
@@ -24,6 +24,7 @@ from app.qualification_award_gate import (
     QualificationAwardGateConfigurationError,
     irreversible_qualification_grants_enabled,
 )
+from app.runtime_settings import source_worker_database_transport_mode
 
 
 DEFAULT_HEARTBEAT_PATH = Path("/tmp/tit-source-worker-heartbeat")
@@ -141,14 +142,12 @@ def _validated_source_worker_database_url() -> str:
     if expected_database and selected_database != expected_database:
         raise RuntimeError("SOURCE_WORKER_DATABASE_TARGET_MISMATCH")
     if _is_production():
-        ssl_modes = parse_qs(parsed.query, keep_blank_values=True).get(
-            "sslmode",
-            [],
-        )
-        if len(ssl_modes) != 1 or ssl_modes[0].lower() != "verify-full":
+        try:
+            source_worker_database_transport_mode(resolved)
+        except ValueError:
             raise RuntimeError(
                 "SOURCE_WORKER_DATABASE_URL_REQUIRES_VERIFIED_TLS"
-            )
+            ) from None
     return resolved
 
 

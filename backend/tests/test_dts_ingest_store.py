@@ -304,6 +304,25 @@ class _TransportConnection:
         self.rollback_count += 1
 
 
+@pytest.mark.parametrize("name", ["PGHOSTADDR", "PGSERVICE"])
+def test_database_settings_reject_ambient_libpq_identity_override(
+    name: str,
+) -> None:
+    values = {
+        "TIT_DTS_INGEST_DB_HOST": APPROVED_INSECURE_PRE_HOST,
+        "TIT_DTS_INGEST_DB_PASSWORD": "database-secret",
+        "TIT_DTS_INGEST_DB_SSLMODE": "disable",
+        "TIT_DTS_ALLOW_INSECURE_DB": "true",
+        name: "must-not-override-url",
+    }
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="DTS_LIBPQ_CONNECTION_IDENTITY_ENV_FORBIDDEN",
+    ):
+        DtsIngestDatabaseSettings.from_env(values)
+
+
 def test_dts_engine_revalidates_new_and_reused_physical_connections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

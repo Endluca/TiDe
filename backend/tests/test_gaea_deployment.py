@@ -1095,7 +1095,10 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "TIT_DTS_EXECUTION_REGION=cn" in readme
     assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" in readme
     assert "dom:v1:<HMAC-SHA256>" in readme
-    assert "国内项目无论 PRE/生产都要求 `verify-full/false`" in readme
+    assert "国内、海外 DTS 的固定 PRE 专线目标" in readme
+    assert "专线限制网络路径但" in readme
+    assert "不加密 PostgreSQL 流量" in readme
+    assert "正式环境仍固定 `verify-full`" in readme
     assert "只允许海外项目启用全局宽表投影" in readme
     assert "pg_try_advisory_lock" not in readme
     assert "session advisory" in readme
@@ -1184,14 +1187,22 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     assert generic.count("TIT_DTS_DOM_STUDENT_HMAC_KEY=") == 1
     assert domestic.count("TIT_DTS_PROJECTION_ENABLED=false") == 1
     assert "TIT_DTS_PROJECTION_ENABLED=true" not in domestic
-    assert "Never\n# apply dts-ingest.pre-ssl-off.env.example" in domestic
+    assert "dts-ingest.pre-ssl-off.env.example" in domestic
 
     pre_override = DTS_PRE_SSL_OFF_ENV.read_text(encoding="utf-8")
     assert pre_override.count("TIT_DTS_INGEST_DB_SSLMODE=disable") == 1
     assert pre_override.count("TIT_DTS_ALLOW_INSECURE_DB=true") == 1
     assert "tide-system.rwlb.singapore.rds.aliyuncs.com:5432" in pre_override
-    assert "overseas DTS PRE project" in pre_override
-    assert "domestic cross-border project must remain" in pre_override
+    assert "overseas or domestic DTS PRE project" in pre_override
+    assert "private line limits network exposure but" in pre_override
+    assert "does not encrypt PostgreSQL traffic" in pre_override
+    assert "Production must remain verify-full" in pre_override
+    assert "TIT_DTS_PASSWORD" not in pre_override
+    assert "TIT_DTS_INGEST_DB_PASSWORD" not in pre_override
+    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in pre_override
+    assert "dts-ingest.pre-ssl-off.env.example" not in DTS_DOCKERFILE.read_text(
+        encoding="utf-8"
+    )
 
     assert "TIT_DTS_INGEST_DB_SSLMODE" not in APPLICATION_ENV.read_text(
         encoding="utf-8"
@@ -1209,6 +1220,12 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
         encoding="utf-8"
     )
     assert "TIT_DTS_ALLOW_INSECURE_DB" not in DOCKERFILE.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in APPLICATION_ENV.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in DOCKERFILE.read_text(
         encoding="utf-8"
     )
 

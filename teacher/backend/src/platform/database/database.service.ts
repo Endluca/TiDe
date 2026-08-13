@@ -1,7 +1,10 @@
 import { Inject, Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
-import type { AppEnvironment } from '../config/environment';
+import {
+  hasApprovedPrePrivateLineDatabaseUrl,
+  type AppEnvironment,
+} from '../config/environment';
 import { quoteQualifiedViewName } from '../../integrations/shiwen/qualified-view-name';
 import {
   SHIWEN_READ_DATABASE_POOL,
@@ -243,7 +246,8 @@ export class DatabaseService implements OnModuleDestroy {
       this.shiwenReadPool,
       `
         SELECT (
-          (SELECT count(*) FROM ${identityRelation} WHERE false) = 0
+          ${this.productionTransportContract('SHIWEN_READ_DATABASE_URL')}
+          AND (SELECT count(*) FROM ${identityRelation} WHERE false) = 0
           AND (
             SELECT count(*)
             FROM public.teacher_scorecard_current
@@ -286,7 +290,8 @@ export class DatabaseService implements OnModuleDestroy {
         )
       )
       SELECT (
-        migration_state.migration_ids IS NOT DISTINCT FROM
+        ${this.productionTransportContract('TIDE_DATABASE_URL')}
+        AND migration_state.migration_ids IS NOT DISTINCT FROM
           ARRAY[${migrationIds}]::text[]
         AND migration_state.migration_count =
           ${CURRENT_PRODUCTION_MIGRATIONS.length}
@@ -1041,6 +1046,31 @@ export class DatabaseService implements OnModuleDestroy {
       FROM migration_state
       CROSS JOIN public_migration_state
     `;
+  }
+
+  private productionTransportContract(
+    setting: 'TIDE_DATABASE_URL' | 'SHIWEN_READ_DATABASE_URL',
+  ): string {
+    if (this.config?.get('NODE_ENV', { infer: true }) !== 'production') {
+      return 'TRUE';
+    }
+    const databaseUrl = this.config.get(setting, { infer: true });
+    const expectedServerSsl =
+      databaseUrl && hasApprovedPrePrivateLineDatabaseUrl(databaseUrl)
+        ? 'off'
+        : 'on';
+    const expectedSessionSsl = expectedServerSsl === 'on' ? 'TRUE' : 'FALSE';
+    return `(
+      current_setting('ssl') = '${expectedServerSsl}'
+      AND COALESCE(
+        (
+          SELECT ssl
+          FROM pg_stat_ssl
+          WHERE pid = pg_backend_pid()
+        ),
+        FALSE
+      ) = ${expectedSessionSsl}
+    )`;
   }
 
   private qualifiedIdentityView(): string | null {

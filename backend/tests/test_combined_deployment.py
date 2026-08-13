@@ -15,6 +15,15 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "deploy" / "combined"
+LIBPQ_CONNECTION_IDENTITY_ENV = (
+    "PGDATABASE",
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    "PGUSER",
+)
 EXPECTED_TEACHER_MIGRATIONS = (
     "0001_initial",
     "0002_shared_database_exchange",
@@ -64,6 +73,13 @@ EXPECTED_FIXED_TASKS = (
     ("G08", "Cocos Course Training", 5),
     ("G09", "SET Teaching Fundamentals", 5),
 )
+
+
+def _environment_without_libpq_identity_overrides() -> dict[str, str]:
+    environment = dict(os.environ)
+    for name in LIBPQ_CONNECTION_IDENTITY_ENV:
+        environment.pop(name, None)
+    return environment
 
 
 def _compose() -> dict:
@@ -138,7 +154,7 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
     assert services["contract-probe"]["env_file"] != services["api"]["env_file"]
     assert services["contract-probe"]["environment"][
         "TIDE_CONTRACT_PROBE_REQUIRE_SSL"
-    ] == "true"
+    ] == "${TIDE_CONTRACT_PROBE_REQUIRE_SSL:-true}"
     assert (
         services["teacher-migrate"]["env_file"]
         == services["migrate"]["env_file"]
@@ -477,7 +493,18 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "p_message IS NULL" in probe
     assert "tide_support_ticket_owner" in probe
     assert "sslmode=verify-full" in runner
+    assert "sslmode=disable" in runner
+    assert "tide-system.rwlb.singapore.rds.aliyuncs.com:5432" in runner
+    assert "tide_system_test" in runner
+    assert "tide_sys_admin" in runner
+    assert "private-line contract probe requires session TLS off" in probe
+    assert "and server ssl=off" in probe
     assert "--no-password" in runner
+    compose = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
+    assert (
+        "TIDE_CONTRACT_PROBE_REQUIRE_SSL: "
+        "${TIDE_CONTRACT_PROBE_REQUIRE_SSL:-true}"
+    ) in compose
 
 
 def test_personalized_photo_gates_reject_missing_or_extra_config_fields() -> None:
@@ -973,6 +1000,58 @@ def test_combined_preflight_accepts_teacher_source_inside_one_clean_repository(
     assert result.returncode == 0, result.stderr
 
 
+def test_combined_preflight_accepts_fixed_pre_private_line_database_urls(
+    tmp_path: Path,
+) -> None:
+    environment = _make_preflight_environment(tmp_path)
+    private_line_base = (
+        "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+        "tide_system_test?sslmode=disable"
+    )
+    Path(environment["TIDE_OPS_ENV_FILE"]).write_text(
+        "DATABASE_URL=postgresql+psycopg://tit_growth_app:secret@"
+        f"{private_line_base}\n"
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tide_system_test\n",
+        encoding="utf-8",
+    )
+    Path(environment["TIDE_OPS_MIGRATION_ENV_FILE"]).write_text(
+        "DATABASE_URL=postgresql+psycopg://tide_sys_admin:secret@"
+        f"{private_line_base}\n",
+        encoding="utf-8",
+    )
+    Path(environment["TIDE_TEACHER_ENV_FILE"]).write_text(
+        "TIDE_DATABASE_URL=postgresql://tit_teacher_crud:secret@"
+        f"{private_line_base}\n"
+        "SHIWEN_READ_DATABASE_URL=postgresql://tit_teacher_crud:secret@"
+        f"{private_line_base}\n",
+        encoding="utf-8",
+    )
+    environment["TIDE_DATABASE_NAME"] = "tide_system_test"
+
+    result = _run_preflight(environment)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_combined_preflight_rejects_private_line_query_identity_override(
+    tmp_path: Path,
+) -> None:
+    environment = _make_preflight_environment(tmp_path)
+    Path(environment["TIDE_OPS_ENV_FILE"]).write_text(
+        "DATABASE_URL=postgresql+psycopg://tit_growth_app:secret@"
+        "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+        "tide_system_test?sslmode=disable&host=other.example\n"
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE=tide_system_test\n",
+        encoding="utf-8",
+    )
+    environment["TIDE_DATABASE_NAME"] = "tide_system_test"
+
+    result = _run_preflight(environment)
+
+    assert result.returncode != 0
+    assert "fixed tide_system_test PRE private-line endpoint" in result.stderr
+
+
 def test_combined_preflight_rejects_dirty_combined_repository(
     tmp_path: Path,
 ) -> None:
@@ -1099,7 +1178,7 @@ def test_combined_preflight_rejects_reused_runtime_and_migration_credentials(
 
 def test_contract_probe_runner_requires_strict_production_tls() -> None:
     environment = {
-        **os.environ,
+        **_environment_without_libpq_identity_overrides(),
         "DATABASE_URL": (
             "postgresql://tide_sys_admin:secret@db.example/tit_growth"
             "?sslmode=require"
@@ -1120,6 +1199,151 @@ def test_contract_probe_runner_requires_strict_production_tls() -> None:
 
     assert result.returncode != 0
     assert "exactly one sslmode=verify-full" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("database_url", "expected_database", "error"),
+    [
+        (
+            "postgresql://other:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable",
+            "tide_system_test",
+            "must use tide_sys_admin",
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@db.example:5432/"
+            "tide_system_test?sslmode=disable",
+            "tide_system_test",
+            "endpoint is not allowlisted",
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "other?sslmode=disable",
+            "other",
+            "must select tide_system_test",
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable&ssl=false",
+            "tide_system_test",
+            "conflicting ssl",
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable&host=db.example",
+            "tide_system_test",
+            "must not override connection identity",
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable&%68ost=db.example",
+            "tide_system_test",
+            "query parameter name is not canonical",
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=verify-full",
+            "tide_system_test",
+            "exactly one sslmode=disable",
+        ),
+    ],
+)
+def test_contract_probe_plaintext_is_limited_to_exact_pre_endpoint(
+    database_url: str,
+    expected_database: str,
+    error: str,
+) -> None:
+    environment = {
+        **_environment_without_libpq_identity_overrides(),
+        "DATABASE_URL": database_url,
+        "TIDE_CONTRACT_PROBE_EXPECTED_DATABASE": expected_database,
+        "TIDE_CONTRACT_PROBE_REQUIRE_SSL": "false",
+        "TIDE_CONTRACT_PROBE_SQL_FILE": str(DEPLOY / "contract-probe.sql"),
+    }
+
+    result = subprocess.run(
+        ["sh", str(DEPLOY / "run-contract-probe.sh")],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert error in result.stderr
+
+
+def test_contract_probe_runner_accepts_exact_pre_private_line_before_psql(
+    tmp_path: Path,
+) -> None:
+    fake_psql = tmp_path / "psql"
+    fake_psql.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_psql.chmod(0o755)
+    environment = {
+        **_environment_without_libpq_identity_overrides(),
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "DATABASE_URL": (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        "TIDE_CONTRACT_PROBE_EXPECTED_DATABASE": "tide_system_test",
+        "TIDE_CONTRACT_PROBE_REQUIRE_SSL": "false",
+        "TIDE_CONTRACT_PROBE_SQL_FILE": str(DEPLOY / "contract-probe.sql"),
+    }
+
+    result = subprocess.run(
+        ["sh", str(DEPLOY / "run-contract-probe.sh")],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("name", ["PGHOSTADDR", "PGSERVICE"])
+def test_contract_probe_rejects_ambient_libpq_identity_override(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    fake_psql = tmp_path / "psql"
+    fake_psql.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    fake_psql.chmod(0o755)
+    environment = {
+        **_environment_without_libpq_identity_overrides(),
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "DATABASE_URL": (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        "TIDE_CONTRACT_PROBE_EXPECTED_DATABASE": "tide_system_test",
+        "TIDE_CONTRACT_PROBE_REQUIRE_SSL": "false",
+        "TIDE_CONTRACT_PROBE_SQL_FILE": str(DEPLOY / "contract-probe.sql"),
+        name: "must-not-override-url",
+    }
+
+    result = subprocess.run(
+        ["sh", str(DEPLOY / "run-contract-probe.sh")],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "ambient libpq connection identity variables" in result.stderr
 
 
 def test_edge_canonicalizes_forwarded_headers_before_one_hop_backends() -> None:

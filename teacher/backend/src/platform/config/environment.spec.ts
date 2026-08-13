@@ -294,6 +294,70 @@ describe('environment configuration', () => {
     ).toThrow('sslmode=verify-full');
   });
 
+  it('allows plaintext only for the fixed PRE private-line database identity', () => {
+    const privateLineUrl =
+      'postgresql://tit_teacher_crud:password@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/tide_system_test?sslmode=disable';
+    const environment = validateEnvironment({
+      ...validProductionEnvironment,
+      TIDE_DATABASE_URL: privateLineUrl,
+      SHIWEN_READ_DATABASE_URL: privateLineUrl,
+    });
+
+    expect(environment.TIDE_DATABASE_URL).toBe(privateLineUrl);
+    expect(environment.SHIWEN_READ_DATABASE_URL).toBe(privateLineUrl);
+  });
+
+  it.each(['PGHOSTADDR', 'PGSERVICE'])(
+    'rejects ambient %s for fixed PRE private-line database URLs',
+    (name) => {
+      const privateLineUrl =
+        'postgresql://tit_teacher_crud:password@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/tide_system_test?sslmode=disable';
+
+      expect(() =>
+        validateEnvironment({
+          ...validProductionEnvironment,
+          TIDE_DATABASE_URL: privateLineUrl,
+          SHIWEN_READ_DATABASE_URL: privateLineUrl,
+          [name]: 'must-not-override-url',
+        }),
+      ).toThrow(name);
+    },
+  );
+
+  it.each([
+    [
+      'wrong role',
+      'postgresql://wrong_role:password@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/tide_system_test?sslmode=disable',
+    ],
+    [
+      'wrong host',
+      'postgresql://tit_teacher_crud:password@other.example.test:5432/tide_system_test?sslmode=disable',
+    ],
+    [
+      'wrong port',
+      'postgresql://tit_teacher_crud:password@tide-system.rwlb.singapore.rds.aliyuncs.com:6432/tide_system_test?sslmode=disable',
+    ],
+    [
+      'wrong database',
+      'postgresql://tit_teacher_crud:password@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/other?sslmode=disable',
+    ],
+    [
+      'conflicting ssl parameter',
+      'postgresql://tit_teacher_crud:password@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/tide_system_test?sslmode=disable&ssl=true',
+    ],
+    [
+      'query host override',
+      'postgresql://tit_teacher_crud:password@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/tide_system_test?sslmode=disable&host=other.example.test',
+    ],
+  ])('rejects PRE private-line plaintext with %s', (_, databaseUrl) => {
+    expect(() =>
+      validateEnvironment({
+        ...validProductionEnvironment,
+        TIDE_DATABASE_URL: databaseUrl,
+      }),
+    ).toThrow('sslmode=verify-full');
+  });
+
   it.each([
     ['PUBLIC_APP_URL', 'http://teacher.example.test'],
     ['PUBLIC_API_URL', 'http://teacher.example.test'],

@@ -54,6 +54,7 @@ from .dts_source_consumer import (
     source_table_suffix,
     student_subject,
 )
+from .runtime_settings import reject_ambient_libpq_connection_identity
 
 
 EXPECTED_DATABASE = "tide_system_test"
@@ -445,6 +446,12 @@ class DtsIngestDatabaseSettings:
                 "TIT_DTS_ALLOW_INSECURE_DB_INVALID"
             )
         if self.sslmode == "disable":
+            try:
+                reject_ambient_libpq_connection_identity()
+            except ValueError as exc:
+                raise DtsConfigurationError(
+                    "DTS_LIBPQ_CONNECTION_IDENTITY_ENV_FORBIDDEN"
+                ) from exc
             if not self.allow_insecure_db:
                 raise DtsConfigurationError(
                     "TIT_DTS_ALLOW_INSECURE_DB_REQUIRED_FOR_SSLMODE_DISABLE"
@@ -506,6 +513,14 @@ class DtsIngestDatabaseSettings:
                 "TIT_DTS_ALLOW_INSECURE_DB_INVALID"
             )
         allow_insecure_db = raw_allow_insecure == "true"
+
+        if sslmode == "disable":
+            try:
+                reject_ambient_libpq_connection_identity(values)
+            except ValueError as exc:
+                raise DtsConfigurationError(
+                    "DTS_LIBPQ_CONNECTION_IDENTITY_ENV_FORBIDDEN"
+                ) from exc
 
         for name, expected in (
             ("TIT_DTS_INGEST_DB_NAME", EXPECTED_DATABASE),

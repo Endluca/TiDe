@@ -10,6 +10,7 @@ from app.runtime_settings import (
     is_production_migration,
     validate_alembic_runtime,
     validate_production_migration_identity,
+    validate_production_migration_transport,
 )
 
 
@@ -66,6 +67,26 @@ def run_migrations_online() -> None:
                 role=identity[0],
                 database=identity[1],
                 is_superuser=identity[2],
+            )
+            transport = connection.execute(
+                text(
+                    """
+                    SELECT
+                        COALESCE(
+                            (
+                                SELECT ssl
+                                FROM pg_stat_ssl
+                                WHERE pid = pg_backend_pid()
+                            ),
+                            false
+                        ),
+                        current_setting('ssl')
+                    """
+                )
+            ).one()
+            validate_production_migration_transport(
+                session_ssl=transport[0],
+                server_ssl=transport[1],
             )
         context.configure(
             connection=connection,

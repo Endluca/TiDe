@@ -141,7 +141,6 @@ def test_domestic_settings_require_china_execution_and_hmac_key() -> None:
     assert "a" * 64 not in fingerprint
     assert fingerprint == settings.domestic_student_hmac_fingerprint()
     settings.require_target_transport(
-        sslmode="verify-full",
         host="tide-system.rwlb.singapore.rds.aliyuncs.com",
         port=5432,
         expected_host="tide-system.rwlb.singapore.rds.aliyuncs.com",
@@ -149,21 +148,9 @@ def test_domestic_settings_require_china_execution_and_hmac_key() -> None:
     )
     with pytest.raises(
         DtsConfigurationError,
-        match="^DTS_DOM_CROSS_BORDER_TLS_REQUIRED$",
-    ):
-        settings.require_target_transport(
-            sslmode="disable",
-            host="tide-system.rwlb.singapore.rds.aliyuncs.com",
-            port=5432,
-            expected_host="tide-system.rwlb.singapore.rds.aliyuncs.com",
-            expected_port=5432,
-        )
-    with pytest.raises(
-        DtsConfigurationError,
         match="^DTS_DOM_CROSS_BORDER_TARGET_NOT_APPROVED$",
     ):
         settings.require_target_transport(
-            sslmode="verify-full",
             host="other.internal",
             port=5432,
             expected_host="tide-system.rwlb.singapore.rds.aliyuncs.com",

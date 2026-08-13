@@ -149,7 +149,7 @@ Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两
 |---|---|---|---|
 | `APP_ENV` | 是 | `production` | 启用运营 API 的生产安全校验 |
 | `TIT_MIGRATION_MODE` | 是 | `false` | 常驻进程不得执行 Alembic |
-| `DATABASE_URL` | 是 | 无 | `tit_growth_app` 的 PostgreSQL URL |
+| `DATABASE_URL` | 是 | 无 | `tit_growth_app` 的 PostgreSQL URL；固定 `tide_system_test` PRE 专线使用 `sslmode=disable`，正式使用 `verify-full` |
 | `TIT_ALLOWED_HOSTS` | 是 | 运营域名 | 多值用英文逗号分隔 |
 | `TIT_HEALTHCHECK_HOST` | 是 | 运营域名 | 必须包含在 `TIT_ALLOWED_HOSTS` |
 | `TIT_ALLOWED_ORIGINS` | 否 | 空 | 运营前后端同源时保持为空 |
@@ -266,10 +266,11 @@ application 项目也不配置任何 DTS 变量。
 
 两套非敏感订阅配置如下；对应的生产安全基线文件是
 `backend/.env.dts-ingest.ovs.production.example` 和
-`backend/.env.dts-ingest.dom.production.example`。当前 PRE 数据库的临时
-`ssl=off` 例外只允许海外项目使用
-`backend/dts-ingest.pre-ssl-off.env.example` 中的两项覆盖，不修改生产基线；国内跨境写入不接受
-该例外，目标库没有可验证 TLS 时国内项目必须失败关闭：
+`backend/.env.dts-ingest.dom.production.example`。当前固定 `tide_system_test` PRE 专线数据库的
+临时 `ssl=off` 例外由国内、海外项目复用
+`backend/dts-ingest.pre-ssl-off.env.example` 中的两项覆盖，不修改生产基线。专线限制网络路径但
+不加密 PostgreSQL 流量；2026-08-13 DMS 现场已确认 `SHOW ssl=off` 且当前会话未使用 TLS，
+正式环境仍固定 `verify-full`：
 
 | 变量名 | 海外项目 | 国内项目 |
 |---|---|---|
@@ -297,20 +298,19 @@ application 项目也不配置任何 DTS 变量。
 | `TIT_DTS_REQUIRED_DOM_TOPIC` | 投影开启时 | 国内 topic | 激活门禁核对国内 partition 0 数据库 checkpoint |
 | `TIT_DTS_INGEST_DB_HOST` | 是 | `tide-system.rwlb.singapore.rds.aliyuncs.com` | 不含端口或 scheme |
 | `TIT_DTS_INGEST_DB_PORT` | 否 | `5432` | PostgreSQL 端口 |
-| `TIT_DTS_INGEST_DB_SSLMODE` | 否 | `verify-full`；仅海外 PRE 可临时覆盖为 `disable` | 国内跨境写入强制 `verify-full`；`tide_system_test` 当前已现场确认 `SHOW ssl=off`，因此启用 TLS 前国内项目必须停止 |
-| `TIT_DTS_ALLOW_INSECURE_DB` | 否 | `false`；仅海外 PRE 与 `disable` 同时覆盖为 `true` | 国内项目固定为 `false`；没有显式授权时禁止非 TLS 连接 |
+| `TIT_DTS_INGEST_DB_SSLMODE` | 否 | `verify-full`；固定 PRE 专线端点可覆盖为 `disable` | 国内、海外 PRE 使用相同数据库传输例外；正式环境固定 `verify-full` |
+| `TIT_DTS_ALLOW_INSECURE_DB` | 否 | `false`；固定 PRE 专线端点与 `disable` 同时覆盖为 `true` | 必须和 `disable` 成对配置；没有固定 PRE 目标时禁止非 TLS 连接 |
 | `TIT_DTS_INGEST_DB_PASSWORD` | 是 | 各项目 Gaea 密钥 | `tit_dts_ingest_runtime` 的数据库密码，不得复用 DTS 密码 |
 
 数据库名、Schema 和角色在代码中失败关闭为
 `tide_system_test / public / tit_dts_ingest_runtime`。SSL 默认 `verify-full`。以下明文例外只适用于
-海外 PRE 项目：只有同时设置
+国内、海外 DTS 的固定 PRE 专线目标：只有同时设置
 `TIT_DTS_INGEST_DB_SSLMODE=disable` 与 `TIT_DTS_ALLOW_INSECURE_DB=true`，且目标精确等于已批准的
 `tide-system.rwlb.singapore.rds.aliyuncs.com:5432 / tide_system_test`，才允许当前 PRE 例外；其他
 模式、端点或缺少显式授权都会在连接前拒绝启动。每条新建的 PostgreSQL 物理连接都会通过
 `pg_stat_ssl` 核验当前会话的实际 TLS 状态，并同时读取服务端 `current_setting('ssl')`；临时 `disable` 例外还会在每次连接池 checkout 时复核。服务端一旦启用 TLS，遗留的 `disable` 配置会立即失败关闭，长期持有的投影锁会话也会在每批投影前复核。此时必须删除两项 PRE 覆盖并恢复生产基线
-`verify-full/false`。国内项目无论 PRE/生产都要求 `verify-full/false`，不得加载该覆盖文件；当前
-目标服务端 `ssl=off` 时，国内项目连接失败是合规门禁的预期行为，不得降级绕过。该例外不得复制
-到生产。正式业务库若不再是当前固定 test 目标，还必须同步
+`verify-full/false`。国内项目即使使用 PRE 例外，仍必须位于中国大陆、只在国内持有 HMAC 密钥且
+固定关闭投影；数据库传输例外不放宽这些边界。该例外不得复制到生产。正式业务库若不再是当前固定 test 目标，还必须同步
 修改数据库身份契约、迁移和 ACL 并重新验收，不能只改 SSL 变量。最终 revision
 `20260813_60_dom_privacy` 必须在 `20260812_59_simple_acl` 之后由
 `tide_sys_admin` 应用；运行账号没有建表权限，接入状态的删除/回退由 Trigger 拒绝。
@@ -350,8 +350,8 @@ checkpoint 均存在且 `source_timestamp >= TIT_DTS_ACTIVATION_AT`，要求未�
 | `TRUST_PROXY_HOPS` | 是 | `1` | 只信任本 Pod 的教师 Nginx 一跳 |
 | `CORS_ORIGINS` | 是 | 教师域名 | 教师页面与 API 同源 |
 | `DATABASE_REQUIRED` | 是 | `true` | 禁止无数据库假启动 |
-| `TIDE_DATABASE_URL` | 是 | 无 | `tit_teacher_crud` 连接；生产必须 `sslmode=verify-full` |
-| `SHIWEN_READ_DATABASE_URL` | 是 | 无 | 教师来源读取连接；与业务连接同用 `tit_teacher_crud`，仍保留独立连接池 |
+| `TIDE_DATABASE_URL` | 是 | 无 | `tit_teacher_crud` 连接；固定 `tide_system_test` PRE 专线使用 `sslmode=disable`，正式必须 `verify-full` |
+| `SHIWEN_READ_DATABASE_URL` | 是 | 无 | 教师来源读取连接；与业务连接同用 `tit_teacher_crud`，仍保留独立连接池并使用相同 SSL 模式 |
 | `DATABASE_MAX_CONNECTIONS` | 是 | `5` | 每条教师数据库链各自的池上限；两条链合计最多 10 |
 | `DATABASE_CONNECTION_TIMEOUT_MS` | 是 | `3000` | 建连超时；需小于聚合探针超时 |
 | `DATABASE_STATEMENT_TIMEOUT_MS` | 是 | `10000` | 教师 SQL 超时 |
@@ -492,8 +492,9 @@ docker stop tide-camp-gaea-test
    配置 `TIT_DTS_EXECUTION_REGION=sg`；国内项目选择中国大陆数据中心并配置
    `TIT_DTS_EXECUTION_REGION=cn`。停止并废弃任何位于新加坡数据中心的国内 DTS Pod。两个项目只
    注入各自 DTS 密码与 `tit_dts_ingest_runtime` 数据库密码；国内项目另行注入专用
-   `TIT_DTS_DOM_STUDENT_HMAC_KEY`，海外项目禁止持有该密钥。国内跨境数据库连接必须先具备
-   `verify-full` 的真实 TLS 证据，不允许使用 PRE `ssl=off` 覆盖。使用各自固化的区域回放边界和
+   `TIT_DTS_DOM_STUDENT_HMAC_KEY`，海外项目禁止持有该密钥。当前固定 PRE 专线目标可在两个项目
+   同时加载 `dts-ingest.pre-ssl-off.env.example` 的 `disable/true` 覆盖；这只是受控非 TLS 例外，
+   正式环境仍须 `verify-full`。使用各自固化的区域回放边界和
    相同的 `2026-08-13` 开放式 cohort；国内始终保持
    `TIT_DTS_PROJECTION_ENABLED=false`，海外在首次追平阶段也保持 `false`。先确认两套 readiness 表明 DB 与 Broker 启动探针通过，
    再单独读回 heartbeat、事件账本、数据库 checkpoint 和消费组位点，证明真实消息已经进入正式
@@ -516,7 +517,10 @@ application 镜像可通过 `RollingUpdate` 回滚到上一个版本；旧、新
 destructive down。
 
 一次性发布变量仍保持原边界：运营和教师迁移统一使用 `tide_sys_admin`、
-`TIT_MIGRATION_MODE=true`、`TIT_MIGRATION_EXPECTED_DATABASE`；首次运营账号初始化只在一次性
+`TIT_MIGRATION_MODE=true`、`TIT_MIGRATION_EXPECTED_DATABASE`；当前固定 `tide_system_test` PRE
+专线的迁移与只读契约探针可各自在管理连接串使用 `sslmode=disable`，契约探针同时设置
+`TIDE_CONTRACT_PROBE_REQUIRE_SSL=false`；两个入口仍校验固定端点、库和角色，正式环境仍为
+`verify-full`。首次运营账号初始化只在一次性
 命令中注入 `TIT_BOOTSTRAP_USERNAME` 与 `TIT_BOOTSTRAP_PASSWORD`。迁移账号不得复用任何
 运行账号。
 

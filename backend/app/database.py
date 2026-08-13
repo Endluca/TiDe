@@ -4,7 +4,7 @@ import os
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import Pool
 
@@ -136,7 +136,66 @@ def build_engine(
             ),
             pool_use_lifo=True,
         )
-    return create_engine(resolved, **engine_options)
+    selected_engine = create_engine(resolved, **engine_options)
+    if (
+        os.getenv("APP_ENV", "local").strip().lower()
+        in {"prod", "production"}
+    ):
+        from .runtime_settings import (
+            DATABASE_TRANSPORT_PRE_PRIVATE_LINE_PLAINTEXT,
+            is_production_migration,
+            migration_database_transport_mode,
+            operations_database_transport_mode,
+        )
+
+        transport_mode = (
+            migration_database_transport_mode(resolved)
+            if is_production_migration()
+            else operations_database_transport_mode(resolved)
+        )
+        if (
+            transport_mode == DATABASE_TRANSPORT_PRE_PRIVATE_LINE_PLAINTEXT
+        ):
+
+            @event.listens_for(selected_engine, "connect")
+            def _validate_pre_private_line_transport(
+                dbapi_connection: Any,
+                _connection_record: Any,
+            ) -> None:
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute(
+                        """
+                        SELECT
+                            COALESCE(
+                                (
+                                    SELECT ssl
+                                    FROM pg_stat_ssl
+                                    WHERE pid = pg_backend_pid()
+                                ),
+                                false
+                            ),
+                            current_setting('ssl')
+                        """
+                    )
+                    row = cursor.fetchone()
+                    if row != (False, "off"):
+                        raise RuntimeError(
+                            "PRE_PRIVATE_LINE_DATABASE_TRANSPORT_MISMATCH"
+                        )
+                finally:
+                    try:
+                        cursor.close()
+                    finally:
+                        dbapi_connection.rollback()
+
+            setattr(
+                selected_engine,
+                "_tit_pre_private_line_transport_guard",
+                True,
+            )
+
+    return selected_engine
 
 
 engine = build_engine()

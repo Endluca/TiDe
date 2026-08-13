@@ -153,7 +153,8 @@ DNS 解析；TCP 不收发应用数据，Kafka 探针不读取业务消息、不
   `gaea/Dockerfile` 作为 application 兼容入口。application 把两套 Web、两套 API 和 heartbeat Worker 收入同一镜像
   并用 `8010/8080` 承载不同域名；海外和国内两个独立 DTS 项目都选择同一个轻量模块，从构建
   图上跳过全部 Node/Nginx 阶段。海外项目必须在新加坡、国内项目必须在中国大陆；国内固定关闭
-  投影并通过 `verify-full` 写海外库，只有海外项目可以在双 checkpoint 门禁后成为投影 owner。
+  投影并默认通过 `verify-full` 写海外库；当前固定 `tide_system_test` PRE 专线端点可使用受限
+  `sslmode=disable` 例外。只有海外项目可以在双 checkpoint 门禁后成为投影 owner。
   两个项目仍分别构建和推送镜像，模块本身不会让跨项目复用
   digest。该配置只证明源码具备构建入口，不代表内部镜像已在 Gaea 构建成功，也不代表双端口
   Ingress、DTS broker、迁移作业或生产切流已经完成。

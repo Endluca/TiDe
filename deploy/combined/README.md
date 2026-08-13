@@ -157,9 +157,13 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
 - `tit_teacher_crud`：教师 API，按最终文档获得 public 指定表与 `tide.*` 的表级权限；
 - `tit_dts_ingest_runtime`：DTS 消费入库，只对两张源宽表与四张接入状态表拥有 CRUD，不能写 Outbox 或其他业务表。
 
-TiDe 和教师端 migration 都核对 `current_user=session_user=tide_sys_admin`、目标库与
-`sslmode=verify-full`。契约探针复用同一管理凭据，但强制使用只读事务。任何一个条件
-不符都必须在执行 DDL 或探针查询前停止。
+TiDe 和教师端 migration 都核对 `current_user=session_user=tide_sys_admin`、目标库与连接传输。
+一般目标仍要求 `sslmode=verify-full`；固定 `tide_system_test` PRE 专线端点可使用
+`sslmode=disable`，但角色、主机、端口、库名和实际非 TLS 状态必须全部匹配。契约探针复用
+同一管理凭据并强制使用只读事务；专线明文探针显式设置
+`TIDE_CONTRACT_PROBE_REQUIRE_SSL=false`。任何一个条件不符都必须在执行 DDL 或探针查询前停止。
+固定 PRE 明文迁移与探针还要求清除 `PGHOST`、`PGHOSTADDR`、`PGPORT`、`PGDATABASE`、
+`PGUSER`、`PGSERVICE`、`PGSERVICEFILE`，防止 libpq 环境变量绕过 URI 的固定端点。
 
 初始连接上限：
 

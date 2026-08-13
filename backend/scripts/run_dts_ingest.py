@@ -402,7 +402,6 @@ def _run(args: argparse.Namespace) -> int:
     stream_settings = DtsConsumerSettings.from_env()
     database_settings = DtsIngestDatabaseSettings.from_env()
     stream_settings.require_target_transport(
-        sslmode=database_settings.sslmode,
         host=database_settings.host,
         port=database_settings.port,
         expected_host=APPROVED_INSECURE_PRE_HOST,

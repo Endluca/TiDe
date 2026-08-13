@@ -311,18 +311,15 @@ class DtsConsumerSettings:
     def require_target_transport(
         self,
         *,
-        sslmode: str,
         host: str,
         port: int,
         expected_host: str,
         expected_port: int,
     ) -> None:
-        """Fix the domestic cross-border destination and require verified TLS."""
+        """Fix the domestic cross-border destination to the approved target."""
 
         if self.source_region != "dom":
             return
-        if sslmode != "verify-full":
-            raise DtsConfigurationError("DTS_DOM_CROSS_BORDER_TLS_REQUIRED")
         if host != expected_host or port != expected_port:
             raise DtsConfigurationError(
                 "DTS_DOM_CROSS_BORDER_TARGET_NOT_APPROVED"

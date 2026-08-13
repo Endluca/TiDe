@@ -164,7 +164,11 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   运行服务仍不能写源表、改结果主键或删除资格。
 - 生产 Alembic 必须显式设置 `TIT_MIGRATION_MODE=true` 和目标数据库名，使用
   `sslmode=verify-full` 的现有管理账号 `tide_sys_admin`；连接角色或实际数据库
-  不一致时会在 DDL 前停止。运行环境文件与迁移环境文件不得复用。
+  不一致时会在 DDL 前停止。当前固定 `tide_system_test` 专线 PRE 可由迁移与只读契约探针各自的
+  管理连接串使用 `sslmode=disable`；迁移入口按 URL 白名单锁定固定端点、库名和管理角色，契约
+  探针还必须显式设置 `TIDE_CONTRACT_PROBE_REQUIRE_SSL=false`。该探针变量只是选择已锁定的 PRE
+  分支，不是放宽任意目标的全局开关。专线不是 TLS，正式环境仍必须 `verify-full`。运行环境文件
+  与迁移环境文件不得复用。
 - `20260729_37_read_perf` 为结构化审计搜索创建 `pg_trgm` 扩展和 GIN 索引。迁移角色必须具备一次性 `CREATE EXTENSION` 权限，或由 DBA 在升级前执行 `CREATE EXTENSION IF NOT EXISTS pg_trgm`；受限运行角色 `tit_growth_app` 不需要也不应获得该权限。
 - `20260729_37_read_perf` 还会把旧的无真实消费方重试事件标记为 `PARKED`，并在
   payload 中保存迁移前状态和错误摘要；隔离回退验证可精确恢复。生产发布仍应先备份并
@@ -203,9 +207,10 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   不得持有该密钥或原始国内学生 ID。该稳定 token 仍是受限伪名数据。若安全边界不允许稳定 token
   跨境，必须改为国内状态库聚合后只发送不可回链指标。首次启动会在受限状态行登记 HMAC 密钥
   fingerprint；后续不匹配即退出，禁止无迁移直接轮换密钥。
-- 国内跨境连接固定要求 `TIT_DTS_INGEST_DB_SSLMODE=verify-full` 与
+- 国内跨境连接默认及正式环境要求 `TIT_DTS_INGEST_DB_SSLMODE=verify-full` 与
   `TIT_DTS_ALLOW_INSECURE_DB=false`，并固定关闭投影；海外进程是双 checkpoint 激活后的唯一投影
-  owner。PRE `ssl=off` 覆盖只允许海外项目使用，不能复制到国内项目。
+  owner。当前固定 `tide_system_test` PRE 专线端点允许国内、海外项目同时设置 `disable/true`，任何
+  范围漂移失败关闭。专线不等于加密；目标数据库启用 TLS 后必须恢复 `verify-full/false`。
 - DTS 持久化进程每次启动先只读校验目标库身份、Catalog、ACL 和 checkpoint，再从当前 Pod
   完成 bootstrap DNS 解析，对解析结果做 5 秒共享连接预算、无凭据且不收发应用数据的 TCP 探针，最后以相同运行密钥
   校验 Kafka SASL/topic/partition/初始位点；全部通过后才写 readiness。TCP 四层失败使用

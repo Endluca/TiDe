@@ -28,6 +28,42 @@ describe('teacher database migration chain', () => {
     );
   });
 
+  it('limits PRE private-line plaintext migration to the fixed database identity', () => {
+    const production = databaseFile('scripts/apply-production.sh');
+
+    expect(production).toContain(
+      'if [[ -n "${TIDE_MIGRATION_DATABASE_URL:-}" ]]; then',
+    );
+    expect(production).toContain('DATABASE_URL="${DATABASE_URL:-}"');
+    expect(production).toContain(
+      'PRE_PRIVATE_LINE_DB_HOST="tide-system.rwlb.singapore.rds.aliyuncs.com"',
+    );
+    expect(production).toContain('PRE_PRIVATE_LINE_DB_NAME="tide_system_test"');
+    expect(production).toContain('PRE_PRIVATE_LINE_DB_OWNER="tide_sys_admin"');
+    expect(production).toContain(
+      'database|dbname|host|hostaddr|options|port|service|servicefile|ssl|user)',
+    );
+    expect(production).toContain(
+      '&& "${EXPECTED_DATABASE}" == "${PRE_PRIVATE_LINE_DB_NAME}"',
+    );
+    expect(production).toContain("current_setting('ssl') = 'on'");
+    expect(production).toContain(
+      'if [[ "${ssl_active}" != "f" || "${server_ssl_active}" != "f" ]]; then',
+    );
+    expect(production).toContain(
+      'elif [[ "${ssl_active}" != "t" || "${server_ssl_active}" != "t" ]]; then',
+    );
+    expect(production).toContain(
+      'PGDATABASE PGHOST PGHOSTADDR PGPORT PGSERVICE PGSERVICEFILE PGUSER',
+    );
+    expect(production).toContain(
+      'if [[ ${!libpq_identity_name+x} == x ]]; then',
+    );
+    expect(production).not.toContain(
+      'TIDE_MIGRATION_PRIVATE_LINE_PLAINTEXT_APPROVED',
+    );
+  });
+
   it('updates only the stable G01 external-status rule in 0033', () => {
     const up = databaseFile('migrations/0033_g01_tesol_only.up.sql').trim();
     const down = databaseFile('migrations/0033_g01_tesol_only.down.sql').trim();

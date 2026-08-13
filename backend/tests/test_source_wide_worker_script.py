@@ -280,6 +280,70 @@ def test_production_source_worker_reuses_verified_tide_backend_database_url(
         _validated_source_worker_database_url()
 
 
+def test_production_source_worker_accepts_fixed_pre_private_line_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        (
+            "postgresql+psycopg://tit_growth_app:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+    )
+    monkeypatch.setenv(
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE",
+        "tide_system_test",
+    )
+
+    assert "tide_system_test?sslmode=disable" in (
+        _validated_source_worker_database_url()
+    )
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        (
+            "postgresql+psycopg://wrong_role:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql+psycopg://tit_growth_app:secret@other.example:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql+psycopg://tit_growth_app:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:6432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql+psycopg://tit_growth_app:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable&ssl=false"
+        ),
+    ],
+)
+def test_production_source_worker_rejects_plaintext_outside_fixed_pre_target(
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv(
+        "TIT_SOURCE_WORKER_EXPECTED_DATABASE",
+        "tide_system_test",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="SOURCE_WORKER_DATABASE_URL_REQUIRES_VERIFIED_TLS",
+    ):
+        _validated_source_worker_database_url()
+
+
 class _MappingResult:
     def __init__(self, row: dict[str, object]) -> None:
         self.row = row

@@ -79,6 +79,61 @@ function hasStrictPostgresSslMode(value: string): boolean {
   }
 }
 
+const PRE_PRIVATE_LINE_DATABASE_HOST =
+  'tide-system.rwlb.singapore.rds.aliyuncs.com';
+const PRE_PRIVATE_LINE_DATABASE_NAME = 'tide_system_test';
+const PRE_PRIVATE_LINE_DATABASE_ROLE = 'tit_teacher_crud';
+const LIBPQ_CONNECTION_IDENTITY_ENV = [
+  'PGDATABASE',
+  'PGHOST',
+  'PGHOSTADDR',
+  'PGPORT',
+  'PGSERVICE',
+  'PGSERVICEFILE',
+  'PGUSER',
+] as const;
+
+export function hasApprovedPrePrivateLineDatabaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const sslModes = url.searchParams.getAll('sslmode');
+    const databaseName = decodeURIComponent(url.pathname.replace(/^\//, ''));
+    const connectionIdentityOverrides = [
+      'database',
+      'dbname',
+      'host',
+      'hostaddr',
+      'options',
+      'port',
+      'service',
+      'servicefile',
+      'user',
+    ];
+    return (
+      (url.protocol === 'postgresql:' || url.protocol === 'postgres:') &&
+      decodeURIComponent(url.username) === PRE_PRIVATE_LINE_DATABASE_ROLE &&
+      url.hostname === PRE_PRIVATE_LINE_DATABASE_HOST &&
+      url.port === '5432' &&
+      databaseName === PRE_PRIVATE_LINE_DATABASE_NAME &&
+      sslModes.length === 1 &&
+      sslModes[0] === 'disable' &&
+      !url.searchParams.has('ssl') &&
+      connectionIdentityOverrides.every(
+        (parameter) => !url.searchParams.has(parameter),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasApprovedProductionDatabaseTransport(value: string): boolean {
+  return (
+    hasStrictPostgresSslMode(value) ||
+    hasApprovedPrePrivateLineDatabaseUrl(value)
+  );
+}
+
 export const environmentSchema = z
   .object({
     NODE_ENV: z
@@ -394,11 +449,12 @@ export const environmentSchema = z
         ['SHIWEN_READ_DATABASE_URL', environment.SHIWEN_READ_DATABASE_URL],
       ] as const;
       for (const [setting, value] of databaseUrls) {
-        if (value && !hasStrictPostgresSslMode(value)) {
+        if (value && !hasApprovedProductionDatabaseTransport(value)) {
           context.addIssue({
             code: 'custom',
             path: [setting],
-            message: '生产环境必须且只能配置 sslmode=verify-full',
+            message:
+              '生产环境必须配置 sslmode=verify-full，或使用固定 PRE 专线数据库身份与 sslmode=disable',
           });
         }
       }
@@ -578,6 +634,23 @@ function withCompanyTestDatabase(
 export function validateEnvironment(
   input: Record<string, unknown>,
 ): AppEnvironment {
+  const usesPrePrivateLinePlaintext = [
+    input.TIDE_DATABASE_URL,
+    input.SHIWEN_READ_DATABASE_URL,
+  ].some(
+    (value) =>
+      typeof value === 'string' && hasApprovedPrePrivateLineDatabaseUrl(value),
+  );
+  if (input.NODE_ENV === 'production' && usesPrePrivateLinePlaintext) {
+    const ambientIdentityName = LIBPQ_CONNECTION_IDENTITY_ENV.find((name) =>
+      Object.prototype.hasOwnProperty.call(input, name),
+    );
+    if (ambientIdentityName) {
+      throw new Error(
+        `环境配置无效：${ambientIdentityName}: 固定 PRE 专线禁止环境变量改写数据库连接身份`,
+      );
+    }
+  }
   const result = environmentSchema.safeParse(withCompanyTestDatabase(input));
 
   if (!result.success) {

@@ -220,7 +220,11 @@ describe('DatabaseService', () => {
     const service = new DatabaseService(
       pool,
       null,
-      config({ NODE_ENV: 'production' }),
+      config({
+        NODE_ENV: 'production',
+        TIDE_DATABASE_URL:
+          'postgresql://tit_teacher_crud:secret@db.example/tide?sslmode=verify-full',
+      }),
     );
 
     await expect(service.checkReadiness()).resolves.toEqual({
@@ -453,6 +457,34 @@ describe('DatabaseService', () => {
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('tide_support_ticket_owner'),
     );
+    expect(productionQuery).toContain("current_setting('ssl') = 'on'");
+    expect(productionQuery).toContain('FROM pg_stat_ssl');
+  });
+
+  it('requires actual plaintext for the fixed PRE private-line readiness query', async () => {
+    let productionQuery = '';
+    const query = jest.fn((sql: string) => {
+      productionQuery = sql;
+      return Promise.resolve(createReadinessResult(true));
+    });
+    const pool = { query } as unknown as Pool;
+    const privateLineUrl =
+      'postgresql://tit_teacher_crud:secret@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/tide_system_test?sslmode=disable';
+    const service = new DatabaseService(
+      pool,
+      null,
+      config({
+        NODE_ENV: 'production',
+        TIDE_DATABASE_URL: privateLineUrl,
+      }),
+    );
+
+    await expect(service.checkReadiness()).resolves.toEqual({
+      tide: 'ok',
+      shiwenRead: 'not_configured',
+    });
+    expect(productionQuery).toContain("current_setting('ssl') = 'off'");
+    expect(productionQuery).toContain(') = FALSE');
   });
 
   it('fails production readiness when a contract query returns false', async () => {

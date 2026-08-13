@@ -24,7 +24,6 @@ case "${require_ssl}" in
   true | false) ;;
   *) fail "TIDE_CONTRACT_PROBE_REQUIRE_SSL must be true or false" ;;
 esac
-
 case "${database_url}" in
   postgresql+psycopg://*)
     contract_url="postgresql://${database_url#postgresql+psycopg://}"
@@ -48,6 +47,7 @@ query="${contract_url#*\?}"
 sslmode_count=0
 sslmode_value=""
 conflicting_ssl=false
+identity_override=false
 if [ "${query}" != "${contract_url}" ]; then
   old_ifs="${IFS}"
   IFS='&'
@@ -55,12 +55,20 @@ if [ "${query}" != "${contract_url}" ]; then
     key="${parameter%%=*}"
     value="${parameter#*=}"
     case "${key}" in
+      "" | [!a-z_]* | *[!a-z0-9_]*)
+        fail "DATABASE_URL query parameter name is not canonical"
+        ;;
+    esac
+    case "${key}" in
       sslmode)
         sslmode_count=$((sslmode_count + 1))
         sslmode_value="${value}"
         ;;
       ssl)
         conflicting_ssl=true
+        ;;
+      database | dbname | host | hostaddr | options | port | service | servicefile | user)
+        identity_override=true
         ;;
     esac
   done
@@ -73,6 +81,47 @@ if [ "${require_ssl}" = "true" ]; then
     || fail "production DATABASE_URL must contain exactly one sslmode=verify-full"
   [ "${conflicting_ssl}" = "false" ] \
     || fail "DATABASE_URL must not contain a conflicting ssl parameter"
+else
+  if [ "${PGDATABASE+x}" = x ] \
+    || [ "${PGHOST+x}" = x ] \
+    || [ "${PGHOSTADDR+x}" = x ] \
+    || [ "${PGPORT+x}" = x ] \
+    || [ "${PGSERVICE+x}" = x ] \
+    || [ "${PGSERVICEFILE+x}" = x ] \
+    || [ "${PGUSER+x}" = x ]; then
+    fail "approved private-line probe forbids ambient libpq connection identity variables"
+  fi
+  [ "${identity_override}" = "false" ] \
+    || fail "DATABASE_URL must not override connection identity in query parameters"
+  [ "${sslmode_count}" -eq 1 ] \
+    && [ "${sslmode_value}" = "disable" ] \
+    || fail "approved private-line DATABASE_URL must contain exactly one sslmode=disable"
+  [ "${conflicting_ssl}" = "false" ] \
+    || fail "DATABASE_URL must not contain a conflicting ssl parameter"
+
+  url_without_scheme="${contract_url#postgresql://}"
+  case "${url_without_scheme}" in
+    */*) ;;
+    *) fail "approved private-line DATABASE_URL is missing a database path" ;;
+  esac
+  authority="${url_without_scheme%%/*}"
+  path_and_query="${url_without_scheme#*/}"
+  case "${authority}" in
+    *@*) ;;
+    *) fail "approved private-line DATABASE_URL must include tide_sys_admin" ;;
+  esac
+  userinfo="${authority%@*}"
+  host_and_port="${authority##*@}"
+  username="${userinfo%%:*}"
+  database_name="${path_and_query%%\?*}"
+  [ "${username}" = "tide_sys_admin" ] \
+    || fail "approved private-line DATABASE_URL must use tide_sys_admin"
+  [ "${host_and_port}" = "tide-system.rwlb.singapore.rds.aliyuncs.com:5432" ] \
+    || fail "approved private-line DATABASE_URL endpoint is not allowlisted"
+  [ "${database_name}" = "tide_system_test" ] \
+    || fail "approved private-line DATABASE_URL must select tide_system_test"
+  [ "${expected_database}" = "tide_system_test" ] \
+    || fail "approved private-line expected database must be tide_system_test"
 fi
 
 # The database grants are the primary write barrier; this session-level guard

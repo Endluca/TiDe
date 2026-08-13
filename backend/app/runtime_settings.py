@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from urllib.parse import parse_qs, urlparse
+from collections.abc import Mapping
+from urllib.parse import ParseResult, parse_qs, unquote, urlparse
 
 from .qualification_award_gate import (
     QualificationAwardGateConfigurationError,
@@ -10,6 +11,22 @@ from .qualification_award_gate import (
 
 
 PRODUCTION_ENVIRONMENTS = {"prod", "production"}
+PRIVATE_LINE_DATABASE = "tide_system_test"
+PRIVATE_LINE_HOST = "tide-system.rwlb.singapore.rds.aliyuncs.com"
+PRIVATE_LINE_PORT = 5432
+DATABASE_TRANSPORT_VERIFIED_TLS = "verified-tls"
+DATABASE_TRANSPORT_PRE_PRIVATE_LINE_PLAINTEXT = "pre-private-line-plaintext"
+LIBPQ_CONNECTION_IDENTITY_ENV = frozenset(
+    {
+        "PGDATABASE",
+        "PGHOST",
+        "PGHOSTADDR",
+        "PGPORT",
+        "PGSERVICE",
+        "PGSERVICEFILE",
+        "PGUSER",
+    }
+)
 LOCAL_ALLOWED_ORIGINS = (
     "http://localhost:5174",
     "http://127.0.0.1:5174",
@@ -45,6 +62,113 @@ def is_production() -> bool:
 
 def is_production_migration() -> bool:
     return is_production() and os.getenv("TIT_MIGRATION_MODE", "").strip() == "true"
+
+
+def _is_exact_private_line_url(
+    parsed: ParseResult,
+    *,
+    role: str,
+) -> bool:
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    identity_override_keys = {
+        "database",
+        "dbname",
+        "host",
+        "hostaddr",
+        "options",
+        "port",
+        "service",
+        "servicefile",
+        "user",
+    }
+    return (
+        unquote(parsed.username or "") == role
+        and parsed.hostname == PRIVATE_LINE_HOST
+        and port == PRIVATE_LINE_PORT
+        and unquote(parsed.path.removeprefix("/")) == PRIVATE_LINE_DATABASE
+        and not identity_override_keys.intersection(query)
+    )
+
+
+def reject_ambient_libpq_connection_identity(
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Prevent libpq from silently replacing the approved PRE endpoint."""
+
+    values = os.environ if environ is None else environ
+    present = sorted(
+        name for name in LIBPQ_CONNECTION_IDENTITY_ENV if name in values
+    )
+    if present:
+        raise ValueError(
+            "libpq connection identity environment variables must be unset: "
+            + ", ".join(present)
+        )
+
+
+def _production_database_transport_mode(
+    database_url: str,
+    *,
+    private_line_role: str,
+    accepted_tls_modes: frozenset[str] = frozenset({"verify-full"}),
+) -> str:
+    if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+        raise ValueError("DATABASE_URL must use PostgreSQL")
+    parsed = urlparse(
+        database_url.replace(
+            "postgresql+psycopg://",
+            "postgresql://",
+            1,
+        )
+    )
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if "ssl" in query:
+        raise ValueError("DATABASE_URL must not contain conflicting ssl")
+    ssl_modes = query.get("sslmode", [])
+    if len(ssl_modes) == 1 and ssl_modes[0] in accepted_tls_modes:
+        return DATABASE_TRANSPORT_VERIFIED_TLS
+    if ssl_modes == ["disable"] and _is_exact_private_line_url(
+        parsed,
+        role=private_line_role,
+    ):
+        reject_ambient_libpq_connection_identity()
+        return DATABASE_TRANSPORT_PRE_PRIVATE_LINE_PLAINTEXT
+    raise ValueError(
+        "DATABASE_URL must contain exactly one sslmode=verify-full; "
+        "sslmode=disable is limited to the approved tide_system_test endpoint"
+    )
+
+
+def operations_database_transport_mode(database_url: str) -> str:
+    """Classify the operations/API URL without duplicating the PRE allowlist."""
+
+    return _production_database_transport_mode(
+        database_url,
+        private_line_role="tit_growth_app",
+        accepted_tls_modes=frozenset({"verify-ca", "verify-full"}),
+    )
+
+
+def source_worker_database_transport_mode(database_url: str) -> str:
+    """Classify the SourceWide URL while preserving its verify-full rule."""
+
+    return _production_database_transport_mode(
+        database_url,
+        private_line_role="tit_growth_app",
+    )
+
+
+def migration_database_transport_mode(database_url: str) -> str:
+    """Classify the one-shot migration URL using its dedicated admin role."""
+
+    return _production_database_transport_mode(
+        database_url,
+        private_line_role="tide_sys_admin",
+    )
 
 
 def _csv_environment(name: str) -> tuple[str, ...]:
@@ -95,17 +219,10 @@ def validate_production_runtime() -> None:
     elif not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
         errors.append("DATABASE_URL must use PostgreSQL")
     else:
-        parsed = urlparse(database_url.replace("postgresql+psycopg://", "postgresql://", 1))
-        ssl_modes = parse_qs(
-            parsed.query,
-            keep_blank_values=True,
-        ).get("sslmode", [])
-        if len(ssl_modes) != 1:
-            errors.append("DATABASE_URL must contain exactly one sslmode")
-        elif ssl_modes[0].lower() not in {"verify-ca", "verify-full"}:
-            errors.append(
-                "DATABASE_URL sslmode must be verify-ca or verify-full"
-            )
+        try:
+            operations_database_transport_mode(database_url)
+        except ValueError as exc:
+            errors.append(str(exc))
 
     for name, (minimum, maximum) in PRODUCTION_INTEGER_SETTINGS.items():
         raw = os.getenv(name, "").strip()
@@ -150,16 +267,10 @@ def validate_production_migration_runtime() -> None:
                 1,
             )
         )
-        ssl_modes = parse_qs(
-            parsed.query,
-            keep_blank_values=True,
-        ).get("sslmode", [])
-        if ssl_modes != ["verify-full"]:
-            errors.append(
-                "DATABASE_URL must contain exactly one sslmode=verify-full"
-            )
-        if "ssl" in parse_qs(parsed.query, keep_blank_values=True):
-            errors.append("DATABASE_URL must not contain conflicting ssl")
+        try:
+            migration_database_transport_mode(database_url)
+        except ValueError as exc:
+            errors.append(str(exc))
         url_database = parsed.path.removeprefix("/")
         if expected_database and url_database != expected_database:
             errors.append(
@@ -201,4 +312,28 @@ def validate_production_migration_identity(
         raise RuntimeError(
             "Production migration requires non-superuser "
             "tide_sys_admin on the explicitly selected database"
+        )
+
+
+def validate_production_migration_transport(
+    *,
+    session_ssl: bool,
+    server_ssl: str,
+) -> None:
+    database_url = os.environ["DATABASE_URL"]
+    transport_mode = migration_database_transport_mode(database_url)
+
+    normalized_server_ssl = server_ssl.strip().lower()
+    if transport_mode == DATABASE_TRANSPORT_PRE_PRIVATE_LINE_PLAINTEXT:
+        if session_ssl or normalized_server_ssl != "off":
+            raise RuntimeError(
+                "Private-line plaintext migration requires a "
+                "non-TLS session and PostgreSQL server ssl=off"
+            )
+        return
+
+    if not session_ssl or normalized_server_ssl != "on":
+        raise RuntimeError(
+            "Production migration requires an actual TLS session and "
+            "PostgreSQL server ssl=on"
         )

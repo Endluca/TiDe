@@ -209,17 +209,41 @@ def validate_url(raw_url: str, expected_role: str) -> None:
     parsed = urlparse(
         raw_url.replace("postgresql+psycopg://", "postgresql://", 1)
     )
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
     if (
         parsed.scheme != "postgresql"
         or unquote(parsed.username or "") != expected_role
         or unquote(parsed.path.removeprefix("/")) != expected_database
-        or parse_qs(parsed.query, keep_blank_values=True).get("sslmode")
-        != ["verify-full"]
     ):
         raise SystemExit(
-            f"database URL must use {expected_role}, target "
-            f"{expected_database}, and sslmode=verify-full"
+            f"database URL must use {expected_role} and target "
+            f"{expected_database}"
         )
+    if query.get("sslmode") == ["verify-full"] and "ssl" not in query:
+        return
+
+    identity_override_keys = {
+        "database", "dbname", "host", "hostaddr", "options", "port",
+        "service", "servicefile", "user",
+    }
+    if (
+        expected_database == "tide_system_test"
+        and parsed.hostname == "tide-system.rwlb.singapore.rds.aliyuncs.com"
+        and port == 5432
+        and query.get("sslmode") == ["disable"]
+        and "ssl" not in query
+        and not identity_override_keys.intersection(query)
+    ):
+        return
+
+    raise SystemExit(
+        "database URL must use sslmode=verify-full, or the fixed "
+        "tide_system_test PRE private-line endpoint with sslmode=disable"
+    )
 
 
 runtime_values = read_values(runtime_path)

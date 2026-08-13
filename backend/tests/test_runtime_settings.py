@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -9,9 +10,12 @@ from app.runtime_settings import (
     PRODUCTION_INTEGER_SETTINGS,
     allowed_hosts,
     allowed_origins,
+    operations_database_transport_mode,
+    source_worker_database_transport_mode,
     validate_alembic_runtime,
     validate_production_migration_runtime,
     validate_production_migration_identity,
+    validate_production_migration_transport,
     validate_production_runtime,
 )
 
@@ -77,6 +81,118 @@ def test_production_runtime_accepts_verified_postgresql(
     set_safe_database_runtime(monkeypatch)
 
     validate_production_runtime()
+
+
+def test_production_runtime_preserves_verify_ca_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_ALLOWED_HOSTS", "tit-growth.example.com")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://app:secret@db.example/tit?sslmode=verify-ca",
+    )
+    set_safe_database_runtime(monkeypatch)
+
+    validate_production_runtime()
+
+
+def test_production_runtime_accepts_exact_pre_private_line_plaintext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_ALLOWED_HOSTS", "tit-growth.example.com")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        (
+            "postgresql+psycopg://tit_growth_app:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+    )
+    set_safe_database_runtime(monkeypatch)
+
+    validate_production_runtime()
+
+    assert operations_database_transport_mode(
+        os.environ["DATABASE_URL"]
+    ) == "pre-private-line-plaintext"
+    assert source_worker_database_transport_mode(
+        os.environ["DATABASE_URL"]
+    ) == "pre-private-line-plaintext"
+
+
+@pytest.mark.parametrize("name", ["PGHOSTADDR", "PGSERVICE"])
+def test_pre_private_line_rejects_ambient_libpq_identity_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    monkeypatch.setenv(name, "must-not-override-url")
+    database_url = (
+        "postgresql://tit_growth_app:secret@"
+        "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+        "tide_system_test?sslmode=disable"
+    )
+
+    with pytest.raises(ValueError, match=name):
+        operations_database_transport_mode(database_url)
+
+
+def test_source_worker_transport_preserves_verify_full_only() -> None:
+    assert source_worker_database_transport_mode(
+        "postgresql://tit_growth_app:secret@db.example/tit?sslmode=verify-full"
+    ) == "verified-tls"
+    with pytest.raises(ValueError, match="sslmode=verify-full"):
+        source_worker_database_transport_mode(
+            "postgresql://tit_growth_app:secret@db.example/tit?sslmode=verify-ca"
+        )
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        (
+            "postgresql://other:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql://tit_growth_app:secret@db.example:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql://tit_growth_app:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "other?sslmode=disable"
+        ),
+        (
+            "postgresql://tit_growth_app:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5433/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql://tit_growth_app:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable&ssl=false"
+        ),
+        (
+            "postgresql://tit_growth_app:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable&host=db.example"
+        ),
+    ],
+)
+def test_production_runtime_rejects_plaintext_outside_exact_pre_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_ALLOWED_HOSTS", "tit-growth.example.com")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    set_safe_database_runtime(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="Unsafe production runtime"):
+        validate_production_runtime()
 
 
 def test_production_runtime_requires_explicit_pool_and_timeout_budget(
@@ -214,6 +330,72 @@ def test_production_migration_requires_exact_tls_database_without_api_settings(
     validate_alembic_runtime()
 
 
+def test_production_migration_accepts_exact_pre_private_line_plaintext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_MIGRATION_MODE", "true")
+    monkeypatch.setenv("TIT_MIGRATION_EXPECTED_DATABASE", "tide_system_test")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        (
+            "postgresql+psycopg://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+    )
+
+    validate_production_migration_runtime()
+    validate_alembic_runtime()
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        (
+            "postgresql://other:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@db.example:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5433/"
+            "tide_system_test?sslmode=disable"
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "other?sslmode=disable"
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable&ssl=false"
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable&dbname=other"
+        ),
+    ],
+)
+def test_production_migration_rejects_plaintext_outside_exact_pre_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_MIGRATION_MODE", "true")
+    monkeypatch.setenv("TIT_MIGRATION_EXPECTED_DATABASE", "tide_system_test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    with pytest.raises(RuntimeError, match="Unsafe production migration"):
+        validate_production_migration_runtime()
+
+
 def test_production_alembic_requires_explicit_migration_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -286,6 +468,131 @@ def test_production_migration_accepts_exact_live_identity(
         database="tit_growth",
         is_superuser=False,
     )
+
+
+def test_production_migration_accepts_matching_live_private_line_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable"
+        ),
+    )
+
+    validate_production_migration_transport(
+        session_ssl=False,
+        server_ssl="off",
+    )
+
+
+@pytest.mark.parametrize(
+    ("database_url", "session_ssl", "server_ssl"),
+    [
+        (
+            "postgresql://tide_sys_admin:secret@"
+            "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+            "tide_system_test?sslmode=disable",
+            True,
+            "on",
+        ),
+        (
+            "postgresql://tide_sys_admin:secret@db.example:5432/"
+            "tit_growth?sslmode=verify-full",
+            False,
+            "off",
+        ),
+    ],
+)
+def test_production_migration_rejects_mismatched_live_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    session_ssl: bool,
+    server_ssl: str,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    with pytest.raises(RuntimeError, match="migration requires"):
+        validate_production_migration_transport(
+            session_ssl=session_ssl,
+            server_ssl=server_ssl,
+        )
+
+
+def test_production_migration_accepts_matching_live_tls_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        (
+            "postgresql://tide_sys_admin:secret@db.example:5432/"
+            "tit_growth?sslmode=verify-full"
+        ),
+    )
+
+    validate_production_migration_transport(
+        session_ssl=True,
+        server_ssl="on",
+    )
+
+
+def test_private_line_engine_installs_live_transport_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    selected = build_engine(
+        "postgresql+psycopg://tit_growth_app:secret@"
+        "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+        "tide_system_test?sslmode=disable"
+    )
+    try:
+        assert getattr(
+            selected,
+            "_tit_pre_private_line_transport_guard",
+            False,
+        ) is True
+    finally:
+        selected.dispose()
+
+
+def test_private_line_migration_engine_uses_admin_transport_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TIT_MIGRATION_MODE", "true")
+    selected = build_engine(
+        "postgresql+psycopg://tide_sys_admin:secret@"
+        "tide-system.rwlb.singapore.rds.aliyuncs.com:5432/"
+        "tide_system_test?sslmode=disable"
+    )
+    try:
+        assert getattr(
+            selected,
+            "_tit_pre_private_line_transport_guard",
+            False,
+        ) is True
+    finally:
+        selected.dispose()
+
+
+def test_verified_tls_engine_does_not_install_private_line_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    selected = build_engine(
+        "postgresql+psycopg://tit_growth_app:secret@db.example:5432/"
+        "tide_system_test?sslmode=verify-full"
+    )
+    try:
+        assert getattr(
+            selected,
+            "_tit_pre_private_line_transport_guard",
+            False,
+        ) is False
+    finally:
+        selected.dispose()
 
 
 def test_postgresql_engine_uses_explicit_bounded_pool(

@@ -54,9 +54,18 @@ SQL 参数前，用 CSPRNG 生成、以 64 位小写 hex 表示的国内项目�
 token 版本和存量关联迁移。国内 `cancel_reason/reason_desc` 自由文本同样不原样出境：只保留
 精确业务值 `Unfilled Lesson Memo`，其他非空内容统一替换为不含原文的存在标记。
 
-国内到海外 PostgreSQL 的连接必须使用 `sslmode=verify-full`，不允许使用 PRE 明文覆盖；国内项目
-固定 `TIT_DTS_PROJECTION_ENABLED=false`，只有海外项目可以在双 checkpoint 门禁通过后持有全局
-投影锁。
+国内到海外 PostgreSQL 的连接默认及正式环境必须使用 `sslmode=verify-full`。当前固定
+`tide_system_test` PRE 端点走受控专线，允许应用、教师端及国内/海外 DTS 使用明文连接；专线降低
+暴露面但不加密 PostgreSQL 流量，不能把“走专线”写成“传输已加密”。DTS 必须同时设置
+`TIT_DTS_INGEST_DB_SSLMODE=disable` 与 `TIT_DTS_ALLOW_INSECURE_DB=true`，缺一、端点/库不匹配或
+非 PRE 均失败关闭；application、教师端、迁移与契约探针也只允许各自连接串对该固定端点设置
+`sslmode=disable`，不得用全局开关放宽其他目标。数据库启用 TLS 后必须把所有连接恢复为
+`verify-full` 并重新验证实际会话 TLS。国内项目仍固定 `TIT_DTS_EXECUTION_REGION=cn`、仅国内持有
+HMAC 密钥且 `TIT_DTS_PROJECTION_ENABLED=false`；只有海外项目可以在双 checkpoint 门禁通过后
+持有全局投影锁。
+
+固定 PRE 明文路径还必须在联网前拒绝 `PGHOST`、`PGHOSTADDR`、`PGSERVICE` 等 libpq 连接身份
+环境覆盖；否则即使版本化 URI 命中白名单，驱动仍可能把凭据发往另一个目标。
 
 多副本私有文件优先使用 OSS；LOCAL 模式必须让所有 Pod 把同一块 ReadWriteMany 共享卷挂载
 到 `/var/lib/tide`，RWO 或每 Pod 独立目录都不满足跨副本读取和清理。视频预热账本若从发布

@@ -86,8 +86,8 @@ Mock 入口，不能用于公司或生产库。
 
 ## 生产迁移
 
-生产只使用 `scripts/apply-production.sh`。它要求独立迁移账号连接串
-`TIDE_MIGRATION_DATABASE_URL` 和显式目标库
+生产只使用 `scripts/apply-production.sh`。它要求独立迁移账号连接串（优先读取
+`TIDE_MIGRATION_DATABASE_URL`，未设置时回退读取同一迁移任务中的 `DATABASE_URL`）和显式目标库
 `TIDE_MIGRATION_EXPECTED_DATABASE`，并同时支持：
 
 - fresh：世文共享 `public` 表已存在，但尚无 TIDE 业务结构；
@@ -121,7 +121,9 @@ head 56 与 P-FB-NEGATIVE rev56 新文案。历史 `0020` 文件和 checksum 保
 
 非测试模式还会同时校验：
 
-- URI 中 `sslmode=verify-full` 恰好出现一次，且当前 PostgreSQL 会话确实使用 TLS；
+- URI 一般要求 `sslmode=verify-full` 恰好出现一次，且当前 PostgreSQL 会话确实使用 TLS；固定
+  `tide_system_test` PRE 专线端点可使用受限 `sslmode=disable`，但管理角色、主机、端口、库名、
+  服务端 `ssl=off` 与当前会话非 TLS 必须全部匹配；
 - `current_user` 与 `session_user` 都是 `tide_sys_admin`，不是通过其他高权限账号
   `SET ROLE` 伪装；
 - `tide_sys_admin` 可登录但不是 superuser，且不允许复制或绕过 RLS；
@@ -162,6 +164,22 @@ export TIDE_MIGRATION_DATABASE_URL='postgresql://tide_sys_admin@db.example/tide_
 export TIDE_MIGRATION_EXPECTED_DATABASE='tide_production'
 bash database/scripts/apply-production.sh
 ```
+
+当前 PRE 数据库服务端 `ssl=off` 时，固定专线目标不需要额外批准开关，但连接 URI 必须精确为
+`tide_sys_admin@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/tide_system_test`、
+`sslmode=disable`，且不得通过 query 参数覆盖账号、主机、端口或库名：
+
+```bash
+export DATABASE_URL='postgresql://tide_sys_admin:<runtime-secret>@tide-system.rwlb.singapore.rds.aliyuncs.com:5432/tide_system_test?sslmode=disable'
+export TIDE_MIGRATION_EXPECTED_DATABASE='tide_system_test'
+bash database/scripts/apply-production.sh
+```
+
+执行前必须清除 `PGHOST`、`PGHOSTADDR`、`PGPORT`、`PGDATABASE`、`PGUSER`、`PGSERVICE`、
+`PGSERVICEFILE`；迁移器会在联网前失败关闭，避免 libpq 环境覆盖把管理凭据发往另一个目标。
+
+迁移器连接后还会要求 `current_user/session_user=tide_sys_admin`、当前会话非 TLS 且
+PostgreSQL `server ssl=off`；固定目标以外仍要求 `verify-full` 和实际 TLS 会话。
 
 也可以从 `backend/` 构建一次性迁移镜像。镜像只复制生产迁移 SQL 和迁移脚本，
 以 UID/GID `10001` 的非 root 用户运行；认证材料只在运行时从受控 env file 注入：

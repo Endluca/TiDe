@@ -3,11 +3,21 @@ set -euo pipefail
 set +x
 
 DB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL:-}"
+if [[ -n "${TIDE_MIGRATION_DATABASE_URL:-}" ]]; then
+  DATABASE_URL="${TIDE_MIGRATION_DATABASE_URL}"
+else
+  DATABASE_URL="${DATABASE_URL:-}"
+fi
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
 TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0041_crm_sso_hybrid}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 COMPANY_TEST_MIGRATION_MODE="${TIDE_COMPANY_TEST_MIGRATION_MODE:-false}"
+
+PRE_PRIVATE_LINE_DB_HOST="tide-system.rwlb.singapore.rds.aliyuncs.com"
+PRE_PRIVATE_LINE_DB_PORT="5432"
+PRE_PRIVATE_LINE_DB_NAME="tide_system_test"
+PRE_PRIVATE_LINE_DB_OWNER="tide_sys_admin"
+PRE_PRIVATE_LINE_PLAINTEXT=false
 
 APPROVED_COMPANY_TEST_DB_HOST="ai-efficiency-postgresql-20260722194941.pods.test.51talk.biz"
 APPROVED_COMPANY_TEST_DB_PORT="5432"
@@ -37,7 +47,7 @@ if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" \
 fi
 
 if [[ "${COMPANY_TEST_MIGRATION_MODE}" != "true" && -z "${DATABASE_URL}" ]]; then
-  echo "TIDE_MIGRATION_DATABASE_URL 不能为空；必须使用独立迁移账号。" >&2
+  echo "TIDE_MIGRATION_DATABASE_URL 或同一迁移任务中的 DATABASE_URL 不能为空；必须使用独立迁移账号。" >&2
   exit 1
 fi
 if [[ -z "${EXPECTED_DATABASE}" ]]; then
@@ -112,24 +122,70 @@ elif [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
     echo "生产迁移只接受显式 PostgreSQL URI。" >&2
     exit 1
   fi
+
+  connection_without_scheme="${DATABASE_URL#*://}"
+  if [[ "${connection_without_scheme}" != *@*/*\?* \
+        || "${connection_without_scheme}" == *#* ]]; then
+    echo "生产迁移 URI 必须显式声明账号、主机、端口、数据库和连接参数。" >&2
+    exit 1
+  fi
+  connection_authority="${connection_without_scheme%%/*}"
+  connection_userinfo="${connection_authority%@*}"
+  connection_server="${connection_authority##*@}"
+  connection_user="${connection_userinfo%%:*}"
+  connection_path_and_query="${connection_without_scheme#*/}"
+  connection_database="${connection_path_and_query%%\?*}"
   connection_query="${DATABASE_URL#*\?}"
   if [[ "${connection_query}" == "${DATABASE_URL}" ]]; then
-    echo "生产迁移连接必须且只能声明一次 sslmode=verify-full。" >&2
+    echo "生产迁移连接必须声明受支持的 sslmode。" >&2
     exit 1
   fi
   sslmode_count=0
   sslmode_value=""
+  connection_identity_override=false
   IFS='&' read -r -a connection_parameters <<<"${connection_query}"
   for connection_parameter in "${connection_parameters[@]}"; do
-    if [[ "${connection_parameter%%=*}" == "sslmode" ]]; then
+    connection_parameter_name="${connection_parameter%%=*}"
+    if [[ ! "${connection_parameter_name}" =~ ^[a-z_][a-z0-9_]*$ ]]; then
+      echo "生产迁移连接参数名必须使用未编码的小写 PostgreSQL 关键字。" >&2
+      exit 1
+    fi
+    if [[ "${connection_parameter_name}" == "sslmode" ]]; then
       sslmode_count=$((sslmode_count + 1))
       sslmode_value="${connection_parameter#*=}"
     fi
+    case "${connection_parameter_name}" in
+      database|dbname|host|hostaddr|options|port|service|servicefile|ssl|user)
+        connection_identity_override=true
+        ;;
+    esac
   done
-  if [[ "${sslmode_count}" != "1" || "${sslmode_value}" != "verify-full" ]]; then
-    echo "生产迁移连接必须且只能声明一次 sslmode=verify-full。" >&2
+  if [[ "${sslmode_count}" != "1" ]]; then
+    echo "生产迁移连接必须且只能声明一次 sslmode。" >&2
     exit 1
   fi
+
+  if [[ "${sslmode_value}" == "disable" \
+        && "${connection_user}" == "${PRE_PRIVATE_LINE_DB_OWNER}" \
+        && "${connection_server}" == "${PRE_PRIVATE_LINE_DB_HOST}:${PRE_PRIVATE_LINE_DB_PORT}" \
+        && "${connection_database}" == "${PRE_PRIVATE_LINE_DB_NAME}" \
+        && "${EXPECTED_DATABASE}" == "${PRE_PRIVATE_LINE_DB_NAME}" \
+        && "${connection_identity_override}" == "false" ]]; then
+    PRE_PRIVATE_LINE_PLAINTEXT=true
+  elif [[ "${sslmode_value}" != "verify-full" ]]; then
+    echo "生产迁移一般要求 sslmode=verify-full；sslmode=disable 仅允许固定 tide_system_test PRE 专线身份。" >&2
+    exit 1
+  fi
+fi
+
+if [[ "${PRE_PRIVATE_LINE_PLAINTEXT}" == "true" ]]; then
+  for libpq_identity_name in \
+    PGDATABASE PGHOST PGHOSTADDR PGPORT PGSERVICE PGSERVICEFILE PGUSER; do
+    if [[ ${!libpq_identity_name+x} == x ]]; then
+      echo "固定 PRE 专线迁移禁止 libpq 环境变量改写连接身份：${libpq_identity_name}。" >&2
+      exit 1
+    fi
+  done
 fi
 
 export PGCONNECT_TIMEOUT="${PGCONNECT_TIMEOUT:-8}"
@@ -236,6 +292,7 @@ SELECT
         ),
         false
     ),
+    current_setting('ssl') = 'on',
     (
         SELECT rolsuper
         FROM pg_roles
@@ -291,6 +348,7 @@ IFS='|' read -r \
   connected_database \
   version_ready \
   ssl_active \
+  server_ssl_active \
   migration_user_superuser \
   migration_user_restricted \
   operator_role_ready \
@@ -336,12 +394,17 @@ elif [[ "${MIGRATION_TEST_MODE}" != "true" ]]; then
     echo "tide_sys_admin 必须是禁止复制和绕过 RLS 的 LOGIN 管理角色。" >&2
     exit 1
   fi
-  if [[ "${ssl_active}" != "t" ]]; then
-    echo "数据库会话未实际使用 TLS，生产迁移已停止。" >&2
-    exit 1
-  fi
   if [[ "${session_user_name}" != "${connected_user}" ]]; then
     echo "生产迁移禁止由高权限 session_user 通过 SET ROLE 伪装。" >&2
+    exit 1
+  fi
+  if [[ "${PRE_PRIVATE_LINE_PLAINTEXT}" == "true" ]]; then
+    if [[ "${ssl_active}" != "f" || "${server_ssl_active}" != "f" ]]; then
+      echo "固定 PRE 专线明文迁移要求当前会话非 TLS 且 PostgreSQL server ssl=off。" >&2
+      exit 1
+    fi
+  elif [[ "${ssl_active}" != "t" || "${server_ssl_active}" != "t" ]]; then
+    echo "数据库会话未实际使用 TLS，生产迁移已停止。" >&2
     exit 1
   fi
 fi

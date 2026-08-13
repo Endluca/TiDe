@@ -79,7 +79,9 @@ pnpm provision:internal-test
 
 生产环境采用 fail-closed 校验，以下条件任一不满足，进程直接拒绝启动：
 
-- `TIDE_DATABASE_URL` 与 `SHIWEN_READ_DATABASE_URL` 都存在，并且各自恰好包含一次 `sslmode=verify-full`；
+- `TIDE_DATABASE_URL` 与 `SHIWEN_READ_DATABASE_URL` 都存在，并且各自恰好包含一次
+  `sslmode=verify-full`；固定 `tide_system_test` PRE 专线端点可使用精确角色、主机、端口、库名
+  都受限的 `sslmode=disable`，不得扩展到其他目标；
 - `TRUST_PROXY_HOPS=1`；联合拓扑只信任已经清洗转发头的 Edge 一跳；
 - `SHIWEN_READ_MODE=VIEWS` 时显式提供 `SHIWEN_TEACHER_IDENTITY_VIEW`；联合共享库部署使用
   `DIRECT_TABLES`；

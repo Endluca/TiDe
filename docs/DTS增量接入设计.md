@@ -18,7 +18,7 @@
 3. SASL 使用 `PLAIN` + `SASL_PLAINTEXT`，实际用户名按 `<账号>-<消费组ID>` 生成；密码只从运行时环境读取，不进入日志或仓库。
 4. 按 `source_region + topic + partition + offset` 定义幂等键，并把已确认的 17 类国内共享/区域业务表事件路由为课程、教师、师生组合、标签或投诉分类脏键。
 5. 已实现海外/国内教师筛选差异、Peak 时段差异、投诉两表各取最新一条、处罚时间差大于 30 秒的迟到/早退规则。
-6. 目标固定为 `tide_system_test.public`，数据库身份固定为 `tit_dts_ingest_runtime`。SSL 默认 `verify-full`。当前 PRE 库已现场确认 `SHOW ssl=off`；同时设置 `TIT_DTS_INGEST_DB_SSLMODE=disable` 和 `TIT_DTS_ALLOW_INSECURE_DB=true` 的临时例外只允许海外 PRE 项目使用，并且只允许已批准的 `tide-system.rwlb.singapore.rds.aliyuncs.com:5432` 端点。国内到海外的跨境写入无论 PRE/生产都强制 `verify-full/false`，服务端没有可验证 TLS 时国内消费者必须失败关闭，不得降级绕过。其他 SSL 模式、端点以及库名、Schema、角色或有效权限不一致时启动失败。每条新建的 PostgreSQL 物理连接都以 `pg_stat_ssl` 核验当前会话是否实际使用 TLS，并同时核验服务端 SSL 状态；海外 PRE 的临时 `disable` 例外还会在每次连接池 checkout 时复核，服务端一旦启用 TLS 便立即失败关闭并要求恢复 `verify-full`。长期持有的投影锁会话也在每批投影前执行同一核验。
+6. 目标固定为 `tide_system_test.public`，数据库身份固定为 `tit_dts_ingest_runtime`。SSL 默认且正式环境固定为 `verify-full`。2026-08-13 DMS 现场值为服务端 `ssl=off` 且当前会话非 TLS；专线只限制网络路径，不加密 PostgreSQL 流量。固定 `tide-system.rwlb.singapore.rds.aliyuncs.com:5432 / tide_system_test` 的国内、海外 DTS PRE 可复用既有两项例外：`TIT_DTS_INGEST_DB_SSLMODE=disable` 与 `TIT_DTS_ALLOW_INSECURE_DB=true`。两项必须同时配置；端点、库、角色、Schema 漂移或正式环境均在连接前失败关闭。每条新建的 PostgreSQL 物理连接都以 `pg_stat_ssl` 核验当前会话 TLS，并同时核验服务端 SSL 状态；明文例外还会在每次连接池 checkout 时复核，服务端一旦启用 TLS 便立即失败关闭并要求恢复 `verify-full/false`。长期持有的投影锁会话也在每批投影前执行同一核验。
 7. 每条消息在一个 PostgreSQL 事务内依次写接入账本、字段白名单当前态、脏键和数据库位点；事务成功后才提交 Kafka offset。数据库位点领先 Kafka 时从数据库续跑，Kafka 位点领先数据库时失败关闭。
 8. 脏键投影器按课程、教师、师生组合、评价标签和投诉分类重算；课程必须等待国内共享教师主数据并通过开放式新师 cohort、地区及入职 30 天窗口校验。国内教师事件晚到时，会把当前镜像中该教师的国内/海外预约重新置脏；缺主记录时重试，不把“尚未到达”解释成删除。
 9. `lesson_source_wide`、`teacher_source_wide` 采用有差异才更新的 UPSERT；源事实删除或退出范围时删除对应宽表行。宽表写入、派生教师脏键和当前脏键完成在同一事务内，失败则进入退避重试。
@@ -67,7 +67,7 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 - Gaea 密钥：`TIT_DTS_PASSWORD`，只用于 DTS SASL；
 - 国内项目额外 Gaea 密钥：`TIT_DTS_DOM_STUDENT_HMAC_KEY`，由 CSPRNG 生成 32 bytes 并精确编码为 64 位小写 hex，只在国内消息仍位于国内容器时生成稳定 token；海外项目禁止配置；
 - 国内 HMAC 密钥首次启动时只把单向 fingerprint 登记到受限 DTS 状态表；之后 fingerprint 不一致即失败关闭。禁止直接替换密钥，轮换必须新增 token 版本并迁移全部存量关联后另行发布；
-- PostgreSQL 非敏感参数：`TIT_DTS_INGEST_DB_HOST/PORT/SSLMODE`；当前 PRE 的 `backend/dts-ingest.pre-ssl-off.env.example` 只允许海外项目显式覆盖 `disable/true`，国内跨境写入固定 `verify-full/false`；
+- PostgreSQL 非敏感参数：`TIT_DTS_INGEST_DB_HOST/PORT/SSLMODE`；固定专线 PRE 的 `backend/dts-ingest.pre-ssl-off.env.example` 可由国内、海外项目复用两项 `disable/true` 覆盖，正式环境均保持 `verify-full/false`；
 - Gaea 密钥：`TIT_DTS_INGEST_DB_PASSWORD`，只用于 `tit_dts_ingest_runtime`。
 
 两个密码不是同一个密码，不允许复用。`TIT_DTS_INGEST_DB_NAME=tide_system_test`、
@@ -95,18 +95,20 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 
 两个可版本化的生产安全配置入口分别是
 `backend/.env.dts-ingest.ovs.production.example` 和
-`backend/.env.dts-ingest.dom.production.example`；PRE 的临时非 TLS 覆盖单独位于
-`backend/dts-ingest.pre-ssl-off.env.example`，且只可加载到海外 PRE 项目。三份文件都故意不含
+`backend/.env.dts-ingest.dom.production.example`；国内、海外固定专线 PRE 的临时非 TLS 覆盖位于
+`backend/dts-ingest.pre-ssl-off.env.example`，两项必须一起加载。上述文件都故意不含
 `TIT_DTS_PASSWORD`、`TIT_DTS_INGEST_DB_PASSWORD` 和国内 HMAC 密钥的值。正式环境若目标不再是当前固定 test 库，还必须同步修改
 数据库身份契约、迁移和 ACL 并重新验收，不能只把 SSL 改回 `verify-full`。
 
 ## 当前未完成的是实联与上线
 
 23/55 字段投影和国内/海外双运行配置已经进入持久化进程，不再停留在候选字段或影子输出。
-`tide_system_test` 当前已迁移至 public 59 / teacher 0041，但仍须应用 public 60 隐私迁移并通过
+`tide_system_test` 的 2026-08-13 现场值是 public `20260812_59_simple_acl`、teacher 精确 36 条且
+head `0041_crm_sso_hybrid`、服务端 `ssl=off` 且当前 DMS 会话非 TLS；仍须应用 public 60 隐私迁移并通过
 只读契约探针，才能满足最新运行门禁。国内订阅已明确使用“AI 效率中心”团队的独立 Gaea 项目
 `tida-camp-dts-dom` 并选择中国大陆集群；仍须从新 Pod 读回平台地域和运行配置。国内跨境写入还要求目标 PostgreSQL
-提供可由 `verify-full` 验证的 TLS，当前已确认的 `ssl=off` 不能作为国内链路上线条件。海外项目仍需
+默认和正式环境提供可由 `verify-full` 验证的 TLS；当前 PRE 仅在固定专线范围允许明文试跑，
+不能称为 TLS 或生产传输安全。海外项目仍需
 完成所在 Pod 到海外 DTS endpoint 的 Kafka 启动门禁。当前尚无合规国内 Pod 的成功
 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账。
 投诉分类是早于新教师长期存在的静态共享字典，不受“新教师
