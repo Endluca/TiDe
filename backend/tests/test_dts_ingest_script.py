@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app.dts_source_consumer import DtsConfigurationError
 from app.dts_wide_projector import DtsWideProjectionError
@@ -11,6 +12,7 @@ from scripts import run_dts_ingest
 from scripts.run_dts_ingest import (
     _env_flag,
     _projection_activation_settings,
+    _safe_operational_error_payload,
     _should_wait_before_next_batch,
 )
 
@@ -77,6 +79,132 @@ def test_watch_waits_only_after_underfilled_or_idle_batch(
         )
         is expected
     )
+
+
+@pytest.mark.parametrize(
+    ("driver_message", "expected_code"),
+    [
+        (
+            "password authentication failed for user runtime-secret",
+            "DTS_TARGET_AUTHENTICATION_FAILED",
+        ),
+        (
+            "no pg_hba.conf entry for host 10.9.15.125",
+            "DTS_TARGET_PG_HBA_REJECTED",
+        ),
+        (
+            "could not translate host name db.internal",
+            "DTS_TARGET_DNS_FAILED",
+        ),
+        ("connection refused", "DTS_TARGET_CONNECTION_REFUSED"),
+        ("connection timeout expired", "DTS_TARGET_CONNECTION_TIMEOUT"),
+        (
+            "server closed the connection unexpectedly",
+            "DTS_TARGET_CONNECTION_CLOSED",
+        ),
+        ("SSL handshake failed", "DTS_TARGET_SSL_HANDSHAKE_FAILED"),
+        ("unknown driver connection error", "DTS_TARGET_CONNECTION_FAILED"),
+    ],
+)
+def test_operational_error_payload_is_stable_and_never_echoes_driver_message(
+    driver_message: str,
+    expected_code: str,
+) -> None:
+    exc = OperationalError("CONNECT", {}, RuntimeError(driver_message))
+
+    payload = _safe_operational_error_payload(exc)
+
+    assert payload == {
+        "error_code": expected_code,
+        "error_type": "OperationalError",
+    }
+    assert driver_message not in json.dumps(payload)
+
+
+def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> None:
+    payload = _safe_operational_error_payload(
+        RuntimeError("password=must-never-appear")
+    )
+
+    assert payload == {
+        "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
+        "error_type": "RuntimeError",
+    }
+    assert "must-never-appear" not in json.dumps(payload)
+
+
+def test_hba_message_takes_priority_over_generic_authorization_sqlstate() -> None:
+    class AuthorizationError(RuntimeError):
+        sqlstate = "28000"
+
+    payload = _safe_operational_error_payload(
+        OperationalError(
+            "CONNECT",
+            {},
+            AuthorizationError("no pg_hba.conf entry for host 10.9.15.125"),
+        )
+    )
+
+    assert payload == {
+        "error_code": "DTS_TARGET_PG_HBA_REJECTED",
+        "error_type": "OperationalError",
+        "sqlstate": "28000",
+    }
+
+
+def test_operational_error_payload_uses_diag_sqlstate_only_when_well_formed(
+) -> None:
+    malformed = RuntimeError("connection failed")
+    malformed.diag = SimpleNamespace(sqlstate="bad!?")  # type: ignore[attr-defined]
+    assert "sqlstate" not in _safe_operational_error_payload(
+        OperationalError("CONNECT", {}, malformed)
+    )
+
+    unavailable = RuntimeError("database is starting")
+    unavailable.diag = SimpleNamespace(sqlstate="57P03")  # type: ignore[attr-defined]
+    assert _safe_operational_error_payload(
+        OperationalError("CONNECT", {}, unavailable)
+    ) == {
+        "error_code": "DTS_TARGET_CONNECTION_UNAVAILABLE",
+        "error_type": "OperationalError",
+        "sqlstate": "57P03",
+    }
+
+
+def test_main_never_echoes_connection_error_text(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret_fragments = (
+        "password=runtime-secret",
+        "user=tit_dts_ingest_runtime",
+        "host=db.internal",
+    )
+    error = OperationalError(
+        "CONNECT",
+        {},
+        RuntimeError(" ".join(secret_fragments) + " connection refused"),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "build_parser",
+        lambda: SimpleNamespace(parse_args=lambda: SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "_run",
+        lambda _args: (_ for _ in ()).throw(error),
+    )
+
+    assert run_dts_ingest.main() == 1
+
+    stderr = capsys.readouterr().err
+    assert json.loads(stderr) == {
+        "error_code": "DTS_TARGET_CONNECTION_REFUSED",
+        "error_type": "OperationalError",
+        "status": "error",
+    }
+    assert all(fragment not in stderr for fragment in secret_fragments)
 
 
 def test_exhausted_projection_prevents_a_success_heartbeat(

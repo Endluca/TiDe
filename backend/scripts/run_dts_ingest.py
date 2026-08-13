@@ -9,6 +9,9 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy.exc import OperationalError
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -68,6 +71,73 @@ def _should_wait_before_next_batch(*, seen: int, max_messages: int) -> bool:
     """Throttle only after an under-filled or idle consumer batch."""
 
     return seen < max_messages
+
+
+def _safe_operational_error_payload(exc: Exception) -> dict[str, str]:
+    """Classify connection failures without emitting driver error text."""
+
+    payload = {
+        "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
+        "error_type": type(exc).__name__,
+    }
+    if not isinstance(exc, OperationalError):
+        return payload
+
+    original: Any = getattr(exc, "orig", exc)
+    message = str(original).lower()
+    sqlstate = getattr(original, "sqlstate", None)
+    if sqlstate is None:
+        sqlstate = getattr(getattr(original, "diag", None), "sqlstate", None)
+    normalized_sqlstate = None
+    if isinstance(sqlstate, str):
+        candidate_sqlstate = sqlstate.upper()
+        if len(candidate_sqlstate) == 5 and candidate_sqlstate.isalnum():
+            normalized_sqlstate = candidate_sqlstate
+
+    if "pg_hba" in message or "no pg_hba.conf entry" in message:
+        error_code = "DTS_TARGET_PG_HBA_REJECTED"
+    elif normalized_sqlstate in {"28P01", "28000"} or (
+        "password authentication failed" in message
+    ):
+        error_code = "DTS_TARGET_AUTHENTICATION_FAILED"
+    elif any(
+        marker in message
+        for marker in (
+            "could not translate host name",
+            "name or service not known",
+            "nodename nor servname",
+            "temporary failure in name resolution",
+        )
+    ):
+        error_code = "DTS_TARGET_DNS_FAILED"
+    elif "connection refused" in message:
+        error_code = "DTS_TARGET_CONNECTION_REFUSED"
+    elif any(
+        marker in message
+        for marker in ("timeout expired", "timed out", "connection timeout")
+    ):
+        error_code = "DTS_TARGET_CONNECTION_TIMEOUT"
+    elif any(
+        marker in message
+        for marker in (
+            "server closed the connection unexpectedly",
+            "connection reset",
+            "terminating connection",
+            "connection is closed",
+        )
+    ):
+        error_code = "DTS_TARGET_CONNECTION_CLOSED"
+    elif "ssl" in message or "tls" in message:
+        error_code = "DTS_TARGET_SSL_HANDSHAKE_FAILED"
+    elif normalized_sqlstate == "57P03":
+        error_code = "DTS_TARGET_CONNECTION_UNAVAILABLE"
+    else:
+        error_code = "DTS_TARGET_CONNECTION_FAILED"
+
+    payload["error_code"] = error_code
+    if normalized_sqlstate is not None:
+        payload["sqlstate"] = normalized_sqlstate
+    return payload
 
 
 def _projection_activation_settings(
@@ -252,8 +322,7 @@ def main() -> int:
             json.dumps(
                 {
                     "status": "error",
-                    "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
-                    "error_type": type(exc).__name__,
+                    **_safe_operational_error_payload(exc),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
