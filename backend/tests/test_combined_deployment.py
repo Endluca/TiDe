@@ -507,6 +507,74 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     ) in compose
 
 
+def test_contract_probe_casts_information_schema_identifier_arrays_to_text() -> None:
+    probe = (DEPLOY / "contract-probe.sql").read_text(encoding="utf-8")
+
+    identifier_aggregates = re.findall(
+        r"SELECT\s+array_agg\((?P<expression>[^)]*)\)\s+"
+        r"FROM\s+information_schema\.",
+        probe,
+        flags=re.DOTALL,
+    )
+
+    assert identifier_aggregates == [
+        "column_name::text ORDER BY ordinal_position"
+    ]
+
+
+def test_contract_probe_separates_owner_admin_from_runtime_membership() -> None:
+    probe = (DEPLOY / "contract-probe.sql").read_text(encoding="utf-8")
+
+    assert "member_role.rolname = 'tide_sys_admin'" in probe
+    assert "membership.set_option" in probe
+    assert "membership.admin_option" in probe
+    assert "membership.inherit_option" in probe
+    assert "member_role.rolname <> 'tide_sys_admin'" in probe
+    assert "ARRAY['tide_sys_admin']::text[]" not in probe
+    assert (
+        "support-ticket owner membership grants runtime access outside "
+        "tide_sys_admin"
+    ) in probe
+
+
+def test_contract_probe_requires_the_exact_support_function_acl_matrix() -> None:
+    probe = (DEPLOY / "contract-probe.sql").read_text(encoding="utf-8")
+
+    matrix = probe[
+        probe.index("VALUES\n                ('public.create_teacher_support_ticket") :
+        probe.index("support-ticket function execution ACL is not exact")
+    ]
+    assert matrix.count("::regprocedure") == 16
+    assert matrix.count("'tit_growth_app'::text, true") == 1
+    assert matrix.count("'tit_teacher_crud'::text, true") == 3
+    assert matrix.count("'tit_dts_ingest_runtime'::text, true") == 0
+    assert "privilege.grantee = 0" in matrix
+    assert "privilege.privilege_type = 'EXECUTE'" in matrix
+
+
+def test_contract_probe_preserves_the_crm_sso_acl_exception() -> None:
+    probe = (DEPLOY / "contract-probe.sql").read_text(encoding="utf-8")
+
+    tide_crud_error = "teacher runtime tide-table CRUD is incomplete"
+    tide_crud_start = probe.rfind("IF EXISTS (", 0, probe.index(tide_crud_error))
+    tide_crud_contract = probe[tide_crud_start : probe.index(tide_crud_error)]
+    assert "relation.relname <> 'crm_sso_logins'" in tide_crud_contract
+    assert "ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]" in (
+        tide_crud_contract
+    )
+
+    crm_acl_error = "teacher runtime CRM SSO ACL is invalid"
+    crm_acl_start = probe.rfind("IF EXISTS (", 0, probe.index(crm_acl_error))
+    crm_acl_contract = probe[crm_acl_start : probe.index(crm_acl_error)]
+    assert "ARRAY['SELECT', 'INSERT', 'UPDATE']::text[]" in crm_acl_contract
+    assert "'tide.crm_sso_logins',\n        'DELETE'" in crm_acl_contract
+
+    assert "future ordinary Tide tables" in probe
+    assert (
+        "ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]" in probe
+    )
+
+
 def test_personalized_photo_gates_reject_missing_or_extra_config_fields() -> None:
     probe = (DEPLOY / "contract-probe.sql").read_text(encoding="utf-8")
     readiness = (

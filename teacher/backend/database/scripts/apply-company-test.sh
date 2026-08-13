@@ -832,9 +832,20 @@ final_acl_ready="$("${ADMIN_PSQL[@]}" -Atqc "
       ) privilege(name)
       where namespace.nspname = 'tide'
         and relation.relkind in ('r', 'p')
+        and relation.relname <> 'crm_sso_logins'
         and not has_table_privilege(
           'tit_teacher_crud', relation.oid, privilege.name
         )
+    )
+    and not exists (
+      select 1
+      from unnest(array['SELECT','INSERT','UPDATE']::text[]) privilege(name)
+      where not has_table_privilege(
+        'tit_teacher_crud', 'tide.crm_sso_logins', privilege.name
+      )
+    )
+    and not has_table_privilege(
+      'tit_teacher_crud', 'tide.crm_sso_logins', 'DELETE'
     )
     and not exists (
       select 1

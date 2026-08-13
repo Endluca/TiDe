@@ -338,10 +338,49 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
     )
     assert "public.teachers," in grant_script
     assert "public.teacher_g01_status_current" in grant_script
+    for signature in (
+        "public.create_teacher_support_ticket(",
+        "public.append_teacher_support_ticket_teacher_message(",
+        "public.append_teacher_support_ticket_operator_message(",
+        "public.mark_teacher_support_ticket_images_deleted(",
+    ):
+        assert signature in grant_script
+    assert (
+        "FROM PUBLIC, tit_growth_app, tit_teacher_crud, "
+        "tit_dts_ingest_runtime;"
+    ) in grant_script
+    owner_switch = grant_script.index(
+        "SET LOCAL ROLE tide_support_ticket_owner;"
+    )
+    function_revoke = grant_script.index(
+        "REVOKE ALL ON FUNCTION public.create_teacher_support_ticket("
+    )
+    owner_reset = grant_script.index("RESET ROLE;", function_revoke)
+    tide_table_acl = grant_script.index(
+        "REVOKE ALL ON ALL TABLES IN SCHEMA tide FROM tit_teacher_crud;"
+    )
+    assert owner_switch < function_revoke < owner_reset < tide_table_acl
+    assert (
+        "GRANT EXECUTE ON FUNCTION "
+        "public.append_teacher_support_ticket_operator_message("
+    ) in grant_script
+    assert ") TO tit_growth_app;" in grant_script
     assert (
         "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA tide "
         "TO tit_teacher_crud;"
     ) in grant_script
+    assert (
+        "REVOKE DELETE ON tide.crm_sso_logins FROM tit_teacher_crud;"
+        in grant_script
+    )
+    assert (
+        "GRANT SELECT, INSERT, UPDATE ON tide.crm_sso_logins "
+        "TO tit_teacher_crud;"
+    ) in grant_script
+    assert "relation.relname <> 'crm_sso_logins'" in script
+    assert (
+        "'tit_teacher_crud', 'tide.crm_sso_logins', 'DELETE'" in script
+    )
     assert (
         "ALTER DEFAULT PRIVILEGES FOR ROLE tide_sys_admin IN SCHEMA tide"
         in grant_script

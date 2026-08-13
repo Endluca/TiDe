@@ -433,7 +433,16 @@ describe('DatabaseService', () => {
       "relation.relkind IN ('r', 'p', 'v', 'm', 'f')",
     );
     expect(productionQuery).toContain(
+      "relation.relname <> 'crm_sso_logins'",
+    );
+    expect(productionQuery).toContain(
       "ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]",
+    );
+    expect(productionQuery).toContain(
+      "ARRAY['SELECT', 'INSERT', 'UPDATE']::text[]",
+    );
+    expect(productionQuery).toContain(
+      "to_regclass('tide.crm_sso_logins'),\n          'DELETE'",
     );
     expect(productionQuery).toContain('has_sequence_privilege(');
     expect(productionQuery).toContain("sequence.relkind = 'S'");

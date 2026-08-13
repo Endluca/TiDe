@@ -773,6 +773,8 @@ BEGIN
             'contract probe role has write-capable privileges';
     END IF;
 
+    -- This is the baseline for future ordinary Tide tables. A table migration
+    -- may narrow it after CREATE; 0041 does that for crm_sso_logins.
     IF NOT EXISTS (
         SELECT 1
         FROM pg_default_acl AS defaults
@@ -809,6 +811,7 @@ BEGIN
         ) AS required_privilege(name)
         WHERE namespace.nspname = 'tide'
           AND relation.relkind IN ('r', 'p')
+          AND relation.relname <> 'crm_sso_logins'
           AND NOT has_table_privilege(
               'tit_teacher_crud',
               relation.oid,
@@ -1061,7 +1064,7 @@ BEGIN
         'public.teacher_source_wide',
         'SELECT'
     ) OR (
-        SELECT array_agg(column_name ORDER BY ordinal_position)
+        SELECT array_agg(column_name::text ORDER BY ordinal_position)
         FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name = 'teacher_g01_status_current'
@@ -1087,17 +1090,33 @@ BEGIN
         RAISE EXCEPTION 'support-ticket function owner is not a restricted NOLOGIN role';
     END IF;
 
-    IF (
-        SELECT array_agg(member_role.rolname ORDER BY member_role.rolname)
+    IF NOT EXISTS (
+        SELECT 1
         FROM pg_auth_members AS membership
         JOIN pg_roles AS granted_role
           ON granted_role.oid = membership.roleid
         JOIN pg_roles AS member_role
           ON member_role.oid = membership.member
         WHERE granted_role.rolname = 'tide_support_ticket_owner'
-    ) IS DISTINCT FROM ARRAY['tide_sys_admin']::text[] THEN
+          AND member_role.rolname = 'tide_sys_admin'
+          AND membership.set_option
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_auth_members AS membership
+        JOIN pg_roles AS granted_role
+          ON granted_role.oid = membership.roleid
+        JOIN pg_roles AS member_role
+          ON member_role.oid = membership.member
+        WHERE granted_role.rolname = 'tide_support_ticket_owner'
+          AND member_role.rolname <> 'tide_sys_admin'
+          AND (
+              NOT membership.admin_option
+              OR membership.inherit_option
+              OR membership.set_option
+          )
+    ) THEN
         RAISE EXCEPTION
-            'support-ticket function owner membership is not restricted to tide_sys_admin';
+            'support-ticket owner membership grants runtime access outside tide_sys_admin';
     END IF;
 
     IF EXISTS (
@@ -1250,28 +1269,47 @@ BEGIN
         RAISE EXCEPTION 'teacher runtime role can write score entries';
     END IF;
 
-    IF NOT has_function_privilege(
-        'tit_growth_app',
-        'public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)',
-        'EXECUTE'
+    IF EXISTS (
+        SELECT 1
+        FROM (
+            VALUES
+                ('public.create_teacher_support_ticket(uuid,character varying,character varying,character varying,jsonb,jsonb)'::regprocedure, 'tit_growth_app'::text, false),
+                ('public.create_teacher_support_ticket(uuid,character varying,character varying,character varying,jsonb,jsonb)'::regprocedure, 'tit_teacher_crud'::text, true),
+                ('public.create_teacher_support_ticket(uuid,character varying,character varying,character varying,jsonb,jsonb)'::regprocedure, 'tit_dts_ingest_runtime'::text, false),
+                ('public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)'::regprocedure, 'tit_growth_app'::text, false),
+                ('public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)'::regprocedure, 'tit_teacher_crud'::text, true),
+                ('public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)'::regprocedure, 'tit_dts_ingest_runtime'::text, false),
+                ('public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)'::regprocedure, 'tit_growth_app'::text, true),
+                ('public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)'::regprocedure, 'tit_teacher_crud'::text, false),
+                ('public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)'::regprocedure, 'tit_dts_ingest_runtime'::text, false),
+                ('public.mark_teacher_support_ticket_images_deleted(uuid,timestamp with time zone)'::regprocedure, 'tit_growth_app'::text, false),
+                ('public.mark_teacher_support_ticket_images_deleted(uuid,timestamp with time zone)'::regprocedure, 'tit_teacher_crud'::text, true),
+                ('public.mark_teacher_support_ticket_images_deleted(uuid,timestamp with time zone)'::regprocedure, 'tit_dts_ingest_runtime'::text, false)
+        ) AS expected(function_oid, role_name, can_execute)
+        WHERE has_function_privilege(
+            expected.role_name,
+            expected.function_oid,
+            'EXECUTE'
+        ) IS DISTINCT FROM expected.can_execute
+    ) OR EXISTS (
+        SELECT 1
+        FROM unnest(ARRAY[
+            'public.create_teacher_support_ticket(uuid,character varying,character varying,character varying,jsonb,jsonb)'::regprocedure,
+            'public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)'::regprocedure,
+            'public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)'::regprocedure,
+            'public.mark_teacher_support_ticket_images_deleted(uuid,timestamp with time zone)'::regprocedure
+        ]) AS secured(function_oid)
+        JOIN pg_proc AS procedure ON procedure.oid = secured.function_oid
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(
+                procedure.proacl,
+                acldefault('f', procedure.proowner)
+            )
+        ) AS privilege
+        WHERE privilege.grantee = 0
+          AND privilege.privilege_type = 'EXECUTE'
     ) THEN
-        RAISE EXCEPTION 'ops runtime role cannot execute the support-ticket reply function';
-    END IF;
-
-    IF has_function_privilege(
-        'tit_growth_app',
-        'public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)',
-        'EXECUTE'
-    ) OR NOT has_function_privilege(
-        'tit_teacher_crud',
-        'public.append_teacher_support_ticket_teacher_message(uuid,character varying,bigint,jsonb)',
-        'EXECUTE'
-    ) OR has_function_privilege(
-        'tit_teacher_crud',
-        'public.append_teacher_support_ticket_operator_message(uuid,bigint,jsonb)',
-        'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION 'support-ticket function execution roles are not separated';
+        RAISE EXCEPTION 'support-ticket function execution ACL is not exact';
     END IF;
 
     SELECT pg_get_functiondef(
@@ -1338,16 +1376,26 @@ BEGIN
         'tit_teacher_crud',
         'public.task_assignments',
         'SELECT'
-    ) OR NOT has_table_privilege(
-        'tit_teacher_crud',
-        'tide.crm_sso_logins',
-        'SELECT,INSERT,UPDATE'
+    ) THEN
+        RAISE EXCEPTION 'teacher runtime role cannot read required shared objects';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM unnest(
+            ARRAY['SELECT', 'INSERT', 'UPDATE']::text[]
+        ) AS required_privilege(name)
+        WHERE NOT has_table_privilege(
+            'tit_teacher_crud',
+            'tide.crm_sso_logins',
+            required_privilege.name
+        )
     ) OR has_table_privilege(
         'tit_teacher_crud',
         'tide.crm_sso_logins',
         'DELETE'
     ) THEN
-        RAISE EXCEPTION 'teacher runtime role cannot read required shared objects';
+        RAISE EXCEPTION 'teacher runtime CRM SSO ACL is invalid';
     END IF;
 END
 $probe$;

@@ -449,6 +449,22 @@ export class DatabaseService implements OnModuleDestroy {
         AND to_regclass('tide.user_accounts') IS NOT NULL
         AND to_regclass('tide.account_onboarding_states') IS NOT NULL
         AND to_regclass('tide.crm_sso_logins') IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(
+            ARRAY['SELECT', 'INSERT', 'UPDATE']::text[]
+          ) AS required(privilege_name)
+          WHERE NOT has_table_privilege(
+            current_user,
+            to_regclass('tide.crm_sso_logins'),
+            required.privilege_name
+          )
+        )
+        AND NOT has_table_privilege(
+          current_user,
+          to_regclass('tide.crm_sso_logins'),
+          'DELETE'
+        )
         AND to_regclass('tide.task_execution_versions') IS NOT NULL
         AND EXISTS (
           SELECT 1
@@ -923,6 +939,7 @@ export class DatabaseService implements OnModuleDestroy {
           ) AS required(privilege_name)
           WHERE namespace.nspname = 'tide'
             AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+            AND relation.relname <> 'crm_sso_logins'
             AND NOT has_table_privilege(
               current_user,
               relation.oid,
