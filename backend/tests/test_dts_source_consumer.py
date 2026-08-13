@@ -1035,6 +1035,7 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
     assert next(iter(fake.offsets_for_times_calls[0].values())) == 1786550400
     committed = next(iter(fake.commit_calls[0].values()))
     assert committed.offset == 42
+    assert committed.metadata == str(heartbeat["sourceTimestamp"])
     assert committed.leader_epoch == -1
     assert fake.kwargs["enable_auto_commit"] is False
     assert fake.kwargs["api_version"] == (2, 7)

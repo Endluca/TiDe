@@ -1519,7 +1519,7 @@ class DtsKafkaConsumer:
                         offsets={
                             topic_partition: OffsetAndMetadata(
                                 message.offset + 1,
-                                "tit-dts-consumer-v1",
+                                str(event.source_timestamp),
                                 -1,
                             )
                         }
