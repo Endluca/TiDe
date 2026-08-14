@@ -66,8 +66,8 @@ def _clear_health_files(*paths: str | None) -> None:
             Path(path).unlink(missing_ok=True)
 
 
-def _emit_startup_probe(payload: dict[str, int | str]) -> None:
-    """Emit only phase names and counts, never endpoints or credentials."""
+def _emit_startup_probe(payload: dict[str, bool | int | str]) -> None:
+    """Emit only fixed phase evidence, never endpoints or credentials."""
 
     print(
         json.dumps(

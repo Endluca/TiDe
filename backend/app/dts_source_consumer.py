@@ -177,6 +177,7 @@ KAFKA_API_VERSION = (2, 7)
 KAFKA_REQUEST_TIMEOUT_MS = 15_000
 KAFKA_CLOSE_TIMEOUT_MS = 1_000
 KAFKA_CLIENT_DISTRIBUTION = "kafka-python"
+KAFKA_CLIENT_PINNED_VERSION = "2.2.20"
 BROKER_TCP_PROBE_TIMEOUT_SECONDS = 5.0
 DOMESTIC_STUDENT_HMAC_DOMAIN = b"tit-dom-student-subject:v1\x00"
 DOMESTIC_STUDENT_HMAC_FINGERPRINT_DOMAIN = (
@@ -200,7 +201,13 @@ _KNOWN_DTS_CONSUMER_GROUP_NAME_PLACEHOLDERS = frozenset(
 )
 _KAFKA_STARTUP_PHASE_FAILURE_CODES = {
     "consumer_open": "DTS_BROKER_CONSUMER_OPEN_FAILED",
-    "committed": "DTS_BROKER_COMMITTED_REQUEST_FAILED",
+    "bootstrap_auth": "DTS_BROKER_BOOTSTRAP_SASL_FAILED",
+    "topic_metadata": "DTS_BROKER_TOPIC_METADATA_FAILED",
+    "partition_check": "DTS_BROKER_TOPIC_PARTITION_UNAVAILABLE",
+    "advertised_broker_auth": "DTS_BROKER_ADVERTISED_SASL_FAILED",
+    "group_coordinator": "DTS_BROKER_FIND_COORDINATOR_FAILED",
+    "coordinator_auth": "DTS_BROKER_COORDINATOR_SASL_FAILED",
+    "offset_fetch": "DTS_BROKER_OFFSET_FETCH_FAILED",
     "offsets_for_times": "DTS_BROKER_OFFSETS_FOR_TIMES_REQUEST_FAILED",
     "beginning_offsets": "DTS_BROKER_BEGINNING_OFFSETS_REQUEST_FAILED",
     "end_offsets": "DTS_BROKER_END_OFFSETS_REQUEST_FAILED",
@@ -887,6 +894,20 @@ def _safe_kafka_phase_diagnostic(
     *,
     fallback_error_code: str,
 ) -> dict[str, bool | str]:
+    if isinstance(exc, DtsConfigurationError):
+        safe_configuration_errors = {
+            "DTS_KAFKA_STARTUP_PROBE_TIMEOUT": True,
+            "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED": False,
+            "DTS_KAFKA_CLIENT_VERSION_UNSUPPORTED": False,
+            "DTS_KAFKA_GROUP_COORDINATOR_UNAVAILABLE": True,
+        }
+        if len(exc.args) == 1 and exc.args[0] in safe_configuration_errors:
+            error_code = str(exc.args[0])
+            return {
+                "error_code": error_code,
+                "error_type": "DtsConfigurationError",
+                "retriable": safe_configuration_errors[error_code],
+            }
     diagnostic = safe_kafka_error_diagnostic(
         exc,
         fallback_error_code=fallback_error_code,
@@ -900,26 +921,131 @@ def _safe_kafka_phase_diagnostic(
     }
 
 
+class _KafkaConnectionTrace:
+    """Keep only fixed connection-state names for one startup phase."""
+
+    _MAX_STATES = 24
+
+    def __init__(self) -> None:
+        self._target_node: Any | None = None
+        self._states: list[str] = []
+        self._failure_type: type[Exception] | None = None
+
+    def begin(self, node_id: Any) -> None:
+        self._target_node = node_id
+        self._states.clear()
+        self._failure_type = None
+
+    def clear(self) -> None:
+        self._target_node = None
+        self._states.clear()
+        self._failure_type = None
+
+    def record(self, node_id: Any, state: str | None) -> None:
+        if (
+            node_id != self._target_node
+            or state is None
+            or len(self._states) >= self._MAX_STATES
+        ):
+            return
+        if not self._states or self._states[-1] != state:
+            self._states.append(state)
+
+    def record_failure(self, node_id: Any, error: Any) -> None:
+        if (
+            node_id != self._target_node
+            or not isinstance(error, Exception)
+        ):
+            return
+        diagnostic = safe_kafka_error_diagnostic(
+            error,
+            fallback_error_code="DTS_BROKER_CONNECTION_FAILED",
+        )
+        if diagnostic is None:
+            return
+        allowed_name = diagnostic["error_type"]
+        for cause in _bounded_exception_chain(error):
+            if type(cause).__name__ == allowed_name:
+                if (
+                    self._failure_type is None
+                    or self._failure_type.__name__
+                    in {"KafkaError", "KafkaConnectionError"}
+                ):
+                    self._failure_type = type(cause)
+                return
+
+    def recorded_failure(self) -> Exception | None:
+        if self._failure_type is None:
+            return None
+        try:
+            return self._failure_type()
+        except Exception:
+            return None
+
+    def safe_summary(self) -> dict[str, bool | int | str]:
+        states = tuple(self._states)
+        tcp_connected = any(
+            state
+            in {
+                "protocol_version_apply",
+                "api_versions_response_wait",
+                "sasl_authenticating",
+                "connected",
+            }
+            for state in states
+        )
+        return {
+            "connection_attempts": states.count("tcp_connecting"),
+            "connection_state_path": ">".join(states) or "not_observed",
+            "connection_state_observed": bool(states),
+            "tcp_connected_observed": tcp_connected,
+            "protocol_version_applied_observed": (
+                "protocol_version_apply" in states
+            ),
+            "api_versions_request_sent_observed": (
+                "api_versions_response_wait" in states
+            ),
+            "sasl_started_observed": "sasl_authenticating" in states,
+            "sasl_authenticated_observed": "connected" in states,
+        }
+
+
 def suppress_unsafe_kafka_library_logging() -> None:
     """Keep kafka-python request objects out of shared container logs."""
 
-    kafka_logger = logging.getLogger("kafka")
-    kafka_logger.handlers.clear()
-    kafka_logger.addHandler(logging.NullHandler())
-    kafka_logger.propagate = False
-    kafka_logger.setLevel(logging.CRITICAL + 1)
+    logger_names = {"kafka"}
+    logger_names.update(
+        name
+        for name in logging.Logger.manager.loggerDict
+        if isinstance(name, str) and name.startswith("kafka.")
+    )
+    for logger_name in logger_names:
+        kafka_logger = logging.getLogger(logger_name)
+        kafka_logger.handlers.clear()
+        kafka_logger.addHandler(logging.NullHandler())
+        kafka_logger.propagate = False
+        kafka_logger.setLevel(logging.CRITICAL + 1)
 
 
 def _run_kafka_startup_phase(
-    phase_callback: Callable[[dict[str, int | str]], None] | None,
+    phase_callback: Callable[[dict[str, bool | int | str]], None] | None,
     phase: str,
     operation: Callable[[], Any],
+    *,
+    request_type: str | None = None,
+    success_details: Callable[[Any], Mapping[str, bool | int | str]]
+    | None = None,
+    always_details: Callable[[], Mapping[str, bool | int | str]]
+    | None = None,
 ) -> Any:
     """Run one Kafka startup request with credential-free phase evidence."""
 
     started_ns = perf_counter_ns()
+    phase_identity = {"phase": phase}
+    if request_type is not None:
+        phase_identity["request_type"] = request_type
     if phase_callback is not None:
-        phase_callback({"phase": phase, "status": "begin"})
+        phase_callback({**phase_identity, "status": "begin"})
     try:
         result = operation()
     except Exception as exc:
@@ -930,25 +1056,32 @@ def _run_kafka_startup_phase(
             )
             phase_callback(
                 {
-                    "phase": phase,
+                    **phase_identity,
                     "status": "fail",
                     "elapsed_ms": max(
                         0,
                         (perf_counter_ns() - started_ns) // 1_000_000,
                     ),
                     **diagnostic,
+                    **({} if always_details is None else always_details()),
                 }
             )
         raise
     if phase_callback is not None:
+        details: dict[str, bool | int | str] = {}
+        if always_details is not None:
+            details.update(always_details())
+        if success_details is not None:
+            details.update(success_details(result))
         phase_callback(
             {
-                "phase": phase,
+                **phase_identity,
                 "status": "ok",
                 "elapsed_ms": max(
                     0,
                     (perf_counter_ns() - started_ns) // 1_000_000,
                 ),
+                **details,
             }
         )
     return result
@@ -966,7 +1099,7 @@ def _kafka_client_version() -> str:
 
 def _safe_kafka_client_probe(
     settings: DtsConsumerSettings,
-) -> dict[str, int | str]:
+) -> dict[str, bool | int | str]:
     """Describe the Kafka client contract without connection identities."""
 
     return {
@@ -975,9 +1108,12 @@ def _safe_kafka_client_probe(
         "client_library": KAFKA_CLIENT_DISTRIBUTION,
         "client_version": _kafka_client_version(),
         "api_version": ".".join(str(part) for part in KAFKA_API_VERSION),
+        "protocol_version_mode": "pinned",
         "security_protocol": "SASL_PLAINTEXT",
         "sasl_mechanism": "PLAIN",
         "enable_auto_commit": False,
+        "group_membership_mode": "manual_partition_assignment",
+        "join_group_enabled": False,
         "broker_count": len(settings.broker_urls),
         "partition": settings.partition,
         "request_timeout_ms": KAFKA_REQUEST_TIMEOUT_MS,
@@ -1756,7 +1892,10 @@ class DtsKafkaConsumer:
     def startup_probe(
         self,
         *,
-        phase_callback: Callable[[dict[str, int | str]], None] | None = None,
+        phase_callback: Callable[
+            [dict[str, bool | int | str]], None
+        ]
+        | None = None,
     ) -> dict[str, int | str]:
         """Resolve the guarded start offset without changing consumer state."""
 
@@ -1770,22 +1909,31 @@ class DtsKafkaConsumer:
             phase_callback({"probe": "broker_tcp", **tcp_probe})
             phase_callback(_safe_kafka_client_probe(self.settings))
         consumer: Any | None = None
+        connection_trace = _KafkaConnectionTrace()
         try:
             consumer = _run_kafka_startup_phase(
                 phase_callback,
                 "consumer_open",
-                self._open_consumer,
+                lambda: self._open_consumer(
+                    connection_trace=connection_trace,
+                ),
             )
             topic_partition = TopicPartition(
                 self.settings.topic,
                 self.settings.partition,
             )
+            deadline = monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
+            self._probe_kafka_protocol(
+                consumer,
+                topic_partition,
+                deadline_monotonic=deadline,
+                phase_callback=phase_callback,
+                connection_trace=connection_trace,
+            )
             initial_offset = self._resolve_initial_offset(
                 consumer,
                 topic_partition,
-                deadline_monotonic=(
-                    monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
-                ),
+                deadline_monotonic=deadline,
                 phase_callback=phase_callback,
             )
             return {
@@ -1873,14 +2021,75 @@ class DtsKafkaConsumer:
             )
         return counters
 
-    def _open_consumer(self) -> Any:
+    def _open_consumer(
+        self,
+        *,
+        connection_trace: _KafkaConnectionTrace | None = None,
+    ) -> Any:
         suppress_unsafe_kafka_library_logging()
+        if _kafka_client_version() != KAFKA_CLIENT_PINNED_VERSION:
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_VERSION_UNSUPPORTED"
+            )
         try:
             from kafka import KafkaConsumer
+            from kafka.client_async import KafkaClient
+            from kafka.conn import ConnectionStates
         except ImportError as exc:  # pragma: no cover - runtime dependency guard
             raise DtsConfigurationError("KAFKA_PYTHON_DEPENDENCY_REQUIRED") from exc
+        # Importing kafka-python creates child loggers lazily. Re-apply the
+        # process-local isolation after those modules exist so platform root
+        # handlers can never render SASL request bytes or connection identity.
+        suppress_unsafe_kafka_library_logging()
+
+        state_names = {
+            ConnectionStates.CONNECTING: "tcp_connecting",
+            ConnectionStates.HANDSHAKE: "tls_handshake",
+            ConnectionStates.API_VERSIONS_SEND: "protocol_version_apply",
+            ConnectionStates.API_VERSIONS_RECV: "api_versions_response_wait",
+            ConnectionStates.AUTHENTICATING: "sasl_authenticating",
+            ConnectionStates.CONNECTED: "connected",
+            ConnectionStates.DISCONNECTED: "disconnected",
+        }
+
+        class DiagnosticKafkaClient(KafkaClient):
+            def _conn_state_change(
+                self,
+                node_id: Any,
+                sock: Any,
+                connection: Any,
+            ) -> None:
+                if (
+                    connection_trace is not None
+                    and not getattr(
+                        connection,
+                        "_tit_diagnostic_close_wrapped",
+                        False,
+                    )
+                ):
+                    # CONNECTING is reported immediately after socket creation,
+                    # before connect_ex, version setup or SASL. Install the
+                    # wrapper here so even a same-rack authentication failure
+                    # cannot race ahead of the safe error-type capture.
+                    original_close = connection.close
+
+                    def close_with_safe_diagnostic(
+                        error: Any = None,
+                    ) -> None:
+                        connection_trace.record_failure(node_id, error)
+                        original_close(error=error)
+
+                    connection.close = close_with_safe_diagnostic
+                    connection._tit_diagnostic_close_wrapped = True
+                super()._conn_state_change(node_id, sock, connection)
+                if connection_trace is not None:
+                    connection_trace.record(
+                        node_id,
+                        state_names.get(getattr(connection, "state", None))
+                    )
 
         return KafkaConsumer(
+            kafka_client=DiagnosticKafkaClient,
             bootstrap_servers=list(self.settings.broker_urls),
             # Aliyun DTS exposes the Kafka 2.7 protocol.  Pinning the broker
             # version avoids kafka-python's blocking auto-detection probe,
@@ -1896,8 +2105,363 @@ class DtsKafkaConsumer:
             security_protocol="SASL_PLAINTEXT",
             sasl_plain_username=self.settings.sasl_username,
             sasl_plain_password=self.settings.password,
+            allow_auto_create_topics=False,
             consumer_timeout_ms=self.idle_timeout_ms,
         )
+
+    def _probe_kafka_protocol(
+        self,
+        consumer: Any,
+        topic_partition: Any,
+        *,
+        deadline_monotonic: float,
+        phase_callback: Callable[
+            [dict[str, bool | int | str]], None
+        ]
+        | None,
+        connection_trace: _KafkaConnectionTrace,
+    ) -> None:
+        """Probe authenticated Kafka request stages without group membership."""
+
+        client = getattr(consumer, "_client", None)
+        coordinator = getattr(consumer, "_coordinator", None)
+        if client is None or coordinator is None:
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+
+        def connect_bootstrap() -> bool:
+            bootstrap_node = self._require_kafka_node(client)
+            connection_trace.begin(bootstrap_node)
+            return self._require_kafka_connection_ready(
+                consumer,
+                bootstrap_node,
+                deadline_monotonic,
+                connection_trace=connection_trace,
+            )
+
+        _run_kafka_startup_phase(
+            phase_callback,
+            "bootstrap_auth",
+            connect_bootstrap,
+            request_type="AuthenticatedConnectionReady",
+            success_details=lambda reused: {
+                "authenticated_connection_ready": True,
+                "connection_reused": reused,
+            },
+            always_details=connection_trace.safe_summary,
+        )
+
+        _run_kafka_startup_phase(
+            phase_callback,
+            "topic_metadata",
+            lambda: self._request_topic_metadata(
+                consumer,
+                topic_partition,
+                deadline_monotonic,
+            ),
+            request_type="Metadata",
+            success_details=lambda broker_count: {
+                "metadata_request_completed": True,
+                "metadata_scope": "configured_topic",
+                "kcat_list_topic_semantics": True,
+                "advertised_broker_count": broker_count,
+            },
+        )
+
+        _run_kafka_startup_phase(
+            phase_callback,
+            "partition_check",
+            lambda: self._require_configured_partition(
+                consumer,
+                topic_partition,
+            ),
+            request_type="LocalMetadataValidation",
+            success_details=lambda partition_count: {
+                "configured_partition_present": True,
+                "metadata_partition_count": partition_count,
+            },
+        )
+
+        def connect_advertised_broker() -> bool:
+            advertised_node = self._require_advertised_broker_node(
+                client,
+                topic_partition,
+            )
+            connection_trace.begin(advertised_node)
+            return self._require_kafka_connection_ready(
+                consumer,
+                advertised_node,
+                deadline_monotonic,
+                connection_trace=connection_trace,
+            )
+
+        _run_kafka_startup_phase(
+            phase_callback,
+            "advertised_broker_auth",
+            connect_advertised_broker,
+            request_type="AuthenticatedConnectionReady",
+            success_details=lambda reused: {
+                "authenticated_connection_ready": True,
+                "connection_reused": reused,
+                "broker_role": "topic_partition_leader",
+            },
+            always_details=connection_trace.safe_summary,
+        )
+
+        connection_trace.clear()
+        _run_kafka_startup_phase(
+            phase_callback,
+            "group_coordinator",
+            lambda: self._require_group_coordinator(
+                consumer,
+                deadline_monotonic,
+            ),
+            request_type="FindCoordinator",
+            success_details=lambda _result: {"coordinator_discovered": True},
+        )
+
+        def connect_coordinator() -> bool:
+            coordinator_node = coordinator.coordinator()
+            if coordinator_node is None:
+                raise DtsConfigurationError(
+                    "DTS_KAFKA_GROUP_COORDINATOR_UNAVAILABLE"
+                )
+            connection_trace.begin(coordinator_node)
+            return self._require_kafka_connection_ready(
+                consumer,
+                coordinator_node,
+                deadline_monotonic,
+                connection_trace=connection_trace,
+            )
+
+        _run_kafka_startup_phase(
+            phase_callback,
+            "coordinator_auth",
+            connect_coordinator,
+            request_type="AuthenticatedConnectionReady",
+            success_details=lambda reused: {
+                "authenticated_connection_ready": True,
+                "connection_reused": reused,
+            },
+            always_details=connection_trace.safe_summary,
+        )
+
+    @staticmethod
+    def _require_kafka_node(client: Any) -> Any:
+        try:
+            from kafka.errors import NoBrokersAvailable
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise DtsConfigurationError(
+                "KAFKA_PYTHON_DEPENDENCY_REQUIRED"
+            ) from exc
+        least_loaded_node = getattr(client, "least_loaded_node", None)
+        if not callable(least_loaded_node):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+        node_id = least_loaded_node()
+        if node_id is None:
+            raise NoBrokersAvailable()
+        return node_id
+
+    @staticmethod
+    def _require_advertised_broker_node(
+        client: Any,
+        topic_partition: Any,
+    ) -> Any:
+        try:
+            from kafka.errors import UnknownTopicOrPartitionError
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise DtsConfigurationError(
+                "KAFKA_PYTHON_DEPENDENCY_REQUIRED"
+            ) from exc
+        cluster = getattr(client, "cluster", None)
+        leader_for_partition = getattr(
+            cluster,
+            "leader_for_partition",
+            None,
+        )
+        broker_metadata = getattr(cluster, "broker_metadata", None)
+        if not callable(leader_for_partition) or not callable(broker_metadata):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+        node_id = leader_for_partition(topic_partition)
+        if node_id is None or node_id == -1 or broker_metadata(node_id) is None:
+            raise UnknownTopicOrPartitionError()
+        return node_id
+
+    @classmethod
+    def _require_kafka_connection_ready(
+        cls,
+        consumer: Any,
+        node_id: Any,
+        deadline_monotonic: float,
+        *,
+        connection_trace: _KafkaConnectionTrace,
+    ) -> bool:
+        try:
+            from kafka.errors import KafkaTimeoutError
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise DtsConfigurationError(
+                "KAFKA_PYTHON_DEPENDENCY_REQUIRED"
+            ) from exc
+        client = getattr(consumer, "_client", None)
+        is_ready = getattr(client, "is_ready", None)
+        maybe_connect = getattr(client, "maybe_connect", None)
+        init_connect = getattr(client, "_init_connect", None)
+        poll_io = getattr(client, "_poll", None)
+        fire_completed = getattr(
+            client,
+            "_fire_pending_completed_requests",
+            None,
+        )
+        connection_failed = getattr(client, "connection_failed", None)
+        client_lock = getattr(client, "_lock", None)
+        if (
+            not callable(is_ready)
+            or not callable(maybe_connect)
+            or not callable(init_connect)
+            or not callable(poll_io)
+            or not callable(fire_completed)
+            or not callable(connection_failed)
+            or client_lock is None
+        ):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+        while True:
+            cls._set_remaining_request_timeout(
+                consumer,
+                deadline_monotonic,
+            )
+            if is_ready(node_id, metadata_priority=False):
+                return True
+            if connection_failed(node_id):
+                from kafka.errors import KafkaConnectionError
+
+                recorded_failure = connection_trace.recorded_failure()
+                raise recorded_failure or KafkaConnectionError()
+            try:
+                timeout_ms = cls._remaining_kafka_timeout_ms(
+                    deadline_monotonic
+                )
+            except DtsConfigurationError as exc:
+                raise KafkaTimeoutError() from exc
+            # KafkaClient.poll() also invokes _maybe_refresh_metadata(). Using
+            # it here would silently fold a Metadata request into the
+            # bootstrap/coordinator authentication phase and make the stage
+            # log misleading. Drive only the pinned client's connection state
+            # machine and socket selector. The explicit topic_metadata stage
+            # below owns the initial configured-topic Metadata request; later
+            # coordinator/offset retries may still refresh stale metadata.
+            with client_lock:
+                if getattr(client, "_closed", False):
+                    raise DtsConfigurationError(
+                        "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+                    )
+                maybe_connect(node_id, wakeup=False)
+                init_connect(node_id)
+                if not is_ready(node_id, metadata_priority=False):
+                    poll_io(timeout_ms / 1000)
+            fire_completed()
+            if connection_failed(node_id):
+                from kafka.errors import KafkaConnectionError
+
+                recorded_failure = connection_trace.recorded_failure()
+                raise recorded_failure or KafkaConnectionError()
+            if monotonic() >= deadline_monotonic:
+                raise KafkaTimeoutError()
+            if is_ready(node_id, metadata_priority=False):
+                return False
+
+    @classmethod
+    def _request_topic_metadata(
+        cls,
+        consumer: Any,
+        topic_partition: Any,
+        deadline_monotonic: float,
+    ) -> int:
+        try:
+            from kafka.errors import KafkaTimeoutError
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise DtsConfigurationError(
+                "KAFKA_PYTHON_DEPENDENCY_REQUIRED"
+            ) from exc
+        client = getattr(consumer, "_client", None)
+        set_topics = getattr(client, "set_topics", None)
+        poll = getattr(client, "poll", None)
+        if not callable(set_topics) or not callable(poll):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+        cluster = getattr(client, "cluster", None)
+        brokers = getattr(cluster, "brokers", None)
+        if not callable(brokers):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+        cls._set_remaining_request_timeout(consumer, deadline_monotonic)
+        future = set_topics([topic_partition.topic])
+        timeout_ms = cls._remaining_kafka_timeout_ms(deadline_monotonic)
+        poll(future=future, timeout_ms=timeout_ms)
+        if not getattr(future, "is_done", False):
+            raise KafkaTimeoutError()
+        if callable(getattr(future, "failed", None)) and future.failed():
+            exception = getattr(future, "exception", None)
+            if isinstance(exception, BaseException):
+                raise exception
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+        return len(tuple(brokers()))
+
+    @staticmethod
+    def _require_configured_partition(
+        consumer: Any,
+        topic_partition: Any,
+    ) -> int:
+        try:
+            from kafka.errors import UnknownTopicOrPartitionError
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise DtsConfigurationError(
+                "KAFKA_PYTHON_DEPENDENCY_REQUIRED"
+            ) from exc
+        client = getattr(consumer, "_client", None)
+        cluster = getattr(client, "cluster", None)
+        partitions_for_topic = getattr(cluster, "partitions_for_topic", None)
+        if not callable(partitions_for_topic):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+        partitions = partitions_for_topic(topic_partition.topic)
+        if partitions is None or topic_partition.partition not in partitions:
+            raise UnknownTopicOrPartitionError()
+        return len(partitions)
+
+    @classmethod
+    def _require_group_coordinator(
+        cls,
+        consumer: Any,
+        deadline_monotonic: float,
+    ) -> None:
+        try:
+            from kafka.errors import KafkaTimeoutError
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise DtsConfigurationError(
+                "KAFKA_PYTHON_DEPENDENCY_REQUIRED"
+            ) from exc
+        coordinator = getattr(consumer, "_coordinator", None)
+        ensure_ready = getattr(coordinator, "ensure_coordinator_ready", None)
+        if not callable(ensure_ready):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+            )
+        cls._set_remaining_request_timeout(consumer, deadline_monotonic)
+        timeout_ms = cls._remaining_kafka_timeout_ms(deadline_monotonic)
+        if not ensure_ready(timeout_ms=timeout_ms):
+            raise KafkaTimeoutError()
 
     def _resolve_initial_offset(
         self,
@@ -1905,7 +2469,10 @@ class DtsKafkaConsumer:
         topic_partition: Any,
         *,
         deadline_monotonic: float | None = None,
-        phase_callback: Callable[[dict[str, int | str]], None] | None = None,
+        phase_callback: Callable[
+            [dict[str, bool | int | str]], None
+        ]
+        | None = None,
     ) -> int:
         deadline = (
             monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
@@ -1914,11 +2481,15 @@ class DtsKafkaConsumer:
         )
         committed = _run_kafka_startup_phase(
             phase_callback,
-            "committed",
+            "offset_fetch",
             lambda: consumer.committed(
                 topic_partition,
                 timeout_ms=self._remaining_kafka_timeout_ms(deadline),
             ),
+            request_type="OffsetFetch",
+            success_details=lambda result: {
+                "committed_offset_present": result is not None,
+            },
         )
         committed_offset = None
         if committed is not None:
@@ -1958,6 +2529,7 @@ class DtsKafkaConsumer:
                         {topic_partition: self.settings.start_timestamp_seconds},
                     )
                 ),
+                request_type="ListOffsetsTimestamp",
             )
             resolved = offsets.get(topic_partition)
             if resolved is None:
@@ -1984,12 +2556,14 @@ class DtsKafkaConsumer:
             phase_callback,
             "beginning_offsets",
             lambda: consumer.beginning_offsets([topic_partition]),
+            request_type="ListOffsetsEarliest",
         )
         self._set_remaining_request_timeout(consumer, deadline)
         end_offsets = _run_kafka_startup_phase(
             phase_callback,
             "end_offsets",
             lambda: consumer.end_offsets([topic_partition]),
+            request_type="ListOffsetsLatest",
         )
         if (
             topic_partition not in beginning_offsets
@@ -2028,9 +2602,18 @@ class DtsKafkaConsumer:
         deadline_monotonic: float,
     ) -> None:
         timeout_ms = cls._remaining_kafka_timeout_ms(deadline_monotonic)
-        config = getattr(consumer, "config", None)
-        if isinstance(config, dict):
-            config["request_timeout_ms"] = timeout_ms
+        configs: list[Any] = [getattr(consumer, "config", None)]
+        client = getattr(consumer, "_client", None)
+        configs.append(getattr(client, "config", None))
+        connections = getattr(client, "_conns", None)
+        if isinstance(connections, Mapping):
+            configs.extend(
+                getattr(connection, "config", None)
+                for connection in connections.values()
+            )
+        for config in configs:
+            if isinstance(config, dict):
+                config["request_timeout_ms"] = timeout_ms
 
     @classmethod
     def _with_remaining_request_timeout(

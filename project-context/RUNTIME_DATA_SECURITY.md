@@ -40,7 +40,10 @@ DTS 启动探针按 `DB → TCP → Kafka` 执行：先使用运行时数据库�
 Catalog/ACL 检查，再完成 bootstrap DNS 解析并从当前 Pod 对解析结果做无凭据 TCP 连接，最后
 使用 SASL 密钥校验 Kafka。5 秒 TCP 连接预算不覆盖前置 DNS 解析。日志/readiness 只允许安全摘要
 和稳定错误码，不输出密码、账号、Broker 解析地址或底层驱动原文。TCP 探针不收发应用数据，
-后续 Kafka 探针只读取 metadata/offset，不消费业务消息、不产生目标写入、不推进消费组位点；Pod Ready
+后续 Kafka 探针按 bootstrap 认证、Metadata、partition、advertised broker 认证、coordinator 与
+offset 请求分段；Metadata 与 `kcat -L -t <topic>` 使用同类单 Topic Metadata API 语义，但不创建
+带密码的 kcat 配置文件。探针只读取
+metadata/offset，不消费业务消息、不产生目标写入、不推进消费组位点；Pod Ready
 只是基础设施和契约可达证据，不是 CDC 或业务完成证据。国内进程在 Kafka 探针成功后、ready 前
 只幂等登记一条不含密钥或学生标识的 HMAC fingerprint 契约行。
 
