@@ -385,8 +385,8 @@ SASL 协议、partition 和有界超时），再按实际位点路径输出不�
 `advertised_broker_auth`、`group_coordinator`、`coordinator_auth`、`offset_fetch`，并按实际位点
 路径继续输出 `offsets_for_times`、`beginning_offsets`、`end_offsets`，均带 `begin/ok/fail`。
 `topic_metadata` 是在失败 Pod 同一网络命名空间中执行的、与 `kcat -L -t <topic>` 同类语义的
-单 Topic Metadata 请求，随后由 `partition_check` 验证配置 partition 0；实现复用正式 kafka-python 客户端，不创建含密码的 kcat 配置
-文件。`consumer_open` 会对 bootstrap 连接真实发送 `ApiVersions` 自动协商客户端兼容协议，再完成
+单 Topic Metadata 请求，随后由 `partition_check` 验证配置 partition 0。客户端保留真实 `ApiVersions` 自动协商，但仅将 Metadata API（key 3）上限限定为 v5，以对齐已成功消费的官方 Java 1.0 诊断客户端的 Metadata 版本边界；其他 Kafka API 仍按自动协商结果选择。`kafka_client_config` 输出 `configured_metadata_api_max_version=5` 与 `metadata_api_version_policy=auto_negotiated_cap`，`topic_metadata` 在完成版本选择后输出服务端声明的 min/max 与实际版本。实现复用正式 kafka-python 客户端，不创建含密码的 kcat 配置
+文件。该 v5 cap 只对齐已定位的 Metadata 路径，是否全链路兼容以发布后 partition/coordinator/offset/Fetch 阶段日志为准。`consumer_open` 会对 bootstrap 连接真实发送 `ApiVersions` 自动协商客户端兼容协议，再完成
 该连接的 SASL；日志中的协商结果只是 kafka-python 选择的兼容版本，不是 DTS Broker 精确版本。
 后续 `bootstrap_auth` 复核已认证连接，通常显示连接复用。协议分段适配器只接受锁定的
 kafka-python 2.2.20，依赖漂移会在发送 Kafka 凭据或协议请求前失败关闭。

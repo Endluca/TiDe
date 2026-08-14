@@ -16,6 +16,7 @@ from fastavro import schemaless_writer
 
 from app.dts_source_consumer import (
     DOMESTIC_STUDENT_HMAC_DOMAIN,
+    KAFKA_METADATA_API_MAX_VERSION,
     DtsConfigurationError,
     DtsConsumerSettings,
     DtsEventProcessor,
@@ -2015,6 +2016,14 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
     )
     assert client_probe["api_version"] == "auto"
     assert client_probe["protocol_version_mode"] == "auto_negotiation"
+    assert (
+        client_probe["configured_metadata_api_max_version"]
+        == KAFKA_METADATA_API_MAX_VERSION
+    )
+    assert (
+        client_probe["metadata_api_version_policy"]
+        == "auto_negotiated_cap"
+    )
     assert client_probe["configured_request_timeout_ms"] == 15_000
     assert (
         client_probe["configured_api_version_auto_timeout_ms"]
@@ -3256,6 +3265,7 @@ def test_kafka_library_logs_never_reach_the_root_logger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import kafka
+    from kafka.protocol.metadata import MetadataRequest
 
     _allow_fake_constructor_state_machine(monkeypatch)
 
@@ -3323,6 +3333,11 @@ def test_kafka_library_logs_never_reach_the_root_logger(
     )
     assert captured_kwargs["enable_auto_commit"] is False
     assert isinstance(captured_kwargs["kafka_client"], type)
+    opened._client._api_versions = {3: (0, 7)}
+    assert (
+        opened._client.api_version(MetadataRequest)
+        == KAFKA_METADATA_API_MAX_VERSION
+    )
 
 
 def test_open_consumer_wires_safe_metadata_transport_milestones(
@@ -3330,7 +3345,10 @@ def test_open_consumer_wires_safe_metadata_transport_milestones(
 ) -> None:
     import kafka
     from kafka.client_async import KafkaClient
+    from kafka.errors import IncompatibleBrokerVersion
     from kafka.future import Future
+    from kafka.protocol.fetch import FetchRequest
+    from kafka.protocol.metadata import MetadataRequest
 
     _allow_fake_constructor_state_machine(monkeypatch)
     pending = Future()
@@ -3362,11 +3380,16 @@ def test_open_consumer_wires_safe_metadata_transport_milestones(
     opened = consumer._open_consumer(metadata_request_trace=trace)
     client = opened._client
     connection = client._conns["private-bootstrap-node"]
+    client._api_versions = {1: (0, 12), 3: (0, 7)}
 
     trace.begin()
+    assert client.api_version(MetadataRequest, max_version=4) == 4
+    assert client.api_version(FetchRequest, max_version=11) == 11
+    selected_metadata_version = client.api_version(MetadataRequest)
+    assert selected_metadata_version == KAFKA_METADATA_API_MAX_VERSION
     request_future = client.send(
         "private-bootstrap-node",
-        SimpleNamespace(API_KEY=3, API_VERSION=1),
+        SimpleNamespace(API_KEY=3, API_VERSION=selected_metadata_version),
     )
     connection._send_bytes(b"opaque-metadata-frame")
     request_future.success(
@@ -3375,11 +3398,22 @@ def test_open_consumer_wires_safe_metadata_transport_milestones(
 
     summary = trace.safe_summary()
     assert summary["api_key"] == 3
-    assert summary["api_version"] == 1
+    assert summary["api_version"] == KAFKA_METADATA_API_MAX_VERSION
+    assert summary["configured_metadata_api_max_version"] == 5
+    assert summary["broker_advertised_metadata_min_version"] == 0
+    assert summary["broker_advertised_metadata_max_version"] == 7
+    assert summary["effective_metadata_api_version"] == 5
     assert summary["request_queued"] is True
     assert summary["write_attempted"] is True
     assert summary["response_received"] is True
     assert "private" not in json.dumps(summary)
+
+    client._api_versions[3] = (0, 4)
+    assert client.api_version(MetadataRequest) == 4
+
+    client._api_versions[3] = (6, 7)
+    with pytest.raises(IncompatibleBrokerVersion):
+        client.api_version(MetadataRequest)
 
 
 def test_kafka_startup_probe_classifies_consumer_construction_timeout(

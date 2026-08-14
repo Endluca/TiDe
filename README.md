@@ -182,7 +182,7 @@ API 自动协商模式、SASL 协议、partition 和有界超时），再依次�
 `topic_metadata`、`partition_check`、`advertised_broker_auth`、`group_coordinator`、
 `coordinator_auth`、`offset_fetch`，并按实际位点路径继续输出 `offsets_for_times`、
 `beginning_offsets`、`end_offsets` 的固定 `begin/ok/fail` 阶段。`topic_metadata` 会真实发送与
-`kcat -L -t <topic>` 同类语义的单 Topic Metadata 请求，随后由 `partition_check` 验证 partition 0；整个过程不引入第二套客户端或带密码
+`kcat -L -t <topic>` 同类语义的单 Topic Metadata 请求，随后由 `partition_check` 验证 partition 0；该请求保留真实 `ApiVersions` 自动协商，但仅将 Metadata API（key 3）上限收敛为 v5，以对齐已能成功消费的官方 Java 1.0 诊断客户端的 Metadata 版本边界；其他 Kafka API 不降级。`kafka_client_config` 会读回该策略，`topic_metadata` 在完成版本选择后记录服务端声明的 Metadata 版本范围与实际选用版本。整个过程不引入第二套客户端或带密码
 配置文件。`consumer_open` 会先对 bootstrap 连接真实发送 `ApiVersions` 自动协商客户端兼容协议，
 再完成该连接的 SASL；日志只把 kafka-python 推断结果记为“协议兼容版本”，不冒充 DTS Broker 的
 精确版本。阿里云文档中的 `0.11–2.7` 是受支持的 Kafka **客户端**版本范围，不是要求调用方固定
@@ -202,7 +202,7 @@ Broker API 2.7；实现因此让每个 fresh consumer 都重新协商。参见[�
 `TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` 与
 `TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` 在 `1–120000ms` 内调整。整轮共享 deadline
 取两者较大值；每个 Kafka 请求取“自身配置上限”和“当时整轮剩余预算”的较小值，因此较晚阶段
-可能短于配置值。脱敏客户端摘要明确输出三个 `configured_*` 上限，每条 phase 再输出当时的
+可能短于配置值。脱敏客户端摘要明确输出三个超时/预算 `configured_*` 上限与独立的 Metadata 版本上限，每条 phase 再输出当时的
 `remaining_probe_budget_ms` 以及两个 `effective_*` 值；超时失败时动态值安全收敛为 `0`。
 这只是 kafka-python 阻塞 SASL/DNS 调用遵守超时的协作式预算，不是可强制终止进程的绝对
 wall-clock 上限；正式消费、位点续跑、commit 和 heartbeat 继续固定使用 15 秒，不会随诊断值放大。

@@ -177,6 +177,7 @@ SCHEMA_BUNDLE_PATH = Path(__file__).with_name("dts_record_schemas.json")
 KAFKA_REQUEST_TIMEOUT_MS = 15_000
 KAFKA_STARTUP_TIMEOUT_MAX_MS = 120_000
 KAFKA_CLOSE_TIMEOUT_MS = 1_000
+KAFKA_METADATA_API_MAX_VERSION = 5
 KAFKA_CLIENT_DISTRIBUTION = "kafka-python"
 KAFKA_CLIENT_PINNED_VERSION = "2.2.20"
 BROKER_TCP_PROBE_TIMEOUT_SECONDS = 5.0
@@ -1169,6 +1170,9 @@ class _KafkaMetadataRequestTrace:
             self._connection = None
             self._future = None
             self._summary = {
+                "configured_metadata_api_max_version": (
+                    KAFKA_METADATA_API_MAX_VERSION
+                ),
                 "request_queued": False,
                 "write_attempted": False,
                 "response_received": False,
@@ -1220,6 +1224,35 @@ class _KafkaMetadataRequestTrace:
             future.add_callback(response_received)
         except Exception:
             pass
+
+    def record_version_selection(
+        self,
+        *,
+        broker_min_version: int,
+        broker_max_version: int,
+        effective_version: int,
+    ) -> None:
+        if not all(
+            type(value) is int and value >= 0
+            for value in (
+                broker_min_version,
+                broker_max_version,
+                effective_version,
+            )
+        ):
+            return
+        with self._lock:
+            if not self._active:
+                return
+            self._summary.update(
+                broker_advertised_metadata_min_version=(
+                    broker_min_version
+                ),
+                broker_advertised_metadata_max_version=(
+                    broker_max_version
+                ),
+                effective_metadata_api_version=effective_version,
+            )
 
     def record_write_attempt(self, connection: Any) -> None:
         with self._lock:
@@ -1428,6 +1461,10 @@ def _safe_kafka_client_probe(
         "client_version": _kafka_client_version(),
         "api_version": "auto",
         "protocol_version_mode": "auto_negotiation",
+        "configured_metadata_api_max_version": (
+            KAFKA_METADATA_API_MAX_VERSION
+        ),
+        "metadata_api_version_policy": "auto_negotiated_cap",
         **_configured_kafka_startup_timeout_summary(settings),
         "security_protocol": "SASL_PLAINTEXT",
         "sasl_mechanism": "PLAIN",
@@ -2522,6 +2559,51 @@ class DtsKafkaConsumer:
                     # request explicit in the topic_metadata phase.
                     return float("inf")
                 return super()._maybe_refresh_metadata(wakeup=wakeup)
+
+            def api_version(
+                self,
+                operation: Any,
+                max_version: int | None = None,
+            ) -> int:
+                try:
+                    api_key = operation[0].API_KEY
+                except Exception:
+                    return super().api_version(
+                        operation,
+                        max_version=max_version,
+                    )
+                if api_key != 3:
+                    return super().api_version(
+                        operation,
+                        max_version=max_version,
+                    )
+
+                # The official DTS diagnostic client embeds Kafka 1.0.0,
+                # whose Metadata ceiling is v5. DTS currently advertises v7
+                # to kafka-python but closes that request with FIN. Preserve
+                # real ApiVersions negotiation and constrain only Metadata.
+                metadata_max_version = KAFKA_METADATA_API_MAX_VERSION
+                if max_version is not None:
+                    metadata_max_version = min(
+                        metadata_max_version,
+                        max_version,
+                    )
+                selected_version = super().api_version(
+                    operation,
+                    max_version=metadata_max_version,
+                )
+                try:
+                    broker_min_version, broker_max_version = (
+                        self.get_api_versions()[api_key]
+                    )
+                except Exception:
+                    return selected_version
+                diagnostic_metadata_trace.record_version_selection(
+                    broker_min_version=broker_min_version,
+                    broker_max_version=broker_max_version,
+                    effective_version=selected_version,
+                )
+                return selected_version
 
             def send(
                 self,
