@@ -13,7 +13,7 @@ test("always exposes the two course ability tags on the home page", () => {
   assert.deepEqual(
     tags.map((tag) => [tag.taskId, tag.label, tag.state]),
     [
-      ["cocos-training", "Cocos 课程准备", "syncing"],
+      ["cocos-training", "Global Communicator 课程准备", "syncing"],
       ["set-fundamentals", "SET 课程准备", "syncing"],
     ],
   );

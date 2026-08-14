@@ -82,7 +82,7 @@ describe('current task catalog locale fields', () => {
       },
       {
         code: 'G08',
-        title: 'Cocos Course Training',
+        title: 'Global Communicator Training',
         score: 5,
         stage: 'ADVANCE',
         sequence: 8,

@@ -90,7 +90,7 @@ test("English results use stable frontend copy instead of backend Chinese", () =
 
   assert.equal(
     result.teacherMessage,
-    "Some items need adjustment. Review the results, then retake the photo.",
+    "Adjust the highlighted items, then retake the photo. Review the examples provided for each item.",
   );
   assert.equal(result.checks[0].message, "The camera angle needs adjustment.");
   assert.equal(result.checks[0].suggestion, "Adjust the camera angle.");

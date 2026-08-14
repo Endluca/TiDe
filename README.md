@@ -109,7 +109,7 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码迁移 head 为 public `20260813_60_dom_privacy` 与 teacher
+- 当前代码迁移 head 为 public `20260814_61_teacher_copy` 与 teacher
   `0041_crm_sso_hybrid`，最终 teacher canonical 账本为 36 条，其中
   `20260811_51_g01_tesol_only` / `0033_g01_tesol_only`
   将 G01 收窄为 TESOL-only，`20260811_54_g04_remove_device_check` /
@@ -119,7 +119,8 @@ Tide_teachers_camp/
   追加个性化环境拍照，`20260811_57_g02_document` / 0039 / 0040 发布 G02
   原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 汇合
   release 内容链与 ACL/DTS 分支，public 60 再增加海外目标库的国内学生隐私
-  fail-closed Trigger。
+  fail-closed Trigger，public 61 只原位更新经审核的教师英文文案，不修改任务身份、分值、
+  assignment 或状态。
   公司 TEST 库 `tit_growth_test_v2` 已于 2026-08-11 按七阶段顺序受控升级至
   public `20260812_56_lean_roles` 与 teacher `0037_g04_remove_device_check`，
   teacher 为精确 32 条 canonical 账本；升级保留 public
@@ -253,14 +254,14 @@ docker compose -f docker-compose.production.yml up -d api score-settlement sourc
 [联合部署说明](deploy/combined/README.md) 和
 [联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
 独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
-联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60` 完成跨 Schema 迁移和最终隐私加固，最终到达
-public `20260813_60_dom_privacy` 和教师端 `0041_crm_sso_hybrid`，并同时通过
+联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61` 完成跨 Schema 迁移、隐私加固与文案更新，最终到达
+public `20260814_61_teacher_copy` 和教师端 `0041_crm_sso_hybrid`，并同时通过
 固定提交源码中的精确 `G01–G09` 标题/分值预检和目标数据库契约探针。
 其中 public 54 阶段包含 rev51 G01 TESOL-only，teacher 37 阶段包含 0033 G01 规则迁移，
 public 55 收敛教师源字段，release public 56 / teacher 0038 追加个性化拍照，
 release public 57 / teacher 0039–0040 发布 G02 原生文档，teacher 0041 增加 CRM SSO；
 public 59 合并 release 内容链与 ACL/DTS 分支，将运行权限统一为最终表级 ACL，并用
-Trigger/受限视图保留业务所有权；public 60 在其后强制国内学生 HMAC token 的数据库边界。
+Trigger/受限视图保留业务所有权；public 60 在其后强制国内学生 HMAC token 的数据库边界，public 61 只更新 G01、G08、Lesson Memo 和 Attendance 的经审核文案。
 教师端未到 0041、最终 canonical 账本不是精确 36 条、目录缺项或语义错误都会失败关闭；在 public 47 及之后的空库直接
 回放 teacher 历史链同样会失败关闭。即使门禁通过，也不能把“已有 Compose”解释为
 已完成生产切流。

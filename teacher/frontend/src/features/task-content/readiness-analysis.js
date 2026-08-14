@@ -62,7 +62,7 @@ function stableTeacherMessage(status, backendStatus, backendDecision, c) {
   }
   if (status === "changes_requested") {
     return c(
-      "Some items need adjustment. Review the results, then retake the photo.",
+      "Adjust the highlighted items, then retake the photo. Review the examples provided for each item.",
       "部分项目需要调整，请查看检测结果后重新拍照。",
     );
   }

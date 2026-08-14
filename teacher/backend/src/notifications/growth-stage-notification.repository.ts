@@ -103,7 +103,7 @@ export class GrowthStageNotificationRepository {
             upserted.teacher_id,
             'GROWTH_STAGE_AVAILABLE',
             'Your next growth stage is ready',
-            'A new set of required tasks is now available in your growth path. Complete them in the order that works best for you.',
+            'A new set of required tasks is now available in your growth path. Work through them in the order that works best for you.',
             'TASKS',
             '/path',
             'growth-stage-available:' || upserted.teacher_id || ':' ||

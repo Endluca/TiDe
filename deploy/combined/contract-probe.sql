@@ -87,14 +87,14 @@ BEGIN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
 
-    -- Final public 60 must include the reviewed release content through
+    -- Final public 61 must include the reviewed release content through
     -- 20260811_57_g02_document, the public 59 ACL/DTS merge, and the
-    -- domestic-student privacy boundary; concrete rows and guards are checked
-    -- below.
+    -- domestic-student privacy boundary and the reviewed teacher-copy update;
+    -- concrete rows and guards are checked below.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260813_60_dom_privacy' THEN
+    ) IS DISTINCT FROM '20260814_61_teacher_copy' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -274,7 +274,7 @@ BEGIN
            'TTP Orientation',
            'ME Culture & PARSNIP',
            'Reliability Training',
-           'Cocos Course Training',
+           'Global Communicator Training',
            'SET Teaching Fundamentals'
        ]::text[]
        OR actual_scores IS DISTINCT FROM ARRAY[3,2,2,3,3,4,3,5,5]::integer[]
@@ -296,12 +296,64 @@ BEGIN
               'Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.'
           AND payload->>'completion_standard' =
               'TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.'
+          AND payload->>'benefit' =
+              'Your profile and required TESOL learning evidence are now complete.'
           AND position('Self-intro' IN payload->>'why_template') = 0
           AND position('Self-intro' IN payload->>'how_summary') = 0
           AND position('Self-intro' IN payload->>'completion_standard') = 0
     ) THEN
         RAISE EXCEPTION
             'stable G01:v1 row is not the reviewed TESOL-only catalog copy';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.task_templates
+        WHERE row_id = 'G09:v1'
+          AND template_id = 'G08'
+          AND template_version = 1
+          AND status = 'PUBLISHED'
+          AND payload->>'template_id' = 'G08'
+          AND payload->>'ops_name_zh' = 'Global Communicator 培训'
+          AND payload->>'title' = 'Global Communicator Training'
+          AND payload->>'why_template' =
+              'Learn the core Global Communicator teaching flow.'
+          AND payload->>'benefit' =
+              'You can now confidently prepare for a Global Communicator lesson.'
+          AND payload->>'score_type' = 'FIXED'
+          AND (payload->>'score_value')::numeric = 5
+    ) THEN
+        RAISE EXCEPTION
+            'stable G09:v1 row for current G08 does not expose the reviewed Global Communicator copy';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM public.task_templates
+        WHERE row_id = 'P-REL-MEMO:v1'
+          AND template_id = 'P-REL-MEMO'
+          AND template_version = 1
+          AND status = 'PUBLISHED'
+          AND payload->>'why_template' =
+              'A completed lesson was recorded with a blank Lesson Memo.'
+          AND payload->>'benefit' =
+              'This task carries no points. It helps strengthen your Lesson Memo reliability.'
+          AND payload->>'score_type' = 'ZERO'
+          AND (payload->>'score_value')::numeric = 0
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM public.task_templates
+        WHERE row_id = 'P-REL-ATTENDANCE:v1'
+          AND template_id = 'P-REL-ATTENDANCE'
+          AND template_version = 1
+          AND status = 'PUBLISHED'
+          AND payload->>'why_template' =
+              'A lesson record shows a reliability issue, such as an absence, late arrival, or early leave.'
+          AND payload->>'score_type' = 'ZERO'
+          AND (payload->>'score_value')::numeric = 0
+    ) THEN
+        RAISE EXCEPTION
+            'stable reliability templates do not expose the reviewed teacher copy';
     END IF;
 
     IF NOT EXISTS (

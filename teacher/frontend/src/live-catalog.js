@@ -8,7 +8,7 @@ export const fixedTaskCatalog = [
   { taskCode: "G05", id: "ttp-orientation", name: "TTP Orientation", stage: "Day 8-14" },
   { taskCode: "G06", id: "me-culture", name: "ME Culture & PARSNIP", stage: "Day 8-14" },
   { taskCode: "G07", id: "reliability-training", name: "Reliability Training", stage: "Day 8-14" },
-  { taskCode: "G08", id: "cocos-training", name: "Cocos Course Training", stage: "Day 15-30" },
+  { taskCode: "G08", id: "cocos-training", name: "Global Communicator Training", stage: "Day 15-30" },
   { taskCode: "G09", id: "set-fundamentals", name: "SET Teaching Fundamentals", stage: "Day 15-30" },
 ];
 
@@ -19,7 +19,7 @@ export const stageDescriptions = [
     releaseDay: 1,
     number: "01",
     title: "Ready for your first lessons",
-    description: "Set up the essentials and build a calm pre-class routine.",
+    description: "Set up the essentials and build a calm, consistent pre-class routine.",
   },
   {
     id: "build-rhythm",

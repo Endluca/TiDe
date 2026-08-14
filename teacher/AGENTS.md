@@ -29,7 +29,7 @@
 - 任务详情四个摘要区域不得混用本地文案：Why 读取共享 `task_assignments.why` 并继续展示 `evidence_snapshot` 的教师安全投影；How、完成标准和完成收益分别读取 assignment 所引用共享模板的 `payload.how_summary / completion_standard / benefit`。本地执行步骤只用于任务操作区，不得覆盖这四个摘要区域。
 - 教师端积分总览与逐课明细只读 `teacher_scorecard_current / teacher_lesson_score_current`；不从原始积分表、课程事实或评分配置自行计算，不保留本地积分兜底。
 - 世文任务触发中心不向教师端发送 G 任务，只读取共享表中合法 `COMPLETED`，并向 `score_entries` 幂等结分。
-- 当前固定任务目录以世文库为准：`G02 platform-policies`、`G03 student-types`、`G04 lesson-preparation`、`G05 ttp-orientation`、`G06 me-culture`、`G07 reliability-training`、`G08 cocos-training`、`G09 set-fundamentals`；重排前旧 `G05` 以 `G00` 只读保留，`free-trial-training` 不在当前必修范围。当前确认的 13 类个性化改善任务由世文任务触发中心根据真实业务数据创建 assignment，教师端不得默认向所有老师展示全部模板。
+- 当前固定任务目录以世文库为准：`G02 platform-policies`、`G03 student-types`、`G04 lesson-preparation`、`G05 ttp-orientation`、`G06 me-culture`、`G07 reliability-training`、`G08 cocos-training`（教师外显名称为 Global Communicator）、`G09 set-fundamentals`；重排前旧 `G05` 以 `G00` 只读保留，`free-trial-training` 不在当前必修范围。当前确认的 13 类个性化改善任务由世文任务触发中心根据真实业务数据创建 assignment，教师端不得默认向所有老师展示全部模板。
 - `public.notifications` 只负责世文业务文字提醒，不负责个性化任务分配或到期提醒，也不保证携带 `task_id`。TIDE 只读个性化 assignment 的 `assigned_at / status / due_at` 和三个 `timezone_*` 时区证据字段，自行将新任务与到期提醒写入 `tide.system_notifications`；不得写 `public.notifications`。
 - 不再建设任务 HTTP 下发／回传接口，不再保留第二套跨系统任务副本。阔知查询快照、TIDE 本地清单明细、图片和文件等过程数据由教师端业务表持有；阔知视频心跳和答案不复制到 TIDE。
 

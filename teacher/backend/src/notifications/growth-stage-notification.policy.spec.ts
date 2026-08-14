@@ -6,7 +6,7 @@ describe('growth stage notification policy', () => {
       teacherId: 'teacher-001',
       typeCode: 'GROWTH_STAGE_AVAILABLE',
       title: 'Your next growth stage is ready',
-      body: 'A new set of required tasks is now available in your growth path. Complete them in the order that works best for you.',
+      body: 'A new set of required tasks is now available in your growth path. Work through them in the order that works best for you.',
       actionType: 'TASKS',
       actionTarget: '/path',
       dedupeKey: 'growth-stage-available:teacher-001:2',

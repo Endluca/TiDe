@@ -30,6 +30,8 @@ def test_lesson_memo_and_attendance_signals_are_exact() -> None:
     assert [(item.task_code, item.title) for item in memo] == [
         ("P-REL-MEMO", "Missing Lesson Memo")
     ]
+    assert "blank Lesson Memo" in memo[0].why
+    assert "unfilled Lesson Memo" not in memo[0].why
 
     memo_with_late = evaluate_lesson(
         {"课程id": 11, "缺席原因明细": "Unfilled Lesson Memo", "迟到": 1},

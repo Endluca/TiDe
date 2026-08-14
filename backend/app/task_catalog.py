@@ -56,7 +56,16 @@ MANDATORY_TASKS = [
         None,
     ),
     ("G07", "可靠性培训", "Reliability Training", 3, "DAY_8_14", "P1", 14, None),
-    ("G08", "Cocos 课程培训", "Cocos Course Training", 5, "DAY_15_30", "P2", 30, None),
+    (
+        "G08",
+        "Global Communicator 培训",
+        "Global Communicator Training",
+        5,
+        "DAY_15_30",
+        "P2",
+        30,
+        None,
+    ),
     (
         "G09",
         "SET 教学基础",
@@ -81,7 +90,7 @@ TASK_COPY: dict[str, tuple[str, str, str, str]] = {
         "Complete the required TESOL status and learning evidence.",
         "Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.",
         "TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.",
-        "Your profile and required TESOL learning evidence are complete.",
+        "Your profile and required TESOL learning evidence are now complete.",
     ),
     "G02": (
         "Learn the essential classroom and account-safety rules.",
@@ -120,10 +129,10 @@ TASK_COPY: dict[str, tuple[str, str, str, str]] = {
         "You have a clear reliability routine.",
     ),
     "G08": (
-        "Learn the core Cocos teaching flow.",
+        "Learn the core Global Communicator teaching flow.",
         "Complete the configured in-platform videos and quiz.",
         "All configured videos and quiz requirements pass.",
-        "You can prepare for a Cocos class.",
+        "You can now confidently prepare for a Global Communicator lesson.",
     ),
     "G09": (
         "Learn the fundamentals of SET teaching.",
@@ -132,13 +141,13 @@ TASK_COPY: dict[str, tuple[str, str, str, str]] = {
         "You understand the SET teaching foundation.",
     ),
     "P-REL-MEMO": (
-        "A completed lesson was recorded with an unfilled Lesson Memo.",
+        "A completed lesson was recorded with a blank Lesson Memo.",
         "Complete the Lesson Memo guidance and review how to submit an accurate memo after every lesson.",
         "The teacher app marks the assigned Lesson Memo learning activity as completed.",
-        "This task carries no points. It closes the identified Lesson Memo reliability gap.",
+        "This task carries no points. It helps strengthen your Lesson Memo reliability.",
     ),
     "P-REL-ATTENDANCE": (
-        "A lesson record contains a reliability issue such as absence, late arrival or early leave.",
+        "A lesson record shows a reliability issue, such as an absence, late arrival, or early leave.",
         "Complete the assigned attendance training and pass its quiz.",
         "The teacher app marks the training and quiz as completed.",
         "This task carries no points. It addresses the specific attendance issue shown in the task reason.",

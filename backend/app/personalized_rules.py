@@ -111,7 +111,7 @@ def evaluate_lesson(
                 title=personalized_task_title("P-REL-MEMO"),
                 priority="P1",
                 why=(
-                    "This completed lesson was recorded with an unfilled Lesson Memo. "
+                    "This completed lesson was recorded with a blank Lesson Memo. "
                     "Complete the Lesson Memo learning activity."
                     + concurrent_note
                 ),

@@ -52,7 +52,7 @@
 - 注册时老师填写公司邮箱、`teacher_id` 和密码；只有世文 `teachers` 中存在该 `teacher_id` 才允许注册。一个邮箱只能绑定一个 `teacher_id`，一个 `teacher_id` 也只能绑定一个邮箱；一期不增加邀请码或第二身份因子。
 - Help 先提供“问 AI／提交工单”分流；AI FAQ 仍只接收文字，人工工单可提交文字和最多 3 张截图。
 - 两端不建设任务 HTTP 下发／回传接口，不保留第二套任务副本。
-- 一期固定任务目录以共享当前目录为准：G02 为 Platform Policies、G03 为 Student Types、G04 为 Lesson Preparation、G05 为 TTP、G06 为 ME Culture & PARSNIP、G07 为 Reliability Training、G08 为 Cocos、G09 为 SET；隐藏 G00 只读保留，Free Trial 仅作候选资料。教师端 13 类个性化改善任务已确认进入本期，但只展示任务触发中心根据真实数据已创建的 assignment。
+- 一期固定任务目录以共享当前目录为准：G02 为 Platform Policies、G03 为 Student Types、G04 为 Lesson Preparation、G05 为 TTP、G06 为 ME Culture & PARSNIP、G07 为 Reliability Training、G08 为 Global Communicator、G09 为 SET；隐藏 G00 只读保留，Free Trial 仅作候选资料。教师端 13 类个性化改善任务已确认进入本期，但只展示任务触发中心根据真实数据已创建的 assignment。
 - 产能成长最高 10 分，由世文内部在 `peak_slot_cnt >= 40` 首次达成时结算并永久锁定；它不是教师任务，也不读取 `S01–S05` 状态。
 - 教师端分数最高展示 200；世文内部积分仍按同一套规则持续线性累加，不因 100 分改变算法。
 - 100 分同时代表达到出营标准和通过试用期。
@@ -170,7 +170,7 @@
 | `G05` | TTP Orientation | 3 |
 | `G06` | ME Culture & PARSNIP | 4 |
 | `G07` | Reliability Training | 3 |
-| `G08` | Cocos Course Training | 5 |
+| `G08` | Global Communicator Training | 5 |
 | `G09` | SET Teaching Fundamentals | 5 |
 | 合计 |  | 30 |
 
@@ -478,7 +478,7 @@
 
 #### 5.2.6 其他模块
 
-- 课程能力标签：首页固定展示“Cocos 课程准备”和“SET 课程准备”，不新增标签字段，也不依赖外部标签回传。
+- 课程能力标签：首页固定展示“Global Communicator 课程准备”和“SET 课程准备”，不新增标签字段，也不依赖外部标签回传。
 - 标签状态直接读取对应必修任务：G08 / G09 为 `COMPLETED` 时显示“已获得”，其他有效未完成状态显示“待完成”；任务数据不可读时显示“状态同步中”，不得推断为未完成。
 - 消息提醒：展示未读数量和最近提醒，任务提醒可进入有效任务。
 - 帮助：先选择 AI FAQ 或提交工单；工单回复在 Messages 查看。
@@ -912,7 +912,7 @@
 ### 10.3 任务
 
 - [ ] 共享积分结构使用 `G01–G09` 和 30 分；教师端展示这 9 个任务。
-- [ ] G02 为 Platform Policies，G03 为 Student Types，G04 为首课准备，G05 为 TTP，G06 为 ME，G07 为 Reliability，G08 为 Cocos，G09 为 SET；隐藏 G00 和 Free Trial 不展示、不计入必修任务数和固定任务积分。
+- [ ] G02 为 Platform Policies，G03 为 Student Types，G04 为首课准备，G05 为 TTP，G06 为 ME，G07 为 Reliability，G08 为 Global Communicator，G09 为 SET；隐藏 G00 和 Free Trial 不展示、不计入必修任务数和固定任务积分。
 - [ ] 产能成长最高 10 分；世文在 `peak_slot_cnt >= 40` 首次达成时结算并永久锁定，不创建任务，也不读取 `S01–S05` 状态。
 - [ ] 当前只展示关联共享目录已发布模板的 `G01–G09`，以及任务触发中心已为当前老师创建的个性化 assignment；隐藏 G00 不展示。
 - [ ] Tasks 的必修任务区域按阶段顺序显示一个首要任务和一个次要任务。

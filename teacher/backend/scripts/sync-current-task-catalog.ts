@@ -91,9 +91,7 @@ const aiReviewRule = (input: {
       'image/png',
       'image/webp',
     ],
-    ...(input.reviewProfile
-      ? { reviewProfile: input.reviewProfile }
-      : {}),
+    ...(input.reviewProfile ? { reviewProfile: input.reviewProfile } : {}),
     systemPrompt:
       'You strictly review teacher-submitted evidence. Return JSON only with this exact shape: {"decision":"PASS|RETRY|ERROR","teacherReason":"teacher-safe concise message","confidenceSummary":{},"criteria":[{"criterionKey":"one configured key","result":"PASS|FAIL|UNKNOWN","teacherMessage":"teacher-safe message or null"}]}. Include every configured criterion exactly once. Never infer a pass from the mere presence of a person or object. Use UNKNOWN whenever the visual evidence is unclear. PASS only when every configured criterion is visibly and unambiguously PASS; any FAIL or UNKNOWN requires RETRY. Use ERROR only when the file cannot be assessed. Do not expose internal risk labels or private model reasoning.',
     userText: input.userText,
@@ -108,8 +106,7 @@ const environmentCriteria = [
   'dressing',
 ];
 
-const personalizedEnvironmentPhotoStepKey =
-  'p-fb-negative-environment-photo';
+const personalizedEnvironmentPhotoStepKey = 'p-fb-negative-environment-photo';
 const teachingEnvironmentReviewProfile = 'TEACHING_ENVIRONMENT_V1';
 const personalizedEnvironmentContentVersion =
   '2026-08-11-personalized-environment-photo-v1';
@@ -142,7 +139,8 @@ export const currentTaskCatalog: CatalogTask[] = [
       'Confirm TESOL, pass the assessment in Kuozhi, complete the Essay and submit the completion proof.',
     completionStandard:
       'TESOL is complete, the Kuozhi assessment reaches 100% progress, the Essay is complete and the completion proof is submitted.',
-    benefit: 'Your profile and required TESOL learning evidence are complete.',
+    benefit:
+      'Your profile and required TESOL learning evidence are now complete.',
     priority: 'P1',
     score: 3,
     stage: 'FOUNDATION',
@@ -395,12 +393,15 @@ export const currentTaskCatalog: CatalogTask[] = [
   },
   {
     code: 'G08',
-    title: 'Cocos Course Training',
-    why: 'Learn the core Cocos teaching flow.',
-    whatToDo: 'Complete the configured Cocos course and assessment in Kuozhi.',
+    opsNameZh: 'Global Communicator 培训',
+    title: 'Global Communicator Training',
+    why: 'Learn the core Global Communicator teaching flow.',
+    whatToDo:
+      'Complete the configured Global Communicator course and assessment in Kuozhi.',
     completionStandard:
       'All required Kuozhi videos and assessment requirements pass.',
-    benefit: 'You can prepare for a Cocos class.',
+    benefit:
+      'You can now confidently prepare for a Global Communicator lesson.',
     priority: 'P1',
     score: 5,
     stage: 'ADVANCE',
@@ -462,39 +463,56 @@ export const currentTaskCatalog: CatalogTask[] = [
     rules: [allStepsRule('请完成设备和连接检查。')],
   },
   ...[
-    [
-      'P-REL-ATTENDANCE',
-      'attendance-reliability-refresher',
-      'Be Ready and On Time',
-      2,
-    ],
-    [
-      'P-REL-MEMO',
-      'lesson-memo-rules-learning',
-      'Complete Your Lesson Memo',
-      3,
-    ],
-    [
-      'P-FB-COMPLAINT',
-      'feedback-topic-learning',
-      'Improve a Teaching Skill',
-      5,
-    ],
-  ].map(([code, externalCode, title, sequence]) =>
+    {
+      code: 'P-REL-ATTENDANCE',
+      externalCode: 'attendance-reliability-refresher',
+      title: 'Be Ready and On Time',
+      why: 'A lesson record shows a reliability issue, such as an absence, late arrival, or early leave.',
+      whatToDo: 'Complete the assigned attendance training and pass its quiz.',
+      completionStandard:
+        'The teacher app marks the training and quiz as completed.',
+      benefit:
+        'This task carries no points. It addresses the specific attendance issue shown in the task reason.',
+      sequence: 2,
+    },
+    {
+      code: 'P-REL-MEMO',
+      externalCode: 'lesson-memo-rules-learning',
+      title: 'Complete Your Lesson Memo',
+      why: 'A completed lesson was recorded with a blank Lesson Memo.',
+      whatToDo:
+        'Complete the Lesson Memo guidance and review how to submit an accurate memo after every lesson.',
+      completionStandard:
+        'The teacher app marks the assigned Lesson Memo learning activity as completed.',
+      benefit:
+        'This task carries no points. It helps strengthen your Lesson Memo reliability.',
+      sequence: 3,
+    },
+    {
+      code: 'P-FB-COMPLAINT',
+      externalCode: 'feedback-topic-learning',
+      title: 'Improve a Teaching Skill',
+      why: 'A teacher-safe improvement topic was assigned from confirmed business data.',
+      whatToDo: 'Complete the learning content configured by Jiahe.',
+      completionStandard:
+        'Meet every requirement in the published task configuration.',
+      benefit: 'You have completed the assigned improvement action.',
+      sequence: 5,
+    },
+  ].map((task) =>
     pending(
       {
-        code: String(code),
-        externalCode: String(externalCode),
-        title: String(title),
-        why: 'A teacher-safe improvement topic was assigned from confirmed business data.',
-        whatToDo: 'Complete the learning content configured by Jiahe.',
-        completionStandard:
-          'Meet every requirement in the published task configuration.',
-        benefit: 'You have completed the assigned improvement action.',
+        code: task.code,
+        externalCode: task.externalCode,
+        title: task.title,
+        why: task.why,
+        whatToDo: task.whatToDo,
+        completionStandard: task.completionStandard,
+        benefit: task.benefit,
         priority: 'P2',
         score: 0,
         stage: 'PERSONALIZED',
-        sequence: Number(sequence),
+        sequence: task.sequence,
         estimatedMinutes: 8,
         allowRetry: true,
         kind: 'PERSONALIZED_IMPROVEMENT',

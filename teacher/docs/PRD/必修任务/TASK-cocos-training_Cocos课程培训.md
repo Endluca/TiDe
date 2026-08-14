@@ -1,4 +1,4 @@
-# 任务 PRD｜Cocos Course Training
+# 任务 PRD｜Global Communicator Training
 
 ## 0. 文档信息
 
@@ -7,7 +7,7 @@
 | 任务 ID / 编码 / 分值 | `cocos-training` / `G08` / 5 分 |
 | 完成方式 | 阔知课程视频＋考试 |
 | 映射 | 课程 `630` |
-| 最近更新 | 2026-08-04 |
+| 最近更新 | 2026-08-14 |
 
 ## 1. 必修映射
 

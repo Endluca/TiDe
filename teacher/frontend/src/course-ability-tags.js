@@ -3,8 +3,8 @@ export const courseAbilityTagCatalog = [
     taskCode: "G08",
     taskId: "cocos-training",
     label: {
-      en: "Cocos course ready",
-      zh: "Cocos 课程准备",
+      en: "Global Communicator ready",
+      zh: "Global Communicator 课程准备",
     },
   },
   {

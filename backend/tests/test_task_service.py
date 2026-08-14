@@ -42,7 +42,7 @@ EXPECTED_MANDATORY_CATALOG = {
     "G05": ("TTP Orientation", 3, "DAY_8_14"),
     "G06": ("ME Culture & PARSNIP", 4, "DAY_8_14"),
     "G07": ("Reliability Training", 3, "DAY_8_14"),
-    "G08": ("Cocos Course Training", 5, "DAY_15_30"),
+    "G08": ("Global Communicator Training", 5, "DAY_15_30"),
     "G09": ("SET Teaching Fundamentals", 5, "DAY_15_30"),
 }
 
@@ -51,7 +51,7 @@ EXPECTED_MANDATORY_COPY = {
         "Complete the required TESOL status and learning evidence.",
         "Confirm TESOL, pass all 61 questions, complete the Essay and submit the completion proof.",
         "TESOL is complete, the 61-question check reaches 80%, the Essay is complete and the completion proof is submitted.",
-        "Your profile and required TESOL learning evidence are complete.",
+        "Your profile and required TESOL learning evidence are now complete.",
         "READY",
     ),
     "G02": (
@@ -97,10 +97,10 @@ EXPECTED_MANDATORY_COPY = {
         "READY",
     ),
     "G08": (
-        "Learn the core Cocos teaching flow.",
+        "Learn the core Global Communicator teaching flow.",
         "Complete the configured in-platform videos and quiz.",
         "All configured videos and quiz requirements pass.",
-        "You can prepare for a Cocos class.",
+        "You can now confidently prepare for a Global Communicator lesson.",
         "READY",
     ),
     "G09": (

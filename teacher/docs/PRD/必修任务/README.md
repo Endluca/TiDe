@@ -28,7 +28,7 @@
 | `G05` | `ttp-orientation` | TTP Orientation TTP 入门培训 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-ttp-orientation_TTP入门培训.md) | 阔知 iframe 视频，3 分 |
 | `G06` | `me-culture` | ME Culture & PARSNIP | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-me-culture_ME文化与PARSNIP.md) | 阔知 iframe 多课程视频＋考试，4 分 |
 | `G07` | `reliability-training` | Reliability Training | 固定必修 | 评审中 | 阔知部分映射 | 嘉荷 | [任务 PRD](TASK-reliability-training_Reliability培训.md) | 阔知 iframe 视频；考试 ID 待补，3 分 |
-| `G08` | `cocos-training` | Cocos Course Training | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-cocos-training_Cocos课程培训.md) | 阔知 iframe 视频＋考试，5 分 |
+| `G08` | `cocos-training` | Global Communicator Training | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-cocos-training_Cocos课程培训.md) | 阔知 iframe 视频＋考试，5 分 |
 | `G09` | `set-fundamentals` | SET Teaching Fundamentals | 固定必修 | 待配置 | 阔知待发布 | 嘉荷 | [任务 PRD](TASK-set-fundamentals_SET教学基础.md) | 不使用本地 Mock；等待阔知课程／视频／考试任务 ID，5 分 |
 
 ### 历史兼容与候选资料

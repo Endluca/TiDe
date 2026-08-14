@@ -295,7 +295,7 @@ def test_readme_runs_preflight_before_migration() -> None:
         "--profile migration run --rm migrate"
     )
     assert preflight < migration
-    assert "20260813_60_dom_privacy" in readme
+    assert "20260814_61_teacher_copy" in readme
     assert "0041_crm_sso_hybrid" in readme
     assert "20260811_51_g01_tesol_only" in readme
     assert "0033_g01_tesol_only" in readme

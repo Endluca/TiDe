@@ -330,8 +330,8 @@ teacher_crm_sso_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations
   || fail "缺少教师端 0041 CRM SSO 混合认证迁移"
 [[ -f "${contract_probe}" ]] \
   || fail "缺少联合部署数据库契约探针"
-grep -Fq "20260813_60_dom_privacy" "${contract_probe}" \
-  || fail "数据库契约探针未固定最终 public head 20260813_60_dom_privacy"
+grep -Fq "20260814_61_teacher_copy" "${contract_probe}" \
+  || fail "数据库契约探针未固定最终 public head 20260814_61_teacher_copy"
 grep -q "2026-08-05-g04-three-part" "${teacher_g04_migration}" \
   || fail "教师端 0031 未发布经评审的 G04 三模块版本"
 grep -q "g02-device-2026-08-05-browser-preflight-v1" "${teacher_g04_migration}" \
@@ -414,7 +414,7 @@ expected = {
     "G05": ("TTP Orientation", 3),
     "G06": ("ME Culture & PARSNIP", 4),
     "G07": ("Reliability Training", 3),
-    "G08": ("Cocos Course Training", 5),
+    "G08": ("Global Communicator Training", 5),
     "G09": ("SET Teaching Fundamentals", 5),
 }
 task_start = re.compile(
@@ -542,4 +542,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→release-public56→teacher0038→release-public57→teacher0040→teacher0041→public59→public60 执行，最终必须通过 public 20260813_60_dom_privacy / teacher 0041 契约探针和发布门禁。\n'
+printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→release-public56→teacher0038→release-public57→teacher0040→teacher0041→public59→public60→public61 执行，最终必须通过 public 20260814_61_teacher_copy / teacher 0041 契约探针和发布门禁。\n'

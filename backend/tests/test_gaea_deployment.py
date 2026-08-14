@@ -396,7 +396,7 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260813_60_dom_privacy"',
+        'EXPECTED_PUBLIC_HEAD="20260814_61_teacher_copy"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -546,7 +546,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260813_60_dom_privacy\\n' ;;
+  6) printf '20260814_61_teacher_copy\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -1153,7 +1153,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "tide_sys_admin" in readme
     assert "tit_growth_migrator" not in readme
     assert "tide_migrator" not in readme
-    assert "20260813_60_dom_privacy" in readme
+    assert "20260814_61_teacher_copy" in readme
     assert "20260811_55_source_wide_v12" in readme
     assert "0037_g04_remove_device_check" in readme
     assert "20260811_51_g01_tesol_only" in readme

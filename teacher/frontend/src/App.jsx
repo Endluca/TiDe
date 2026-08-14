@@ -1219,7 +1219,7 @@ function StageMap({
           <div
             className="map-locked-note"
             aria-label={copy(language, "Module available to preview", "本阶段可以提前查看")}
-            title={copy(language, `Complete the previous module to unlock early, or wait until Day ${source.releaseDay}`, `完成上一阶段可提前解锁，最晚第 ${source.releaseDay} 天自动开放`)}
+            title={copy(language, `Complete the previous module to unlock it early, or wait until Day ${source.releaseDay}.`, `完成上一阶段可提前解锁，最晚第 ${source.releaseDay} 天自动开放`)}
           >
             <img
               src={publicAsset("/assets/growth-maps/stage-locked-padlock.png")}
@@ -1240,8 +1240,8 @@ function StageMap({
               />
               <span>
                 {state === "locked"
-                  ? copy(language, `Preview now; complete the previous module to unlock early, or wait until Day ${source.releaseDay}.`, `现在可以先查看；完成上一阶段可提前解锁，最晚第 ${source.releaseDay} 天自动开放。`)
-                  : copy(language, "I’m here with you for this module.", "这一阶段，我会陪你一起完成。")}
+                  ? copy(language, `Preview now, unlock early by completing the previous module, or wait until Day ${source.releaseDay}.`, `现在可以先查看；完成上一阶段可提前解锁，最晚第 ${source.releaseDay} 天自动开放。`)
+                  : copy(language, "I’m here to support you through this module.", "这一阶段，我会陪你一起完成。")}
               </span>
             </div>
           )}
@@ -1259,7 +1259,7 @@ function StageMap({
               </div>
               <small>
                 {state === "locked"
-                  ? copy(language, `Preview is available. Actions open early after the previous module, or automatically on Day ${source.releaseDay}.`, `任务始终可以预览；完成上一阶段可提前开始，最晚第 ${source.releaseDay} 天自动开放。`)
+                  ? copy(language, `Preview is available now. Complete the previous module to unlock it early, or it will open automatically on Day ${source.releaseDay}.`, `任务始终可以预览；完成上一阶段可提前开始，最晚第 ${source.releaseDay} 天自动开放。`)
                   : state === "complete"
                   ? copy(language, "This module is complete.", "本阶段已完成。")
                   : copy(language, "Complete this module to open the next map.", "完成本阶段后，可以进入下一阶段。")}
@@ -1358,7 +1358,7 @@ function PersonalizedTaskGrid({ rawTasks, language }) {
           <p>
             {copy(
               language,
-              "Focused support selected for your current growth needs.",
+              "Focused support for your current growth needs",
               "根据当前成长需要，为你提供针对性的改善支持。",
             )}
           </p>
@@ -1762,7 +1762,7 @@ function GrowthPathPage({
         <div className="tasks-hub-title">
           <small>{copy(language, "TASKS", "我的任务")}</small>
           <h1>{copy(language, "Start here today", "今天从这里开始")}</h1>
-          <p>{copy(language, "Start with the two required actions below. The islands keep your complete required-task path.", "先完成上方推荐任务，也可以在下方查看全部必修任务。")}</p>
+          <p>{copy(language, "Start with the two required actions below. The islands show your full path through the required tasks.", "先完成上方推荐任务，也可以在下方查看全部必修任务。")}</p>
         </div>
         <div className="tasks-hub-summary">
           <div>
@@ -1805,7 +1805,7 @@ function GrowthPathPage({
             <small>{copy(language, "REQUIRED TASK PATH", "完整必修任务路径")}</small>
             <h2 id="required-path-title">{copy(language, "Explore the required-task islands", "查看成长地图")}</h2>
             <p>
-              {copy(language, "Every island, stage and checkpoint below remains part of the full required-task journey.", "在成长地图中查看各阶段任务和开放顺序。")}
+              {copy(language, "Every island, stage, and checkpoint is part of your complete required-task journey.", "在成长地图中查看各阶段任务和开放顺序。")}
               <span className="tasks-map-mobile-hint">
                 {copy(language, " Swipe left or right to view more stages.", " 可左右滑动查看更多阶段。")}
               </span>
@@ -2039,7 +2039,7 @@ function TaskDetailPage({
     ? [
         "Content pending",
         "内容待补充",
-        "This personalized improvement task is confirmed; its official content and completion method are still being prepared.",
+        "Your personalized improvement task is confirmed. The content and completion steps will be available once they’re ready.",
         "这项个性化改善任务已经确认，正式内容和完成方式仍在准备中。",
       ]
     : workspaceMeta[raw.method] || ["Task actions", "任务操作", "Complete the action below to update your task progress.", "完成下方操作后，任务进度会自动更新。"];
@@ -2895,7 +2895,7 @@ function DimensionDetails({
             compact
             language={language}
             title={copy(language, "Class attribution is temporarily unavailable", "逐课积分归因暂时无法加载")}
-            message={copy(language, "The cumulative score is still available. Reload later to view its full class attribution.", "累计积分仍可正常查看，请稍后重新加载完整逐课归因。")}
+            message={copy(language, "Your cumulative score is saved. Check back later to see how it is attributed across your classes.", "累计积分仍可正常查看，请稍后重新加载完整逐课归因。")}
           />
         ) : usesCourseMatrix ? (
           <article className="dimension-course-matrix">
@@ -3384,7 +3384,7 @@ function LessonCourseView({
         <div className={`data-score-guide lesson-data-score-guide ${activeLesson.scoreStatus === "SOURCE_MISSING" ? "is-warning" : ""}`}>
           <Info size={14} />
           {activeLesson.scoreStatus === "SOURCE_MISSING"
-            ? copy(language, "Part of this class evidence is currently unavailable, so no points were inferred.", "本课部分证据暂时缺失，系统未推算积分。")
+            ? copy(language, "Some class evidence is unavailable, so no points were added.", "本课部分证据暂时缺失，系统未推算积分。")
             : copy(
                 language,
                 `Course facts and scores use the ${activeLesson.scoreRuleVersion || "current"} result.`,
@@ -3558,7 +3558,7 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
         <p className="score-dialog-intro">
           {copy(
             language,
-            "Current points use the latest scorecard. Available points are the sum of unfinished required tasks and disappear after all required tasks are complete.",
+            "Your current points reflect your latest scorecard. Available points come from required tasks you haven’t completed yet and disappear once all required tasks are complete.",
             "已获得积分以最新积分卡为准；可获得积分为未完成必修任务分值之和，全部完成后不再显示。",
           )}
         </p>
@@ -3583,8 +3583,8 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
             <div>
               <span><Medal size={18} weight="duotone" /></span>
               <div>
-                <h3 id="score-stage-title">{copy(language, "Milestones and encouragement", "成长阶段与激励")}</h3>
-                <p>{copy(language, "See what each growth stage means and the incentive you receive after reaching it.", "了解每个成长阶段的要求，以及达成后可以获得的激励。")}</p>
+                <h3 id="score-stage-title">{copy(language, "Milestones and rewards", "成长阶段与激励")}</h3>
+                <p>{copy(language, "See what each growth stage means and what you’ll receive when you reach it.", "了解每个成长阶段的要求，以及达成后可以获得的激励。")}</p>
               </div>
             </div>
             <small>{copy(language, "Stage incentives", "阶段激励")}</small>
@@ -3606,7 +3606,7 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
                 </div>
                 <strong>{score.graduationMilestone} {copy(language, "pts", "分")}</strong>
               </div>
-              <p>{copy(language, "Work toward 100 points and all 9 required tasks; the final graduation status uses the system result.", "出营阶段关注达到 100 分并完成 9 项必修任务；最终状态以系统返回结果为准。")}</p>
+              <p>{copy(language, "Earn 100 points and complete all 9 required tasks. Your final graduation status is determined by the system result.", "出营阶段关注达到 100 分并完成 9 项必修任务；最终状态以系统返回结果为准。")}</p>
               {graduationStatus && (
                 <div className="score-stage-progress-copy">
                   <span>{graduationStatus}</span>
@@ -3615,7 +3615,7 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
               )}
               <aside>
                 <Sparkle size={16} weight="fill" />
-                <span><b>{copy(language, "Incentive:", "激励说明：")}</b>{copy(language, " After graduation, your Rank increases by 1 level.", "成功出营后，你的 Rank 将提升 1 级。")}</span>
+                <span><b>{copy(language, "Incentive:", "激励说明：")}</b>{copy(language, " Upon reaching 100 points, your rank upgrades by 1 level.", "成功出营后，你的 Rank 将提升 1 级。")}</span>
               </aside>
             </article>
             <article
@@ -3634,7 +3634,7 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
                 </div>
                 <strong>{score.goldMilestone} {copy(language, "pts", "分")}</strong>
               </div>
-              <p>{copy(language, "Reaching 200 points advances you to the Gold Teacher assessment; the final status uses the system result.", "达到 200 分后进入金牌教师评定；最终状态以系统返回结果为准。")}</p>
+              <p>{copy(language, "Earn 200 points to advance to the Gold Teacher assessment. Your final status is based on the system result.", "达到 200 分后进入金牌教师评定；最终状态以系统返回结果为准。")}</p>
               {goldStatus && (
                 <div className="score-stage-progress-copy">
                   <span>{goldStatus}</span>
@@ -3643,7 +3643,7 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
               )}
               <aside>
                 <Sparkle size={16} weight="fill" />
-                <span><b>{copy(language, "Incentive:", "激励说明：")}</b>{copy(language, " After becoming a Gold Teacher, your Rank increases by another level.", "成为金牌教师后，你的 Rank 将再提升 1 级。")}</span>
+                <span><b>{copy(language, "Incentive:", "激励说明：")}</b>{copy(language, " Upon becoming a Gold Teacher, your Rank increases by 1 level.", "成为金牌教师后，你的 Rank 将再提升 1 级。")}</span>
               </aside>
             </article>
           </div>
@@ -3652,8 +3652,8 @@ function ScoreDetailDialog({ open, onClose, language, score }) {
           <header>
             <span><ChartLineUp size={20} weight="duotone" /></span>
             <div>
-              <h3 id="score-rules-title">{copy(language, "Point rules", "积分规则说明")}</h3>
-              <p>{copy(language, "The positive rules below reflect the current scorecard.", "以下正向加分规则以当前积分卡为准。")}</p>
+              <h3 id="score-rules-title">{copy(language, "HOW POINTS WORK", "积分规则说明")}</h3>
+              <p>{copy(language, "The rules below reflect the current scorecard and how points are earned.", "以下正向加分规则以当前积分卡为准。")}</p>
             </div>
             <small className="score-rules-version">
               {copy(language, "Version", "版本")}：{score.resultVersion}
@@ -4129,7 +4129,7 @@ function MyTitPage({
             aria-haspopup="dialog"
           >
             <span className="score-block-title">
-              <span>{copy(language, "Total growth score", "我的成长积分")}</span>
+              <span>{copy(language, "Progress Score", "我的成长积分")}</span>
               <Info size={17} />
             </span>
             <div className="score-current-block">
@@ -4147,8 +4147,18 @@ function MyTitPage({
             : copy(language, `${currentScore} of ${score.total} points`, `当前 ${currentScore} 分，共 ${score.total} 分`)}>
             <div className="tit-score-track-line"><span style={{ width: `${scoreProgress}%` }} /></div>
             {currentScore !== null && !allScoreMilestonesReached && <span className="tit-score-marker current" style={{ left: `${scoreProgress}%` }}><strong>{currentScore}</strong></span>}
-            <span className={`tit-score-marker graduation ${score.graduationQualified ? "is-achieved" : ""}`} style={{ left: `${(score.graduationMilestone / score.total) * 100}%` }}><i /><b>{score.graduationMilestone}</b><small><span>{copy(language, "Graduation", "出营")}</span><span>{copy(language, "9 required tasks", "9 项必修任务")}</span></small></span>
-            <span className={`tit-score-marker gold ${allScoreMilestonesReached ? "is-current-stage" : ""}`} style={{ left: `${(score.goldMilestone / score.total) * 100}%` }}><i /><b>{score.goldMilestone}</b><small><span>{copy(language, "Gold stage", "金牌阶段")}</span><span>{allScoreMilestonesReached ? copy(language, "Achieved", "已达成") : copy(language, "Excellent", "优秀")}</span></small></span>
+            <span
+              className={`tit-score-marker graduation ${score.graduationQualified ? "is-achieved" : ""}`}
+              style={{ left: `${(score.graduationMilestone / score.total) * 100}%` }}
+              title={copy(language, "Qualified = the teacher has demonstrated the required foundational skills and can perform the role to the expected standard.", "出营：教师已具备岗位所需的基础能力，并达到预期标准。")}
+              aria-label={copy(language, `${score.graduationMilestone} points. Qualified: the teacher has demonstrated the required foundational skills and can perform the role to the expected standard.`, `${score.graduationMilestone} 分。出营：教师已具备岗位所需的基础能力，并达到预期标准。`)}
+            ><i /><b>{score.graduationMilestone}</b><small><span>{copy(language, "Qualified", "出营")}</span></small></span>
+            <span
+              className={`tit-score-marker gold ${allScoreMilestonesReached ? "is-current-stage" : ""}`}
+              style={{ left: `${(score.goldMilestone / score.total) * 100}%` }}
+              title={copy(language, "Proficient = the teacher demonstrates stronger, more consistent teaching skills and performance.", "金牌阶段：教师展现出更强、更稳定的教学技能和表现。")}
+              aria-label={copy(language, `${score.goldMilestone} points. Proficient: the teacher demonstrates stronger, more consistent teaching skills and performance.`, `${score.goldMilestone} 分。金牌阶段：教师展现出更强、更稳定的教学技能和表现。`)}
+            ><i /><b>{score.goldMilestone}</b><small><span>{copy(language, "Proficient", "金牌阶段")}</span></small></span>
             <span className="tit-score-zero">0</span>
           </div>
           <div className="tit-score-footer">
@@ -4187,13 +4197,13 @@ function MyTitPage({
       >
         <div className="dimension-section-heading">
           <div>
-            <h2>{copy(language, "My five growth dimensions", "我的成长表现")}</h2>
+            <h2>{copy(language, "My 5 growth dimensions", "我的成长表现")}</h2>
             <p>{growthView === "dimensions"
-            ? copy(language, "See each dimension total and its available score sources", "查看各维度总分和可用的加分来源")
-              : copy(language, "See every safe course fact and the indicators that actually earned points", "查看每节课的事实数据及实际加分")}</p>
+            ? copy(language, "See each dimension total and available score sources.", "查看各维度总分和可用的加分来源")
+              : copy(language, "See the course facts and indicators that contributed to your points.", "查看每节课的事实数据及实际加分")}</p>
           </div>
           <div className="dimension-view-controls">
-            <span className="growth-view-hint">{copy(language, "Switch view to see different details", "切换视图查看不同明细")}</span>
+            <span className="growth-view-hint">{copy(language, "Switch views to see more details.", "切换视图查看不同明细")}</span>
             <div className="growth-view-switch" role="tablist" aria-label={copy(language, "Growth-performance view", "成长表现查看方式") }>
               <button
                 type="button"
@@ -4225,7 +4235,7 @@ function MyTitPage({
               <span>
                 {copy(
                   language,
-                  "User feedback, reliability and hardware quality are uncapped cumulative scores. The total growth score above is displayed up to 200 points.",
+                  "User feedback, reliability, and hardware quality points accumulate without a cap. The total growth score above is displayed up to 200 points.",
                   "用户反馈、上课稳定度和硬件质量为无上限累计分；上方成长总分最高展示 200 分。",
                 )}
               </span>

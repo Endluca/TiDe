@@ -102,7 +102,7 @@ docker build -t tide-teacher-api:reviewed .
 
 镜像只暴露 `3000`，其内置健康检查请求 `/health/ready`。生产环境中，容器进入
 healthy 不只代表 Node 进程存在：public Alembic 账本必须唯一指向
-`20260813_60_dom_privacy`，教师端迁移账本必须是完整的 36 条 canonical 清单，包含
+`20260814_61_teacher_copy`，教师端迁移账本必须是完整的 36 条 canonical 清单，包含
 `0033_g01_tesol_only`、`0037_g04_remove_device_check`、
 `0038_personalized_environment_photo`、`0039_g02_policy_document`、
 `0040_g02_document_read_status`，且唯一最新版本为 `0041_crm_sso_hybrid`。

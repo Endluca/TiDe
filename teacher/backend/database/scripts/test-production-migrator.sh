@@ -87,7 +87,7 @@ FROM (
         ('G06:v1', 'G05', 'PUBLISHED', 'TTP Orientation', 3),
         ('G07:v1', 'G06', 'PUBLISHED', 'ME Culture & PARSNIP', 4),
         ('G08:v1', 'G07', 'PUBLISHED', 'Reliability Training', 3),
-        ('G09:v1', 'G08', 'PUBLISHED', 'Cocos Course Training', 5),
+        ('G09:v1', 'G08', 'PUBLISHED', 'Global Communicator Training', 5),
         ('G10:v1', 'G09', 'PUBLISHED', 'SET Teaching Fundamentals', 5)
 ) AS catalog(row_id, task_code, status, title, score_value);
 
@@ -291,8 +291,9 @@ ON public.teacher_support_tickets
 TO tit_growth_app, tit_teacher_crud, tide_support_ticket_owner;
 SQL
   # 这套教师 migrator fixture 只镜像教师依赖的 public 结构；最终账本仍须
-  # 前进到 public 60，真实 rev60 隐私 Trigger 由根仓库迁移测试覆盖。
-  set_public_head "${database_name}" "20260813_60_dom_privacy"
+  # 前进到 public 61，真实 rev60 隐私 Trigger 和 rev61 文案迁移
+  # 由根仓库迁移测试覆盖。
+  set_public_head "${database_name}" "20260814_61_teacher_copy"
 }
 
 install_public_personalized_contract() {
@@ -726,7 +727,7 @@ SELECT
     to_regclass('tide.crm_sso_logins') IS NOT NULL,
     NOT EXISTS (SELECT 1 FROM tide.crm_sso_logins),
     (SELECT version_num FROM public.alembic_version) =
-        '20260813_60_dom_privacy',
+        '20260814_61_teacher_copy',
     count(*) FILTER (
         WHERE migration_id = '0041_crm_sso_hybrid'
     ) = 1,
@@ -1127,7 +1128,7 @@ final_acl_probe_state="$(psql -X --no-password -Atqc "
     and (select not rolinherit from pg_roles where rolname = 'tit_teacher_crud')
 " "postgresql:///${FRESH_DB}")"
 if [[ "${final_acl_probe_state}" != "t" ]]; then
-  echo "public 60 最终教师/Owner 表级 ACL 验收失败。" >&2
+  echo "public 61 最终教师/Owner 表级 ACL 验收失败。" >&2
   exit 1
 fi
 legacy_acl_probe_state="$(psql -X --no-password -AtF '|' \
@@ -4384,4 +4385,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、teacher canonical 0041 与最终 public 60 账本契约、跨 Schema 顺序门禁、0022–0041、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；真实 rev60 隐私 Trigger 由根仓库迁移测试验收。"
+echo "生产 migrator fresh/upgrade、teacher canonical 0041 与最终 public 61 账本契约、跨 Schema 顺序门禁、0022–0041、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；真实 rev60 隐私 Trigger 与 rev61 文案迁移由根仓库迁移测试验收。"
