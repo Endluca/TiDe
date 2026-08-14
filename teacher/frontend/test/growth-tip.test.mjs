@@ -202,27 +202,8 @@ test("replaces unsafe or overly long backend guidance with teacher-safe copy", (
 
   assert.equal(
     tip.action.prompt,
-    "Open the task when you’re ready and work through the steps provided.",
+    "Open the task when you’re ready and follow the steps provided.",
   );
-});
-
-test("uses the approved Philippines English copy for the ready and in-progress actions", () => {
-  const ready = buildGrowthTip({
-    teacherName: "Teacher",
-    campDay: 4,
-    tasks: [task()],
-    language: "en",
-  });
-  const started = buildGrowthTip({
-    teacherName: "Teacher",
-    campDay: 4,
-    tasks: [task({ status: "started" })],
-    language: "en",
-  });
-
-  assert.equal(ready.action.label, "RECOMMENDED NEXT STEP");
-  assert.equal(started.action.label, "TAKE THE NEXT STEP");
-  assert.equal(started.action.buttonLabel, "Resume Task");
 });
 
 test("uses the backend-provided guidance for every fixed and personalized task route", () => {

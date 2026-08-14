@@ -6,10 +6,10 @@ export const TEACHING_ENVIRONMENT_REFERENCE_PHOTO = publicAsset(
 
 export const TEACHING_ENVIRONMENT_STANDARDS = {
   en: [
-    ["camera_angle", "Camera angle", "Show one teacher with a clear, unobstructed face and chest-up upper body. Keep your head centered, leave a little space above it, and position the camera near eye level."],
-    ["lighting", "Lighting", "Ensure both sides of your face and all facial features are clearly visible in even, front-facing light. Avoid darkness, heavy shadows, overexposure, strong backlighting, or masking filters."],
-    ["background", "Background", "Use a clean, stable background free of unrelated people, animals, clutter, and identifiable private information. Virtual backgrounds must not cover or distort you."],
-    ["dressing", "Dressing", "Wear a neat, professional top with your shoulders and neckline clearly visible. Avoid sleepwear, loungewear, sleeveless or overly casual clothing, and distracting accessories."],
+    ["camera_angle", "Camera angle", "Face the camera directly and keep your head upright. Align your face and shoulders with the guide, with the camera at eye level. Side profiles or visibly turned, tilted, raised or lowered heads will not pass."],
+    ["lighting", "Lighting", "Keep your face evenly and brightly lit. It should not be too dark, overexposed or strongly backlit."],
+    ["background", "Background", "Use a clean, appropriate background without distractions. A virtual background must display clearly without covering your face or body."],
+    ["dressing", "Dressing", "Wear neat, professional clothing that is suitable for teaching young learners online."],
   ],
   zh: [
     ["camera_angle", "摄像头角度", "必须正脸面对摄像头并保持头部端正，脸部和肩部尽量贴合辅助线，摄像头与视线平齐；侧脸、明显转头、仰头、低头或头部侧倾不通过。"],

@@ -515,12 +515,12 @@ export default function SupportTicketForm({
         {copy(language, "Back", "返回")}
       </button>
       <div className="support-ticket-intro">
-        <small>{copy(language, "CONTACT SUPPORT", "联系运营")}</small>
+        <small>{copy(language, "CONTACT OPERATIONS", "联系运营")}</small>
         <h3>{copy(language, "Submit a support ticket", "提交工单")}</h3>
         <p>
           {copy(
             language,
-            "Tell us what happened. Your page, device, browser, and update time are attached automatically.",
+            "Tell us what happened. Page, device, browser, and update time are attached automatically.",
             "请描述遇到的问题；所在页面、设备、浏览器和更新时间会自动附带。",
           )}
         </p>

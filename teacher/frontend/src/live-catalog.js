@@ -19,7 +19,7 @@ export const stageDescriptions = [
     releaseDay: 1,
     number: "01",
     title: "Ready for your first lessons",
-    description: "Set up the essentials and build a calm, consistent pre-class routine.",
+    description: "Set up the essentials and build a calm pre-class routine.",
   },
   {
     id: "build-rhythm",

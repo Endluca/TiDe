@@ -276,7 +276,7 @@ export default function MessageCenter({
                       {actionButtonLabel}<ArrowRight size={18} />
                     </button>
                   ) : (
-                    <p>{copy(language, "This message remains in your history, but its action is no longer available.", "消息仍会保留在历史记录中，但操作入口已不可用。")}</p>
+                    <p>{copy(language, "The message remains in your history, but its action can no longer be opened.", "消息仍会保留在历史记录中，但操作入口已不可用。")}</p>
                   )}
                 </div>
               )}

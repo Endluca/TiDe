@@ -176,7 +176,7 @@ const visibleCourseFactDefinitions = [
     read: (facts) => {
       const result = factValue(
         facts.cpuUsageHigh,
-        { en: "High computer load detected", zh: "有电脑高负载记录" },
+        { en: "High computer load was recorded", zh: "有电脑高负载记录" },
         { en: "Computer ran steadily", zh: "电脑运行稳定" },
       );
       return result.tone === "positive"

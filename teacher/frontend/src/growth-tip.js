@@ -22,14 +22,14 @@ const stageCopy = {
       (name) => `${name}，你正在形成自己的授课节奏`,
     ],
     body: [
-      "Keep developing the habits that make platform use, classroom management, and lesson delivery smoother and more consistent.",
+      "Keep practising the platform, classroom and reliability habits that make each lesson feel calmer and more consistent.",
       "继续把排课、课堂习惯和教学方法练熟，稳定的小习惯会让每节课更从容。",
     ],
   },
   advance: {
     range: ["DAY 15–30", "第 15–30 天"],
     title: [
-      (name) => `${name}, keep practising and apply what you’ve learned consistently.`,
+      (name) => `${name}, make what you’ve learned even steadier`,
       (name) => `${name}，把已经学会的内容用得更稳`,
     ],
     body: [
@@ -44,7 +44,7 @@ const stageCopy = {
       (name) => `${name}，按自己的节奏继续前进`,
     ],
     body: [
-      "Your training path is ready. Your next useful step will appear here when available.",
+      "Your training path is ready. I’ll keep the next useful step here whenever there is something for you to do.",
       "你的成长路径已经准备好。有适合继续完成的内容时，我会把下一步放在这里。",
     ],
   },
@@ -172,7 +172,7 @@ function teacherSafePrompt(task, language) {
   ) {
     return localized(
       language,
-      "Open the task when you’re ready and work through the steps provided.",
+      "Open the task when you’re ready and follow the steps provided.",
       "准备好后打开任务，按照页面步骤继续完成。",
     );
   }
@@ -243,7 +243,7 @@ function statusCopy(task, prompt, language) {
       label: localized(language, "SUBMISSION RECEIVED", "提交已收到"),
       prompt: localized(
         language,
-        "Your work has been submitted successfully. No need to submit it again. The latest review status will be kept here.",
+        "Your work has been submitted, so there’s no need to repeat it. I’ll keep the latest review status here.",
         "内容已经提交，无需重复操作。审核结果更新后，我会继续陪你走下一步。",
       ),
       buttonLabel: localized(language, "View progress", "查看进度"),
@@ -266,13 +266,13 @@ function statusCopy(task, prompt, language) {
   }
   if (task.status === "started") {
     return {
-      label: localized(language, "TAKE THE NEXT STEP", "继续当前这一步"),
+      label: localized(language, "CONTINUE YOUR NEXT STEP", "继续当前这一步"),
       prompt: localized(
         language,
         `${prompt} Continue from where you left off.`,
         `${prompt}从上次的位置继续就好。`,
       ),
-      buttonLabel: localized(language, "Resume Task", "继续任务"),
+      buttonLabel: localized(language, "Continue task", "继续任务"),
       mood: "thumb",
       tone: "continue",
     };
@@ -282,7 +282,7 @@ function statusCopy(task, prompt, language) {
       label: localized(language, "CONTENT IN PREPARATION", "内容准备中"),
       prompt: localized(
         language,
-        "This task isn’t ready yet. No action is needed for now. It will appear here when the content is available.",
+        "This task is not ready yet. You do not need to take any action; it will update here when the content is available.",
         "这项任务暂未开放，现在无需操作；内容准备好后会在这里更新。",
       ),
       buttonLabel: null,
@@ -291,7 +291,7 @@ function statusCopy(task, prompt, language) {
     };
   }
   return {
-    label: localized(language, "RECOMMENDED NEXT STEP", "这一步可以先做"),
+    label: localized(language, "A GOOD NEXT STEP", "这一步可以先做"),
     prompt,
     buttonLabel: localized(language, "Start task", "开始任务"),
     mood: "thumb",
@@ -319,15 +319,15 @@ export function buildGrowthTip({
       title: localized(language, "Your latest progress is being updated", "最新成长进度正在更新"),
       body: localized(
         language,
-        "Your completed work is saved. You can continue with any available task while we update your latest results.",
+        "Your completed work is safe. You can continue with any available task while we refresh your latest results.",
         "已完成的内容不会丢失，你可以先继续当前可用任务。",
       ),
       action: {
-        label: localized(language, "RECOMMENDED NEXT STEP", "现在可以做"),
+        label: localized(language, "SAFE NEXT STEP", "现在可以做"),
         title: localized(language, "Review your current tasks", "查看当前任务"),
         prompt: localized(
           language,
-          "Your completed work is already saved. There’s no need to repeat it—check back soon for your latest progress.",
+          "There is no need to repeat any completed work. Check back shortly for the latest progress.",
           "无需重复已经完成的内容，稍后回来即可查看最新进度。",
         ),
         task: null,
@@ -350,16 +350,16 @@ export function buildGrowthTip({
       body: hasCompletedTasks
         ? localized(
           language,
-          "Nice work. No action is needed right now. Keep your classroom routine steady and consistent.",
+          "Nice work. There is nothing you need to handle right now. Keep your steady classroom routine going.",
           "做得很好！当前没有需要处理的内容，继续保持稳定的课堂节奏就好。",
         )
         : stage.body[languageIndex],
       action: {
-        label: localized(language, "CONTINUE YOUR PROGRESS", "继续保持"),
-        title: localized(language, "YOU’RE ALL SET FOR NOW", "当前没有需要立即处理的任务"),
+        label: localized(language, "KEEP THE MOMENTUM", "继续保持"),
+        title: localized(language, "No urgent action right now", "当前没有需要立即处理的任务"),
         prompt: localized(
           language,
-          "Your next useful step will appear here when it’s ready.",
+          "When a useful next step is ready, I’ll place it here for you.",
           "有适合继续完成的内容时，我会把下一步放在这里。",
         ),
         task: null,

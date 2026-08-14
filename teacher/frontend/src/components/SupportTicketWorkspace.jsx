@@ -197,8 +197,8 @@ export default function SupportTicketWorkspace({
                     {ticket.status === "CLOSED"
                       ? copy(language, "Closed", "已关闭")
                       : ticket.status === "WAITING_TEACHER"
-                        ? copy(language, "Replied", "运营已回复")
-                        : copy(language, "Pending reply", "等待运营回复")}
+                        ? copy(language, "Operations replied", "运营已回复")
+                        : copy(language, "Waiting for reply", "等待运营回复")}
                   </span>
                   <strong>{copy(language, category[0], category[1])}</strong>
                   <p>{lastMessage?.content || ""}</p>
@@ -219,7 +219,7 @@ export default function SupportTicketWorkspace({
               <p>
                 {error
                   ? error
-                  : copy(language, "Use Help to contact support.", "需要运营协助时，可以从“帮助”提交工单。")}
+                  : copy(language, "Use Help when you need an operations reply.", "需要运营协助时，可以从“帮助”提交工单。")}
               </p>
             </div>
           )}
@@ -245,7 +245,7 @@ export default function SupportTicketWorkspace({
                 <article className={`ticket-message is-${message.sender.toLowerCase()}`} key={message.messageId}>
                   <span>{message.sender === "TEACHER" ? <UserCircle size={20} /> : <Headset size={19} />}</span>
                   <div>
-                    <small>{message.sender === "TEACHER" ? copy(language, "You", "我") : copy(language, "Support", "运营")}</small>
+                    <small>{message.sender === "TEACHER" ? copy(language, "You", "我") : copy(language, "Operations", "运营")}</small>
                     <p>{message.content}</p>
                     {message.images.length > 0 && (
                       <div className="ticket-message-images">
@@ -263,7 +263,7 @@ export default function SupportTicketWorkspace({
             {selected.status === "WAITING_TEACHER" && !replyOpen && (
               <div className="ticket-resolution">
                 <strong>{copy(language, "Has your issue been resolved?", "问题是否已经解决？")}</strong>
-                <p>{copy(language, "If not, add more details and the ticket will return to Support.", "如果未解决，可以继续补充，工单会重新交给运营处理。")}</p>
+                <p>{copy(language, "If not, add more details and the ticket will return to operations.", "如果未解决，可以继续补充，工单会重新交给运营处理。")}</p>
                 <div>
                   <button type="button" onClick={resolved} disabled={saving}>
                     <CheckCircle size={18} weight="fill" />{copy(language, "Resolved", "已解决")}
@@ -275,7 +275,7 @@ export default function SupportTicketWorkspace({
               </div>
             )}
             {selected.status === "WAITING_OPERATOR" && (
-              <div className="ticket-waiting"><Clock size={18} />{copy(language, "Pending reply", "正在等待运营回复")}</div>
+              <div className="ticket-waiting"><Clock size={18} />{copy(language, "Waiting for an operations reply", "正在等待运营回复")}</div>
             )}
             {selected.status === "CLOSED" && (
               <div className="ticket-closed"><CheckCircle size={18} weight="fill" />{copy(language, "This ticket is closed", "该工单已关闭")}</div>
@@ -291,7 +291,7 @@ export default function SupportTicketWorkspace({
                   maxLength={5000}
                   value={reply}
                   onChange={(event) => setReply(event.target.value)}
-                  placeholder={copy(language, "Describe what still needs to be resolved.", "请说明仍未解决的问题。")}
+                  placeholder={copy(language, "Tell operations what still needs help.", "请说明仍未解决的问题。")}
                   required
                 />
                 <div className="ticket-reply-actions">
@@ -320,7 +320,7 @@ export default function SupportTicketWorkspace({
           <div className="message-detail-placeholder">
             <span><Headset size={34} weight="duotone" /></span>
             <h2>{copy(language, "Open a ticket", "选择一条工单查看")}</h2>
-            <p>{copy(language, "Replies remain here with the full conversation.", "运营回复和后续沟通会完整保留在这里。")}</p>
+            <p>{copy(language, "Operations replies remain here with the full conversation.", "运营回复和后续沟通会完整保留在这里。")}</p>
           </div>
         )}
       </article>
