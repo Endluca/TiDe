@@ -1120,6 +1120,11 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "2026-08-13" in readme
     assert "TIT_DTS_PROJECTION_ENABLED=false" in readme
     assert "TIT_DTS_STARTUP_RETRY_SECONDS" in readme
+    assert "TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS" in readme
+    assert "TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS" in readme
+    assert "configured_startup_probe_budget_ms" in readme
+    assert "remaining_probe_budget_ms" in readme
+    assert "effective_request_timeout_ms" in readme
     assert "15/30/60" in readme
     assert "重试期间 readiness 与 heartbeat 都不存在" in readme
     assert "TIT_DTS_ACTIVATION_AT" in readme
@@ -1220,6 +1225,12 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     for content in (generic, overseas, domestic):
         assert content.count("TIT_DTS_INGEST_DB_SSLMODE=verify-full") == 1
         assert content.count("TIT_DTS_ALLOW_INSECURE_DB=false") == 1
+        assert content.count(
+            "TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS=15000"
+        ) == 1
+        assert content.count(
+            "TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS=15000"
+        ) == 1
         assert "TIT_DTS_INGEST_DB_SSLMODE=disable" not in content
 
     assert "TIT_DTS_EXECUTION_REGION=sg" in overseas

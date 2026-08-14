@@ -24,6 +24,7 @@ from functools import lru_cache
 from importlib.metadata import version as package_version
 from math import ceil
 from pathlib import Path
+from threading import Lock
 from time import monotonic, perf_counter_ns
 from typing import Any, Protocol
 
@@ -174,6 +175,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
 INFRASTRUCTURE_TABLES = frozenset({"dts_postgres_heartbeat"})
 SCHEMA_BUNDLE_PATH = Path(__file__).with_name("dts_record_schemas.json")
 KAFKA_REQUEST_TIMEOUT_MS = 15_000
+KAFKA_STARTUP_TIMEOUT_MAX_MS = 120_000
 KAFKA_CLOSE_TIMEOUT_MS = 1_000
 KAFKA_CLIENT_DISTRIBUTION = "kafka-python"
 KAFKA_CLIENT_PINNED_VERSION = "2.2.20"
@@ -336,6 +338,8 @@ class DtsConsumerSettings:
     start_timestamp_seconds: int | None = None
     partition: int = 0
     execution_region: str = "sg"
+    kafka_startup_request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS
+    kafka_startup_api_version_auto_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS
     domestic_student_hmac_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -352,6 +356,22 @@ class DtsConsumerSettings:
             raise DtsConfigurationError(
                 "TIT_DTS_GROUP_ID_PLACEHOLDER_FORBIDDEN"
             )
+        for name, value in (
+            (
+                "TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS",
+                self.kafka_startup_request_timeout_ms,
+            ),
+            (
+                "TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS",
+                self.kafka_startup_api_version_auto_timeout_ms,
+            ),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 1 <= value <= KAFKA_STARTUP_TIMEOUT_MAX_MS
+            ):
+                raise DtsConfigurationError(f"{name}_INVALID")
         if self.source_region == "dom":
             key = self.domestic_student_hmac_key
             if key is None:
@@ -389,6 +409,17 @@ class DtsConsumerSettings:
             value = values.get(name, "")
             if not value:
                 raise DtsConfigurationError(f"{name}_REQUIRED")
+            return value
+
+        def optional_startup_timeout_ms(name: str) -> int:
+            raw = values.get(name, "").strip()
+            if not raw:
+                return KAFKA_REQUEST_TIMEOUT_MS
+            if re.fullmatch(r"[0-9]+", raw) is None:
+                raise DtsConfigurationError(f"{name}_INVALID")
+            value = int(raw)
+            if not 1 <= value <= KAFKA_STARTUP_TIMEOUT_MAX_MS:
+                raise DtsConfigurationError(f"{name}_INVALID")
             return value
 
         source_region = required("TIT_DTS_SOURCE_REGION").lower()
@@ -465,7 +496,24 @@ class DtsConsumerSettings:
             password=required_secret("TIT_DTS_PASSWORD"),
             start_timestamp_seconds=_parse_start_timestamp_seconds(start_at),
             execution_region=required("TIT_DTS_EXECUTION_REGION").lower(),
+            kafka_startup_request_timeout_ms=optional_startup_timeout_ms(
+                "TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS"
+            ),
+            kafka_startup_api_version_auto_timeout_ms=(
+                optional_startup_timeout_ms(
+                    "TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS"
+                )
+            ),
             domestic_student_hmac_key=domestic_student_hmac_password,
+        )
+
+    @property
+    def kafka_startup_probe_budget_ms(self) -> int:
+        """Return the shared startup deadline before elapsed time is applied."""
+
+        return max(
+            self.kafka_startup_request_timeout_ms,
+            self.kafka_startup_api_version_auto_timeout_ms,
         )
 
     def safe_summary(self) -> dict[str, Any]:
@@ -1101,6 +1149,186 @@ class _KafkaConnectionTrace:
         return summary
 
 
+class _KafkaMetadataRequestTrace:
+    """Keep only safe transport milestones for configured-topic Metadata."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._generation = 0
+        self._active = False
+        self._started_ns = 0
+        self._connection: Any | None = None
+        self._future: Any | None = None
+        self._summary: dict[str, bool | int | str] = {}
+
+    def begin(self) -> None:
+        with self._lock:
+            self._generation += 1
+            self._active = True
+            self._started_ns = perf_counter_ns()
+            self._connection = None
+            self._future = None
+            self._summary = {
+                "request_queued": False,
+                "write_attempted": False,
+                "response_received": False,
+                "disconnect_observed": False,
+            }
+
+    def finish(self) -> None:
+        with self._lock:
+            self._active = False
+            self._connection = None
+            self._future = None
+
+    def _record_milestone(self, name: str) -> None:
+        self._summary[name] = True
+        self._summary[f"{name}_elapsed_ms"] = max(
+            0,
+            (perf_counter_ns() - self._started_ns) // 1_000_000,
+        )
+
+    def record_request(
+        self,
+        connection: Any,
+        request: Any,
+        future: Any,
+    ) -> None:
+        try:
+            api_key = request.API_KEY
+            api_version = request.API_VERSION
+            pending = future.is_done is False
+        except Exception:
+            return
+        if api_key != 3 or type(api_key) is not int or type(api_version) is not int:
+            return
+        with self._lock:
+            if not self._active:
+                return
+            self._summary.update(api_key=api_key, api_version=api_version)
+            if not pending:
+                return
+            self._connection = connection
+            self._future = future
+            self._record_milestone("request_queued")
+            generation = self._generation
+
+        def response_received(_response: Any) -> None:
+            self.record_response(generation, future)
+
+        try:
+            future.add_callback(response_received)
+        except Exception:
+            pass
+
+    def record_write_attempt(self, connection: Any) -> None:
+        with self._lock:
+            if (
+                self._active
+                and connection is self._connection
+                and self._summary.get("request_queued") is True
+                and self._summary.get("response_received") is False
+                and self._summary.get("write_attempted") is False
+            ):
+                self._record_milestone("write_attempted")
+
+    def record_response(self, generation: int, future: Any) -> None:
+        with self._lock:
+            if (
+                self._active
+                and generation == self._generation
+                and future is self._future
+                and self._summary.get("response_received") is False
+            ):
+                self._record_milestone("response_received")
+
+    @staticmethod
+    def _exception_objects(error: Any) -> tuple[Exception, ...]:
+        pending = [error] if isinstance(error, Exception) else []
+        found: list[Exception] = []
+        seen: set[int] = set()
+        while pending and len(found) < 8:
+            current = pending.pop(0)
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            found.append(current)
+            try:
+                related = (
+                    current.__cause__,
+                    None if current.__suppress_context__ else current.__context__,
+                    *current.args[:4],
+                )
+            except Exception:
+                continue
+            pending.extend(item for item in related if isinstance(item, Exception))
+        return tuple(found)
+
+    @classmethod
+    def _disconnect_kind(cls, error: Any) -> str:
+        try:
+            from kafka import errors as kafka_errors
+        except ImportError:  # pragma: no cover - dependency guard
+            return "unknown"
+        chain = cls._exception_objects(error)
+        if any(isinstance(exc, kafka_errors.KafkaProtocolError) for exc in chain):
+            return "protocol"
+        if any(
+            isinstance(
+                exc,
+                (
+                    kafka_errors.RequestTimedOutError,
+                    kafka_errors.KafkaTimeoutError,
+                    TimeoutError,
+                ),
+            )
+            for exc in chain
+        ):
+            return "timeout"
+        if any(
+            isinstance(exc, ConnectionResetError)
+            or (isinstance(exc, OSError) and exc.errno == errno.ECONNRESET)
+            for exc in chain
+        ):
+            return "RST"
+        if any(
+            isinstance(exc, kafka_errors.KafkaConnectionError)
+            and len(exc.args) == 1
+            and exc.args[0] == "socket disconnected"
+            for exc in chain
+        ):
+            return "FIN"
+        return "unknown"
+
+    def record_disconnect(self, connection: Any, error: Any) -> None:
+        kind = self._disconnect_kind(error)
+        with self._lock:
+            if (
+                not self._active
+                or connection is not self._connection
+                or self._summary.get("request_queued") is not True
+                or self._summary.get("response_received") is True
+            ):
+                return
+            self._summary["disconnect_observed"] = True
+            if self._summary.get("disconnect_kind") in {None, "unknown"}:
+                self._summary["disconnect_kind"] = kind
+                self._summary["disconnect_elapsed_ms"] = max(
+                    0,
+                    (perf_counter_ns() - self._started_ns) // 1_000_000,
+                )
+
+    def safe_summary(self) -> dict[str, bool | int | str]:
+        with self._lock:
+            summary = dict(self._summary)
+            if (
+                summary.get("request_queued") is True
+                and summary.get("response_received") is False
+            ):
+                summary.setdefault("disconnect_kind", "unknown")
+            return summary
+
+
 def suppress_unsafe_kafka_library_logging() -> None:
     """Keep kafka-python request objects out of shared container logs."""
 
@@ -1200,7 +1428,7 @@ def _safe_kafka_client_probe(
         "client_version": _kafka_client_version(),
         "api_version": "auto",
         "protocol_version_mode": "auto_negotiation",
-        "api_version_auto_timeout_ms": KAFKA_REQUEST_TIMEOUT_MS,
+        **_configured_kafka_startup_timeout_summary(settings),
         "security_protocol": "SASL_PLAINTEXT",
         "sasl_mechanism": "PLAIN",
         "enable_auto_commit": False,
@@ -1208,8 +1436,61 @@ def _safe_kafka_client_probe(
         "join_group_enabled": False,
         "broker_count": len(settings.broker_urls),
         "partition": settings.partition,
-        "request_timeout_ms": KAFKA_REQUEST_TIMEOUT_MS,
-        "offset_probe_budget_ms": KAFKA_REQUEST_TIMEOUT_MS,
+    }
+
+
+def _configured_kafka_startup_timeout_summary(
+    settings: DtsConsumerSettings,
+) -> dict[str, int]:
+    """Return non-secret configured startup ceilings, not live remaining time."""
+
+    return {
+        "configured_request_timeout_ms": (
+            settings.kafka_startup_request_timeout_ms
+        ),
+        "configured_api_version_auto_timeout_ms": (
+            settings.kafka_startup_api_version_auto_timeout_ms
+        ),
+        "configured_startup_probe_budget_ms": (
+            settings.kafka_startup_probe_budget_ms
+        ),
+    }
+
+
+def _safe_kafka_phase_timeout_summary(
+    settings: DtsConsumerSettings,
+    deadline_monotonic: float,
+) -> dict[str, int]:
+    """Snapshot live startup budgets without letting diagnostics raise."""
+
+    try:
+        remaining_probe_budget_ms = max(
+            0,
+            min(
+                settings.kafka_startup_probe_budget_ms,
+                ceil((deadline_monotonic - monotonic()) * 1000),
+            ),
+        )
+    except Exception:
+        # A failure log must remain renderable even if the clock probe itself
+        # is unavailable while the original Kafka exception is unwinding.
+        remaining_probe_budget_ms = 0
+    return {
+        "configured_request_timeout_ms": (
+            settings.kafka_startup_request_timeout_ms
+        ),
+        "configured_api_version_auto_timeout_ms": (
+            settings.kafka_startup_api_version_auto_timeout_ms
+        ),
+        "remaining_probe_budget_ms": remaining_probe_budget_ms,
+        "effective_request_timeout_ms": min(
+            settings.kafka_startup_request_timeout_ms,
+            remaining_probe_budget_ms,
+        ),
+        "effective_api_version_auto_timeout_ms": min(
+            settings.kafka_startup_api_version_auto_timeout_ms,
+            remaining_probe_budget_ms,
+        ),
     }
 
 
@@ -2003,14 +2284,45 @@ class DtsKafkaConsumer:
             phase_callback(_safe_kafka_client_probe(self.settings))
         consumer: Any | None = None
         connection_trace = _KafkaConnectionTrace()
-        deadline = monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
+        metadata_request_trace = _KafkaMetadataRequestTrace()
+        startup_request_timeout_ms = (
+            self.settings.kafka_startup_request_timeout_ms
+        )
+        startup_api_version_auto_timeout_ms = (
+            self.settings.kafka_startup_api_version_auto_timeout_ms
+        )
+        deadline = (
+            monotonic()
+            + self.settings.kafka_startup_probe_budget_ms / 1000
+        )
+        kafka_phase_callback = phase_callback
+        if phase_callback is not None:
+            def emit_kafka_phase(
+                payload: dict[str, bool | int | str],
+            ) -> None:
+                phase_callback(
+                    {
+                        **payload,
+                        **_safe_kafka_phase_timeout_summary(
+                            self.settings,
+                            deadline,
+                        ),
+                    }
+                )
+
+            kafka_phase_callback = emit_kafka_phase
         try:
             consumer = _run_kafka_startup_phase(
-                phase_callback,
+                kafka_phase_callback,
                 "consumer_open",
                 lambda: self._open_consumer(
                     connection_trace=connection_trace,
+                    metadata_request_trace=metadata_request_trace,
                     deadline_monotonic=deadline,
+                    request_timeout_ms=startup_request_timeout_ms,
+                    api_version_auto_timeout_ms=(
+                        startup_api_version_auto_timeout_ms
+                    ),
                 ),
                 request_type="ApiVersionsThenSASL",
                 success_details=lambda _consumer: {
@@ -2030,14 +2342,17 @@ class DtsKafkaConsumer:
                 consumer,
                 topic_partition,
                 deadline_monotonic=deadline,
-                phase_callback=phase_callback,
+                phase_callback=kafka_phase_callback,
                 connection_trace=connection_trace,
+                metadata_request_trace=metadata_request_trace,
+                request_timeout_ms=startup_request_timeout_ms,
             )
             initial_offset = self._resolve_initial_offset(
                 consumer,
                 topic_partition,
                 deadline_monotonic=deadline,
-                phase_callback=phase_callback,
+                phase_callback=kafka_phase_callback,
+                request_timeout_ms=startup_request_timeout_ms,
             )
             return {
                 "status": "ok",
@@ -2128,7 +2443,10 @@ class DtsKafkaConsumer:
         self,
         *,
         connection_trace: _KafkaConnectionTrace | None = None,
+        metadata_request_trace: _KafkaMetadataRequestTrace | None = None,
         deadline_monotonic: float | None = None,
+        request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
+        api_version_auto_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
     ) -> Any:
         suppress_unsafe_kafka_library_logging()
         if _kafka_client_version() != KAFKA_CLIENT_PINNED_VERSION:
@@ -2147,6 +2465,9 @@ class DtsKafkaConsumer:
         suppress_unsafe_kafka_library_logging()
 
         diagnostic_trace = connection_trace or _KafkaConnectionTrace()
+        diagnostic_metadata_trace = (
+            metadata_request_trace or _KafkaMetadataRequestTrace()
+        )
         state_names = {
             ConnectionStates.CONNECTING: "tcp_connecting",
             ConnectionStates.HANDSHAKE: "tls_handshake",
@@ -2202,6 +2523,30 @@ class DtsKafkaConsumer:
                     return float("inf")
                 return super()._maybe_refresh_metadata(wakeup=wakeup)
 
+            def send(
+                self,
+                node_id: Any,
+                request: Any,
+                wakeup: bool = True,
+                request_timeout_ms: int | None = None,
+            ) -> Any:
+                future = super().send(
+                    node_id,
+                    request,
+                    wakeup=wakeup,
+                    request_timeout_ms=request_timeout_ms,
+                )
+                try:
+                    connection = self._conns.get(node_id)
+                except Exception:
+                    connection = None
+                diagnostic_metadata_trace.record_request(
+                    connection,
+                    request,
+                    future,
+                )
+                return future
+
             def _conn_state_change(
                 self,
                 node_id: Any,
@@ -2238,11 +2583,49 @@ class DtsKafkaConsumer:
                     def close_with_safe_diagnostic(
                         error: Any = None,
                     ) -> None:
+                        diagnostic_metadata_trace.record_disconnect(
+                            connection,
+                            error,
+                        )
                         diagnostic_trace.record_failure(node_id, error)
                         original_close(error=error)
 
                     connection.close = close_with_safe_diagnostic
                     connection._tit_diagnostic_close_wrapped = True
+                if not getattr(
+                    connection,
+                    "_tit_diagnostic_send_bytes_wrapped",
+                    False,
+                ):
+                    original_send_bytes = getattr(
+                        connection,
+                        "_send_bytes",
+                        None,
+                    )
+                    if callable(original_send_bytes):
+
+                        def send_bytes_with_safe_diagnostic(
+                            data: Any,
+                        ) -> Any:
+                            diagnostic_metadata_trace.record_write_attempt(
+                                connection
+                            )
+                            try:
+                                return original_send_bytes(data)
+                            except Exception as exc:
+                                # Capture raw structural transport types before
+                                # kafka-python may stringify them with the
+                                # private connection identity.
+                                diagnostic_metadata_trace.record_disconnect(
+                                    connection,
+                                    exc,
+                                )
+                                raise
+
+                        connection._send_bytes = (
+                            send_bytes_with_safe_diagnostic
+                        )
+                    connection._tit_diagnostic_send_bytes_wrapped = True
                 if not getattr(
                     connection,
                     "_tit_diagnostic_api_versions_wrapped",
@@ -2278,11 +2661,21 @@ class DtsKafkaConsumer:
                 )
 
         deadline = (
-            monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
+            monotonic()
+            + max(request_timeout_ms, api_version_auto_timeout_ms) / 1000
             if deadline_monotonic is None
             else deadline_monotonic
         )
-        timeout_ms = self._remaining_kafka_timeout_ms(deadline)
+        effective_api_version_auto_timeout_ms = (
+            self._remaining_kafka_timeout_ms(
+                deadline,
+                timeout_cap_ms=api_version_auto_timeout_ms,
+            )
+        )
+        effective_request_timeout_ms = self._remaining_kafka_timeout_ms(
+            deadline,
+            timeout_cap_ms=request_timeout_ms,
+        )
         try:
             consumer = KafkaConsumer(
                 kafka_client=DiagnosticKafkaClient,
@@ -2292,10 +2685,12 @@ class DtsKafkaConsumer:
                 # KafkaConsumer. Re-pinning the inferred tuple would discard
                 # the DTS endpoint's actual API ranges.
                 api_version=None,
-                api_version_auto_timeout_ms=timeout_ms,
+                api_version_auto_timeout_ms=(
+                    effective_api_version_auto_timeout_ms
+                ),
                 # Metadata, coordinator and timestamp lookups must fail within
                 # a bounded startup budget instead of the 305s default.
-                request_timeout_ms=timeout_ms,
+                request_timeout_ms=effective_request_timeout_ms,
                 enable_auto_commit=False,
                 group_id=self.settings.group_id,
                 sasl_mechanism="PLAIN",
@@ -2400,6 +2795,8 @@ class DtsKafkaConsumer:
         ]
         | None,
         connection_trace: _KafkaConnectionTrace,
+        metadata_request_trace: _KafkaMetadataRequestTrace,
+        request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
     ) -> None:
         """Probe authenticated Kafka request stages without group membership."""
 
@@ -2418,6 +2815,7 @@ class DtsKafkaConsumer:
                 bootstrap_node,
                 deadline_monotonic,
                 connection_trace=connection_trace,
+                request_timeout_ms=request_timeout_ms,
             )
 
         _run_kafka_startup_phase(
@@ -2432,22 +2830,28 @@ class DtsKafkaConsumer:
             always_details=connection_trace.safe_summary,
         )
 
-        _run_kafka_startup_phase(
-            phase_callback,
-            "topic_metadata",
-            lambda: self._request_topic_metadata(
-                consumer,
-                topic_partition,
-                deadline_monotonic,
-            ),
-            request_type="Metadata",
-            success_details=lambda broker_count: {
-                "metadata_request_completed": True,
-                "metadata_scope": "configured_topic",
-                "kcat_list_topic_semantics": True,
-                "advertised_broker_count": broker_count,
-            },
-        )
+        metadata_request_trace.begin()
+        try:
+            _run_kafka_startup_phase(
+                phase_callback,
+                "topic_metadata",
+                lambda: self._request_topic_metadata(
+                    consumer,
+                    topic_partition,
+                    deadline_monotonic,
+                    request_timeout_ms=request_timeout_ms,
+                ),
+                request_type="Metadata",
+                success_details=lambda broker_count: {
+                    "metadata_request_completed": True,
+                    "metadata_scope": "configured_topic",
+                    "kcat_list_topic_semantics": True,
+                    "advertised_broker_count": broker_count,
+                },
+                always_details=metadata_request_trace.safe_summary,
+            )
+        finally:
+            metadata_request_trace.finish()
 
         _run_kafka_startup_phase(
             phase_callback,
@@ -2474,6 +2878,7 @@ class DtsKafkaConsumer:
                 advertised_node,
                 deadline_monotonic,
                 connection_trace=connection_trace,
+                request_timeout_ms=request_timeout_ms,
             )
 
         _run_kafka_startup_phase(
@@ -2496,6 +2901,7 @@ class DtsKafkaConsumer:
             lambda: self._require_group_coordinator(
                 consumer,
                 deadline_monotonic,
+                request_timeout_ms=request_timeout_ms,
             ),
             request_type="FindCoordinator",
             success_details=lambda _result: {"coordinator_discovered": True},
@@ -2513,6 +2919,7 @@ class DtsKafkaConsumer:
                 coordinator_node,
                 deadline_monotonic,
                 connection_trace=connection_trace,
+                request_timeout_ms=request_timeout_ms,
             )
 
         _run_kafka_startup_phase(
@@ -2580,6 +2987,7 @@ class DtsKafkaConsumer:
         deadline_monotonic: float,
         *,
         connection_trace: _KafkaConnectionTrace,
+        request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
     ) -> bool:
         try:
             from kafka.errors import KafkaTimeoutError
@@ -2615,6 +3023,7 @@ class DtsKafkaConsumer:
             cls._set_remaining_request_timeout(
                 consumer,
                 deadline_monotonic,
+                request_timeout_ms=request_timeout_ms,
             )
             if is_ready(node_id, metadata_priority=False):
                 return True
@@ -2625,7 +3034,8 @@ class DtsKafkaConsumer:
                 raise recorded_failure or KafkaConnectionError()
             try:
                 timeout_ms = cls._remaining_kafka_timeout_ms(
-                    deadline_monotonic
+                    deadline_monotonic,
+                    timeout_cap_ms=request_timeout_ms,
                 )
             except DtsConfigurationError as exc:
                 raise KafkaTimeoutError() from exc
@@ -2662,6 +3072,8 @@ class DtsKafkaConsumer:
         consumer: Any,
         topic_partition: Any,
         deadline_monotonic: float,
+        *,
+        request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
     ) -> int:
         try:
             from kafka.errors import KafkaTimeoutError
@@ -2682,9 +3094,16 @@ class DtsKafkaConsumer:
             raise DtsConfigurationError(
                 "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
             )
-        cls._set_remaining_request_timeout(consumer, deadline_monotonic)
+        cls._set_remaining_request_timeout(
+            consumer,
+            deadline_monotonic,
+            request_timeout_ms=request_timeout_ms,
+        )
         future = set_topics([topic_partition.topic])
-        timeout_ms = cls._remaining_kafka_timeout_ms(deadline_monotonic)
+        timeout_ms = cls._remaining_kafka_timeout_ms(
+            deadline_monotonic,
+            timeout_cap_ms=request_timeout_ms,
+        )
         poll(future=future, timeout_ms=timeout_ms)
         if not getattr(future, "is_done", False):
             raise KafkaTimeoutError()
@@ -2725,6 +3144,8 @@ class DtsKafkaConsumer:
         cls,
         consumer: Any,
         deadline_monotonic: float,
+        *,
+        request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
     ) -> None:
         try:
             from kafka.errors import KafkaTimeoutError
@@ -2738,8 +3159,15 @@ class DtsKafkaConsumer:
             raise DtsConfigurationError(
                 "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
             )
-        cls._set_remaining_request_timeout(consumer, deadline_monotonic)
-        timeout_ms = cls._remaining_kafka_timeout_ms(deadline_monotonic)
+        cls._set_remaining_request_timeout(
+            consumer,
+            deadline_monotonic,
+            request_timeout_ms=request_timeout_ms,
+        )
+        timeout_ms = cls._remaining_kafka_timeout_ms(
+            deadline_monotonic,
+            timeout_cap_ms=request_timeout_ms,
+        )
         if not ensure_ready(timeout_ms=timeout_ms):
             raise KafkaTimeoutError()
 
@@ -2753,9 +3181,10 @@ class DtsKafkaConsumer:
             [dict[str, bool | int | str]], None
         ]
         | None = None,
+        request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
     ) -> int:
         deadline = (
-            monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
+            monotonic() + request_timeout_ms / 1000
             if deadline_monotonic is None
             else deadline_monotonic
         )
@@ -2764,7 +3193,10 @@ class DtsKafkaConsumer:
             "offset_fetch",
             lambda: consumer.committed(
                 topic_partition,
-                timeout_ms=self._remaining_kafka_timeout_ms(deadline),
+                timeout_ms=self._remaining_kafka_timeout_ms(
+                    deadline,
+                    timeout_cap_ms=request_timeout_ms,
+                ),
             ),
             request_type="OffsetFetch",
             success_details=lambda result: {
@@ -2807,6 +3239,7 @@ class DtsKafkaConsumer:
                         consumer,
                         deadline,
                         {topic_partition: self.settings.start_timestamp_seconds},
+                        request_timeout_ms=request_timeout_ms,
                     )
                 ),
                 request_type="ListOffsetsTimestamp",
@@ -2831,14 +3264,22 @@ class DtsKafkaConsumer:
                     "DTS_KAFKA_OFFSET_AHEAD_OF_DATABASE"
                 )
 
-        self._set_remaining_request_timeout(consumer, deadline)
+        self._set_remaining_request_timeout(
+            consumer,
+            deadline,
+            request_timeout_ms=request_timeout_ms,
+        )
         beginning_offsets = _run_kafka_startup_phase(
             phase_callback,
             "beginning_offsets",
             lambda: consumer.beginning_offsets([topic_partition]),
             request_type="ListOffsetsEarliest",
         )
-        self._set_remaining_request_timeout(consumer, deadline)
+        self._set_remaining_request_timeout(
+            consumer,
+            deadline,
+            request_timeout_ms=request_timeout_ms,
+        )
         end_offsets = _run_kafka_startup_phase(
             phase_callback,
             "end_offsets",
@@ -2869,19 +3310,28 @@ class DtsKafkaConsumer:
         return target_offset
 
     @staticmethod
-    def _remaining_kafka_timeout_ms(deadline_monotonic: float) -> int:
+    def _remaining_kafka_timeout_ms(
+        deadline_monotonic: float,
+        *,
+        timeout_cap_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
+    ) -> int:
         remaining_ms = ceil((deadline_monotonic - monotonic()) * 1000)
         if remaining_ms < 1:
             raise DtsConfigurationError("DTS_KAFKA_STARTUP_PROBE_TIMEOUT")
-        return min(remaining_ms, KAFKA_REQUEST_TIMEOUT_MS)
+        return min(remaining_ms, timeout_cap_ms)
 
     @classmethod
     def _set_remaining_request_timeout(
         cls,
         consumer: Any,
         deadline_monotonic: float,
+        *,
+        request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
     ) -> None:
-        timeout_ms = cls._remaining_kafka_timeout_ms(deadline_monotonic)
+        timeout_ms = cls._remaining_kafka_timeout_ms(
+            deadline_monotonic,
+            timeout_cap_ms=request_timeout_ms,
+        )
         configs: list[Any] = [getattr(consumer, "config", None)]
         client = getattr(consumer, "_client", None)
         configs.append(getattr(client, "config", None))
@@ -2901,8 +3351,14 @@ class DtsKafkaConsumer:
         consumer: Any,
         deadline_monotonic: float,
         request: dict[Any, int],
+        *,
+        request_timeout_ms: int = KAFKA_REQUEST_TIMEOUT_MS,
     ) -> dict[Any, int]:
-        cls._set_remaining_request_timeout(consumer, deadline_monotonic)
+        cls._set_remaining_request_timeout(
+            consumer,
+            deadline_monotonic,
+            request_timeout_ms=request_timeout_ms,
+        )
         return request
 
     @staticmethod

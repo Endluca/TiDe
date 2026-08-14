@@ -289,6 +289,8 @@ application 项目也不配置任何 DTS 变量。
 |---|---:|---|---|
 | `TIT_PROCESS_PROFILE` | 是 | `dts-ingest` | 只启动 DTS 业务进程 |
 | `TIT_DTS_STARTUP_RETRY_SECONDS` | 否 | `15` | 仅 `--watch` 容器启动期使用；以该值起步、2 倍退避并在 60 秒封顶，默认 `15/30/60`，允许范围 `(0,60]` |
+| `TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` | 否 | `15000` | 仅 Kafka 启动门禁的 Metadata/Coordinator/Offset 等请求上限，允许 `1–120000`；PRE 兼容诊断可临时设为 `120000` |
+| `TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` | 否 | `15000` | 仅 Kafka 启动门禁的 ApiVersions 自动协商上限，允许 `1–120000`；PRE 兼容诊断可临时设为 `120000` |
 | `TIT_DTS_PASSWORD` | 是 | 各自 Gaea 密钥 | 只用于本项目对应订阅的 DTS SASL |
 | `TIT_DTS_COHORT_START` | 否 | `2026-08-13` | 北京时间新教师 cohort 起点，按 `dom_teacher.status_on_time` 日期筛选；两项目必须一致 |
 | `TIT_DTS_COHORT_END_EXCLUSIVE` | 否 | 空 | 开放式人群；需要封闭批次时才设置不含当天的结束边界 |
@@ -351,8 +353,15 @@ kafka-python 2.2.20，依赖漂移会在发送 Kafka 凭据或协议请求前失
 advertised leader、协调器或 offset 可用，后续远端阶段仍须逐项通过。
 消费者手工绑定 partition 0，不执行 `JoinGroup`；不能用“未加入消费组”替代 SASL、FindCoordinator
 或 OffsetFetch 的阶段判断。
-Kafka 位点探针按同一 15 秒 deadline 收紧剩余请求超时；这是 kafka-python 阻塞 SASL/DNS 调用
-协作遵守的预算，不是可强制终止进程的绝对 wall-clock 上限。关闭连接另有 1 秒上限；
+Kafka 位点探针默认按同一 15 秒 deadline 收紧剩余请求超时；两个 startup-only 变量允许在
+`1–120000ms` 内分别调整 Kafka 请求与 ApiVersions 自动协商上限，整轮共享 deadline 取两者较大值，
+每个请求取自身配置上限与当时剩余整轮预算的较小值，较晚阶段因此可能被剩余预算缩短。
+`kafka_client_config` 明确读回 `configured_request_timeout_ms`、
+`configured_api_version_auto_timeout_ms` 和 `configured_startup_probe_budget_ms`；后续每条 Kafka
+phase 日志还会动态输出 `remaining_probe_budget_ms`、`effective_request_timeout_ms` 和
+`effective_api_version_auto_timeout_ms`。这些字段均为非敏感整数；超时失败时动态值可为 `0`，日志计算本身不会覆盖原始错误。
+这只是 kafka-python 阻塞 SASL/DNS 调用协作遵守的预算，不是可强制终止进程的绝对 wall-clock
+上限。正式消费初始化、位点续跑、commit 与 heartbeat 仍固定使用 15 秒；关闭连接另有 1 秒上限；
 探针不读取消息、不写目标库、不提交 offset。`--watch` 容器遇到明确白名单内的暂态网络、Kafka
 连接/超时、数据库连接或激活依赖未就绪时，不再退出制造 CrashLoop，而是在同一 PID 内按
 `TIT_DTS_STARTUP_RETRY_SECONDS` 起步、2 倍退避并在 60 秒封顶（默认 `15/30/60`）；每轮都关闭失败连接池并使用全新

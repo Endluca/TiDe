@@ -190,8 +190,14 @@ Broker API 2.7；实现因此让每个 fresh consumer 都重新协商。参见[�
 证明 Topic、advertised leader、消费组协调器或 offset 可用，后续阶段必须继续通过。消费者使用
 手工 partition assignment，不执行 `JoinGroup`；消费组可用性以 `group_coordinator` 和
 `offset_fetch` 为准。
-各阶段按同一个 15 秒 deadline 收紧剩余请求超时；这是 kafka-python 阻塞 SASL/DNS 调用遵守
-超时的协作式预算，不是可强制终止进程的绝对 wall-clock 上限。
+启动阶段默认按同一个 15 秒 deadline 收紧剩余请求超时；仅启动门禁可分别通过
+`TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` 与
+`TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` 在 `1–120000ms` 内调整。整轮共享 deadline
+取两者较大值；每个 Kafka 请求取“自身配置上限”和“当时整轮剩余预算”的较小值，因此较晚阶段
+可能短于配置值。脱敏客户端摘要明确输出三个 `configured_*` 上限，每条 phase 再输出当时的
+`remaining_probe_budget_ms` 以及两个 `effective_*` 值；超时失败时动态值安全收敛为 `0`。
+这只是 kafka-python 阻塞 SASL/DNS 调用遵守超时的协作式预算，不是可强制终止进程的绝对
+wall-clock 上限；正式消费、位点续跑、commit 和 heartbeat 继续固定使用 15 秒，不会随诊断值放大。
 `--watch` 容器对明确白名单内的暂态网络、Kafka/数据库连接和激活依赖失败使用全新连接资源，
 默认按 `15/30/60` 秒有界退避重跑完整启动门禁，不再靠进程退出制造 CrashLoop；重试期间不写 readiness 或
 heartbeat。认证/授权、配置、Schema/ACL、隐私/HMAC 和 offset 不变量错误仍失败退出。这些检查在

@@ -23,6 +23,7 @@ from app.dts_source_consumer import (
     DtsRecordError,
     InMemoryShadowSink,
     _KafkaConnectionTrace,
+    _KafkaMetadataRequestTrace,
     _parsed_avro_schema,
     _run_kafka_startup_phase,
     assert_domestic_event_protected,
@@ -342,6 +343,7 @@ class _FakeKafkaStartupConsumer:
         self.reused_nodes = set() if reused_nodes is None else reused_nodes
         self.timeout_events: list[int] = []
         self.open_deadlines: list[float] = []
+        self.open_timeout_configs: list[tuple[int, int]] = []
         self.config = {
             "api_version": self.negotiated_api_version,
             "request_timeout_ms": 15_000,
@@ -418,13 +420,24 @@ def _install_fake_startup_consumer(
         _self: DtsKafkaShadowConsumer,
         *,
         connection_trace: object | None = None,
+        metadata_request_trace: object | None = None,
         deadline_monotonic: float | None = None,
+        request_timeout_ms: int = 15_000,
+        api_version_auto_timeout_ms: int = 15_000,
     ) -> _FakeKafkaStartupConsumer:
         assert deadline_monotonic is not None
         fake.open_deadlines.append(deadline_monotonic)
-        _self._set_remaining_request_timeout(fake, deadline_monotonic)
+        fake.open_timeout_configs.append(
+            (request_timeout_ms, api_version_auto_timeout_ms)
+        )
+        _self._set_remaining_request_timeout(
+            fake,
+            deadline_monotonic,
+            request_timeout_ms=request_timeout_ms,
+        )
         fake.timeout_events.append(fake.config["request_timeout_ms"])
         fake._client.connection_trace = connection_trace
+        fake._client.metadata_request_trace = metadata_request_trace
         _self._last_negotiated_api_version = fake.negotiated_api_version
         if connection_trace is not None:
             connection_trace.begin(fake.bootstrap_node)
@@ -513,6 +526,9 @@ def _as_auto_negotiated_consumer(
         ) -> None:
             return None
 
+        def _send_bytes(self, data: bytes) -> int:
+            return len(data)
+
     config = dict(getattr(consumer, "config", {}))
     config["api_version"] = version
     setattr(consumer, "config", config)
@@ -527,6 +543,7 @@ def _as_auto_negotiated_consumer(
         client._maybe_refresh_metadata(),
     )
     connection = FakeConnection()
+    client._conns = {"private-bootstrap-node": connection}
     for state in (
         ConnectionStates.CONNECTING,
         ConnectionStates.API_VERSIONS_SEND,
@@ -597,6 +614,9 @@ def test_settings_use_epoch_seconds_and_build_official_sasl_username() -> None:
 
     assert settings.sasl_username == "consumer-opaque-provider-group-id-01"
     assert settings.start_timestamp_seconds == 1786550400
+    assert settings.kafka_startup_request_timeout_ms == 15_000
+    assert settings.kafka_startup_api_version_auto_timeout_ms == 15_000
+    assert settings.kafka_startup_probe_budget_ms == 15_000
     summary = settings.safe_summary()
     assert summary["start_timestamp_seconds"] == 1786550400
     assert "start_timestamp_ms" not in summary
@@ -610,6 +630,61 @@ def test_settings_use_epoch_seconds_and_build_official_sasl_username() -> None:
     with pytest.raises(
         DtsConfigurationError,
         match="TIT_DTS_START_AT_REQUIRES_TIMEZONE",
+    ):
+        DtsConsumerSettings.from_env(values)
+
+
+def test_settings_accept_independent_bounded_kafka_startup_timeouts() -> None:
+    values = {
+        "TIT_DTS_SOURCE_REGION": "ovs",
+        "TIT_DTS_EXECUTION_REGION": "sg",
+        "TIT_DTS_BROKER_URL": "broker.internal:18003",
+        "TIT_DTS_TOPIC": "topic-v2",
+        "TIT_DTS_GROUP_ID": "opaque-provider-group-id-01",
+        "TIT_DTS_ACCOUNT": "consumer",
+        "TIT_DTS_PASSWORD": "runtime-only",
+        "TIT_DTS_START_AT": "2026-08-13T00:00:00+08:00",
+        "TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS": "60000",
+        "TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS": "120000",
+    }
+
+    settings = DtsConsumerSettings.from_env(values)
+
+    assert settings.kafka_startup_request_timeout_ms == 60_000
+    assert settings.kafka_startup_api_version_auto_timeout_ms == 120_000
+    assert settings.kafka_startup_probe_budget_ms == 120_000
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS", "0"),
+        ("TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS", "120001"),
+        ("TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS", "1.5"),
+        ("TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS", "-1"),
+        ("TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS", "120001"),
+        ("TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS", "forever"),
+    ],
+)
+def test_settings_reject_invalid_kafka_startup_timeouts(
+    name: str,
+    value: str,
+) -> None:
+    values = {
+        "TIT_DTS_SOURCE_REGION": "ovs",
+        "TIT_DTS_EXECUTION_REGION": "sg",
+        "TIT_DTS_BROKER_URL": "broker.internal:18003",
+        "TIT_DTS_TOPIC": "topic-v2",
+        "TIT_DTS_GROUP_ID": "opaque-provider-group-id-01",
+        "TIT_DTS_ACCOUNT": "consumer",
+        "TIT_DTS_PASSWORD": "runtime-only",
+        "TIT_DTS_START_AT": "2026-08-13T00:00:00+08:00",
+        name: value,
+    }
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match=f"^{name}_INVALID$",
     ):
         DtsConsumerSettings.from_env(values)
 
@@ -1644,6 +1719,8 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
         account="consumer",
         password="runtime-only",
         start_timestamp_seconds=1786550400,
+        kafka_startup_request_timeout_ms=120_000,
+        kafka_startup_api_version_auto_timeout_ms=120_000,
     )
     consumer = DtsKafkaShadowConsumer(
         settings,
@@ -1938,7 +2015,12 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
     )
     assert client_probe["api_version"] == "auto"
     assert client_probe["protocol_version_mode"] == "auto_negotiation"
-    assert client_probe["api_version_auto_timeout_ms"] == 15_000
+    assert client_probe["configured_request_timeout_ms"] == 15_000
+    assert (
+        client_probe["configured_api_version_auto_timeout_ms"]
+        == 15_000
+    )
+    assert client_probe["configured_startup_probe_budget_ms"] == 15_000
     assert client_probe[
         "group_membership_mode"
     ] == "manual_partition_assignment"
@@ -1999,16 +2081,12 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
         ] is True
         assert completed[phase]["connection_reused"] is False
         assert completed[phase]["sasl_authenticated_observed"] is True
-    assert completed["topic_metadata"] == {
-        "phase": "topic_metadata",
-        "request_type": "Metadata",
-        "status": "ok",
-        "elapsed_ms": completed["topic_metadata"]["elapsed_ms"],
-        "metadata_request_completed": True,
-        "metadata_scope": "configured_topic",
-        "kcat_list_topic_semantics": True,
-        "advertised_broker_count": 1,
-    }
+    topic_metadata = completed["topic_metadata"]
+    assert topic_metadata["request_type"] == "Metadata"
+    assert topic_metadata["metadata_request_completed"] is True
+    assert topic_metadata["metadata_scope"] == "configured_topic"
+    assert topic_metadata["kcat_list_topic_semantics"] is True
+    assert topic_metadata["advertised_broker_count"] == 1
     assert completed["partition_check"][
         "configured_partition_present"
     ] is True
@@ -2052,6 +2130,21 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
     ]
     assert fake._client.fire_completed_calls == 2
     assert len(fake.open_deadlines) == 1
+    for payload in emitted:
+        if "phase" not in payload:
+            continue
+        assert payload["configured_request_timeout_ms"] == 15_000
+        assert (
+            payload["configured_api_version_auto_timeout_ms"]
+            == 15_000
+        )
+        remaining_ms = int(payload["remaining_probe_budget_ms"])
+        assert 0 <= remaining_ms <= 15_000
+        assert payload["effective_request_timeout_ms"] == remaining_ms
+        assert (
+            payload["effective_api_version_auto_timeout_ms"]
+            == remaining_ms
+        )
     assert all(
         payload["elapsed_ms"] >= 0
         for payload in emitted
@@ -2072,6 +2165,84 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
         assert secret not in serialized
 
 
+@pytest.mark.parametrize(
+    ("request_timeout_ms", "api_version_auto_timeout_ms"),
+    [(60_000, 120_000), (120_000, 60_000)],
+)
+def test_kafka_startup_probe_honors_independent_extended_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+    successful_broker_tcp_probe: None,
+    request_timeout_ms: int,
+    api_version_auto_timeout_ms: int,
+) -> None:
+    from app import dts_source_consumer as consumer_module
+
+    fake = _FakeKafkaStartupConsumer()
+    _install_fake_startup_consumer(monkeypatch, fake)
+    monkeypatch.setattr(consumer_module, "monotonic", lambda: 100.0)
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("private-bootstrap.example:18003",),
+        topic="private-topic-v2",
+        group_id="private-provider-group-id",
+        account="private-consumer-account",
+        password="private-consumer-password",
+        start_timestamp_seconds=1786550400,
+        kafka_startup_request_timeout_ms=request_timeout_ms,
+        kafka_startup_api_version_auto_timeout_ms=(
+            api_version_auto_timeout_ms
+        ),
+    )
+    emitted: list[dict[str, bool | int | str]] = []
+
+    result = DtsKafkaShadowConsumer(
+        settings,
+        DtsEventProcessor(InMemoryShadowSink()),
+    ).startup_probe(phase_callback=emitted.append)
+
+    assert result["status"] == "ok"
+    assert fake.open_deadlines == [220.0]
+    assert fake.open_timeout_configs == [
+        (request_timeout_ms, api_version_auto_timeout_ms)
+    ]
+    assert fake.timeout_events
+    assert set(fake.timeout_events) == {request_timeout_ms}
+    client_probe = next(
+        payload
+        for payload in emitted
+        if payload.get("probe") == "kafka_client_config"
+    )
+    assert (
+        client_probe["configured_request_timeout_ms"]
+        == request_timeout_ms
+    )
+    assert (
+        client_probe["configured_api_version_auto_timeout_ms"]
+        == api_version_auto_timeout_ms
+    )
+    assert client_probe["configured_startup_probe_budget_ms"] == 120_000
+    for payload in emitted:
+        if "phase" not in payload:
+            continue
+        assert (
+            payload["configured_request_timeout_ms"]
+            == request_timeout_ms
+        )
+        assert (
+            payload["configured_api_version_auto_timeout_ms"]
+            == api_version_auto_timeout_ms
+        )
+        assert payload["remaining_probe_budget_ms"] == 120_000
+        assert (
+            payload["effective_request_timeout_ms"]
+            == request_timeout_ms
+        )
+        assert (
+            payload["effective_api_version_auto_timeout_ms"]
+            == api_version_auto_timeout_ms
+        )
+
+
 def test_kafka_connection_trace_ignores_non_target_bootstrap_close() -> None:
     trace = _KafkaConnectionTrace()
     trace.begin("private-topic-leader-node")
@@ -2088,6 +2259,146 @@ def test_kafka_connection_trace_ignores_non_target_bootstrap_close() -> None:
     )
     assert "disconnected" not in str(summary["connection_state_path"])
     assert trace.recorded_failure() is None
+
+
+def test_kafka_metadata_trace_records_complete_request_milestones() -> None:
+    from kafka.future import Future
+
+    trace = _KafkaMetadataRequestTrace()
+    connection = object()
+    future = Future()
+    trace.begin()
+
+    trace.record_request(
+        connection,
+        SimpleNamespace(API_KEY=3, API_VERSION=1),
+        future,
+    )
+    trace.record_write_attempt(connection)
+    future.success(SimpleNamespace(private_topic="must-not-be-read"))
+
+    summary = trace.safe_summary()
+    assert summary["api_key"] == 3
+    assert summary["api_version"] == 1
+    assert summary["request_queued"] is True
+    assert summary["write_attempted"] is True
+    assert summary["response_received"] is True
+    assert summary["disconnect_observed"] is False
+    assert "disconnect_kind" not in summary
+    assert 0 <= summary["request_queued_elapsed_ms"]
+    assert (
+        summary["request_queued_elapsed_ms"]
+        <= summary["write_attempted_elapsed_ms"]
+        <= summary["response_received_elapsed_ms"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "expected_kind"),
+    [
+        (
+            lambda: __import__(
+                "kafka.errors",
+                fromlist=["KafkaConnectionError"],
+            ).KafkaConnectionError("socket disconnected"),
+            "FIN",
+        ),
+        (
+            lambda: __import__(
+                "kafka.errors",
+                fromlist=["KafkaConnectionError"],
+            ).KafkaConnectionError(
+                ConnectionResetError(
+                    errno.ECONNRESET,
+                    "private-endpoint-password",
+                )
+            ),
+            "RST",
+        ),
+        (
+            lambda: __import__(
+                "kafka.errors",
+                fromlist=["RequestTimedOutError"],
+            ).RequestTimedOutError("private-endpoint-password"),
+            "timeout",
+        ),
+        (
+            lambda: __import__(
+                "kafka.errors",
+                fromlist=["InvalidReceiveError"],
+            ).InvalidReceiveError("private-endpoint-password"),
+            "protocol",
+        ),
+        (
+            lambda: __import__(
+                "kafka.errors",
+                fromlist=["KafkaConnectionError"],
+            ).KafkaConnectionError("private-endpoint-password"),
+            "unknown",
+        ),
+    ],
+)
+def test_kafka_metadata_trace_classifies_disconnect_without_error_text(
+    error_factory: object,
+    expected_kind: str,
+) -> None:
+    from kafka.future import Future
+
+    trace = _KafkaMetadataRequestTrace()
+    connection = object()
+    future = Future()
+    trace.begin()
+    trace.record_request(
+        connection,
+        SimpleNamespace(API_KEY=3, API_VERSION=2),
+        future,
+    )
+    trace.record_write_attempt(connection)
+    trace.record_disconnect(connection, error_factory())
+
+    summary = trace.safe_summary()
+    assert summary["response_received"] is False
+    assert summary["disconnect_observed"] is True
+    assert summary["disconnect_kind"] == expected_kind
+    assert summary["disconnect_elapsed_ms"] >= 0
+    serialized = json.dumps(summary, sort_keys=True)
+    assert "private-endpoint-password" not in serialized
+    assert "socket disconnected" not in serialized
+
+
+def test_kafka_metadata_trace_ignores_other_apis_and_stale_future() -> None:
+    from kafka.future import Future
+
+    trace = _KafkaMetadataRequestTrace()
+    connection = object()
+    stale_future = Future()
+    trace.begin()
+    trace.record_request(
+        connection,
+        SimpleNamespace(API_KEY=18, API_VERSION=3),
+        Future(),
+    )
+    trace.record_request(
+        connection,
+        SimpleNamespace(API_KEY=3, API_VERSION=1),
+        stale_future,
+    )
+    trace.finish()
+
+    current_future = Future()
+    trace.begin()
+    trace.record_request(
+        connection,
+        SimpleNamespace(API_KEY=3, API_VERSION=2),
+        current_future,
+    )
+    stale_future.success(SimpleNamespace())
+    assert trace.safe_summary()["response_received"] is False
+
+    current_future.success(SimpleNamespace())
+    summary = trace.safe_summary()
+    assert summary["response_received"] is True
+    assert summary["api_version"] == 2
 
 
 def test_kafka_connection_trace_preserves_specific_sasl_failure() -> None:
@@ -3014,6 +3325,63 @@ def test_kafka_library_logs_never_reach_the_root_logger(
     assert isinstance(captured_kwargs["kafka_client"], type)
 
 
+def test_open_consumer_wires_safe_metadata_transport_milestones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+    from kafka.client_async import KafkaClient
+    from kafka.future import Future
+
+    _allow_fake_constructor_state_machine(monkeypatch)
+    pending = Future()
+    monkeypatch.setattr(
+        KafkaClient,
+        "send",
+        lambda _self, _node_id, _request, **_kwargs: pending,
+    )
+
+    class ConstructedConsumer:
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+
+    constructed = ConstructedConsumer()
+
+    def factory(**kwargs: object) -> object:
+        return _as_auto_negotiated_consumer(
+            constructed,
+            kafka_client_class=kwargs["kafka_client"],
+        )
+
+    monkeypatch.setattr(kafka, "KafkaConsumer", factory)
+    trace = _KafkaMetadataRequestTrace()
+    consumer = DtsKafkaShadowConsumer(
+        _startup_probe_settings(),
+        DtsEventProcessor(InMemoryShadowSink()),
+    )
+    opened = consumer._open_consumer(metadata_request_trace=trace)
+    client = opened._client
+    connection = client._conns["private-bootstrap-node"]
+
+    trace.begin()
+    request_future = client.send(
+        "private-bootstrap-node",
+        SimpleNamespace(API_KEY=3, API_VERSION=1),
+    )
+    connection._send_bytes(b"opaque-metadata-frame")
+    request_future.success(
+        SimpleNamespace(private_topic="must-not-be-rendered")
+    )
+
+    summary = trace.safe_summary()
+    assert summary["api_key"] == 3
+    assert summary["api_version"] == 1
+    assert summary["request_queued"] is True
+    assert summary["write_attempted"] is True
+    assert summary["response_received"] is True
+    assert "private" not in json.dumps(summary)
+
+
 def test_kafka_startup_probe_classifies_consumer_construction_timeout(
     monkeypatch: pytest.MonkeyPatch,
     successful_broker_tcp_probe: None,
@@ -3060,6 +3428,19 @@ def test_kafka_startup_probe_fails_closed_on_kafka_client_version_drift(
         "_kafka_client_version",
         lambda: "2.2.21",
     )
+    clock_values = iter((100.0, 100.0))
+
+    def failing_diagnostic_clock() -> float:
+        try:
+            return next(clock_values)
+        except StopIteration as exc:
+            raise RuntimeError("diagnostic clock unavailable") from exc
+
+    monkeypatch.setattr(
+        consumer_module,
+        "monotonic",
+        failing_diagnostic_clock,
+    )
     monkeypatch.setattr(
         kafka,
         "KafkaConsumer",
@@ -3100,6 +3481,11 @@ def test_kafka_startup_probe_fails_closed_on_kafka_client_version_drift(
             "api_versions_response_received_observed": False,
             "sasl_started_observed": False,
             "sasl_authenticated_observed": False,
+            "configured_request_timeout_ms": 15_000,
+            "configured_api_version_auto_timeout_ms": 15_000,
+            "remaining_probe_budget_ms": 0,
+            "effective_request_timeout_ms": 0,
+            "effective_api_version_auto_timeout_ms": 0,
         }
     ]
 
@@ -3158,32 +3544,40 @@ def test_kafka_startup_probe_validates_database_checkpoint_with_bounded_calls(
         connection.config["request_timeout_ms"]
         for connection in fake._client._conns.values()
     } == {fake.config["request_timeout_ms"]}
-    assert without_phase_elapsed([
+    offset_phase_payloads = [
         payload
         for payload in emitted
         if payload.get("phase") in {"beginning_offsets", "end_offsets"}
-    ]) == [
-        {
-            "phase": "beginning_offsets",
-            "request_type": "ListOffsetsEarliest",
-            "status": "begin",
-        },
-        {
-            "phase": "beginning_offsets",
-            "request_type": "ListOffsetsEarliest",
-            "status": "ok",
-        },
-        {
-            "phase": "end_offsets",
-            "request_type": "ListOffsetsLatest",
-            "status": "begin",
-        },
-        {
-            "phase": "end_offsets",
-            "request_type": "ListOffsetsLatest",
-            "status": "ok",
-        },
     ]
+    assert [
+        (payload["phase"], payload["request_type"], payload["status"])
+        for payload in offset_phase_payloads
+    ] == [
+        ("beginning_offsets", "ListOffsetsEarliest", "begin"),
+        ("beginning_offsets", "ListOffsetsEarliest", "ok"),
+        ("end_offsets", "ListOffsetsLatest", "begin"),
+        ("end_offsets", "ListOffsetsLatest", "ok"),
+    ]
+    logged_remaining_ms = [
+        int(payload["remaining_probe_budget_ms"])
+        for payload in offset_phase_payloads
+    ]
+    assert all(0 < value < 15_000 for value in logged_remaining_ms)
+    assert logged_remaining_ms == sorted(logged_remaining_ms, reverse=True)
+    for payload, remaining_ms in zip(
+        offset_phase_payloads,
+        logged_remaining_ms,
+    ):
+        assert payload["configured_request_timeout_ms"] == 15_000
+        assert (
+            payload["configured_api_version_auto_timeout_ms"]
+            == 15_000
+        )
+        assert payload["effective_request_timeout_ms"] == remaining_ms
+        assert (
+            payload["effective_api_version_auto_timeout_ms"]
+            == remaining_ms
+        )
 
 
 @pytest.mark.parametrize(
