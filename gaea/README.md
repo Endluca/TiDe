@@ -288,6 +288,7 @@ application 项目也不配置任何 DTS 变量。
 | 变量名 | 必填 | TEST 值/约束 | 说明 |
 |---|---:|---|---|
 | `TIT_PROCESS_PROFILE` | 是 | `dts-ingest` | 只启动 DTS 业务进程 |
+| `TIT_DTS_STARTUP_RETRY_SECONDS` | 否 | `15` | 仅 `--watch` 容器启动期使用；以该值起步、2 倍退避并在 60 秒封顶，默认 `15/30/60`，允许范围 `(0,60]` |
 | `TIT_DTS_PASSWORD` | 是 | 各自 Gaea 密钥 | 只用于本项目对应订阅的 DTS SASL |
 | `TIT_DTS_COHORT_START` | 否 | `2026-08-13` | 北京时间新教师 cohort 起点，按 `dom_teacher.status_on_time` 日期筛选；两项目必须一致 |
 | `TIT_DTS_COHORT_END_EXCLUSIVE` | 否 | 空 | 开放式人群；需要封闭批次时才设置不含当天的结束边界 |
@@ -326,33 +327,44 @@ DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`
 只读探针全部通过后，才写本次进程的
 `readiness=ready`。TCP 探针不收发应用数据；TCP 失败输出 `DTS_BROKER_TCP_*`，TCP 成功会先打印
 `DTS_STARTUP_PROBE/broker_tcp status=ok`，之后 Kafka 请求超时输出
-`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 探针先输出脱敏的客户端契约摘要（客户端/API 版本、
+`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 探针先输出脱敏的客户端契约摘要（客户端版本/API 自动协商模式、
 SASL 协议、partition 和有界超时），再按实际位点路径输出不含连接身份的固定阶段；阶段来自
 `consumer_open`、`bootstrap_auth`、`topic_metadata`、`partition_check`、
 `advertised_broker_auth`、`group_coordinator`、`coordinator_auth`、`offset_fetch`，并按实际位点
 路径继续输出 `offsets_for_times`、`beginning_offsets`、`end_offsets`，均带 `begin/ok/fail`。
 `topic_metadata` 是在失败 Pod 同一网络命名空间中执行的、与 `kcat -L -t <topic>` 同类语义的
 单 Topic Metadata 请求，随后由 `partition_check` 验证配置 partition 0；实现复用正式 kafka-python 客户端，不创建含密码的 kcat 配置
-文件。客户端固定使用 Kafka 2.7，因此建连阶段只记录“应用固定协议版本”而不冒充远端
-ApiVersions 请求；协议分段适配器只接受锁定的 kafka-python 2.2.20，依赖漂移会在发送 Kafka
-凭据或协议请求前失败关闭。
+文件。`consumer_open` 会对 bootstrap 连接真实发送 `ApiVersions` 自动协商客户端兼容协议，再完成
+该连接的 SASL；日志中的协商结果只是 kafka-python 选择的兼容版本，不是 DTS Broker 精确版本。
+后续 `bootstrap_auth` 复核已认证连接，通常显示连接复用。协议分段适配器只接受锁定的
+kafka-python 2.2.20，依赖漂移会在发送 Kafka 凭据或协议请求前失败关闭。
 连接阶段输出固定状态路径以及 TCP、协议版本、SASL 的安全布尔证据。完成或失败阶段带
 `elapsed_ms`；失败只输出白名单 `error_type`、稳定
-`error_code` 和 `retriable`；其中 `retriable` 表示 kafka-python 对该错误类别的同请求重试语义，
-不是应用会无限重试的承诺。上述启动诊断不输出 endpoint、账号、消费组、密码、异常正文或堆栈。代码会
+`error_code` 和 `retriable`；其中 Kafka 阶段的 `retriable` 先表示 kafka-python 对该错误类别的同请求
+重试语义，容器进程还会再经过自己的暂态白名单才决定是否重试。上述启动诊断不输出 endpoint、账号、
+消费组、密码、异常正文或堆栈。代码会
 隔离 kafka-python 原生日志，只保留这些结构化诊断，因为 SASL 调试报文可能包含认证字节。
 同理，不得把 `SASL_PLAINTEXT/PLAIN` 会话的完整 `tcpdump -w` 抓包直接上传或发群：payload
 包含可还原的消费用户名与密码。网络侧优先只提供 TCP flags/长度/时序；若经安全负责人批准必须
 移交完整 pcap，只能走受控通道，并在抓包后立即轮换对应 DTS 消费密码。
-`consumer_open=ok` 只表示客户端对象已创建，后续远端请求阶段成功才是对应 Kafka 能力的证据。
+`consumer_open=ok` 表示 bootstrap 的 ApiVersions 响应和 SASL 已成功，但不证明目标 Topic、
+advertised leader、协调器或 offset 可用，后续远端阶段仍须逐项通过。
 消费者手工绑定 partition 0，不执行 `JoinGroup`；不能用“未加入消费组”替代 SASL、FindCoordinator
 或 OffsetFetch 的阶段判断。
 Kafka 位点探针按同一 15 秒 deadline 收紧剩余请求超时；这是 kafka-python 阻塞 SASL/DNS 调用
 协作遵守的预算，不是可强制终止进程的绝对 wall-clock 上限。关闭连接另有 1 秒上限；
-探针不读取消息、不写目标库、不提交 offset，任一步失败都由进程非零退出且不会短暂变绿。该门禁
-成功后，国内进程会在写 readiness 前幂等登记一条仅含契约版本与 HMAC key fingerprint 的受限
-状态行；它不包含密钥或学生标识，fingerprint 不匹配会失败关闭。
-在每次容器进程启动/重启时执行，不在镜像构建或周期 healthcheck 中重复执行。首轮以及后续消费循环成功完成后才
+探针不读取消息、不写目标库、不提交 offset。`--watch` 容器遇到明确白名单内的暂态网络、Kafka
+连接/超时、数据库连接或激活依赖未就绪时，不再退出制造 CrashLoop，而是在同一 PID 内按
+`TIT_DTS_STARTUP_RETRY_SECONDS` 起步、2 倍退避并在 60 秒封顶（默认 `15/30/60`）；每轮都关闭失败连接池并使用全新
+数据库连接、Kafka 客户端和投影锁会话重跑完整门禁。重试期间 readiness 与 heartbeat 都不存在，
+因此 Pod 必须保持 NotReady/不健康，不能把“进程仍活着”解释成链路可用。SASL/Topic/Group/Cluster
+授权、协议不兼容或配置错误，以及数据库身份、Schema/ACL、隐私/HMAC/offset 不变量失败仍立即非零退出；
+非 `--watch` 诊断命令也保持单次失败退出。国内进程只有在探针成功后，才会在写 readiness 前幂等
+登记一条仅含契约版本与 HMAC key fingerprint 的受限状态行；它不包含密钥或学生标识，fingerprint
+不匹配会失败关闭。该整套门禁在每次容器进程启动/重启以及每次暂态重试时执行，不在镜像构建或周期 healthcheck
+中重复执行。镜像 HEALTHCHECK 表达 readiness 与消费进展，不是独立 liveness；发布时
+必须读回 Gaea 实际 `startupProbe/readinessProbe/livenessProbe`，不得让 liveness 因启动期缺少健康文件
+而杀掉仍在安全重试的进程。首轮以及后续消费循环成功完成后才
 刷新 heartbeat，其中包含本轮接入和宽表投影计数。两者同时健康只证明服务具备消费条件并持续
 运行，不证明至少消费到一条业务消息或字段值已通过对账。国内项目的起始边界已固定为
 `2026-08-12T16:30:00+08:00`；任一项目未注入

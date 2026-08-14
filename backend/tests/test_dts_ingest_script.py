@@ -868,3 +868,494 @@ def test_startup_probe_failure_prevents_readiness(
     assert not heartbeat.exists()
     assert sink.privacy_contract_registered is False
     assert sink.closed is True
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    ["0", "-1", "nan", "inf", "61", "not-a-number"],
+)
+def test_startup_retry_interval_rejects_non_positive_or_unbounded_values(
+    raw_value: str,
+) -> None:
+    args = run_dts_ingest.build_parser().parse_args(
+        ["--startup-retry-seconds", raw_value]
+    )
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_STARTUP_RETRY_SECONDS_INVALID$",
+    ):
+        run_dts_ingest._startup_retry_seconds(args)
+
+
+def test_startup_retry_interval_uses_cli_then_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TIT_DTS_STARTUP_RETRY_SECONDS", "20")
+    assert run_dts_ingest._startup_retry_seconds(
+        run_dts_ingest.build_parser().parse_args([])
+    ) == 20.0
+    assert run_dts_ingest._startup_retry_seconds(
+        run_dts_ingest.build_parser().parse_args(
+            ["--startup-retry-seconds", "2.5"]
+        )
+    ) == 2.5
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (
+            KafkaConnectionError("broker.internal password=secret"),
+            "DTS_BROKER_CONNECTION_FAILED",
+        ),
+        (
+            KafkaTimeoutError("broker.internal password=secret"),
+            "DTS_BROKER_KAFKA_REQUEST_TIMEOUT",
+        ),
+        (
+            DtsConfigurationError("DTS_BROKER_TCP_CONNECTION_TIMEOUT"),
+            "DTS_BROKER_TCP_CONNECTION_TIMEOUT",
+        ),
+        (
+            run_dts_ingest.DtsIngestStoreError(
+                "DTS_PROJECTION_CHECKPOINT_NOT_READY"
+            ),
+            "DTS_PROJECTION_CHECKPOINT_NOT_READY",
+        ),
+        (
+            OperationalError(
+                "CONNECT",
+                {},
+                RuntimeError("db.internal password=secret connection refused"),
+            ),
+            "DTS_TARGET_CONNECTION_REFUSED",
+        ),
+    ],
+)
+def test_only_explicit_transient_startup_errors_are_retryable(
+    error: Exception,
+    expected_code: str,
+) -> None:
+    diagnostic = run_dts_ingest._retryable_startup_diagnostic(
+        error,
+        sslmode="disable",
+    )
+
+    assert diagnostic == {
+        "error_code": expected_code,
+        "error_type": (
+            "OperationalError"
+            if isinstance(error, OperationalError)
+            else type(error).__name__
+        ),
+        "retriable": True,
+    }
+    rendered = json.dumps(diagnostic)
+    assert "internal" not in rendered
+    assert "secret" not in rendered
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SaslAuthenticationFailedError("account=consumer password=secret"),
+        TopicAuthorizationFailedError("topic-v2 password=secret"),
+        GroupAuthorizationFailedError("group-id password=secret"),
+        UnsupportedVersionError("broker.internal password=secret"),
+        DtsConfigurationError("DTS_TARGET_STATE_SCHEMA_MISMATCH"),
+        run_dts_ingest.DtsIngestStoreError(
+            "DTS_TARGET_STATE_SCHEMA_MISMATCH"
+        ),
+        RuntimeError("broker.internal password=secret"),
+    ],
+)
+def test_permanent_or_unknown_startup_errors_are_not_retried(
+    error: Exception,
+) -> None:
+    assert (
+        run_dts_ingest._retryable_startup_diagnostic(
+            error,
+            sslmode="disable",
+        )
+        is None
+    )
+
+
+def test_watch_retries_transient_startup_with_fresh_resources_before_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    readiness = tmp_path / "readiness.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    stream_settings = SimpleNamespace(
+        source_region="ovs",
+        topic="ovs-topic",
+        partition=0,
+        start_timestamp_seconds=1786550400,
+        require_target_transport=lambda **_kwargs: None,
+        domestic_student_hmac_fingerprint=lambda: None,
+        safe_summary=lambda: {"source_region": "ovs"},
+    )
+    database_settings = SimpleNamespace(
+        sslmode="disable",
+        host="tide-system.rwlb.singapore.rds.aliyuncs.com",
+        port=5432,
+        safe_summary=lambda: {"database": "tide_system_test"},
+    )
+
+    class Sink:
+        engine = object()
+
+        def __init__(self) -> None:
+            self.closed = False
+            self.privacy_contract_registered = False
+
+        def resume_offset(self, **_kwargs: object) -> int:
+            return 42
+
+        def validate_domestic_student_privacy_state(self) -> None:
+            pass
+
+        def validate_domestic_student_privacy_contract(
+            self, **_kwargs: object
+        ) -> None:
+            self.privacy_contract_registered = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Projector:
+        settings = SimpleNamespace(
+            require_subscription_boundary=lambda _value: None
+        )
+
+    class Consumer:
+        instances = 0
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            type(self).instances += 1
+            self.instance = type(self).instances
+
+        def startup_probe(self, *, phase_callback: object) -> dict[str, object]:
+            assert callable(phase_callback)
+            assert not readiness.exists()
+            assert not heartbeat.exists()
+            if self.instance == 1:
+                raise KafkaConnectionError(
+                    "broker.internal account=consumer password=secret"
+                )
+            return {"status": "ok", "partition": 0, "initial_offset": 42}
+
+        def run(self, **_kwargs: object) -> dict[str, int]:
+            args.watch = False
+            return {
+                "seen": 0,
+                "processed": 0,
+                "ignored": 0,
+                "duplicates": 0,
+                "committed": 0,
+            }
+
+    sinks: list[Sink] = []
+
+    def build_sink(*_args: object, **_kwargs: object) -> Sink:
+        sink = Sink()
+        sinks.append(sink)
+        return sink
+
+    def skip_wait(_seconds: float) -> bool:
+        assert not readiness.exists()
+        assert not heartbeat.exists()
+        return True
+
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsConsumerSettings",
+        SimpleNamespace(from_env=lambda: stream_settings),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsIngestDatabaseSettings",
+        SimpleNamespace(from_env=lambda: database_settings),
+    )
+    monkeypatch.setattr(run_dts_ingest, "PostgresDtsEventSink", build_sink)
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsWideProjector",
+        lambda *_args, **_kwargs: Projector(),
+    )
+    monkeypatch.setattr(run_dts_ingest, "DtsKafkaConsumer", Consumer)
+    monkeypatch.setattr(run_dts_ingest, "_wait_for_startup_retry", skip_wait)
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    monkeypatch.setenv("TIT_DTS_PROJECTION_ENABLED", "false")
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--watch",
+            "--startup-retry-seconds",
+            "1",
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    assert run_dts_ingest._run(args) == 0
+
+    assert len(sinks) == 2
+    assert Consumer.instances == 2
+    assert all(sink.closed for sink in sinks)
+    assert sinks[0].privacy_contract_registered is False
+    assert sinks[1].privacy_contract_registered is True
+    assert json.loads(readiness.read_text(encoding="utf-8"))["status"] == (
+        "ready"
+    )
+    assert json.loads(heartbeat.read_text(encoding="utf-8"))["status"] == "ok"
+    output_lines = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    ]
+    retry = next(
+        item for item in output_lines if item.get("mode") == "DTS_STARTUP_RETRY"
+    )
+    assert retry == {
+        "attempt": 1,
+        "error_code": "DTS_BROKER_CONNECTION_FAILED",
+        "error_type": "KafkaConnectionError",
+        "mode": "DTS_STARTUP_RETRY",
+        "retriable": True,
+        "retry_in_seconds": 1.0,
+        "status": "waiting",
+    }
+    rendered = json.dumps(output_lines)
+    assert "broker.internal" not in rendered
+    assert "consumer" not in rendered
+    assert "secret" not in rendered
+
+
+def test_watch_exits_on_permanent_startup_error_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    readiness = tmp_path / "readiness.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    contract = SimpleNamespace(
+        database_settings=SimpleNamespace(sslmode="disable"),
+        startup_retry_seconds=15.0,
+    )
+    attempts = 0
+
+    def fail_startup(*_args: object, **_kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise SaslAuthenticationFailedError(
+            "account=consumer password=secret"
+        )
+
+    monkeypatch.setattr(
+        run_dts_ingest, "_load_runtime_contract", lambda _args: contract
+    )
+    monkeypatch.setattr(run_dts_ingest, "_start_ingest_once", fail_startup)
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "_wait_for_startup_retry",
+        lambda _seconds: (_ for _ in ()).throw(
+            AssertionError("permanent errors must not wait")
+        ),
+    )
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--watch",
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    with pytest.raises(SaslAuthenticationFailedError):
+        run_dts_ingest._run(args)
+
+    assert attempts == 1
+    assert not readiness.exists()
+    assert not heartbeat.exists()
+
+
+def test_sigterm_during_startup_backoff_stops_without_another_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    readiness = tmp_path / "readiness.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    contract = SimpleNamespace(
+        database_settings=SimpleNamespace(sslmode="disable"),
+        startup_retry_seconds=15.0,
+    )
+    attempts = 0
+
+    def fail_startup(*_args: object, **_kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise KafkaTimeoutError("broker.internal password=secret")
+
+    def stop_during_wait(_seconds: float) -> bool:
+        run_dts_ingest._stop_requested = True
+        return False
+
+    monkeypatch.setattr(
+        run_dts_ingest, "_load_runtime_contract", lambda _args: contract
+    )
+    monkeypatch.setattr(run_dts_ingest, "_start_ingest_once", fail_startup)
+    monkeypatch.setattr(
+        run_dts_ingest, "_wait_for_startup_retry", stop_during_wait
+    )
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--watch",
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    assert run_dts_ingest._run(args) == 0
+    assert attempts == 1
+    assert not readiness.exists()
+    assert not heartbeat.exists()
+
+
+def test_startup_retry_wait_is_interruptible_in_short_slices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    monkeypatch.setattr(run_dts_ingest.time, "monotonic", lambda: 0.0)
+
+    def request_stop(seconds: float) -> None:
+        sleeps.append(seconds)
+        run_dts_ingest._stop_requested = True
+
+    monkeypatch.setattr(run_dts_ingest.time, "sleep", request_stop)
+
+    assert run_dts_ingest._wait_for_startup_retry(15.0) is False
+    assert sleeps == [0.2]
+
+
+def test_database_auth_classification_wins_over_connection_sqlstate() -> None:
+    class AuthenticationError(RuntimeError):
+        sqlstate = "08006"
+
+    error = OperationalError(
+        "CONNECT",
+        {},
+        AuthenticationError("password authentication failed for user secret"),
+    )
+
+    assert (
+        run_dts_ingest._retryable_startup_diagnostic(
+            error,
+            sslmode="disable",
+        )
+        is None
+    )
+
+
+def test_startup_retry_backoff_is_exponential_and_bounded() -> None:
+    assert [
+        run_dts_ingest._startup_retry_delay(15.0, attempt)
+        for attempt in range(1, 6)
+    ] == [15.0, 30.0, 60.0, 60.0, 60.0]
+
+
+@pytest.mark.parametrize("stop_stage", ["consumer", "projector"])
+def test_sigterm_during_steady_work_removes_health_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    stop_stage: str,
+) -> None:
+    readiness = tmp_path / "readiness.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    stream_settings = SimpleNamespace(
+        safe_summary=lambda: {"source_region": "ovs"}
+    )
+    database_settings = SimpleNamespace(
+        sslmode="disable",
+        safe_summary=lambda: {"database": "tide_system_test"},
+    )
+    contract = SimpleNamespace(
+        stream_settings=stream_settings,
+        database_settings=database_settings,
+        projection_enabled=stop_stage == "projector",
+        startup_retry_seconds=15.0,
+    )
+
+    class Sink:
+        closed = False
+        lock_checked = False
+
+        def assert_projection_lock_held(self) -> None:
+            self.lock_checked = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Consumer:
+        def run(self, **_kwargs: object) -> dict[str, int]:
+            if stop_stage == "consumer":
+                run_dts_ingest._stop_requested = True
+            return {
+                "seen": 0,
+                "processed": 0,
+                "ignored": 0,
+                "duplicates": 0,
+                "committed": 0,
+            }
+
+    class Projector:
+        def run_batch(self, **_kwargs: object) -> dict[str, int]:
+            run_dts_ingest._stop_requested = True
+            return {
+                "dirty_keys": 0,
+                "lesson_upserts": 0,
+                "lesson_deletes": 0,
+                "teacher_upserts": 0,
+                "teacher_deletes": 0,
+                "unchanged": 0,
+                "retries": 0,
+            }
+
+    sink = Sink()
+    started = SimpleNamespace(
+        sink=sink,
+        consumer=Consumer(),
+        projector=Projector(),
+        checkpoint=42,
+        broker_probe={"status": "ok"},
+    )
+    monkeypatch.setattr(
+        run_dts_ingest, "_load_runtime_contract", lambda _args: contract
+    )
+    monkeypatch.setattr(
+        run_dts_ingest, "_start_ingest_once", lambda *_args: started
+    )
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    assert run_dts_ingest._run(args) == 0
+    assert sink.closed is True
+    assert sink.lock_checked is (stop_stage == "projector")
+    assert not readiness.exists()
+    assert not heartbeat.exists()

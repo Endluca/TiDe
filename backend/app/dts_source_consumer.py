@@ -173,7 +173,6 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
 }
 INFRASTRUCTURE_TABLES = frozenset({"dts_postgres_heartbeat"})
 SCHEMA_BUNDLE_PATH = Path(__file__).with_name("dts_record_schemas.json")
-KAFKA_API_VERSION = (2, 7)
 KAFKA_REQUEST_TIMEOUT_MS = 15_000
 KAFKA_CLOSE_TIMEOUT_MS = 1_000
 KAFKA_CLIENT_DISTRIBUTION = "kafka-python"
@@ -897,6 +896,7 @@ def _safe_kafka_phase_diagnostic(
     if isinstance(exc, DtsConfigurationError):
         safe_configuration_errors = {
             "DTS_KAFKA_STARTUP_PROBE_TIMEOUT": True,
+            "DTS_KAFKA_API_VERSION_NEGOTIATION_INCOMPLETE": False,
             "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED": False,
             "DTS_KAFKA_CLIENT_VERSION_UNSUPPORTED": False,
             "DTS_KAFKA_GROUP_COORDINATOR_UNAVAILABLE": True,
@@ -929,17 +929,41 @@ class _KafkaConnectionTrace:
     def __init__(self) -> None:
         self._target_node: Any | None = None
         self._states: list[str] = []
+        self._connection_attempts = 0
         self._failure_type: type[Exception] | None = None
+        self._failure_retriable: bool | None = None
+        self._failure_states: tuple[str, ...] = ()
+        self._failure_attempt = 0
+        self._failure_api_versions_response_received = False
+        self._api_versions_response_received = False
 
-    def begin(self, node_id: Any) -> None:
+    def begin(
+        self,
+        node_id: Any,
+        *,
+        preserve_failure: bool = False,
+    ) -> None:
         self._target_node = node_id
         self._states.clear()
-        self._failure_type = None
+        if not preserve_failure:
+            self._connection_attempts = 0
+            self._failure_type = None
+            self._failure_retriable = None
+            self._failure_states = ()
+            self._failure_attempt = 0
+            self._failure_api_versions_response_received = False
+        self._api_versions_response_received = False
 
     def clear(self) -> None:
         self._target_node = None
         self._states.clear()
+        self._connection_attempts = 0
         self._failure_type = None
+        self._failure_retriable = None
+        self._failure_states = ()
+        self._failure_attempt = 0
+        self._failure_api_versions_response_received = False
+        self._api_versions_response_received = False
 
     def record(self, node_id: Any, state: str | None) -> None:
         if (
@@ -949,6 +973,8 @@ class _KafkaConnectionTrace:
         ):
             return
         if not self._states or self._states[-1] != state:
+            if state == "tcp_connecting":
+                self._connection_attempts += 1
             self._states.append(state)
 
     def record_failure(self, node_id: Any, error: Any) -> None:
@@ -964,15 +990,52 @@ class _KafkaConnectionTrace:
         if diagnostic is None:
             return
         allowed_name = diagnostic["error_type"]
+        new_retriable = diagnostic["retriable"] is True
         for cause in _bounded_exception_chain(error):
             if type(cause).__name__ == allowed_name:
+                existing_name = (
+                    None
+                    if self._failure_type is None
+                    else self._failure_type.__name__
+                )
+                generic_types = {"KafkaError", "KafkaConnectionError"}
+                should_replace = self._failure_type is None
+                # Across multiple bootstrap endpoints, a permanent and
+                # actionable failure (for example bad SASL credentials) must
+                # outrank an earlier retryable timeout. Otherwise watch mode
+                # could retry a permanent configuration failure forever.
                 if (
-                    self._failure_type is None
-                    or self._failure_type.__name__
-                    in {"KafkaError", "KafkaConnectionError"}
+                    self._failure_retriable is True
+                    and not new_retriable
                 ):
+                    should_replace = True
+                elif (
+                    self._failure_retriable is new_retriable
+                    and existing_name in generic_types
+                    and allowed_name not in generic_types
+                ):
+                    should_replace = True
+                if should_replace:
                     self._failure_type = type(cause)
+                    self._failure_retriable = new_retriable
+                    self._failure_states = tuple(self._states)
+                    self._failure_attempt = self._connection_attempts
+                    self._failure_api_versions_response_received = (
+                        self._api_versions_response_received
+                    )
                 return
+
+    def record_api_versions_response(
+        self,
+        node_id: Any,
+        response: Any,
+    ) -> None:
+        """Remember only that a successful ApiVersions response arrived."""
+
+        if node_id != self._target_node:
+            return
+        if getattr(response, "error_code", None) == 0:
+            self._api_versions_response_received = True
 
     def recorded_failure(self) -> Exception | None:
         if self._failure_type is None:
@@ -987,27 +1050,55 @@ class _KafkaConnectionTrace:
         tcp_connected = any(
             state
             in {
-                "protocol_version_apply",
+                "api_versions_request_prepare",
                 "api_versions_response_wait",
                 "sasl_authenticating",
                 "connected",
             }
             for state in states
         )
-        return {
-            "connection_attempts": states.count("tcp_connecting"),
+        summary: dict[str, bool | int | str] = {
+            "connection_attempts": self._connection_attempts,
             "connection_state_path": ">".join(states) or "not_observed",
             "connection_state_observed": bool(states),
             "tcp_connected_observed": tcp_connected,
-            "protocol_version_applied_observed": (
-                "protocol_version_apply" in states
+            "api_versions_prepare_observed": (
+                "api_versions_request_prepare" in states
             ),
-            "api_versions_request_sent_observed": (
+            "api_versions_request_dispatched_observed": (
                 "api_versions_response_wait" in states
+            ),
+            "api_versions_response_received_observed": (
+                self._api_versions_response_received
             ),
             "sasl_started_observed": "sasl_authenticating" in states,
             "sasl_authenticated_observed": "connected" in states,
         }
+        if self._failure_type is not None:
+            failure_states = self._failure_states
+            summary.update(
+                {
+                    "selected_failure_error_type": (
+                        self._failure_type.__name__
+                    ),
+                    "selected_failure_retriable": bool(
+                        self._failure_retriable
+                    ),
+                    "selected_failure_connection_attempt": (
+                        self._failure_attempt
+                    ),
+                    "selected_failure_connection_state_path": (
+                        ">".join(failure_states) or "not_observed"
+                    ),
+                    "selected_failure_api_versions_response_received_observed": (
+                        self._failure_api_versions_response_received
+                    ),
+                    "selected_failure_sasl_started_observed": (
+                        "sasl_authenticating" in failure_states
+                    ),
+                }
+            )
+        return summary
 
 
 def suppress_unsafe_kafka_library_logging() -> None:
@@ -1107,8 +1198,9 @@ def _safe_kafka_client_probe(
         "status": "ok",
         "client_library": KAFKA_CLIENT_DISTRIBUTION,
         "client_version": _kafka_client_version(),
-        "api_version": ".".join(str(part) for part in KAFKA_API_VERSION),
-        "protocol_version_mode": "pinned",
+        "api_version": "auto",
+        "protocol_version_mode": "auto_negotiation",
+        "api_version_auto_timeout_ms": KAFKA_REQUEST_TIMEOUT_MS,
         "security_protocol": "SASL_PLAINTEXT",
         "sasl_mechanism": "PLAIN",
         "enable_auto_commit": False,
@@ -1888,6 +1980,7 @@ class DtsKafkaConsumer:
         self.settings = settings
         self.processor = processor
         self.idle_timeout_ms = idle_timeout_ms
+        self._last_negotiated_api_version: tuple[int, ...] | None = None
 
     def startup_probe(
         self,
@@ -1910,19 +2003,29 @@ class DtsKafkaConsumer:
             phase_callback(_safe_kafka_client_probe(self.settings))
         consumer: Any | None = None
         connection_trace = _KafkaConnectionTrace()
+        deadline = monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
         try:
             consumer = _run_kafka_startup_phase(
                 phase_callback,
                 "consumer_open",
                 lambda: self._open_consumer(
                     connection_trace=connection_trace,
+                    deadline_monotonic=deadline,
                 ),
+                request_type="ApiVersionsThenSASL",
+                success_details=lambda _consumer: {
+                    "protocol_version_mode": "auto_negotiated",
+                    "negotiated_protocol_compatibility_version": (
+                        self._formatted_negotiated_api_version()
+                    ),
+                    "authenticated_connection_ready": True,
+                },
+                always_details=connection_trace.safe_summary,
             )
             topic_partition = TopicPartition(
                 self.settings.topic,
                 self.settings.partition,
             )
-            deadline = monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
             self._probe_kafka_protocol(
                 consumer,
                 topic_partition,
@@ -2025,6 +2128,7 @@ class DtsKafkaConsumer:
         self,
         *,
         connection_trace: _KafkaConnectionTrace | None = None,
+        deadline_monotonic: float | None = None,
     ) -> Any:
         suppress_unsafe_kafka_library_logging()
         if _kafka_client_version() != KAFKA_CLIENT_PINNED_VERSION:
@@ -2042,17 +2146,62 @@ class DtsKafkaConsumer:
         # handlers can never render SASL request bytes or connection identity.
         suppress_unsafe_kafka_library_logging()
 
+        diagnostic_trace = connection_trace or _KafkaConnectionTrace()
         state_names = {
             ConnectionStates.CONNECTING: "tcp_connecting",
             ConnectionStates.HANDSHAKE: "tls_handshake",
-            ConnectionStates.API_VERSIONS_SEND: "protocol_version_apply",
+            ConnectionStates.API_VERSIONS_SEND: (
+                "api_versions_request_prepare"
+            ),
             ConnectionStates.API_VERSIONS_RECV: "api_versions_response_wait",
             ConnectionStates.AUTHENTICATING: "sasl_authenticating",
             ConnectionStates.CONNECTED: "connected",
             ConnectionStates.DISCONNECTED: "disconnected",
         }
+        opened_clients: list[Any] = []
 
         class DiagnosticKafkaClient(KafkaClient):
+            def __init__(self, **configs: Any) -> None:
+                self._tit_auto_version_check_active = False
+                self._tit_api_versions_response_observed = False
+                try:
+                    super().__init__(**configs)
+                except Exception:
+                    recorded_failure = diagnostic_trace.recorded_failure()
+                    try:
+                        self.close()
+                    except Exception:
+                        pass
+                    if recorded_failure is not None:
+                        raise recorded_failure from None
+                    raise
+                opened_clients.append(self)
+
+            def check_version(
+                self,
+                node_id: Any = None,
+                timeout: float | None = None,
+                **kwargs: Any,
+            ) -> tuple[int, ...]:
+                self._tit_auto_version_check_active = True
+                try:
+                    return super().check_version(
+                        node_id=node_id,
+                        timeout=timeout,
+                        **kwargs,
+                    )
+                finally:
+                    self._tit_auto_version_check_active = False
+
+            def _maybe_refresh_metadata(self, wakeup: bool = False) -> float:
+                if self._tit_auto_version_check_active:
+                    # check_version() drives connections through public
+                    # poll(), which would otherwise send an implicit
+                    # no-topic Metadata request. Keep the first Metadata
+                    # request explicit in the topic_metadata phase.
+                    return float("inf")
+                return super()._maybe_refresh_metadata(wakeup=wakeup)
+
             def _conn_state_change(
                 self,
                 node_id: Any,
@@ -2060,8 +2209,21 @@ class DtsKafkaConsumer:
                 connection: Any,
             ) -> None:
                 if (
-                    connection_trace is not None
-                    and not getattr(
+                    self._tit_auto_version_check_active
+                    and getattr(connection, "state", None)
+                    is ConnectionStates.CONNECTING
+                ):
+                    diagnostic_trace.begin(
+                        node_id,
+                        preserve_failure=True,
+                    )
+                # The supported DTS range starts at Kafka 0.11, where
+                # ApiVersions exists. kafka-python's older fallback probes
+                # include dummy-group and no-topic requests that would blur
+                # the explicit startup phases; fail closed instead.
+                connection.VERSION_CHECKS = ()
+                if (
+                    not getattr(
                         connection,
                         "_tit_diagnostic_close_wrapped",
                         False,
@@ -2076,37 +2238,155 @@ class DtsKafkaConsumer:
                     def close_with_safe_diagnostic(
                         error: Any = None,
                     ) -> None:
-                        connection_trace.record_failure(node_id, error)
+                        diagnostic_trace.record_failure(node_id, error)
                         original_close(error=error)
 
                     connection.close = close_with_safe_diagnostic
                     connection._tit_diagnostic_close_wrapped = True
-                super()._conn_state_change(node_id, sock, connection)
-                if connection_trace is not None:
-                    connection_trace.record(
-                        node_id,
-                        state_names.get(getattr(connection, "state", None))
+                if not getattr(
+                    connection,
+                    "_tit_diagnostic_api_versions_wrapped",
+                    False,
+                ):
+                    original_api_versions_response = (
+                        connection._handle_api_versions_response
                     )
 
-        return KafkaConsumer(
-            kafka_client=DiagnosticKafkaClient,
-            bootstrap_servers=list(self.settings.broker_urls),
-            # Aliyun DTS exposes the Kafka 2.7 protocol.  Pinning the broker
-            # version avoids kafka-python's blocking auto-detection probe,
-            # which otherwise turns every unreachable-broker startup into an
-            # additional opaque NoBrokersAvailable delay.
-            api_version=KAFKA_API_VERSION,
-            # Metadata, coordinator and timestamp lookups must fail within a
-            # bounded startup budget instead of kafka-python's 305s default.
-            request_timeout_ms=KAFKA_REQUEST_TIMEOUT_MS,
-            enable_auto_commit=False,
-            group_id=self.settings.group_id,
-            sasl_mechanism="PLAIN",
-            security_protocol="SASL_PLAINTEXT",
-            sasl_plain_username=self.settings.sasl_username,
-            sasl_plain_password=self.settings.password,
-            allow_auto_create_topics=False,
-            consumer_timeout_ms=self.idle_timeout_ms,
+                    def api_versions_response_with_safe_diagnostic(
+                        future: Any,
+                        response: Any,
+                    ) -> Any:
+                        if getattr(response, "error_code", None) == 0:
+                            self._tit_api_versions_response_observed = True
+                            diagnostic_trace.record_api_versions_response(
+                                node_id,
+                                response,
+                            )
+                        return original_api_versions_response(
+                            future,
+                            response,
+                        )
+
+                    connection._handle_api_versions_response = (
+                        api_versions_response_with_safe_diagnostic
+                    )
+                    connection._tit_diagnostic_api_versions_wrapped = True
+                super()._conn_state_change(node_id, sock, connection)
+                diagnostic_trace.record(
+                    node_id,
+                    state_names.get(getattr(connection, "state", None)),
+                )
+
+        deadline = (
+            monotonic() + KAFKA_REQUEST_TIMEOUT_MS / 1000
+            if deadline_monotonic is None
+            else deadline_monotonic
+        )
+        timeout_ms = self._remaining_kafka_timeout_ms(deadline)
+        try:
+            consumer = KafkaConsumer(
+                kafka_client=DiagnosticKafkaClient,
+                bootstrap_servers=list(self.settings.broker_urls),
+                # Match the official client behavior: discover the remote
+                # protocol compatibility through ApiVersions for every fresh
+                # KafkaConsumer. Re-pinning the inferred tuple would discard
+                # the DTS endpoint's actual API ranges.
+                api_version=None,
+                api_version_auto_timeout_ms=timeout_ms,
+                # Metadata, coordinator and timestamp lookups must fail within
+                # a bounded startup budget instead of the 305s default.
+                request_timeout_ms=timeout_ms,
+                enable_auto_commit=False,
+                group_id=self.settings.group_id,
+                sasl_mechanism="PLAIN",
+                security_protocol="SASL_PLAINTEXT",
+                sasl_plain_username=self.settings.sasl_username,
+                sasl_plain_password=self.settings.password,
+                allow_auto_create_topics=False,
+                consumer_timeout_ms=self.idle_timeout_ms,
+            )
+        except Exception:
+            recorded_failure = diagnostic_trace.recorded_failure()
+            for client in opened_clients:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            if recorded_failure is not None:
+                raise recorded_failure from None
+            raise
+
+        try:
+            negotiated_version = self._normalize_negotiated_api_version(
+                getattr(consumer, "config", None),
+            )
+            client = getattr(consumer, "_client", None)
+            trace_summary = diagnostic_trace.safe_summary()
+            bootstrap_connected = getattr(
+                client,
+                "bootstrap_connected",
+                None,
+            )
+            if not callable(bootstrap_connected):
+                raise DtsConfigurationError(
+                    "DTS_KAFKA_CLIENT_INTERNAL_API_UNSUPPORTED"
+                )
+            if not bool(
+                getattr(
+                    client,
+                    "_tit_api_versions_response_observed",
+                    False,
+                )
+            ):
+                raise DtsConfigurationError(
+                    "DTS_KAFKA_API_VERSION_NEGOTIATION_INCOMPLETE"
+                )
+            if (
+                not trace_summary["sasl_authenticated_observed"]
+                or not bootstrap_connected()
+            ):
+                from kafka.errors import KafkaConnectionError
+
+                recorded_failure = diagnostic_trace.recorded_failure()
+                raise recorded_failure or KafkaConnectionError()
+            self._last_negotiated_api_version = negotiated_version
+            return consumer
+        except Exception:
+            try:
+                consumer.close(
+                    autocommit=False,
+                    timeout_ms=KAFKA_CLOSE_TIMEOUT_MS,
+                )
+            except Exception:
+                pass
+            raise
+
+    @staticmethod
+    def _normalize_negotiated_api_version(
+        config: Any,
+    ) -> tuple[int, ...]:
+        value = (
+            config.get("api_version")
+            if isinstance(config, Mapping)
+            else None
+        )
+        if (
+            not isinstance(value, tuple)
+            or len(value) not in {2, 3}
+            or any(type(part) is not int or part < 0 for part in value)
+        ):
+            raise DtsConfigurationError(
+                "DTS_KAFKA_API_VERSION_NEGOTIATION_INCOMPLETE"
+            )
+        return value
+
+    def _formatted_negotiated_api_version(self) -> str:
+        if self._last_negotiated_api_version is None:
+            raise DtsConfigurationError(
+                "DTS_KAFKA_API_VERSION_NEGOTIATION_INCOMPLETE"
+            )
+        return ".".join(
+            str(part) for part in self._last_negotiated_api_version
         )
 
     def _probe_kafka_protocol(
@@ -2352,9 +2632,9 @@ class DtsKafkaConsumer:
             # KafkaClient.poll() also invokes _maybe_refresh_metadata(). Using
             # it here would silently fold a Metadata request into the
             # bootstrap/coordinator authentication phase and make the stage
-            # log misleading. Drive only the pinned client's connection state
-            # machine and socket selector. The explicit topic_metadata stage
-            # below owns the initial configured-topic Metadata request; later
+            # log misleading. Drive only the negotiated client's connection
+            # state machine and socket selector. The explicit topic_metadata
+            # stage below owns the initial configured-topic request; later
             # coordinator/offset retries may still refresh stale metadata.
             with client_lock:
                 if getattr(client, "_closed", False):

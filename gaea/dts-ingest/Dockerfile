@@ -33,6 +33,7 @@ ENV TZ=Asia/Shanghai \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
     TIT_PROCESS_PROFILE=dts-ingest \
+    TIT_DTS_STARTUP_RETRY_SECONDS=15 \
     TIT_DTS_INGEST_HEARTBEAT=/tmp/tit-dts-ingest-heartbeat \
     TIT_DTS_INGEST_READINESS=/tmp/tit-dts-ingest-readiness
 

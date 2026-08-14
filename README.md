@@ -138,7 +138,7 @@ Tide_teachers_camp/
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
-- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；除真实消费组 ID（sid）必须在部署时从对应订阅的“数据消费”页注入外，其余已确认的非敏感参数已固化。2026-08-13 DMS 现场只读结果为 `tide_system_test`、服务端 `ssl=off`、当前会话未使用 TLS、public `20260812_59_simple_acl`、teacher 36 条且 head `0041_crm_sso_hybrid`；因此仍须应用 public 60 隐私迁移并通过只读契约探针。部署边界现已收紧为：海外消费者运行在新加坡，国内消费者通过“AI 效率中心”团队的独立 Gaea 项目 `tida-camp-dts-dom` 运行在中国大陆集群；平台项目选择和 `TIT_DTS_EXECUTION_REGION=cn` 都必须在新 Pod 上读回，不能只凭变量声明推断地理放置。国内消费者在构造任何发往海外 PostgreSQL 的 SQL 参数前，使用仅注入国内项目的密钥把原始学生 ID 转为 `dom:v1:<HMAC-SHA256>`，海外项目和海外数据库均不得持有该密钥或原始国内学生 ID；稳定 token 仍按伪名数据受限管理。默认及正式环境仍固定 `sslmode=verify-full`。当前 `tide_system_test` PRE 固定专线端点允许用既有 `sslmode=disable` 受控例外；专线只限制网络路径，并不加密 PostgreSQL 流量。该例外不得扩展到其他端点、库或正式环境，数据库启用 TLS 后必须恢复 `verify-full`。全局 23/55 宽表投影只允许由海外消费者持有，国内消费者固定 `projection=false`。当前仍无国内新 Pod 的成功 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账，不能视为链路联调完成。增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
+- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；除真实消费组 ID（sid）必须在部署时从对应订阅的“数据消费”页注入外，其余已确认的非敏感参数已固化。截至 2026-08-14，海外 `tide_system_test` 已实证为 public `20260814_61_teacher_copy`、teacher 精确 36 条且 head `0041_crm_sso_hybrid`，并已通过当前 release 的完整只读联合契约探针。rev61 只原位更新 4 条稳定任务模板文案，不改 DTS 表、Trigger 或隐私函数；数据库发布门禁已关闭，但这不代表 DTS 或 `pre-tida-camp` 全流程可用。部署边界现已收紧为：海外消费者运行在新加坡，国内消费者通过“AI 效率中心”团队的独立 Gaea 项目 `tida-camp-dts-dom` 运行在中国大陆集群；平台项目选择和 `TIT_DTS_EXECUTION_REGION=cn` 都必须在新 Pod 上读回，不能只凭变量声明推断地理放置。国内消费者在构造任何发往海外 PostgreSQL 的 SQL 参数前，使用仅注入国内项目的密钥把原始学生 ID 转为 `dom:v1:<HMAC-SHA256>`，海外项目和海外数据库均不得持有该密钥或原始国内学生 ID；稳定 token 仍按伪名数据受限管理。默认及正式环境仍固定 `sslmode=verify-full`。当前 `tide_system_test` PRE 固定专线端点允许用既有 `sslmode=disable` 受控例外；专线只限制网络路径，并不加密 PostgreSQL 流量。该例外不得扩展到其他端点、库或正式环境，数据库启用 TLS 后必须恢复 `verify-full`。全局 23/55 宽表投影只允许由海外消费者持有，国内消费者固定 `projection=false`。当前仍无国内新 Pod 的成功 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账，不能视为链路联调完成。增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
 
 ## Gaea 部署骨架（双构建入口、三项目）
 
@@ -170,25 +170,33 @@ Kafka 的 SASL/topic/partition/初始位点，全部通过后才写 readiness；
 密钥 fingerprint 的受限状态行；该行不含密钥或学生标识。TCP 失败输出 `DTS_BROKER_TCP_*`
 稳定错误码；TCP 已通但 Kafka 请求超时输出
 `DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 启动日志先输出脱敏的客户端契约摘要（客户端版本、
-API 版本、SASL 协议、partition 和有界超时），再依次输出 `consumer_open`、`bootstrap_auth`、
+API 自动协商模式、SASL 协议、partition 和有界超时），再依次输出 `consumer_open`、`bootstrap_auth`、
 `topic_metadata`、`partition_check`、`advertised_broker_auth`、`group_coordinator`、
 `coordinator_auth`、`offset_fetch`，并按实际位点路径继续输出 `offsets_for_times`、
 `beginning_offsets`、`end_offsets` 的固定 `begin/ok/fail` 阶段。`topic_metadata` 会真实发送与
 `kcat -L -t <topic>` 同类语义的单 Topic Metadata 请求，随后由 `partition_check` 验证 partition 0；整个过程不引入第二套客户端或带密码
-配置文件。客户端固定使用 Kafka 2.7，因此建连阶段只记录“应用固定协议版本”而不冒充远端
-ApiVersions 请求；协议分段适配器只接受锁定的 kafka-python 2.2.20，依赖漂移会在发送 Kafka
-凭据或协议请求前失败关闭。
+配置文件。`consumer_open` 会先对 bootstrap 连接真实发送 `ApiVersions` 自动协商客户端兼容协议，
+再完成该连接的 SASL；日志只把 kafka-python 推断结果记为“协议兼容版本”，不冒充 DTS Broker 的
+精确版本。阿里云文档中的 `0.11–2.7` 是受支持的 Kafka **客户端**版本范围，不是要求调用方固定
+Broker API 2.7；实现因此让每个 fresh consumer 都重新协商。参见[阿里云 DTS Kafka 客户端说明](https://help.aliyun.com/zh/dts/user-guide/use-a-kafka-client-to-consume-tracked-data)。
+后续 `bootstrap_auth` 复核已认证连接，通常显示 `connection_reused=true`。协议分段
+适配器只接受锁定的 kafka-python 2.2.20，依赖漂移会在发送 Kafka 凭据或协议请求前失败关闭。
 连接阶段输出固定状态路径以及 TCP、协议版本、SASL 的安全布尔证据。完成或失败
 阶段带 `elapsed_ms`；失败只输出白名单 `error_type`、稳定
-`error_code` 和 `retriable`；其中 `retriable` 表示 kafka-python 对该错误类别的同请求重试语义，
-不是应用会无限重试的承诺。上述启动诊断不输出 endpoint、账号、消费组、密码、异常正文或堆栈。
+`error_code` 和 `retriable`；Kafka 阶段的该字段表示库级重试语义，容器还会经过应用暂态白名单再决定
+是否重试。上述启动诊断不输出 endpoint、账号、消费组、密码、异常正文或堆栈。
 代码会隔离 kafka-python 原生日志，只保留这些结构化诊断，因为 SASL 调试报文可能包含认证字节；
-`consumer_open=ok` 本身不代表远端认证成功。消费者使用手工 partition assignment，不执行
-`JoinGroup`；认证与消费组可用性分别以 `*_auth`、`group_coordinator` 和 `offset_fetch` 为准。
+`consumer_open=ok` 现在必须同时具备成功 ApiVersions 响应和 bootstrap SASL 连接证据；它仍不
+证明 Topic、advertised leader、消费组协调器或 offset 可用，后续阶段必须继续通过。消费者使用
+手工 partition assignment，不执行 `JoinGroup`；消费组可用性以 `group_coordinator` 和
+`offset_fetch` 为准。
 各阶段按同一个 15 秒 deadline 收紧剩余请求超时；这是 kafka-python 阻塞 SASL/DNS 调用遵守
 超时的协作式预算，不是可强制终止进程的绝对 wall-clock 上限。
-这些检查在每次容器进程启动/重启时执行，不在镜像构建或
-周期健康检查中重复执行。Pod Ready 只表示“具备开始消费的条件”，不表示已经完成 CDC 接入或字段对账。
+`--watch` 容器对明确白名单内的暂态网络、Kafka/数据库连接和激活依赖失败使用全新连接资源，
+默认按 `15/30/60` 秒有界退避重跑完整启动门禁，不再靠进程退出制造 CrashLoop；重试期间不写 readiness 或
+heartbeat。认证/授权、配置、Schema/ACL、隐私/HMAC 和 offset 不变量错误仍失败退出。这些检查在
+每次容器进程启动或暂态重试时执行，不在镜像构建或周期健康检查中重复执行。Pod Ready 只表示
+“具备开始消费的条件”，不表示已经完成 CDC 接入或字段对账。
 
 application 的两个 Worker 分别通过 PostgreSQL session advisory lock 保持逻辑单活，未持锁的
 standby 仍刷新本 Pod heartbeat，并用数据库探测维持 readiness。教师全局调度使用

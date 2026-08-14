@@ -124,6 +124,7 @@ def test_gaea_dts_module_omits_the_application_build_graph() -> None:
     assert "COPY --chown=gaea:gaea backend/app ./app" in dts_runtime
     assert "run_dts_ingest.py" in dts_runtime
     assert "TIT_PROCESS_PROFILE=dts-ingest" in dts_runtime
+    assert "TIT_DTS_STARTUP_RETRY_SECONDS=15" in dts_runtime
     assert "USER gaea" in dts_runtime
     assert "HEALTHCHECK" in dts_runtime
     assert "STOPSIGNAL SIGTERM" in dts_runtime
@@ -1118,6 +1119,9 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "TIT_DTS_COHORT_START" in readme
     assert "2026-08-13" in readme
     assert "TIT_DTS_PROJECTION_ENABLED=false" in readme
+    assert "TIT_DTS_STARTUP_RETRY_SECONDS" in readme
+    assert "15/30/60" in readme
+    assert "重试期间 readiness 与 heartbeat 都不存在" in readme
     assert "TIT_DTS_ACTIVATION_AT" in readme
     assert "TIT_DTS_REQUIRED_OVS_TOPIC" in readme
     assert "探针不读取消息" in readme

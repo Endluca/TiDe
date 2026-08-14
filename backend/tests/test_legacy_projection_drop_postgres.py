@@ -585,10 +585,12 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                 None,
             )
 
-        # The current chain becomes forward-only at rev54. Prove the complete
-        # forward upgrade and ORM drift check only after the rev47-49
-        # round-trip assertions have finished; the ephemeral cluster is then
-        # discarded instead of pretending a rev54 rollback is possible.
+        # The current chain becomes forward-only at rev54. Prepare only the
+        # personalized catalog rows that an operational database seeds outside
+        # Alembic, then prove the remaining forward upgrade and ORM drift check.
+        # Existing G01/G08 rows must continue through the migrations unchanged
+        # by this fixture; the ephemeral cluster is discarded afterward instead
+        # of pretending a rev54 rollback is possible.
         with engine.begin() as connection:
             connection.execute(
                 text(
@@ -600,8 +602,8 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                         created_by, updated_by, created_at, updated_at
                     ) VALUES (
                         'P-FB-NEGATIVE:v1', 'P-FB-NEGATIVE', 1, 'PUBLISHED', 5,
-                        'TEACHER_TASK', 'TEACHER_APP', 'INBOUND_STATUS_ONLY',
-                        'P-FB-NEGATIVE', 'MOCK',
+                        'TEACHER_TASK', 'TEACHER_APP', 'OUTBOUND_MANAGED',
+                        'P-FB-NEGATIVE', 'REAL',
                         jsonb_build_object(
                             'template_id', 'P-FB-NEGATIVE',
                             'title', 'Feedback Improvement',
@@ -613,6 +615,47 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                                 'Complete the learning activity assigned for the feedback issue shown in the task reason.',
                             'completion_standard',
                                 'The teacher app marks the matching learning activity as completed.'
+                        ),
+                        'POSTGRES_ROUND_TRIP_FIXTURE',
+                        'POSTGRES_ROUND_TRIP_FIXTURE',
+                        '2026-08-11T00:00:00+00',
+                        '2026-08-11T00:00:00+00'
+                    ),
+                    (
+                        'P-REL-MEMO:v1', 'P-REL-MEMO', 1, 'PUBLISHED', 2,
+                        'TEACHER_TASK', 'TEACHER_APP', 'OUTBOUND_MANAGED',
+                        'P-REL-MEMO', 'REAL',
+                        jsonb_build_object(
+                            'template_id', 'P-REL-MEMO',
+                            'title', 'Lesson Memo Improvement',
+                            'category', 'PERSONALIZED_IMPROVEMENT',
+                            'content_status', 'READY',
+                            'score_type', 'ZERO',
+                            'score_value', 0,
+                            'why_template',
+                                'A completed lesson was recorded with an unfilled Lesson Memo.',
+                            'benefit',
+                                'This task carries no points. It closes the identified Lesson Memo reliability gap.'
+                        ),
+                        'POSTGRES_ROUND_TRIP_FIXTURE',
+                        'POSTGRES_ROUND_TRIP_FIXTURE',
+                        '2026-08-11T00:00:00+00',
+                        '2026-08-11T00:00:00+00'
+                    ),
+                    (
+                        'P-REL-ATTENDANCE:v1', 'P-REL-ATTENDANCE', 1,
+                        'PUBLISHED', 2,
+                        'TEACHER_TASK', 'TEACHER_APP', 'OUTBOUND_MANAGED',
+                        'P-REL-ATTENDANCE', 'REAL',
+                        jsonb_build_object(
+                            'template_id', 'P-REL-ATTENDANCE',
+                            'title', 'Attendance Improvement',
+                            'category', 'PERSONALIZED_IMPROVEMENT',
+                            'content_status', 'READY',
+                            'score_type', 'ZERO',
+                            'score_value', 0,
+                            'why_template',
+                                'A lesson record contains a reliability issue such as absence, late arrival or early leave.'
                         ),
                         'POSTGRES_ROUND_TRIP_FIXTURE',
                         'POSTGRES_ROUND_TRIP_FIXTURE',

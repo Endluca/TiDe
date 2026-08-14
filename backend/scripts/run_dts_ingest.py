@@ -7,7 +7,9 @@ import signal
 import socket
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,56 @@ from app.dts_wide_projector import (  # noqa: E402
 
 
 _stop_requested = False
+_DEFAULT_STARTUP_RETRY_SECONDS = 15.0
+_MAX_STARTUP_RETRY_SECONDS = 60.0
+_RETRYABLE_DTS_STARTUP_ERROR_CODES = frozenset(
+    {
+        "DTS_BROKER_TCP_DNS_FAILED",
+        "DTS_BROKER_TCP_CONNECTION_TIMEOUT",
+        "DTS_BROKER_TCP_CONNECTION_REFUSED",
+        "DTS_BROKER_TCP_UNREACHABLE",
+        "DTS_BROKER_TCP_CONNECTION_FAILED",
+        "DTS_BROKER_TCP_ALL_ENDPOINTS_FAILED",
+        "DTS_BROKER_KAFKA_REQUEST_TIMEOUT",
+        "DTS_KAFKA_STARTUP_PROBE_TIMEOUT",
+        "DTS_KAFKA_GROUP_COORDINATOR_UNAVAILABLE",
+    }
+)
+_RETRYABLE_DATABASE_STARTUP_ERROR_CODES = frozenset(
+    {
+        "DTS_TARGET_DNS_FAILED",
+        "DTS_TARGET_CONNECTION_REFUSED",
+        "DTS_TARGET_CONNECTION_TIMEOUT",
+        "DTS_TARGET_CONNECTION_CLOSED",
+        "DTS_TARGET_CONNECTION_UNAVAILABLE",
+    }
+)
+_RETRYABLE_STORE_STARTUP_ERROR_CODES = frozenset(
+    {
+        "DTS_PROJECTION_LOCK_NOT_ACQUIRED",
+        "DTS_PROJECTION_CHECKPOINT_NOT_READY",
+        "DTS_PROJECTION_COMPLAINT_DICTIONARY_EMPTY",
+        "DTS_PROJECTION_COMPLAINT_CATEGORY_DEPENDENCY_PENDING",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _RuntimeContract:
+    stream_settings: DtsConsumerSettings
+    database_settings: DtsIngestDatabaseSettings
+    projection_enabled: bool
+    activation_settings: DtsProjectionActivationSettings | None
+    startup_retry_seconds: float
+
+
+@dataclass(frozen=True)
+class _StartedIngest:
+    sink: PostgresDtsEventSink
+    consumer: DtsKafkaConsumer
+    projector: DtsWideProjector
+    checkpoint: int | None
+    broker_probe: dict[str, object]
 
 
 def _request_stop(_signum: int, _frame: object) -> None:
@@ -89,6 +141,30 @@ def _env_flag(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise DtsConfigurationError(f"{name}_INVALID")
+
+
+def _startup_retry_seconds(args: argparse.Namespace) -> float:
+    raw = getattr(args, "startup_retry_seconds", None)
+    if raw is None:
+        raw = os.environ.get(
+            "TIT_DTS_STARTUP_RETRY_SECONDS",
+            str(_DEFAULT_STARTUP_RETRY_SECONDS),
+        )
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise DtsConfigurationError(
+            "TIT_DTS_STARTUP_RETRY_SECONDS_INVALID"
+        ) from exc
+    if (
+        not isfinite(seconds)
+        or seconds <= 0
+        or seconds > _MAX_STARTUP_RETRY_SECONDS
+    ):
+        raise DtsConfigurationError(
+            "TIT_DTS_STARTUP_RETRY_SECONDS_INVALID"
+        )
+    return seconds
 
 
 def _should_wait_before_next_batch(*, seen: int, max_messages: int) -> bool:
@@ -242,6 +318,205 @@ def _projection_activation_settings(
     return DtsProjectionActivationSettings.from_env(environ)
 
 
+def _load_runtime_contract(args: argparse.Namespace) -> _RuntimeContract:
+    if not isfinite(args.interval_seconds) or args.interval_seconds < 0:
+        raise DtsConfigurationError("DTS_INTERVAL_SECONDS_INVALID")
+    stream_settings = DtsConsumerSettings.from_env()
+    database_settings = DtsIngestDatabaseSettings.from_env()
+    stream_settings.require_target_transport(
+        host=database_settings.host,
+        port=database_settings.port,
+        expected_host=APPROVED_INSECURE_PRE_HOST,
+        expected_port=APPROVED_INSECURE_PRE_PORT,
+    )
+    projection_enabled = _env_flag("TIT_DTS_PROJECTION_ENABLED", False)
+    if stream_settings.source_region == "dom" and projection_enabled:
+        raise DtsConfigurationError("DTS_DOM_PROJECTION_FORBIDDEN")
+    activation_settings = _projection_activation_settings(
+        enabled=projection_enabled,
+    )
+    if activation_settings is not None:
+        activation_settings.require_current_stream(
+            source_region=stream_settings.source_region,
+            topic=stream_settings.topic,
+        )
+    return _RuntimeContract(
+        stream_settings=stream_settings,
+        database_settings=database_settings,
+        projection_enabled=projection_enabled,
+        activation_settings=activation_settings,
+        startup_retry_seconds=_startup_retry_seconds(args),
+    )
+
+
+def _start_ingest_once(
+    args: argparse.Namespace,
+    contract: _RuntimeContract,
+) -> _StartedIngest | None:
+    """Run every startup gate with fresh resources and no health writes."""
+
+    if _stop_requested:
+        return None
+    stream_settings = contract.stream_settings
+    sink = PostgresDtsEventSink(
+        contract.database_settings,
+        source_region=stream_settings.source_region,
+    )
+    handoff = False
+    try:
+        processor = DtsEventProcessor(sink)
+        projector = DtsWideProjector(
+            sink.engine,
+            worker_id=(
+                f"{stream_settings.source_region}:"
+                f"{socket.gethostname()}:{os.getpid()}"
+            ),
+        )
+        projector.settings.require_subscription_boundary(
+            stream_settings.start_timestamp_seconds
+        )
+        # These checks create no source rows and advance no offsets.
+        checkpoint = sink.resume_offset(
+            source_region=stream_settings.source_region,
+            topic=stream_settings.topic,
+            partition=stream_settings.partition,
+        )
+        sink.validate_domestic_student_privacy_state()
+        if _stop_requested:
+            return None
+        consumer = DtsKafkaConsumer(
+            stream_settings,
+            processor,
+            idle_timeout_ms=args.idle_timeout_ms,
+        )
+        broker_probe = consumer.startup_probe(
+            phase_callback=_emit_startup_probe,
+        )
+        # A signal received while a blocking broker call was in flight must
+        # never be followed by a database write or a transient ready state.
+        if _stop_requested:
+            return None
+        sink.validate_domestic_student_privacy_contract(
+            key_fingerprint=(
+                stream_settings.domestic_student_hmac_fingerprint()
+            ),
+            topic=stream_settings.topic,
+            partition=stream_settings.partition,
+        )
+        if _stop_requested:
+            return None
+        if contract.activation_settings is not None:
+            sink.acquire_projection_activation(contract.activation_settings)
+        if _stop_requested:
+            return None
+        started = _StartedIngest(
+            sink=sink,
+            consumer=consumer,
+            projector=projector,
+            checkpoint=checkpoint,
+            broker_probe=dict(broker_probe),
+        )
+        handoff = True
+        return started
+    finally:
+        if not handoff:
+            sink.close()
+
+
+def _retryable_startup_diagnostic(
+    exc: Exception,
+    *,
+    sslmode: str | None,
+) -> dict[str, bool | str] | None:
+    """Return a safe diagnostic only for an explicit transient allowlist."""
+
+    kafka_diagnostic = safe_kafka_error_diagnostic(
+        exc,
+        fallback_error_code="DTS_BROKER_REQUEST_FAILED",
+    )
+    if kafka_diagnostic is not None:
+        if kafka_diagnostic.get("retriable") is True:
+            return kafka_diagnostic
+        return None
+
+    if isinstance(exc, OperationalError):
+        payload = _safe_operational_error_payload(exc, sslmode=sslmode)
+        error_code = payload.get("error_code")
+        sqlstate = payload.get("sqlstate")
+        if error_code in _RETRYABLE_DATABASE_STARTUP_ERROR_CODES or (
+            error_code == "DTS_TARGET_CONNECTION_FAILED"
+            and isinstance(sqlstate, str)
+            and sqlstate.startswith("08")
+        ):
+            return {
+                "error_code": str(error_code),
+                "error_type": "OperationalError",
+                "retriable": True,
+            }
+        return None
+
+    if (
+        isinstance(exc, DtsConfigurationError)
+        and len(exc.args) == 1
+        and exc.args[0] in _RETRYABLE_DTS_STARTUP_ERROR_CODES
+    ):
+        return {
+            "error_code": str(exc.args[0]),
+            "error_type": "DtsConfigurationError",
+            "retriable": True,
+        }
+    if (
+        isinstance(exc, DtsIngestStoreError)
+        and len(exc.args) == 1
+        and exc.args[0] in _RETRYABLE_STORE_STARTUP_ERROR_CODES
+    ):
+        return {
+            "error_code": str(exc.args[0]),
+            "error_type": "DtsIngestStoreError",
+            "retriable": True,
+        }
+    return None
+
+
+def _startup_retry_delay(base_seconds: float, attempt: int) -> float:
+    exponent = min(max(attempt - 1, 0), 10)
+    return min(base_seconds * (2**exponent), _MAX_STARTUP_RETRY_SECONDS)
+
+
+def _emit_startup_retry(
+    *,
+    attempt: int,
+    diagnostic: dict[str, bool | str],
+    retry_in_seconds: float,
+) -> None:
+    print(
+        json.dumps(
+            {
+                "mode": "DTS_STARTUP_RETRY",
+                "status": "waiting",
+                "attempt": attempt,
+                "error_code": diagnostic["error_code"],
+                "error_type": diagnostic["error_type"],
+                "retriable": True,
+                "retry_in_seconds": retry_in_seconds,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+
+
+def _wait_for_startup_retry(seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while not _stop_requested:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        time.sleep(min(0.2, remaining))
+    return False
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -255,6 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--idle-timeout-ms", type=int, default=10_000)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--interval-seconds", type=float, default=3.0)
+    parser.add_argument("--startup-retry-seconds")
     parser.add_argument("--heartbeat-path")
     parser.add_argument("--readiness-path")
     parser.add_argument("--healthcheck", action="store_true")
@@ -280,94 +556,72 @@ def _run(args: argparse.Namespace) -> int:
     if args.healthcheck:
         return _healthcheck(args)
     _clear_health_files(args.heartbeat_path, args.readiness_path)
-    if args.interval_seconds < 0:
-        raise DtsConfigurationError("DTS_INTERVAL_SECONDS_INVALID")
-    stream_settings = DtsConsumerSettings.from_env()
-    database_settings = DtsIngestDatabaseSettings.from_env()
-    stream_settings.require_target_transport(
-        host=database_settings.host,
-        port=database_settings.port,
-        expected_host=APPROVED_INSECURE_PRE_HOST,
-        expected_port=APPROVED_INSECURE_PRE_PORT,
-    )
-    projection_enabled = _env_flag("TIT_DTS_PROJECTION_ENABLED", False)
-    if stream_settings.source_region == "dom" and projection_enabled:
-        raise DtsConfigurationError("DTS_DOM_PROJECTION_FORBIDDEN")
-    activation_settings = _projection_activation_settings(
-        enabled=projection_enabled,
-    )
-    if activation_settings is not None:
-        activation_settings.require_current_stream(
-            source_region=stream_settings.source_region,
-            topic=stream_settings.topic,
-        )
-    sink = PostgresDtsEventSink(
-        database_settings,
-        source_region=stream_settings.source_region,
-    )
+    contract = _load_runtime_contract(args)
+    attempt = 0
+    started: _StartedIngest | None = None
+    while not _stop_requested:
+        _clear_health_files(args.heartbeat_path, args.readiness_path)
+        try:
+            started = _start_ingest_once(args, contract)
+        except Exception as exc:
+            _clear_health_files(args.heartbeat_path, args.readiness_path)
+            diagnostic = _retryable_startup_diagnostic(
+                exc,
+                sslmode=contract.database_settings.sslmode,
+            )
+            if not args.watch or diagnostic is None:
+                raise
+            attempt += 1
+            retry_in_seconds = _startup_retry_delay(
+                contract.startup_retry_seconds,
+                attempt,
+            )
+            _emit_startup_retry(
+                attempt=attempt,
+                diagnostic=diagnostic,
+                retry_in_seconds=retry_in_seconds,
+            )
+            if not _wait_for_startup_retry(retry_in_seconds):
+                return 0
+            continue
+        break
+    if started is None or _stop_requested:
+        if started is not None:
+            started.sink.close()
+        return 0
+
+    stream_settings = contract.stream_settings
+    database_settings = contract.database_settings
+    projection_enabled = contract.projection_enabled
     try:
-        processor = DtsEventProcessor(sink)
-        projector = DtsWideProjector(
-            sink.engine,
-            worker_id=(
-                f"{stream_settings.source_region}:"
-                f"{socket.gethostname()}:{os.getpid()}"
-            ),
-        )
-        projector.settings.require_subscription_boundary(
-            stream_settings.start_timestamp_seconds
-        )
-        # Validate database identity, exact ACL and existing privacy state
-        # before the first broker connection. These checks create no rows and
-        # do not advance either offset.
-        checkpoint = sink.resume_offset(
-            source_region=stream_settings.source_region,
-            topic=stream_settings.topic,
-            partition=stream_settings.partition,
-        )
-        sink.validate_domestic_student_privacy_state()
-        consumer = DtsKafkaConsumer(
-            stream_settings,
-            processor,
-            idle_timeout_ms=args.idle_timeout_ms,
-        )
-        broker_probe = consumer.startup_probe(
-            phase_callback=_emit_startup_probe,
-        )
-        # Only after the read-only Kafka probe succeeds, register the one
-        # non-secret DOM key commitment. This is idempotent and must complete
-        # before readiness or any message consumption.
-        sink.validate_domestic_student_privacy_contract(
-            key_fingerprint=(
-                stream_settings.domestic_student_hmac_fingerprint()
-            ),
-            topic=stream_settings.topic,
-            partition=stream_settings.partition,
-        )
-        if activation_settings is not None:
-            sink.acquire_projection_activation(activation_settings)
         started_at = datetime.now(timezone.utc).isoformat()
         _write_health(
             args.readiness_path,
             {
                 "status": "ready",
                 "started_at": started_at,
-                "checkpoint": checkpoint,
-                "broker_probe": broker_probe,
+                "checkpoint": started.checkpoint,
+                "broker_probe": started.broker_probe,
                 "connection": stream_settings.safe_summary(),
                 "target": database_settings.safe_summary(),
             },
         )
+        if _stop_requested:
+            _clear_health_files(args.heartbeat_path, args.readiness_path)
+            return 0
         while not _stop_requested:
-            result = consumer.run(
+            result = started.consumer.run(
                 max_messages=args.max_messages,
                 commit_offsets=True,
             )
+            if _stop_requested:
+                _clear_health_files(args.heartbeat_path, args.readiness_path)
+                return 0
             if projection_enabled:
                 # Prove the checked-out session is still the one that acquired
                 # the global projector lock before every projection batch.
-                sink.assert_projection_lock_held()
-                projection = projector.run_batch(
+                started.sink.assert_projection_lock_held()
+                projection = started.projector.run_batch(
                     max_keys=args.max_projection_keys
                 )
             else:
@@ -380,6 +634,9 @@ def _run(args: argparse.Namespace) -> int:
                     "unchanged": 0,
                     "retries": 0,
                 }
+            if _stop_requested:
+                _clear_health_files(args.heartbeat_path, args.readiness_path)
+                return 0
             heartbeat = {
                 "status": "ok",
                 "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -408,8 +665,10 @@ def _run(args: argparse.Namespace) -> int:
             deadline = time.monotonic() + args.interval_seconds
             while not _stop_requested and time.monotonic() < deadline:
                 time.sleep(min(0.2, deadline - time.monotonic()))
+        if _stop_requested:
+            _clear_health_files(args.heartbeat_path, args.readiness_path)
     finally:
-        sink.close()
+        started.sink.close()
     return 0
 
 
