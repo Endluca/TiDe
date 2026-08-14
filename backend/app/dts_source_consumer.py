@@ -188,6 +188,10 @@ DOMESTIC_ALLOWED_REASON_DETAIL = "Unfilled Lesson Memo"
 DOMESTIC_REDACTED_REASON_DETAIL = "Domestic reason redacted"
 _DOMESTIC_STUDENT_TOKEN_PATTERN = re.compile(r"^dom:v1:[0-9a-f]{64}$")
 _DOMESTIC_STUDENT_HMAC_KEY_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_DOMESTIC_STUDENT_HMAC_PASSWORD_ENV = (
+    "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD"
+)
+_DOMESTIC_STUDENT_HMAC_LEGACY_ENV = "TIT_DTS_DOM_STUDENT_HMAC_KEY"
 _KNOWN_DTS_CONSUMER_GROUP_NAME_PLACEHOLDERS = frozenset(
     {"tit-ovs-group", "tit-dom-group"}
 )
@@ -282,11 +286,60 @@ class DtsConsumerSettings:
         if not brokers:
             raise DtsConfigurationError("TIT_DTS_BROKER_URL_REQUIRED")
         start_at = values.get("TIT_DTS_START_AT", "").strip()
-        domestic_student_hmac_key = values.get(
-            "TIT_DTS_DOM_STUDENT_HMAC_KEY"
+        domestic_student_hmac_password = values.get(
+            _DOMESTIC_STUDENT_HMAC_PASSWORD_ENV
         )
-        if domestic_student_hmac_key == "":
-            domestic_student_hmac_key = None
+        legacy_domestic_student_hmac_key = values.get(
+            _DOMESTIC_STUDENT_HMAC_LEGACY_ENV
+        )
+        if domestic_student_hmac_password == "":
+            domestic_student_hmac_password = None
+        if legacy_domestic_student_hmac_key == "":
+            legacy_domestic_student_hmac_key = None
+        if source_region == "ovs":
+            if domestic_student_hmac_password is not None:
+                raise DtsConfigurationError(
+                    "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORBIDDEN_FOR_OVS"
+                )
+            if legacy_domestic_student_hmac_key is not None:
+                raise DtsConfigurationError(
+                    "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORBIDDEN_FOR_OVS"
+                )
+        elif domestic_student_hmac_password is None:
+            raise DtsConfigurationError(
+                "TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED"
+            )
+        if (
+            domestic_student_hmac_password is not None
+            and _DOMESTIC_STUDENT_HMAC_KEY_PATTERN.fullmatch(
+                domestic_student_hmac_password
+            )
+            is None
+        ):
+            raise DtsConfigurationError(
+                "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORMAT_INVALID"
+            )
+        if (
+            legacy_domestic_student_hmac_key is not None
+            and _DOMESTIC_STUDENT_HMAC_KEY_PATTERN.fullmatch(
+                legacy_domestic_student_hmac_key
+            )
+            is None
+        ):
+            raise DtsConfigurationError(
+                "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORMAT_INVALID"
+            )
+        legacy_secret_conflicts = (
+            legacy_domestic_student_hmac_key is not None
+            and not hmac.compare_digest(
+                domestic_student_hmac_password or "",
+                legacy_domestic_student_hmac_key,
+            )
+        )
+        if legacy_secret_conflicts:
+            raise DtsConfigurationError(
+                "TIT_DTS_DOM_STUDENT_HMAC_SECRET_CONFLICT"
+            )
         return cls(
             source_region=source_region,
             broker_urls=brokers,
@@ -296,7 +349,7 @@ class DtsConsumerSettings:
             password=required_secret("TIT_DTS_PASSWORD"),
             start_timestamp_seconds=_parse_start_timestamp_seconds(start_at),
             execution_region=required("TIT_DTS_EXECUTION_REGION").lower(),
-            domestic_student_hmac_key=domestic_student_hmac_key,
+            domestic_student_hmac_key=domestic_student_hmac_password,
         )
 
     def safe_summary(self) -> dict[str, Any]:
@@ -473,7 +526,9 @@ def protect_domestic_student_ids(
         return event
     key = settings.domestic_student_hmac_key
     if key is None:  # pragma: no cover - settings validation is fail closed
-        raise DtsConfigurationError("TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED")
+        raise DtsConfigurationError(
+            "TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED"
+        )
     return DtsChangeEvent(
         source_region=event.source_region,
         topic=event.topic,

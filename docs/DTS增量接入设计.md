@@ -26,7 +26,7 @@
 11. 稀疏 UPDATE 先合并已持久化当前态、before 与 after，再重算反向依赖；归属键变化时旧键、新键都重新投影。
 12. `TIT_DTS_PROJECTION_ENABLED` 默认关闭。国内、海外先只写账本/镜像/脏键并追平到同一激活时刻，之后只允许海外项目开启全局投影；国内项目固定为 `false`，避免回放未完成时产生暂态 `0/false`、双项目配置漂移或让国内跨境链路持有投影 owner 权限。
 13. `TIT_DTS_PROJECTION_MAX_ATTEMPTS` 默认 `8`（允许 `1–100`）。按 `10/20/40/80/160/300/300` 秒累计提供约 15 分钟跨 Topic 暂态依赖窗口；达到阈值后投影进程以 `DTS_WIDE_PROJECTION_RETRY_EXHAUSTED` 失败关闭且不刷新成功 heartbeat。重启不能清除该状态，只有对应新源事件重新置脏并清零尝试次数后才能恢复。
-14. 每个持久化进程绑定唯一 `source_region` 与运行区域：`ovs/sg`、`dom/cn`；订阅区域、运行区域或入库事件区域不一致时失败关闭。国内消息完成 Avro 解码后、构造任何海外 PostgreSQL SQL 参数前，必须删除 `s_id/student_id/stu_id/user_id` 原值，并使用只存在于国内容器的 `TIT_DTS_DOM_STUDENT_HMAC_KEY` 生成 `dom:v1:<HMAC-SHA256>`。可能由人工录入的 `cancel_reason/reason_desc` 也不得原样出境：只保留精确业务值 `Unfilled Lesson Memo`，其他非空内容降为 `Domestic reason redacted`。海外项目与海外目标库不得持有该密钥或原始国内学生 ID。两条 PostgreSQL 连接分别使用 `tit-dts-ingest-ovs`、`tit-dts-ingest-dom` 标识，健康状态也带安全的订阅摘要。
+14. 每个持久化进程绑定唯一 `source_region` 与运行区域：`ovs/sg`、`dom/cn`；订阅区域、运行区域或入库事件区域不一致时失败关闭。国内消息完成 Avro 解码后、构造任何海外 PostgreSQL SQL 参数前，必须删除 `s_id/student_id/stu_id/user_id` 原值，并使用只存在于国内容器的 `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` 生成 `dom:v1:<HMAC-SHA256>`。变量名中的 `PASSWORD` 用于触发 Gaea 敏感值掩码，不能改回会在配置页明文展示的旧名称。可能由人工录入的 `cancel_reason/reason_desc` 也不得原样出境：只保留精确业务值 `Unfilled Lesson Memo`，其他非空内容降为 `Domestic reason redacted`。海外项目与海外目标库不得持有该密钥或原始国内学生 ID。两条 PostgreSQL 连接分别使用 `tit-dts-ingest-ovs`、`tit-dts-ingest-dom` 标识，健康状态也带安全的订阅摘要。
 15. 启动时通过 PostgreSQL Catalog 精确校验教师 55 列、课程 23 列的顺序、类型、长度和可空性，以及四张 DTS 状态表的 57 列、15 个关键约束、4 个必要索引和 4 个 guard Trigger。两个 SourceWide Outbox Trigger 还会校验事件类型、绑定函数、参数、WHEN 和启用状态；任一漂移都在连接 broker 之前失败关闭。
 16. 每次持久化进程启动都先清除上一进程留下的 heartbeat/readiness，再依次完成目标库连接、传输、身份、Schema/ACL 校验，完成 bootstrap DNS 解析后对解析结果执行 TCP 探针，最后执行 Kafka 端到端只读探针。TCP 探针只做三次握手，解析出的多个地址共享 5 秒连接预算；DNS 解析发生在该 socket 连接预算之前，不能把“5 秒”描述为覆盖 DNS 的整轮硬超时。探针不接收账号/密码且不收发应用数据；四层失败输出 `DTS_BROKER_TCP_*` 稳定错误码。TCP 成功后立即输出不含 endpoint/IP 的安全阶段日志；后续 Kafka 请求超时输出 `DTS_BROKER_KAFKA_REQUEST_TIMEOUT`，由此区分 Pod 网络与 SASL/metadata/消费组/位点层。Kafka 探针使用与正式消费相同的 SASL 配置，验证 topic、partition 0 以及真实初始位点：没有数据库 checkpoint 时按 `TIT_DTS_START_AT` 解析 offset；已有 checkpoint 时验证它没有落后于 Kafka 最早可用位点、没有超过当前末端，并继续执行 Kafka 位点领先数据库的保护。整轮 Kafka 位点探针共享 15 秒总预算，关闭连接另有 1 秒上限。任一步失败都不写 `ready` 或成功 heartbeat，进程非零退出，由 Gaea 重新拉起后再次完整检查。该整套门禁在容器进程启动/重启时执行，不在镜像构建或周期 healthcheck 中重复执行。
 17. 启动 TCP 探针只建立并立即关闭 socket；Kafka 探针只读取 metadata/offset，不迭代消息、不执行 Avro 解码、不调用事件处理器、不写接入账本/镜像/脏键/宽表，也不提交消费组 offset。探针成功只证明当前具备开始消费的条件，不等于已经消费到一条消息；实际接入必须另看事件账本、数据库 checkpoint 和消费组位点。
@@ -65,7 +65,7 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 - `TIT_PROCESS_PROFILE=dts-ingest`；
 - DTS 非敏感连接参数：`TIT_DTS_SOURCE_REGION/EXECUTION_REGION/BROKER_URL/TOPIC/GROUP_ID/ACCOUNT/START_AT`；
 - Gaea 密钥：`TIT_DTS_PASSWORD`，只用于 DTS SASL；
-- 国内项目额外 Gaea 密钥：`TIT_DTS_DOM_STUDENT_HMAC_KEY`，由 CSPRNG 生成 32 bytes 并精确编码为 64 位小写 hex，只在国内消息仍位于国内容器时生成稳定 token；海外项目禁止配置；
+- 国内项目额外 Gaea 密钥：`TIT_DTS_DOM_STUDENT_HMAC_PASSWORD`，由 CSPRNG 生成 32 bytes 并精确编码为 64 位小写 hex，以敏感变量掩码注入，只在国内消息仍位于国内容器时生成稳定 token；海外项目禁止配置；
 - 国内 HMAC 密钥首次启动时只把单向 fingerprint 登记到受限 DTS 状态表；之后 fingerprint 不一致即失败关闭。禁止直接替换密钥，轮换必须新增 token 版本并迁移全部存量关联后另行发布；
 - PostgreSQL 非敏感参数：`TIT_DTS_INGEST_DB_HOST/PORT/SSLMODE`；固定专线 PRE 的 `backend/dts-ingest.pre-ssl-off.env.example` 可由国内、海外项目复用两项 `disable/true` 覆盖，正式环境均保持 `verify-full/false`；
 - Gaea 密钥：`TIT_DTS_INGEST_DB_PASSWORD`，只用于 `tit_dts_ingest_runtime`。
@@ -84,7 +84,7 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 | `TIT_DTS_GROUP_ID` | 海外订阅“数据消费”页生成的消费组 ID（sid） | 国内订阅“数据消费”页生成的消费组 ID（sid） |
 | `TIT_DTS_ACCOUNT` | `titconsumeovs` | `titconsumedom` |
 | `TIT_DTS_START_AT` | `2026-08-10T14:16:00+08:00` | `2026-08-12T16:30:00+08:00` |
-| `TIT_DTS_DOM_STUDENT_HMAC_KEY` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex |
+| `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex，并由 Gaea 掩码保存 |
 | `TIT_DTS_COHORT_START` | `2026-08-13` | `2026-08-13` |
 | `TIT_DTS_COHORT_END_EXCLUSIVE` | 空（开放式） | 空（开放式） |
 | `TIT_DTS_PROJECTION_ENABLED` | 首次追平时 `false`；激活后由本项目改为 `true` | 固定 `false`，禁止成为投影 owner |

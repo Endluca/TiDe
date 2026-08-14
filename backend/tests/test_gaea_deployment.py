@@ -1132,7 +1132,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "国内项目必须位于中国大陆" in readme
     assert "TIT_DTS_EXECUTION_REGION=sg" in readme
     assert "TIT_DTS_EXECUTION_REGION=cn" in readme
-    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" in readme
+    assert "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD" in readme
     assert "dom:v1:<HMAC-SHA256>" in readme
     assert "国内、海外 DTS 的固定 PRE 专线目标" in readme
     assert "专线限制网络路径但" in readme
@@ -1227,9 +1227,12 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     assert "tit-ovs-group" not in overseas
     assert "tit-dom-group" not in domestic
     assert "TIT_DTS_EXECUTION_REGION=" in generic
+    assert "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD" not in overseas
     assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in overseas
-    assert domestic.count("TIT_DTS_DOM_STUDENT_HMAC_KEY=") == 1
-    assert generic.count("TIT_DTS_DOM_STUDENT_HMAC_KEY=") == 1
+    assert domestic.count("TIT_DTS_DOM_STUDENT_HMAC_PASSWORD=") == 1
+    assert generic.count("TIT_DTS_DOM_STUDENT_HMAC_PASSWORD=") == 1
+    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in domestic
+    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in generic
     assert domestic.count("TIT_DTS_PROJECTION_ENABLED=false") == 1
     assert "TIT_DTS_PROJECTION_ENABLED=true" not in domestic
     assert "dts-ingest.pre-ssl-off.env.example" in domestic
@@ -1244,6 +1247,7 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     assert "Production must remain verify-full" in pre_override
     assert "TIT_DTS_PASSWORD" not in pre_override
     assert "TIT_DTS_INGEST_DB_PASSWORD" not in pre_override
+    assert "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD" not in pre_override
     assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in pre_override
     assert "dts-ingest.pre-ssl-off.env.example" not in DTS_DOCKERFILE.read_text(
         encoding="utf-8"
@@ -1267,7 +1271,19 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     assert "TIT_DTS_ALLOW_INSECURE_DB" not in DOCKERFILE.read_text(
         encoding="utf-8"
     )
+    assert "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD" not in APPLICATION_ENV.read_text(
+        encoding="utf-8"
+    )
     assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in APPLICATION_ENV.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD" not in COMBINED_ENV.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in COMBINED_ENV.read_text(
+        encoding="utf-8"
+    )
+    assert "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD" not in DOCKERFILE.read_text(
         encoding="utf-8"
     )
     assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in DOCKERFILE.read_text(

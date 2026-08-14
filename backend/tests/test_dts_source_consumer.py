@@ -150,7 +150,7 @@ def test_domestic_settings_require_china_execution_and_hmac_key() -> None:
         "TIT_DTS_ACCOUNT": "consumer",
         "TIT_DTS_PASSWORD": "runtime-only",
         "TIT_DTS_START_AT": "2026-08-12T16:30:00+08:00",
-        "TIT_DTS_DOM_STUDENT_HMAC_KEY": "a" * 64,
+        "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD": "a" * 64,
     }
 
     settings = DtsConsumerSettings.from_env(values)
@@ -186,8 +186,13 @@ def test_domestic_settings_require_china_execution_and_hmac_key() -> None:
             "TIT_DTS_EXECUTION_REGION_SOURCE_MISMATCH",
         ),
         (
-            "TIT_DTS_DOM_STUDENT_HMAC_KEY",
+            "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD",
             "not-a-64-character-lowercase-hex-secret",
+            "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORMAT_INVALID",
+        ),
+        (
+            "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD",
+            "非ASCII密钥",
             "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORMAT_INVALID",
         ),
     ):
@@ -195,8 +200,73 @@ def test_domestic_settings_require_china_execution_and_hmac_key() -> None:
         with pytest.raises(DtsConfigurationError, match=f"^{error}$"):
             DtsConsumerSettings.from_env(invalid)
 
+    missing_secret = dict(values)
+    del missing_secret["TIT_DTS_DOM_STUDENT_HMAC_PASSWORD"]
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED$",
+    ):
+        DtsConsumerSettings.from_env(missing_secret)
 
-def test_overseas_settings_reject_domestic_hmac_secret() -> None:
+
+def test_domestic_settings_accept_matching_legacy_hmac_transition() -> None:
+    values = {
+        "TIT_DTS_SOURCE_REGION": "dom",
+        "TIT_DTS_EXECUTION_REGION": "cn",
+        "TIT_DTS_BROKER_URL": "broker.internal:18003",
+        "TIT_DTS_TOPIC": "dom-topic-v2",
+        "TIT_DTS_GROUP_ID": "dtsdom1234567890",
+        "TIT_DTS_ACCOUNT": "consumer",
+        "TIT_DTS_PASSWORD": "runtime-only",
+        "TIT_DTS_START_AT": "2026-08-12T16:30:00+08:00",
+        "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD": "a" * 64,
+        "TIT_DTS_DOM_STUDENT_HMAC_KEY": "a" * 64,
+    }
+
+    settings = DtsConsumerSettings.from_env(values)
+
+    assert settings.domestic_student_hmac_key == "a" * 64
+    values["TIT_DTS_DOM_STUDENT_HMAC_KEY"] = "b" * 64
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_DOM_STUDENT_HMAC_SECRET_CONFLICT$",
+    ) as conflict:
+        DtsConsumerSettings.from_env(values)
+    assert "a" * 64 not in str(conflict.value)
+    assert "b" * 64 not in str(conflict.value)
+
+    values["TIT_DTS_DOM_STUDENT_HMAC_KEY"] = "非ASCII旧密钥"
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_DOM_STUDENT_HMAC_KEY_FORMAT_INVALID$",
+    ):
+        DtsConsumerSettings.from_env(values)
+
+    del values["TIT_DTS_DOM_STUDENT_HMAC_PASSWORD"]
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED$",
+    ):
+        DtsConsumerSettings.from_env(values)
+
+
+@pytest.mark.parametrize(
+    ("secret_name", "error"),
+    [
+        (
+            "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD",
+            "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORBIDDEN_FOR_OVS",
+        ),
+        (
+            "TIT_DTS_DOM_STUDENT_HMAC_KEY",
+            "TIT_DTS_DOM_STUDENT_HMAC_KEY_FORBIDDEN_FOR_OVS",
+        ),
+    ],
+)
+def test_overseas_settings_reject_domestic_hmac_secret(
+    secret_name: str,
+    error: str,
+) -> None:
     values = {
         "TIT_DTS_SOURCE_REGION": "ovs",
         "TIT_DTS_EXECUTION_REGION": "sg",
@@ -208,12 +278,40 @@ def test_overseas_settings_reject_domestic_hmac_secret() -> None:
         "TIT_DTS_START_AT": "2026-08-10T14:16:00+08:00",
     }
     assert DtsConsumerSettings.from_env(values).domestic_student_hmac_fingerprint() is None
-    values["TIT_DTS_DOM_STUDENT_HMAC_KEY"] = "a" * 64
+    values[secret_name] = "a" * 64
+    with pytest.raises(
+        DtsConfigurationError,
+        match=f"^{error}$",
+    ):
+        DtsConsumerSettings.from_env(values)
+
+
+def test_overseas_settings_reject_both_domestic_hmac_names() -> None:
+    values = {
+        "TIT_DTS_SOURCE_REGION": "ovs",
+        "TIT_DTS_EXECUTION_REGION": "sg",
+        "TIT_DTS_BROKER_URL": "broker.internal:18003",
+        "TIT_DTS_TOPIC": "ovs-topic-v2",
+        "TIT_DTS_GROUP_ID": "dtsovs1234567890",
+        "TIT_DTS_ACCOUNT": "consumer",
+        "TIT_DTS_PASSWORD": "runtime-only",
+        "TIT_DTS_START_AT": "2026-08-10T14:16:00+08:00",
+        "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD": "a" * 64,
+        "TIT_DTS_DOM_STUDENT_HMAC_KEY": "a" * 64,
+    }
+
     with pytest.raises(
         DtsConfigurationError,
         match="^TIT_DTS_DOM_STUDENT_HMAC_KEY_FORBIDDEN_FOR_OVS$",
     ):
         DtsConsumerSettings.from_env(values)
+
+    values["TIT_DTS_DOM_STUDENT_HMAC_PASSWORD"] = ""
+    values["TIT_DTS_DOM_STUDENT_HMAC_KEY"] = ""
+    assert (
+        DtsConsumerSettings.from_env(values).domestic_student_hmac_key
+        is None
+    )
 
 
 def test_domestic_student_ids_are_hmac_protected_before_routing() -> None:

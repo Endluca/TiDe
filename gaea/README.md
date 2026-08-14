@@ -249,7 +249,7 @@ application 项目也不配置任何 DTS 变量。
 当前消费者固定 partition 0，每个 DTS 项目先使用 1 个副本。两个项目可以同时把各自事件写入
 同一个 `tide_system_test.public`：接入幂等键包含 `source_region + topic + partition + offset`。
 国内消息仍在国内容器内时，代码必须在构造任何海外 PostgreSQL SQL 参数前删除原始学生 ID，
-并使用仅注入国内项目的 `TIT_DTS_DOM_STUDENT_HMAC_KEY` 生成
+并使用仅注入国内项目且由 Gaea 掩码保存的 `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` 生成
 `dom:v1:<HMAC-SHA256>`；海外项目、海外数据库、日志和错误 payload 都不得持有该密钥或原始国内
 学生 ID。稳定 token 用于师生去重、收藏/拉黑归因和课程宽表关联，但仍属于伪名数据，必须继续
 限制访问。若合规边界连稳定 token 都不允许跨境，则当前 23/55 投影协议不适用，必须改为国内
@@ -281,7 +281,7 @@ application 项目也不配置任何 DTS 变量。
 | `TIT_DTS_GROUP_ID` | 海外订阅“数据消费”页生成的消费组 ID（sid） | 国内订阅“数据消费”页生成的消费组 ID（sid） |
 | `TIT_DTS_ACCOUNT` | `titconsumeovs` | `titconsumedom` |
 | `TIT_DTS_START_AT` | `2026-08-10T14:16:00+08:00` | `2026-08-12T16:30:00+08:00` |
-| `TIT_DTS_DOM_STUDENT_HMAC_KEY` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex，并作为敏感变量注入 |
+| `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex；必须使用该含 `PASSWORD` 的名称触发 Gaea 敏感值掩码 |
 
 每个项目还需要以下共同变量：
 
@@ -496,7 +496,8 @@ docker stop tide-camp-gaea-test
    配置 `TIT_DTS_EXECUTION_REGION=sg`；国内项目选择中国大陆数据中心并配置
    `TIT_DTS_EXECUTION_REGION=cn`。停止并废弃任何位于新加坡数据中心的国内 DTS Pod。两个项目只
    注入各自 DTS 密码与 `tit_dts_ingest_runtime` 数据库密码；国内项目另行注入专用
-   `TIT_DTS_DOM_STUDENT_HMAC_KEY`，海外项目禁止持有该密钥。当前固定 PRE 专线目标可在两个项目
+   `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD`，海外项目禁止持有该密钥。变量名中的 `PASSWORD` 是
+   Gaea 敏感值掩码契约，不能改回旧名称。当前固定 PRE 专线目标可在两个项目
    同时加载 `dts-ingest.pre-ssl-off.env.example` 的 `disable/true` 覆盖；这只是受控非 TLS 例外，
    正式环境仍须 `verify-full`。使用各自固化的区域回放边界和
    相同的 `2026-08-13` 开放式 cohort；国内始终保持

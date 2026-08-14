@@ -133,7 +133,7 @@ def test_domestic_private_line_plaintext_reuses_existing_database_gate(
         "TIT_DTS_GROUP_ID": "dtsdom1234567890",
         "TIT_DTS_ACCOUNT": "consumer",
         "TIT_DTS_PASSWORD": "runtime-only",
-        "TIT_DTS_DOM_STUDENT_HMAC_KEY": "a" * 64,
+        "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD": "a" * 64,
         "TIT_DTS_INGEST_DB_HOST": (
             "tide-system.rwlb.singapore.rds.aliyuncs.com"
         ),
