@@ -56,6 +56,36 @@ test("describes favorite points as one eligible class per learner", () => {
   }]);
 });
 
+test("uses the approved Philippines English score-rule copy", () => {
+  const [feedback, capacity] = presentScorecardRules([
+    {
+      code: "USER_FEEDBACK",
+      score: 5,
+      scoreRuleVersion: "rule-v8",
+      components: [{ code: "FEEDBACK_FAVORITE", pointsPerUnit: 5 }],
+    },
+    {
+      code: "CAPACITY",
+      score: 10,
+      scoreRuleVersion: "rule-v8",
+      components: [{ code: "CAPACITY_PEAK_SLOT_40", score: 10 }],
+    },
+  ], "en");
+
+  assert.equal(
+    feedback.description,
+    "Praise accumulates by event, while Favorites count unique learners. There is no cap on points in this category.",
+  );
+  assert.equal(
+    feedback.items[0].condition,
+    "Only each learner’s first eligible favorite for this teacher earns points; later favorites do not earn additional points.",
+  );
+  assert.equal(
+    capacity.description,
+    "A one-time award is granted when the required bookable-slot target is reached.",
+  );
+});
+
 test("presents teacher-readable rules from Shiwen scorecard components", () => {
   const groups = presentScorecardRules([
     {

@@ -2,7 +2,7 @@ const scorecardGroupCopy = {
   USER_FEEDBACK: {
     title: { en: "User Feedback", zh: "用户反馈" },
     description: {
-      en: "Praise accumulates by event; favorites count unique learners. This dimension has no cap.",
+      en: "Praise accumulates by event, while Favorites count unique learners. There is no cap on points in this category.",
       zh: "好评按次累计，收藏按去重学员人数累计，本维度不封顶。",
     },
   },
@@ -23,7 +23,7 @@ const scorecardGroupCopy = {
   CAPACITY: {
     title: { en: "Teaching Availability", zh: "有效供给" },
     description: {
-      en: "A one-time award is granted after reaching the required bookable-slot target.",
+      en: "A one-time award is granted when the required bookable-slot target is reached.",
       zh: "达到规定的可约课时目标后获得一次性积分。",
     },
   },
@@ -45,7 +45,7 @@ const scorecardRuleCopy = {
   FEEDBACK_FAVORITE: {
     title: { en: "Learner favorite", zh: "学员收藏" },
     condition: {
-      en: "Each learner's first eligible favorite of this teacher; later favorites do not score again",
+      en: "Only each learner’s first eligible favorite for this teacher earns points; later favorites do not earn additional points.",
       zh: "每名学员首次符合计分条件的收藏课；后续收藏不重复计分",
     },
     unit: { en: "/learner", zh: "/人" },
@@ -76,7 +76,7 @@ const scorecardRuleCopy = {
       zh: "无设备网络&教学环境问题",
     },
     condition: {
-      en: "Each eligible class without device, network, or teaching-environment issues",
+      en: "Each eligible class completed without device, network, or teaching-environment issues.",
       zh: "每节无设备、网络及教学环境问题的课程",
     },
     unit: { en: "/class", zh: "/节" },

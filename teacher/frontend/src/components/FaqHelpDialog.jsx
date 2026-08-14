@@ -350,7 +350,7 @@ export default function FaqHelpDialog({
           >
             <div className="help-route-intro">
               <h3>{copy(language, "Choose the quickest route", "选择最合适的求助方式")}</h3>
-              <p>{copy(language, "Try the FAQ for common questions, or send a ticket when you need an operations reply.", "常见问题可先问 AI；需要运营介入时，可直接提交工单。")}</p>
+              <p>{copy(language, "Check the FAQ for common questions, or send a ticket when you need help.", "常见问题可先问 AI；需要运营介入时，可直接提交工单。")}</p>
             </div>
             <button type="button" onClick={startFaq}>
               <span><ChatCircleDots size={25} weight="duotone" /></span>
@@ -360,7 +360,7 @@ export default function FaqHelpDialog({
             <button type="button" onClick={() => startTicket()}>
               <span><Headset size={25} weight="duotone" /></span>
               <strong>{copy(language, "Submit a support ticket", "提交工单")}</strong>
-              <small>{copy(language, "Send screenshots and wait for an operations reply", "可附截图，等待运营回复")}</small>
+              <small>{copy(language, "Send screenshots and wait for a reply.", "可附截图，等待运营回复")}</small>
             </button>
           </div>
         ) : mode === "TICKET" ? (
@@ -410,7 +410,7 @@ export default function FaqHelpDialog({
               <h3>{copy(language, "Ask about your 51Talk teacher journey", "询问你的 51Talk 教师相关问题")}</h3>
               <p>{copy(
                 language,
-                "Answers use approved FAQ content only. If there is no reliable match, the question is recorded for review.",
+                "Answers are based only on approved FAQ content. If there’s no reliable match, your question is recorded for review.",
                 "回答只依据已审核 FAQ；没有可靠依据时会明确说明，并记录问题供后续补充。",
               )}</p>
               <div className="faq-suggestions">

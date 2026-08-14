@@ -432,9 +432,7 @@ describe('DatabaseService', () => {
     expect(productionQuery).toContain(
       "relation.relkind IN ('r', 'p', 'v', 'm', 'f')",
     );
-    expect(productionQuery).toContain(
-      "relation.relname <> 'crm_sso_logins'",
-    );
+    expect(productionQuery).toContain("relation.relname <> 'crm_sso_logins'");
     expect(productionQuery).toContain(
       "ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::text[]",
     );

@@ -16,7 +16,7 @@ test("localizes our automatic task notifications", () => {
   });
   assert.deepEqual(localizeNotification(message, "en"), {
     title: "Task review in progress",
-    body: "Your task submission is saved and still being reviewed. Open the task to check the latest status.",
+    body: "Your task submission is saved and still under review. Open the task to check the latest status.",
   });
 });
 
@@ -34,7 +34,7 @@ test("localizes the growth-stage notification without inventing a stage name", (
   });
   assert.deepEqual(localizeNotification(message, "en"), {
     title: message.title,
-    body: message.body,
+    body: "A new set of required tasks is now available in your growth path. Work through them in the order that works best for you.",
   });
 });
 

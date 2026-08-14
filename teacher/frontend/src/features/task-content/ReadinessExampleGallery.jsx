@@ -108,8 +108,8 @@ export default function ReadinessExampleGallery({ className = "", compact = fals
         <header className="lesson-example-gallery-head">
           <span><ImagesSquare size={22} weight="duotone" /></span>
           <div>
-            <small>{c("CAMERA-VIEW EXAMPLES", "画面检测示例")}</small>
-            <h3>{c("Compare before taking your photo", "拍照前对照一下合格与需调整示例")}</h3>
+            <small>{c("VIEW FOUR REFERENCE EXAMPLES", "画面检测示例")}</small>
+            <h3>{c("RECOMMENDED & NEEDS-ADJUSTMENT EXAMPLES", "拍照前对照一下合格与需调整示例")}</h3>
             <p>{c("Choose an item below. Tap any image to view it larger.", "选择一项查看，点击图片可以放大。")}</p>
           </div>
         </header>
