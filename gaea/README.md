@@ -2,13 +2,15 @@
 
 ## 部署模式
 
-这是两种构建形态、三个运行项目的受控 TEST 部署：
+这是两种构建形态、三个运行项目的受控 TEST 部署，另带一个只在排障窗口使用的诊断模块：
 
-- `gaea/gaea.yml` 声明 `application` 与 `dts-ingest` 两个模块；现有 application 项目可暂时
+- `gaea/gaea.yml` 声明 `application`、`dts-ingest` 与临时 `dts-diagnose` 三个模块；现有 application 项目可暂时
   继续读取根级 `gaea/Dockerfile`，切换多模块后选择 `gaea/application/Dockerfile`；两者内容
   由测试强制保持完全一致；
 - 海外和国内两个独立 DTS 项目都选择 `gaea/dts-ingest/Dockerfile`，但仍由 Gaea 分别构建、
   推送和发布；海外项目必须位于新加坡数据中心，国内项目必须位于中国大陆数据中心；
+- `dts-diagnose` 不是第四个常驻项目；它只在国内 PRE 原项目中短暂替换 `dts-ingest`，用阿里云
+  官方 Java 诊断包复现同一 VPC、订阅、消费组和出口链路；
 - 三个项目使用不同密钥集合。国内学生 ID 的 HMAC 密钥只允许注入国内项目。
   模块选择不会自动创建 Gaea 项目，也不会自动选择正确数据中心或让海外和国内跨项目复用同一个
   image digest。
@@ -233,6 +235,54 @@ SourceWide 健康探针会使用同一个受限数据库身份直接读取 Outbo
 `attempt_count=0` 事件允许 Worker 追平；尚未到 `available_at` 的正常退避事件也不计为
 超龄。数据库探测失败同样失败关闭；重启不会清除终态事件，必须先检查 `last_error`、修复
 源数据或投影问题并按运维流程重新入队，不能用反复重启掩盖毒事件。
+
+## 阿里云官方 DTS 诊断模块
+
+`gaea/dts-diagnose` 固定封装阿里云排错文档直接链接的 Java 8 JAR。构建过程不访问 GitHub；
+源码 commit、13,917,673 字节文件和 SHA-256
+`8a1c484a7c01fc5e684b57eb720a4757f3652027c6d1fea41bc5f69451556ef0` 均记录在
+`gaea/dts-diagnose/SOURCE.md`。该包内置 DTS SDK 1.4.0 与 Kafka Java Client 1.0.0，因而是
+当前 kafka-python Metadata v7 收到 FIN 问题的直接协议 A/B。
+
+这个工具是完整消费者，不是只读 Metadata 探针。`ASSIGN` 模式会读取并解码 CDC 记录，官方
+文档明确说明它会更新指定消费组的消费位点；默认 listener 还会输出 Schema、Before image 和
+After image。因此只能在当前国内 PRE 项目中有界运行，不能与 Python 消费者并发，也不能把
+容器健康解释为链路成功。
+
+发布前先在目标 `tide_system_test` 留底 durable checkpoint：
+
+```sql
+SELECT source_region, topic, partition_id, next_offset,
+       source_timestamp, source_position, updated_at
+FROM public.dts_ingest_checkpoints
+WHERE source_region = 'dom' AND partition_id = 0;
+```
+
+随后按以下顺序执行：
+
+1. 关闭或缩容 `pre-tida-camp-dts-dom` 当前 `dts-ingest` Pod，确认不存在同组 Python 消费者；
+2. 保持原国内项目、团队、数据中心、broker、topic、sid、账号和密码不变，把构建模块临时改为
+   `dts-diagnose`，副本数固定 1，禁止滚动阶段新旧模块重叠；
+3. 新增非敏感变量 `TIT_DTS_DIAG_INIT_CHECKPOINT=1786523400`，保持
+   `TIT_DTS_DIAG_LOG_LEVEL=TRACE`；运行脚本把现有变量映射为官方八项配置，`userName` 只填写
+   `TIT_DTS_ACCOUNT` 原账号，不手工拼接 sid；
+4. 同时保存 Gaea 完整控制台日志和容器 `/deployments/logs/dts-new-subscribe.log*`。外部
+   log4j 配置会把 DTS SDK TRACE、Kafka `NetworkClient` TRACE、Metadata、Selector、SASL、
+   Fetcher 与 Coordinator 时间线同时写到两处；
+5. 看到第一条 `RecordType [HEARTBEAT]` 即证明官方 Java/Kafka 1.0 路径可用；看到明确异常则
+   保留完整首轮日志。任一结果出现后立即停止诊断 Pod；
+6. 把同一 Gaea 项目的构建模块切回 `dts-ingest`，删除诊断变量，按留底 checkpoint、数据库
+   账本和消费组位点判断是否需要位点恢复，再重新执行正式 readiness/heartbeat 验收。
+
+诊断镜像的 HEALTHCHECK 只检查 Java 进程仍存活。官方包成功后会长期运行且可重试；所以 Pod
+绿色、退出码 0 或日志文件存在都不是成功标准。唯一成功证据是实际 HEARTBEAT/业务记录，唯一
+失败证据是本次进程的明确异常时间线。
+
+阿里建议把 `request.timeout.ms` 与 `api.version.auto.timeout.ms` 调到 120000ms。这个官方
+Java 包只读取八个固定配置键，不透传任意 Kafka 配置；它内置 Kafka 1.0.0 的
+`request.timeout.ms` 默认值为 305000ms，已经更长，并且 Java 客户端没有 kafka-python 的
+`api.version.auto.timeout.ms`。启动摘要会明确读回这两个事实，不能把无效的第九个 properties
+键伪装成已生效参数。
 
 ## DTS ingest 独立 Profile
 
@@ -467,6 +517,7 @@ TEST 只验收当前教师绑定的正式阔知课程；不存在示例账号或
 ```bash
 docker build -f gaea/Dockerfile -t tide-camp:gaea .
 docker build -f gaea/dts-ingest/Dockerfile -t tide-camp-dts:gaea .
+docker build -f gaea/dts-diagnose/Dockerfile -t tide-camp-dts-diagnose:gaea .
 ```
 
 Gaea 中现有 application 项目可以暂时保持根构建方式，也可切换 `multi_module/application`；
@@ -589,6 +640,12 @@ gaea/
 │   └── Dockerfile
 ├── dts-ingest/
 │   └── Dockerfile
+├── dts-diagnose/
+│   ├── Dockerfile
+│   ├── SOURCE.md
+│   ├── log4j-diagnose.properties
+│   ├── run.sh
+│   └── dts_subscribe_sdk_dep_demo-1.0-SNAPSHOT-jar-with-dependencies.jar
 ├── bin/
 │   ├── healthcheck.sh
 │   ├── render-nginx-conf.sh

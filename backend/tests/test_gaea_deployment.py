@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +16,15 @@ GAEA_DIR = ROOT / "gaea"
 DOCKERFILE = GAEA_DIR / "Dockerfile"
 APPLICATION_DOCKERFILE = GAEA_DIR / "application" / "Dockerfile"
 DTS_DOCKERFILE = GAEA_DIR / "dts-ingest" / "Dockerfile"
+DTS_DIAG_DIR = GAEA_DIR / "dts-diagnose"
+DTS_DIAG_DOCKERFILE = DTS_DIAG_DIR / "Dockerfile"
+DTS_DIAG_RUN = DTS_DIAG_DIR / "run.sh"
+DTS_DIAG_LOGGING = DTS_DIAG_DIR / "log4j-diagnose.properties"
+DTS_DIAG_SOURCE = DTS_DIAG_DIR / "SOURCE.md"
+DTS_DIAG_JAR = (
+    DTS_DIAG_DIR
+    / "dts_subscribe_sdk_dep_demo-1.0-SNAPSHOT-jar-with-dependencies.jar"
+)
 GAEA_MODULES = GAEA_DIR / "gaea.yml"
 README = GAEA_DIR / "README.md"
 HEALTHCHECK = GAEA_DIR / "bin" / "healthcheck.sh"
@@ -66,7 +77,7 @@ ARCHITECTURE = ROOT / "docs" / "architecture.md"
 RUNTIME_SECURITY = ROOT / "project-context" / "RUNTIME_DATA_SECURITY.md"
 
 
-def test_gaea_keeps_the_application_root_and_routes_one_dts_module() -> None:
+def test_gaea_keeps_the_application_root_and_routes_dts_modules() -> None:
     assert DOCKERFILE.is_file()
     assert GAEA_MODULES.read_text(encoding="utf-8") == (
         "multmod: true\n"
@@ -75,6 +86,7 @@ def test_gaea_keeps_the_application_root_and_routes_one_dts_module() -> None:
         "  name:\n"
         "    - application\n"
         "    - dts-ingest\n"
+        "    - dts-diagnose\n"
     )
     assert APPLICATION_DOCKERFILE.read_bytes() == DOCKERFILE.read_bytes()
     assert DTS_DOCKERFILE.is_file()
@@ -84,7 +96,85 @@ def test_gaea_keeps_the_application_root_and_routes_one_dts_module() -> None:
     assert set(GAEA_DIR.glob("*/Dockerfile")) == {
         APPLICATION_DOCKERFILE,
         DTS_DOCKERFILE,
+        DTS_DIAG_DOCKERFILE,
     }
+
+
+def test_gaea_official_dts_diagnostic_is_pinned_and_verbose() -> None:
+    expected_sha256 = (
+        "8a1c484a7c01fc5e684b57eb720a4757"
+        "f3652027c6d1fea41bc5f69451556ef0"
+    )
+    jar_bytes = DTS_DIAG_JAR.read_bytes()
+    dockerfile = DTS_DIAG_DOCKERFILE.read_text(encoding="utf-8")
+    runner = DTS_DIAG_RUN.read_text(encoding="utf-8")
+    logging_config = DTS_DIAG_LOGGING.read_text(encoding="utf-8")
+    source = DTS_DIAG_SOURCE.read_text(encoding="utf-8")
+
+    assert len(jar_bytes) == 13_917_673
+    assert hashlib.sha256(jar_bytes).hexdigest() == expected_sha256
+    with zipfile.ZipFile(DTS_DIAG_JAR) as archive:
+        manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8")
+        kafka_version = archive.read("kafka/kafka-version.properties").decode(
+            "utf-8"
+        )
+    assert "Main-Class: com.aliyun.dts.subscribe.clients.DTSConsumerDemo" in manifest
+    assert "version=1.0.0" in kafka_version
+
+    assert "hub.51talk.biz/runtime/oraclejdk:1.8-debian11" in dockerfile
+    assert "useradd --uid 1001" in dockerfile
+    assert "USER gaea" in dockerfile
+    assert "HEALTHCHECK" in dockerfile
+    assert "STOPSIGNAL SIGTERM" in dockerfile
+    assert 'CMD ["/deployments/bin/run.sh"]' in dockerfile
+    assert expected_sha256 in dockerfile
+    assert "sha256sum -c -" in dockerfile
+    assert "curl " not in dockerfile
+    assert "wget " not in dockerfile
+
+    syntax = subprocess.run(
+        ["sh", "-n", str(DTS_DIAG_RUN)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+    for mapping in (
+        "brokerUrl=%s",
+        "topic=%s",
+        "sid=%s",
+        "userName=%s",
+        "password=%s",
+        "initCheckpoint=%s",
+        "subscribeMode=ASSIGN",
+        "isForceUseInitCheckpoint=true",
+    ):
+        assert mapping in runner
+    assert "kafka.request.timeout.ms=" not in runner
+    assert "api.version.auto.timeout.ms=" not in runner
+    assert 'chmod 0600 "$CONFIG_PATH"' in runner
+    assert "set -x" not in runner
+    assert '-cp "${LOG_CONFIG_DIR}:${JAR_PATH}"' in runner
+    assert "com.aliyun.dts.subscribe.clients.DTSConsumerDemo" in runner
+    assert "java_exited" in runner
+
+    for logger in (
+        "com.aliyun.dts.subscribe",
+        "org.apache.kafka=DEBUG",
+        "org.apache.kafka.clients.NetworkClient=TRACE",
+        "org.apache.kafka.clients.Metadata=DEBUG",
+        "org.apache.kafka.common.network.Selector=TRACE",
+        "org.apache.kafka.common.security.authenticator.SaslClientAuthenticator=DEBUG",
+        "org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient=DEBUG",
+        "org.apache.kafka.clients.consumer.internals.Fetcher=DEBUG",
+        "org.apache.kafka.clients.consumer.internals.SubscriptionState=DEBUG",
+    ):
+        assert logger in logging_config
+    assert "dts-new-subscribe.log" in logging_config
+    assert "MaxFileSize=100MB" in logging_config
+    assert "MaxBackupIndex=5" in logging_config
+    assert expected_sha256 in source
+    assert "48596de62f01ea7d4b84082b562c33e9e5350287" in source
 
 
 def test_gaea_dts_module_omits_the_application_build_graph() -> None:
@@ -1098,6 +1188,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "tide-camp-api" not in readme
     assert "两种构建形态、三个运行项目" in readme
     assert "`dts-ingest`" in readme
+    assert "`dts-diagnose`" in readme
     assert "轻量 DTS 镜像" in readme
     assert "分别构建、" in readme
     assert "推送和发布" in readme
@@ -1120,6 +1211,11 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "2026-08-13" in readme
     assert "TIT_DTS_PROJECTION_ENABLED=false" in readme
     assert "TIT_DTS_STARTUP_RETRY_SECONDS" in readme
+    assert "TIT_DTS_DIAG_INIT_CHECKPOINT=1786523400" in readme
+    assert "RecordType [HEARTBEAT]" in readme
+    assert "dts-new-subscribe.log" in readme
+    assert "305000ms" in readme
+    assert "8a1c484a7c01fc5e684b57eb720a4757f3652027c6d1fea41bc5f69451556ef0" in readme
     assert "TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS" in readme
     assert "TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS" in readme
     assert "configured_startup_probe_budget_ms" in readme

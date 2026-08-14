@@ -4,3 +4,4 @@ gaeamod:
   name:
     - application
     - dts-ingest
+    - dts-diagnose

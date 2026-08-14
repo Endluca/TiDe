@@ -140,18 +140,22 @@ Tide_teachers_camp/
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
 - 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；除真实消费组 ID（sid）必须在部署时从对应订阅的“数据消费”页注入外，其余已确认的非敏感参数已固化。截至 2026-08-14，海外 `tide_system_test` 已实证为 public `20260814_61_teacher_copy`、teacher 精确 36 条且 head `0041_crm_sso_hybrid`，并已通过当前 release 的完整只读联合契约探针。rev61 只原位更新 4 条稳定任务模板文案，不改 DTS 表、Trigger 或隐私函数；数据库发布门禁已关闭，但这不代表 DTS 或 `pre-tida-camp` 全流程可用。部署边界现已收紧为：海外消费者运行在新加坡，国内消费者通过“AI 效率中心”团队的独立 Gaea 项目 `tida-camp-dts-dom` 运行在中国大陆集群；平台项目选择和 `TIT_DTS_EXECUTION_REGION=cn` 都必须在新 Pod 上读回，不能只凭变量声明推断地理放置。国内消费者在构造任何发往海外 PostgreSQL 的 SQL 参数前，使用仅注入国内项目的密钥把原始学生 ID 转为 `dom:v1:<HMAC-SHA256>`，海外项目和海外数据库均不得持有该密钥或原始国内学生 ID；稳定 token 仍按伪名数据受限管理。默认及正式环境仍固定 `sslmode=verify-full`。当前 `tide_system_test` PRE 固定专线端点允许用既有 `sslmode=disable` 受控例外；专线只限制网络路径，并不加密 PostgreSQL 流量。该例外不得扩展到其他端点、库或正式环境，数据库启用 TLS 后必须恢复 `verify-full`。全局 23/55 宽表投影只允许由海外消费者持有，国内消费者固定 `projection=false`。当前仍无国内新 Pod 的成功 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账，不能视为链路联调完成。增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
 
-## Gaea 部署骨架（双构建入口、三项目）
+## Gaea 部署骨架（常驻双入口、临时诊断模块、三项目）
 
-[`gaea/gaea.yml`](gaea/gaea.yml) 声明 `application` 和 `dts-ingest` 两个构建模块。
+[`gaea/gaea.yml`](gaea/gaea.yml) 声明 `application`、`dts-ingest` 和临时
+`dts-diagnose` 三个构建模块。
 `application` 构建运营 React、教师 React、运营 FastAPI 和教师 NestJS，并用 s6-overlay 在
 一个 Pod 中管理运营 API、教师 API、教师 Nginx、积分结算 Worker 与 SourceWide Worker 五个
 进程；`dts-ingest` 只安装 DTS 的 Python 依赖并直接运行接入进程，不构建两个前端、教师
-NestJS 或 Nginx。根 [`gaea/Dockerfile`](gaea/Dockerfile) 暂时保留为 application 的兼容入口：
+NestJS 或 Nginx。`dts-diagnose` 固定封装阿里云排错文档链接的 Java 8 官方诊断 JAR，仅在
+国内 PRE 原项目中临时替换 `dts-ingest` 做协议 A/B，不是第四个常驻项目。根
+[`gaea/Dockerfile`](gaea/Dockerfile) 暂时保留为 application 的兼容入口：
 
 ```bash
 docker build -f gaea/Dockerfile -t tide-camp:gaea .
 docker build -f gaea/application/Dockerfile -t tide-camp:gaea .
 docker build -f gaea/dts-ingest/Dockerfile -t tide-camp-dts:gaea .
+docker build -f gaea/dts-diagnose/Dockerfile -t tide-camp-dts-diagnose:gaea .
 ```
 
 现有 application 项目可暂时继续使用根兼容入口，切换多模块后选择 `application`，并支持整套
@@ -164,6 +168,10 @@ Pod 设置为 `2` 个或更多副本；海外、国内 DTS 分别使用独立 Ga
 `tide_system_test` PRE 专线例外可由国内、海外 DTS 复用既有两项覆盖，不能把通道隔离写成传输加密。
 模块选择是项目构建配置，
 不是运行时环境变量，也不会自动把项目放到正确数据中心。
+诊断模块内置 Kafka Java Client 1.0.0，完整输出 SDK/Kafka 协议日志和解码记录；它会推进所选
+消费组位点。使用前必须留底数据库 checkpoint、停止 Python 消费者，出现首条 HEARTBEAT 或
+明确错误后立即停止并切回 `dts-ingest`。完整步骤、JAR 来源与 SHA-256 见
+[`gaea/README.md`](gaea/README.md) 和 [`gaea/dts-diagnose/SOURCE.md`](gaea/dts-diagnose/SOURCE.md)。
 每个 DTS 进程启动时先只读校验目标库，再从该 Pod 做无凭据的 bootstrap TCP 探针，最后校验
 Kafka 的 SASL/topic/partition/初始位点，全部通过后才写 readiness；探针不读取消息、不写目标库、
 不提交 offset。国内进程在 Kafka 探针成功后、readiness 之前幂等登记一条只含契约版本和 HMAC
