@@ -9,10 +9,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.dts_source_consumer import (
+    DtsConfigurationError,
     DtsConsumerSettings,
     DtsEventProcessor,
     DtsKafkaShadowConsumer,
+    DtsRecordError,
     InMemoryShadowSink,
+    safe_kafka_error_diagnostic,
 )
 
 
@@ -36,8 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def _run(args: argparse.Namespace) -> int:
     settings = DtsConsumerSettings.from_env()
     sink = InMemoryShadowSink()
     consumer = DtsKafkaShadowConsumer(
@@ -61,6 +63,39 @@ def main() -> int:
         )
     )
     return 0
+
+
+def main() -> int:
+    try:
+        return _run(build_parser().parse_args())
+    except (DtsConfigurationError, DtsRecordError) as exc:
+        payload: dict[str, bool | str] = {
+            "status": "error",
+            "error_code": str(exc),
+        }
+    except Exception as exc:
+        diagnostic = safe_kafka_error_diagnostic(
+            exc,
+            fallback_error_code="DTS_SHADOW_KAFKA_REQUEST_FAILED",
+        )
+        payload = {
+            "status": "error",
+            **(
+                diagnostic
+                if diagnostic is not None
+                else {
+                    "error_code": "DTS_SHADOW_UNEXPECTED_ERROR",
+                    "error_type": "UnexpectedError",
+                    "retriable": False,
+                }
+            ),
+        }
+    print(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        file=sys.stderr,
+        flush=True,
+    )
+    return 1
 
 
 if __name__ == "__main__":

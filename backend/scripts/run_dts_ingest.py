@@ -30,6 +30,7 @@ from app.dts_source_consumer import (  # noqa: E402
     DtsEventProcessor,
     DtsKafkaConsumer,
     DtsRecordError,
+    safe_kafka_error_diagnostic,
 )
 from app.dts_wide_projector import (  # noqa: E402
     DtsWideProjectionError,
@@ -100,16 +101,19 @@ def _safe_operational_error_payload(
     exc: Exception,
     *,
     sslmode: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, bool | str]:
     """Classify database and broker failures without emitting error text."""
 
-    payload = {
+    payload: dict[str, bool | str] = {
         "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
         "error_type": type(exc).__name__,
     }
-    kafka_error_code = _safe_kafka_error_code(exc)
-    if kafka_error_code is not None:
-        payload["error_code"] = kafka_error_code
+    kafka_diagnostic = safe_kafka_error_diagnostic(
+        exc,
+        fallback_error_code="DTS_BROKER_REQUEST_FAILED",
+    )
+    if kafka_diagnostic is not None:
+        payload.update(kafka_diagnostic)
         return payload
     if not isinstance(exc, OperationalError):
         return payload
@@ -218,127 +222,6 @@ def _safe_operational_error_payload(
     if normalized_sqlstate is not None:
         payload["sqlstate"] = normalized_sqlstate
     return payload
-
-
-def _safe_kafka_error_code(exc: Exception) -> str | None:
-    """Return a stable Kafka connection code without returning its details."""
-
-    try:
-        from kafka import errors as kafka_errors
-    except ImportError:  # pragma: no cover - runtime dependency guard
-        return None
-
-    chain = tuple(_exception_chain(exc))
-    authentication_types = tuple(
-        error_type
-        for name in (
-            "SaslAuthenticationFailedError",
-            "AuthenticationFailedError",
-        )
-        if isinstance(
-            error_type := getattr(kafka_errors, name, None),
-            type,
-        )
-    )
-    if authentication_types and any(
-        isinstance(error, authentication_types) for error in chain
-    ):
-        return "DTS_BROKER_SASL_AUTHENTICATION_FAILED"
-
-    stable_kafka_errors = (
-        (
-            "TopicAuthorizationFailedError",
-            "DTS_BROKER_TOPIC_AUTHORIZATION_FAILED",
-        ),
-        (
-            "GroupAuthorizationFailedError",
-            "DTS_BROKER_GROUP_AUTHORIZATION_FAILED",
-        ),
-        (
-            "UnknownTopicOrPartitionError",
-            "DTS_BROKER_TOPIC_PARTITION_UNAVAILABLE",
-        ),
-        (
-            "UnsupportedVersionError",
-            "DTS_BROKER_PROTOCOL_UNSUPPORTED",
-        ),
-    )
-    for error_name, error_code in stable_kafka_errors:
-        error_type = getattr(kafka_errors, error_name, None)
-        if isinstance(error_type, type) and any(
-            isinstance(error, error_type) for error in chain
-        ):
-            return error_code
-
-    kafka_error_type = getattr(kafka_errors, "KafkaError", ())
-    if not isinstance(kafka_error_type, type) or not any(
-        isinstance(error, kafka_error_type) for error in chain
-    ):
-        return None
-
-    if any(isinstance(error, socket.gaierror) for error in chain):
-        return "DTS_BROKER_DNS_FAILED"
-
-    connection_error_type = getattr(
-        kafka_errors,
-        "KafkaConnectionError",
-        (),
-    )
-    for error in chain:
-        if not isinstance(error, connection_error_type):
-            continue
-        message = _safe_exception_text(error)
-        if "dns failure" in message:
-            return "DTS_BROKER_DNS_FAILED"
-        if "timeout" in message or "timed out" in message:
-            return "DTS_BROKER_KAFKA_REQUEST_TIMEOUT"
-
-    timeout_types = tuple(
-        error_type
-        for error_type in (
-            getattr(kafka_errors, "KafkaTimeoutError", None),
-            TimeoutError,
-            socket.timeout,
-        )
-        if isinstance(error_type, type)
-    )
-    if any(isinstance(error, timeout_types) for error in chain):
-        return "DTS_BROKER_KAFKA_REQUEST_TIMEOUT"
-
-    no_brokers_type = getattr(kafka_errors, "NoBrokersAvailable", ())
-    if any(isinstance(error, no_brokers_type) for error in chain):
-        return "DTS_BROKER_UNAVAILABLE"
-    if any(isinstance(error, connection_error_type) for error in chain):
-        return "DTS_BROKER_CONNECTION_FAILED"
-    return None
-
-
-def _exception_chain(exc: Exception) -> tuple[Exception, ...]:
-    """Traverse bounded explicit/implicit causes without rendering them."""
-
-    result: list[Exception] = []
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while isinstance(current, Exception) and len(result) < 8:
-        identity = id(current)
-        if identity in seen:
-            break
-        seen.add(identity)
-        result.append(current)
-        try:
-            current = current.__cause__ or current.__context__
-        except Exception:
-            break
-    return tuple(result)
-
-
-def _safe_exception_text(exc: Exception) -> str:
-    """Inspect known kafka-python markers; callers never emit this value."""
-
-    try:
-        return str(exc).lower()
-    except Exception:
-        return ""
 
 
 def _diagnostic_sslmode(

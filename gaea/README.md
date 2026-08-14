@@ -325,7 +325,15 @@ DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`
 只读探针全部通过后，才写本次进程的
 `readiness=ready`。TCP 探针不收发应用数据；TCP 失败输出 `DTS_BROKER_TCP_*`，TCP 成功会先打印
 `DTS_STARTUP_PROBE/broker_tcp status=ok`，之后 Kafka 请求超时输出
-`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 位点探针共享 15 秒总预算，关闭连接另有 1 秒上限；
+`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 探针先输出脱敏的客户端契约摘要（客户端/API 版本、
+SASL 协议、partition 和有界超时），再按实际位点路径输出不含连接身份的固定阶段；阶段来自
+`consumer_open`、`committed`、`offsets_for_times`、`beginning_offsets`、`end_offsets`，并带
+`begin/ok/fail`。完成或失败阶段带 `elapsed_ms`；失败只输出白名单 `error_type`、稳定
+`error_code` 和 `retriable`；其中 `retriable` 表示 kafka-python 对该错误类别的同请求重试语义，
+不是应用会无限重试的承诺。上述启动诊断不输出 endpoint、账号、消费组、密码、异常正文或堆栈。代码会
+隔离 kafka-python 原生日志，只保留这些结构化诊断，因为 SASL 调试报文可能包含认证字节。
+`consumer_open=ok` 只表示客户端对象已创建，后续远端请求阶段成功才是对应 Kafka 能力的证据。
+Kafka 位点探针共享 15 秒总预算，关闭连接另有 1 秒上限；
 探针不读取消息、不写目标库、不提交 offset，任一步失败都由进程非零退出且不会短暂变绿。该门禁
 成功后，国内进程会在写 readiness 前幂等登记一条仅含契约版本与 HMAC key fingerprint 的受限
 状态行；它不包含密钥或学生标识，fingerprint 不匹配会失败关闭。

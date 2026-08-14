@@ -168,7 +168,15 @@ Kafka 的 SASL/topic/partition/初始位点，全部通过后才写 readiness；
 不提交 offset。国内进程在 Kafka 探针成功后、readiness 之前幂等登记一条只含契约版本和 HMAC
 密钥 fingerprint 的受限状态行；该行不含密钥或学生标识。TCP 失败输出 `DTS_BROKER_TCP_*`
 稳定错误码；TCP 已通但 Kafka 请求超时输出
-`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。这些检查在每次容器进程启动/重启时执行，不在镜像构建或
+`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 启动日志先输出脱敏的客户端契约摘要（客户端版本、
+API 版本、SASL 协议、partition 和有界超时），再按实际位点路径，在 `consumer_open`、
+`committed`、`offsets_for_times`、`beginning_offsets`、`end_offsets` 中输出相应的固定
+`begin/ok/fail` 阶段。完成或失败阶段带 `elapsed_ms`；失败只输出白名单 `error_type`、稳定
+`error_code` 和 `retriable`；其中 `retriable` 表示 kafka-python 对该错误类别的同请求重试语义，
+不是应用会无限重试的承诺。上述启动诊断不输出 endpoint、账号、消费组、密码、异常正文或堆栈。
+代码会隔离 kafka-python 原生日志，只保留这些结构化诊断，因为 SASL 调试报文可能包含认证字节；
+`consumer_open=ok` 本身不代表远端认证成功。
+这些检查在每次容器进程启动/重启时执行，不在镜像构建或
 周期健康检查中重复执行。Pod Ready 只表示“具备开始消费的条件”，不表示已经完成 CDC 接入或字段对账。
 
 application 的两个 Worker 分别通过 PostgreSQL session advisory lock 保持逻辑单活，未持锁的

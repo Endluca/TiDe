@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import socket
 from datetime import time
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from app.dts_source_consumer import (
     DtsRecordError,
     InMemoryShadowSink,
     _parsed_avro_schema,
+    _run_kafka_startup_phase,
     assert_domestic_event_protected,
     build_change_event,
     decode_dts_avro,
@@ -31,6 +33,7 @@ from app.dts_source_consumer import (
     protect_domestic_student_ids,
     reduce_latest_complaints,
     route_dirty_keys,
+    safe_kafka_error_diagnostic,
     teacher_matches_region,
 )
 
@@ -83,6 +86,15 @@ def event_from_record(raw: dict[str, object], *, offset: int = 10):
         partition=0,
         offset=offset,
     )
+
+
+def without_phase_elapsed(
+    payloads: list[dict[str, int | str]],
+) -> list[dict[str, int | str]]:
+    return [
+        {key: value for key, value in payload.items() if key != "elapsed_ms"}
+        for payload in payloads
+    ]
 
 
 def test_settings_use_epoch_seconds_and_build_official_sasl_username() -> None:
@@ -1089,6 +1101,7 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
             self.seek_calls = []
             self.offsets_for_times_calls = []
             self.commit_calls = []
+            self.commit_timeout_ms = None
             self.closed = False
 
         def assign(self, partitions: list[object]) -> None:
@@ -1105,8 +1118,14 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
         def seek(self, partition: object, offset: int) -> None:
             self.seek_calls.append((partition, offset))
 
-        def commit(self, *, offsets: dict[object, object]) -> None:
+        def commit(
+            self,
+            *,
+            offsets: dict[object, object],
+            timeout_ms: int,
+        ) -> None:
             self.commit_calls.append(offsets)
+            self.commit_timeout_ms = timeout_ms
 
         def close(self, *, autocommit: bool, timeout_ms: int) -> None:
             assert autocommit is False
@@ -1161,7 +1180,132 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
     assert fake.kwargs["api_version"] == (2, 7)
     assert fake.kwargs["request_timeout_ms"] == 15_000
     assert fake.kwargs["sasl_plain_username"] == "consumer-dtsovs1234567890"
+    assert fake.commit_timeout_ms == 15_000
     assert fake.closed is True
+
+
+def test_kafka_commit_timeout_fails_after_sink_and_restart_uses_database_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+    from kafka.errors import KafkaTimeoutError
+
+    heartbeat = record(operation="HEARTBEAT", object_name=None)
+    message = SimpleNamespace(
+        topic="topic-v2",
+        partition=0,
+        offset=41,
+        value=b"encoded",
+    )
+
+    class DurableProcessor:
+        authoritative_checkpoint = True
+
+        def __init__(self) -> None:
+            self.checkpoint = 41
+            self.processed_offsets: list[int] = []
+
+        def resume_offset(self, **_kwargs: object) -> int:
+            return self.checkpoint
+
+        def process(self, event: object) -> object:
+            offset = int(getattr(event, "offset"))
+            self.processed_offsets.append(offset)
+            self.checkpoint = offset + 1
+            return SimpleNamespace(status="PROCESSED")
+
+    class FakeConsumer:
+        def __init__(self, *, fail_commit: bool, has_message: bool) -> None:
+            self.config = {"request_timeout_ms": 15_000}
+            self.fail_commit = fail_commit
+            self.messages = [message] if has_message else []
+            self.seek_calls: list[tuple[object, int]] = []
+            self.commit_timeout_ms: int | None = None
+            self.closed = False
+
+        def committed(self, _partition: object, *, timeout_ms: int) -> int:
+            assert timeout_ms == 15_000
+            return 41
+
+        def beginning_offsets(self, partitions: list[object]):
+            return {partition: 0 for partition in partitions}
+
+        def end_offsets(self, partitions: list[object]):
+            return {partition: 100 for partition in partitions}
+
+        def assign(self, _partitions: list[object]) -> None:
+            pass
+
+        def seek(self, partition: object, offset: int) -> None:
+            self.seek_calls.append((partition, offset))
+
+        def commit(
+            self,
+            *,
+            offsets: dict[object, object],
+            timeout_ms: int,
+        ) -> None:
+            assert offsets
+            self.commit_timeout_ms = timeout_ms
+            if self.fail_commit:
+                raise KafkaTimeoutError("commit deadline exceeded")
+
+        def close(self, *, autocommit: bool, timeout_ms: int) -> None:
+            assert autocommit is False
+            assert timeout_ms == 1_000
+            self.closed = True
+
+        def __iter__(self):
+            return iter(self.messages)
+
+    fake_consumers: list[FakeConsumer] = []
+
+    def factory(**_kwargs: object) -> FakeConsumer:
+        first_attempt = not fake_consumers
+        consumer = FakeConsumer(
+            fail_commit=first_attempt,
+            has_message=first_attempt,
+        )
+        fake_consumers.append(consumer)
+        return consumer
+
+    monkeypatch.setattr(kafka, "KafkaConsumer", factory)
+    monkeypatch.setattr(
+        "app.dts_source_consumer.decode_dts_avro",
+        lambda _payload: heartbeat,
+    )
+    processor = DurableProcessor()
+    consumer = DtsKafkaShadowConsumer(
+        DtsConsumerSettings(
+            source_region="ovs",
+            broker_urls=("broker.internal:18003",),
+            topic="topic-v2",
+            group_id="dtsovs1234567890",
+            account="consumer",
+            password="runtime-only",
+            start_timestamp_seconds=1786550400,
+        ),
+        processor,
+    )
+
+    with pytest.raises(KafkaTimeoutError, match="commit deadline exceeded"):
+        consumer.run(max_messages=1, commit_offsets=True)
+
+    assert processor.processed_offsets == [41]
+    assert processor.checkpoint == 42
+    assert fake_consumers[0].commit_timeout_ms == 15_000
+    assert fake_consumers[0].closed is True
+
+    assert consumer.run(max_messages=1, commit_offsets=True) == {
+        "seen": 0,
+        "processed": 0,
+        "ignored": 0,
+        "duplicates": 0,
+        "committed": 0,
+    }
+    assert processor.processed_offsets == [41]
+    assert fake_consumers[1].seek_calls[0][1] == 42
+    assert fake_consumers[1].closed is True
 
 
 def test_domestic_kafka_run_protects_student_id_before_processor(
@@ -1315,7 +1459,8 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
         DtsEventProcessor(InMemoryShadowSink()),
     )
 
-    result = consumer.startup_probe()
+    emitted: list[dict[str, int | str]] = []
+    result = consumer.startup_probe(phase_callback=emitted.append)
 
     fake = holder["consumer"]
     assert result == {
@@ -1328,6 +1473,38 @@ def test_kafka_startup_probe_resolves_offset_zero_without_consumer_state_change(
     assert fake.kwargs["request_timeout_ms"] == 15_000
     assert fake.close_autocommit is False
     assert fake.closed is True
+    assert without_phase_elapsed(emitted) == [
+        {"probe": "broker_tcp", "status": "ok", "broker_count": 1},
+        {
+            "probe": "kafka_client_config",
+            "status": "ok",
+            "client_library": "kafka-python",
+            "client_version": "2.2.20",
+            "api_version": "2.7",
+            "security_protocol": "SASL_PLAINTEXT",
+            "sasl_mechanism": "PLAIN",
+            "enable_auto_commit": False,
+            "broker_count": 1,
+            "partition": 0,
+            "request_timeout_ms": 15_000,
+            "offset_probe_budget_ms": 15_000,
+        },
+        {"phase": "consumer_open", "status": "begin"},
+        {"phase": "consumer_open", "status": "ok"},
+        {"phase": "committed", "status": "begin"},
+        {"phase": "committed", "status": "ok"},
+        {"phase": "offsets_for_times", "status": "begin"},
+        {"phase": "offsets_for_times", "status": "ok"},
+    ]
+    assert all(
+        payload["elapsed_ms"] >= 0
+        for payload in emitted
+        if payload.get("status") == "ok" and "phase" in payload
+    )
+    serialized = json.dumps(emitted)
+    assert "broker.internal" not in serialized
+    assert "dtsovs1234567890" not in serialized
+    assert "runtime-only" not in serialized
 
 
 def test_kafka_startup_probe_stops_before_credentials_when_tcp_fails(
@@ -1530,6 +1707,7 @@ def test_kafka_startup_probe_distinguishes_l4_success_from_kafka_timeout(
         password="runtime-only",
         start_timestamp_seconds=1786550400,
     )
+    emitted: list[dict[str, int | str]] = []
 
     with pytest.raises(
         DtsConfigurationError,
@@ -1538,9 +1716,314 @@ def test_kafka_startup_probe_distinguishes_l4_success_from_kafka_timeout(
         DtsKafkaShadowConsumer(
             settings,
             DtsEventProcessor(InMemoryShadowSink()),
-        ).startup_probe()
+        ).startup_probe(phase_callback=emitted.append)
 
     assert fake.closed is True
+    assert without_phase_elapsed(emitted) == [
+        {"probe": "broker_tcp", "status": "ok", "broker_count": 1},
+        {
+            "probe": "kafka_client_config",
+            "status": "ok",
+            "client_library": "kafka-python",
+            "client_version": "2.2.20",
+            "api_version": "2.7",
+            "security_protocol": "SASL_PLAINTEXT",
+            "sasl_mechanism": "PLAIN",
+            "enable_auto_commit": False,
+            "broker_count": 1,
+            "partition": 0,
+            "request_timeout_ms": 15_000,
+            "offset_probe_budget_ms": 15_000,
+        },
+        {"phase": "consumer_open", "status": "begin"},
+        {"phase": "consumer_open", "status": "ok"},
+        {"phase": "committed", "status": "begin"},
+        {
+            "phase": "committed",
+            "status": "fail",
+            "error_type": "KafkaTimeoutError",
+            "error_code": "DTS_BROKER_KAFKA_REQUEST_TIMEOUT",
+            "retriable": True,
+        },
+    ]
+    assert "endpoint" not in json.dumps(emitted)
+    assert "password" not in json.dumps(emitted)
+
+
+def test_kafka_startup_phase_does_not_log_non_timeout_exception_text() -> None:
+    emitted: list[dict[str, int | str]] = []
+    sensitive_exception_text = (
+        "broker.internal account-name provider-group-id plaintext-password"
+    )
+
+    def fail_consumer_open() -> None:
+        raise RuntimeError(sensitive_exception_text)
+
+    with pytest.raises(RuntimeError, match="plaintext-password"):
+        _run_kafka_startup_phase(
+            emitted.append,
+            "consumer_open",
+            fail_consumer_open,
+        )
+
+    assert without_phase_elapsed(emitted) == [
+        {"phase": "consumer_open", "status": "begin"},
+        {
+            "phase": "consumer_open",
+            "status": "fail",
+            "error_type": "UnexpectedError",
+            "error_code": "DTS_BROKER_CONSUMER_OPEN_FAILED",
+            "retriable": False,
+        },
+    ]
+    serialized = json.dumps(emitted)
+    assert "broker.internal" not in serialized
+    assert "account-name" not in serialized
+    assert "provider-group-id" not in serialized
+    assert "plaintext-password" not in serialized
+
+
+def test_kafka_startup_phase_reports_allowlisted_nested_kafka_cause() -> None:
+    from kafka.errors import SaslAuthenticationFailedError
+
+    emitted: list[dict[str, int | str]] = []
+
+    def fail_committed() -> None:
+        try:
+            raise SaslAuthenticationFailedError(
+                "sasl-user plaintext-password"
+            )
+        except SaslAuthenticationFailedError as cause:
+            raise RuntimeError("outer broker.internal") from cause
+
+    with pytest.raises(RuntimeError, match="outer broker.internal"):
+        _run_kafka_startup_phase(
+            emitted.append,
+            "committed",
+            fail_committed,
+        )
+
+    assert without_phase_elapsed(emitted) == [
+        {"phase": "committed", "status": "begin"},
+        {
+            "phase": "committed",
+            "status": "fail",
+            "error_code": "DTS_BROKER_SASL_AUTHENTICATION_FAILED",
+            "error_type": "SaslAuthenticationFailedError",
+            "retriable": False,
+        },
+    ]
+    serialized = json.dumps(emitted)
+    assert "sasl-user" not in serialized
+    assert "plaintext-password" not in serialized
+    assert "broker.internal" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("error_name", "expected_code", "expected_retriable"),
+    [
+        (
+            "SaslAuthenticationFailedError",
+            "DTS_BROKER_SASL_AUTHENTICATION_FAILED",
+            False,
+        ),
+        (
+            "TopicAuthorizationFailedError",
+            "DTS_BROKER_TOPIC_AUTHORIZATION_FAILED",
+            False,
+        ),
+        (
+            "GroupAuthorizationFailedError",
+            "DTS_BROKER_GROUP_AUTHORIZATION_FAILED",
+            False,
+        ),
+        (
+            "ClusterAuthorizationFailedError",
+            "DTS_BROKER_CLUSTER_AUTHORIZATION_FAILED",
+            False,
+        ),
+        (
+            "UnsupportedSaslMechanismError",
+            "DTS_BROKER_SASL_PROTOCOL_MISMATCH",
+            False,
+        ),
+        ("InvalidTopicError", "DTS_BROKER_TOPIC_INVALID", False),
+        (
+            "UnknownTopicOrPartitionError",
+            "DTS_BROKER_TOPIC_PARTITION_UNAVAILABLE",
+            True,
+        ),
+        (
+            "UnsupportedVersionError",
+            "DTS_BROKER_PROTOCOL_UNSUPPORTED",
+            False,
+        ),
+        (
+            "RequestTimedOutError",
+            "DTS_BROKER_REQUEST_TIMED_OUT",
+            True,
+        ),
+        ("NoBrokersAvailable", "DTS_BROKER_UNAVAILABLE", True),
+        (
+            "KafkaConnectionError",
+            "DTS_BROKER_CONNECTION_FAILED",
+            True,
+        ),
+        (
+            "CoordinatorNotAvailableError",
+            "DTS_BROKER_GROUP_COORDINATOR_UNAVAILABLE",
+            True,
+        ),
+        (
+            "RebalanceInProgressError",
+            "DTS_BROKER_GROUP_STATE_FAILED",
+            False,
+        ),
+        (
+            "CorrelationIdError",
+            "DTS_BROKER_PROTOCOL_FAILED",
+            True,
+        ),
+        (
+            "OffsetOutOfRangeError",
+            "DTS_BROKER_OFFSET_UNAVAILABLE",
+            False,
+        ),
+        (
+            "KafkaConfigurationError",
+            "DTS_BROKER_CLIENT_CONFIGURATION_INVALID",
+            False,
+        ),
+        (
+            "KafkaTimeoutError",
+            "DTS_BROKER_KAFKA_REQUEST_TIMEOUT",
+            True,
+        ),
+    ],
+)
+def test_kafka_diagnostic_allowlist_matches_client_semantics(
+    error_name: str,
+    expected_code: str,
+    expected_retriable: bool,
+) -> None:
+    from kafka import errors as kafka_errors
+
+    error_type = getattr(kafka_errors, error_name)
+    diagnostic = safe_kafka_error_diagnostic(
+        error_type("private details"),
+        fallback_error_code="DTS_BROKER_FALLBACK",
+    )
+
+    assert diagnostic == {
+        "error_code": expected_code,
+        "error_type": error_name,
+        "retriable": expected_retriable,
+    }
+
+
+def test_kafka_diagnostic_prefers_specific_broker_timeout_cause() -> None:
+    from kafka.errors import KafkaTimeoutError, RequestTimedOutError
+
+    try:
+        try:
+            raise RequestTimedOutError("private broker response")
+        except RequestTimedOutError as cause:
+            raise KafkaTimeoutError("private client timeout") from cause
+    except KafkaTimeoutError as error:
+        diagnostic = safe_kafka_error_diagnostic(
+            error,
+            fallback_error_code="DTS_BROKER_FALLBACK",
+        )
+
+    assert diagnostic == {
+        "error_code": "DTS_BROKER_REQUEST_TIMED_OUT",
+        "error_type": "RequestTimedOutError",
+        "retriable": True,
+    }
+
+
+def test_kafka_diagnostic_respects_suppressed_exception_context() -> None:
+    from kafka.errors import SaslAuthenticationFailedError
+
+    try:
+        try:
+            raise SaslAuthenticationFailedError("plaintext-password")
+        except SaslAuthenticationFailedError:
+            raise RuntimeError("outer error") from None
+    except RuntimeError as error:
+        diagnostic = safe_kafka_error_diagnostic(
+            error,
+            fallback_error_code="DTS_BROKER_FALLBACK",
+        )
+
+    assert diagnostic is None
+
+
+def test_unknown_kafka_error_is_not_declared_retriable() -> None:
+    from kafka.errors import KafkaError
+
+    diagnostic = safe_kafka_error_diagnostic(
+        KafkaError("private unknown failure"),
+        fallback_error_code="DTS_BROKER_FALLBACK",
+    )
+
+    assert diagnostic == {
+        "error_code": "DTS_BROKER_FALLBACK",
+        "error_type": "KafkaError",
+        "retriable": False,
+    }
+
+
+def test_kafka_library_logs_never_reach_the_root_logger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kafka
+
+    captured: list[logging.LogRecord] = []
+    constructed = object()
+
+    class CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    root_logger = logging.getLogger()
+    kafka_logger = logging.getLogger("kafka")
+    kafka_connection_logger = logging.getLogger("kafka.conn")
+    root_handler = CaptureHandler()
+    monkeypatch.setattr(root_logger, "handlers", [root_handler])
+    monkeypatch.setattr(root_logger, "level", logging.DEBUG)
+    monkeypatch.setattr(kafka_logger, "handlers", [])
+    monkeypatch.setattr(kafka_logger, "propagate", True)
+    monkeypatch.setattr(kafka_logger, "level", logging.NOTSET)
+    monkeypatch.setattr(kafka_connection_logger, "handlers", [])
+    monkeypatch.setattr(kafka_connection_logger, "propagate", True)
+    monkeypatch.setattr(kafka_connection_logger, "level", logging.DEBUG)
+
+    def factory(**_kwargs: object) -> object:
+        kafka_connection_logger.error(
+            "SaslAuthenticateRequest auth_bytes=plaintext-password"
+        )
+        return constructed
+
+    monkeypatch.setattr(kafka, "KafkaConsumer", factory)
+    settings = DtsConsumerSettings(
+        source_region="ovs",
+        broker_urls=("broker.internal:18003",),
+        topic="topic-v2",
+        group_id="dtsovs1234567890",
+        account="consumer",
+        password="runtime-only",
+        start_timestamp_seconds=1786550400,
+    )
+    consumer = DtsKafkaShadowConsumer(
+        settings,
+        DtsEventProcessor(InMemoryShadowSink()),
+    )
+
+    opened = consumer._open_consumer()
+
+    assert opened is constructed
+    assert captured == []
 
 
 def test_kafka_startup_probe_classifies_consumer_construction_timeout(
@@ -1646,13 +2129,26 @@ def test_kafka_startup_probe_validates_database_checkpoint_with_bounded_calls(
         resume_offset=lambda **_kwargs: 0,
     )
 
-    result = DtsKafkaShadowConsumer(settings, processor).startup_probe()
+    emitted: list[dict[str, int | str]] = []
+    result = DtsKafkaShadowConsumer(settings, processor).startup_probe(
+        phase_callback=emitted.append
+    )
 
     assert result["initial_offset"] == 0
     assert fake.committed_timeout_ms == 15_000
     assert fake.beginning_timeout_ms == 10_000
     assert fake.end_timeout_ms == 5_000
     assert fake.closed is True
+    assert without_phase_elapsed([
+        payload
+        for payload in emitted
+        if payload.get("phase") in {"beginning_offsets", "end_offsets"}
+    ]) == [
+        {"phase": "beginning_offsets", "status": "begin"},
+        {"phase": "beginning_offsets", "status": "ok"},
+        {"phase": "end_offsets", "status": "begin"},
+        {"phase": "end_offsets", "status": "ok"},
+    ]
 
 
 @pytest.mark.parametrize(

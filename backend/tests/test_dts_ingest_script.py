@@ -20,6 +20,7 @@ from sqlalchemy.exc import OperationalError
 from app.dts_source_consumer import DtsConfigurationError
 from app.dts_wide_projector import DtsWideProjectionError
 from scripts import run_dts_ingest
+from scripts import run_dts_source_consumer
 from scripts.run_dts_ingest import (
     _diagnostic_sslmode,
     _env_flag,
@@ -336,62 +337,76 @@ def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> N
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_code"),
+    ("error", "expected_code", "expected_retriable"),
     [
         (
             NoBrokersAvailable("broker.internal account=consumer password=secret"),
             "DTS_BROKER_UNAVAILABLE",
+            True,
         ),
         (
             socket.gaierror("broker.internal password=secret"),
             "DTS_INGEST_UNEXPECTED_ERROR",
+            None,
         ),
         (
             KafkaConnectionError("DNS failure broker.internal password=secret"),
-            "DTS_BROKER_DNS_FAILED",
+            "DTS_BROKER_CONNECTION_FAILED",
+            True,
         ),
         (
             SaslAuthenticationFailedError(
                 "account=consumer password=secret"
             ),
             "DTS_BROKER_SASL_AUTHENTICATION_FAILED",
+            False,
         ),
         (
             KafkaTimeoutError("broker.internal password=secret"),
             "DTS_BROKER_KAFKA_REQUEST_TIMEOUT",
+            True,
         ),
         (
             KafkaConnectionError("timeout broker.internal password=secret"),
-            "DTS_BROKER_KAFKA_REQUEST_TIMEOUT",
+            "DTS_BROKER_CONNECTION_FAILED",
+            True,
         ),
         (
             TopicAuthorizationFailedError("topic-v2 password=secret"),
             "DTS_BROKER_TOPIC_AUTHORIZATION_FAILED",
+            False,
         ),
         (
             GroupAuthorizationFailedError("dtsdom1234567890 password=secret"),
             "DTS_BROKER_GROUP_AUTHORIZATION_FAILED",
+            False,
         ),
         (
             UnknownTopicOrPartitionError("topic-v2 password=secret"),
             "DTS_BROKER_TOPIC_PARTITION_UNAVAILABLE",
+            True,
         ),
         (
             UnsupportedVersionError("broker.internal password=secret"),
             "DTS_BROKER_PROTOCOL_UNSUPPORTED",
+            False,
         ),
     ],
 )
 def test_kafka_error_payload_is_stable_and_never_echoes_connection_details(
     error: Exception,
     expected_code: str,
+    expected_retriable: bool | None,
 ) -> None:
     payload = _safe_operational_error_payload(error)
 
-    assert payload == {
+    expected_payload: dict[str, bool | str] = {
         "error_code": expected_code,
         "error_type": type(error).__name__,
     }
+    if expected_retriable is not None:
+        expected_payload["retriable"] = expected_retriable
+    assert payload == expected_payload
     rendered = json.dumps(payload)
     assert "broker.internal" not in rendered
     assert "consumer" not in rendered
@@ -414,7 +429,8 @@ def test_nested_kafka_authentication_failure_keeps_outer_error_text_private(
 
     assert payload == {
         "error_code": "DTS_BROKER_SASL_AUTHENTICATION_FAILED",
-        "error_type": "RuntimeError",
+        "error_type": "SaslAuthenticationFailedError",
+        "retriable": False,
     }
     rendered = json.dumps(payload)
     assert "broker.internal" not in rendered
@@ -551,9 +567,41 @@ def test_main_emits_safe_broker_unavailable_error(
     assert json.loads(stderr) == {
         "error_code": "DTS_BROKER_UNAVAILABLE",
         "error_type": "NoBrokersAvailable",
+        "retriable": True,
         "status": "error",
     }
     assert all(fragment not in stderr for fragment in secret_fragments)
+
+
+def test_shadow_main_emits_safe_kafka_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    error = SaslAuthenticationFailedError(
+        "account=consumer password=runtime-secret"
+    )
+    monkeypatch.setattr(
+        run_dts_source_consumer,
+        "build_parser",
+        lambda: SimpleNamespace(parse_args=lambda: SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        run_dts_source_consumer,
+        "_run",
+        lambda _args: (_ for _ in ()).throw(error),
+    )
+
+    assert run_dts_source_consumer.main() == 1
+
+    stderr = capsys.readouterr().err
+    assert json.loads(stderr) == {
+        "error_code": "DTS_BROKER_SASL_AUTHENTICATION_FAILED",
+        "error_type": "SaslAuthenticationFailedError",
+        "retriable": False,
+        "status": "error",
+    }
+    assert "consumer" not in stderr
+    assert "runtime-secret" not in stderr
 
 
 def test_exhausted_projection_prevents_a_success_heartbeat(
