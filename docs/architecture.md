@@ -66,13 +66,18 @@ Alembic 和教师端 migration 仍是发布前独立作业，数据库角色与�
 ReadWriteMany 共享卷。这个受控 TEST 形态不提供进程级秘密隔离：同 UID 进程可接触容器级
 环境变量，生产信任边界成立前仍应拆容器或 Pod。
 
-两个轻量 DTS 容器在每次进程启动时按 `DB → TCP → Kafka` 执行只读门禁：先核验目标数据库
-契约和传输，再完成 bootstrap DNS 解析并对解析结果执行无凭据 TCP 连接，最后核验 Kafka
-SASL/topic/partition/初始位点，全部通过后才写 readiness。TCP 探针的 5 秒连接预算不覆盖前置
-DNS 解析；TCP 不收发应用数据，Kafka 探针不读取业务消息、不提交 offset，
+两个轻量 DTS 容器在每次进程启动时按 `DB → official Java Kafka` 执行只读门禁：先核验目标数据库
+契约和传输，再由已在国内 PRE 成功消费的官方 Kafka Java Client 1.0.0 核验
+SASL/topic/partition/committed/begin/end 与初始位点，全部通过后才写 readiness。Java 启动阶段不
+poll 业务消息、不提交 offset；`DB → TCP → Kafka` 的细粒度探针只保留在显式
+`kafka_python` 回退模式，TCP 探针的 5 秒连接预算不覆盖前置 DNS 解析。
 国内进程只在 Kafka 探针通过后、ready 前登记不含密钥或学生标识的 HMAC fingerprint 契约行。
 因此 Pod Ready 只代表具备开始消费的条件；CDC 是否实际进入系统仍以事件账本、数据库 checkpoint、
 消费组位点和字段对账为准。
+
+正式消费由 Python 父进程和 Java 子进程单条串行协作：Java 输出原始 Avro EVENT，Python 完成国内
+HMAC 与数据库事务后才返回 DURABLE_ACK，Java 再同步提交 `offset + 1`。DB checkpoint 始终是
+恢复权威；ACK 丢失最多造成幂等重放，不会让 Kafka 位点越过未落库事件。
 
 国内消息的原始学生 ID 只允许存在于国内容器内存。消费者在构造任何发往海外 PostgreSQL 的 SQL
 参数前，使用国内项目独占密钥生成 `dom:v1:<HMAC-SHA256>` 并移除原值；海外项目与海外库不持有

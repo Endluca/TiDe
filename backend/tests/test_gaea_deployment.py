@@ -16,6 +16,10 @@ GAEA_DIR = ROOT / "gaea"
 DOCKERFILE = GAEA_DIR / "Dockerfile"
 APPLICATION_DOCKERFILE = GAEA_DIR / "application" / "Dockerfile"
 DTS_DOCKERFILE = GAEA_DIR / "dts-ingest" / "Dockerfile"
+DTS_JAVA_DIR = GAEA_DIR / "dts-ingest" / "java"
+DTS_TRANSPORT_LOGGING = (
+    GAEA_DIR / "dts-ingest" / "log4j-bridge.properties"
+)
 DTS_DIAG_DIR = GAEA_DIR / "dts-diagnose"
 DTS_DIAG_DOCKERFILE = DTS_DIAG_DIR / "Dockerfile"
 DTS_DIAG_RUN = DTS_DIAG_DIR / "run.sh"
@@ -201,7 +205,11 @@ def test_gaea_dts_module_omits_the_application_build_graph() -> None:
     }
     assert dts_requirements < full_requirements
 
-    dts_build = dockerfile.split(
+    java_build = dockerfile.split(
+        "FROM hub.51talk.biz/ci/maven:oraclejdk1.8-maven3 AS java-build",
+        1,
+    )[1]
+    dts_build = java_build.split(
         "FROM hub.51talk.biz/library/python:3.12-alpine AS python-build",
         1,
     )[1]
@@ -209,12 +217,21 @@ def test_gaea_dts_module_omits_the_application_build_graph() -> None:
         "FROM hub.51talk.biz/library/python:3.12-alpine AS runtime",
         1,
     )[1]
+    assert "COPY gaea/dts-ingest/java /build/src" in java_build
+    assert "javac -encoding UTF-8 -source 1.8 -target 1.8" in java_build
+    assert "dts-diagnose.jar" in java_build
+    assert "sha256sum -c -" in java_build
     assert "COPY backend/requirements-dts-ingest.txt" in dts_build
     assert "COPY backend/requirements.txt" not in dts_build
+    assert "python -m venv /opt/venv" in dts_build
     assert "COPY --chown=gaea:gaea backend/app ./app" in dts_runtime
     assert "run_dts_ingest.py" in dts_runtime
     assert "TIT_PROCESS_PROFILE=dts-ingest" in dts_runtime
+    assert "TIT_DTS_TRANSPORT=official_java" in dts_runtime
     assert "TIT_DTS_STARTUP_RETRY_SECONDS=15" in dts_runtime
+    assert "/deployments/dts-transport.jar" in dts_runtime
+    assert "/deployments/dts-diagnose.jar" in dts_runtime
+    assert "/deployments/config/log4j.properties" in dts_runtime
     assert "USER gaea" in dts_runtime
     assert "HEALTHCHECK" in dts_runtime
     assert "STOPSIGNAL SIGTERM" in dts_runtime
@@ -222,7 +239,7 @@ def test_gaea_dts_module_omits_the_application_build_graph() -> None:
     assert "nginx" not in dts_runtime.lower()
     assert "s6-overlay" not in dts_runtime
     assert "frontend" not in dts_runtime.lower()
-    assert dockerfile.count("FROM ") == 2
+    assert dockerfile.count("FROM ") == 3
 
 
 def test_gaea_dts_module_uses_internal_sources_and_non_root_runtime() -> None:
@@ -231,12 +248,15 @@ def test_gaea_dts_module_uses_internal_sources_and_non_root_runtime() -> None:
         line for line in dockerfile.splitlines() if line.startswith("FROM ")
     ]
 
-    assert len(from_lines) == 2
+    assert len(from_lines) == 3
     assert all("hub.51talk.biz/" in line for line in from_lines)
     assert "https://mirrors.aliyun.com/pypi/simple/" in dockerfile
     assert "mirrors.ustc.edu.cn" in dockerfile
     assert "addgroup -g 1001 gaea" in dockerfile
     assert "adduser -u 1001 -G gaea -D gaea" in dockerfile
+    assert "openjdk8-jre-base" in dockerfile
+    assert "gcompat" in dockerfile
+    assert "--start-period=360s" in dockerfile
     assert "ENV TZ=Asia/Shanghai" in dockerfile
     assert "USER gaea" in dockerfile
     assert 'ENTRYPOINT ["/init"]' not in dockerfile
@@ -255,6 +275,24 @@ def test_gaea_dts_module_uses_internal_sources_and_non_root_runtime() -> None:
         "backend/migrations",
     ):
         assert excluded not in dockerfile
+
+
+def test_gaea_dts_official_transport_keeps_protocol_stdout_clean() -> None:
+    dockerfile = DTS_DOCKERFILE.read_text(encoding="utf-8")
+    logging_config = DTS_TRANSPORT_LOGGING.read_text(encoding="utf-8")
+    java_sources = tuple(DTS_JAVA_DIR.rglob("*.java"))
+
+    assert java_sources
+    assert (
+        "-Dlog4j.configuration=file:/deployments/config/log4j.properties"
+        in dockerfile
+    )
+    assert (
+        "COPY --chown=gaea:gaea gaea/dts-ingest/log4j-bridge.properties "
+        "/deployments/config/log4j.properties"
+    ) in dockerfile
+    assert "log4j.appender.STDERR.Target=System.err" in logging_config
+    assert "System.out" not in logging_config
 
 
 def _bash_array(script: str, name: str) -> tuple[str, ...]:
@@ -1427,7 +1465,8 @@ def test_current_deployment_docs_do_not_restore_single_replica_mode() -> None:
 
     assert "`DB → TCP → Kafka`" in documents[ARCHITECTURE]
     assert "TCP 探针的 5 秒连接预算不覆盖前置" in documents[ARCHITECTURE]
-    assert "`DB → TCP → Kafka`" in documents[RUNTIME_SECURITY]
+    assert "`DB → official Java Kafka`" in documents[RUNTIME_SECURITY]
+    assert "`DB → TCP → 分阶段 kafka-python`" in documents[RUNTIME_SECURITY]
 
 
 def test_gaea_build_context_includes_teacher_but_excludes_secrets() -> None:

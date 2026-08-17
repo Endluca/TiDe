@@ -146,8 +146,10 @@ Tide_teachers_camp/
 `dts-diagnose` 三个构建模块。
 `application` 构建运营 React、教师 React、运营 FastAPI 和教师 NestJS，并用 s6-overlay 在
 一个 Pod 中管理运营 API、教师 API、教师 Nginx、积分结算 Worker 与 SourceWide Worker 五个
-进程；`dts-ingest` 只安装 DTS 的 Python 依赖并直接运行接入进程，不构建两个前端、教师
-NestJS 或 Nginx。`dts-diagnose` 固定封装阿里云排错文档链接的 Java 8 官方诊断 JAR，仅在
+进程；`dts-ingest` 不构建两个前端、教师 NestJS 或 Nginx，它由 Python 进程持有数据库、国内
+HMAC、账本和投影事务，并拉起使用阿里云官方诊断包内 Kafka Java Client 1.0.0 的受控子进程
+负责 Kafka 传输。Java 每次只交付一条原始 Avro 消息，必须等 Python 数据库事务返回 durable ACK
+后才提交 `offset + 1`。`dts-diagnose` 固定封装阿里云排错文档链接的 Java 8 官方诊断 JAR，仅在
 国内 PRE 原项目中临时替换 `dts-ingest` 做协议 A/B，不是第四个常驻项目。根
 [`gaea/Dockerfile`](gaea/Dockerfile) 暂时保留为 application 的兼容入口：
 
@@ -169,15 +171,19 @@ Pod 设置为 `2` 个或更多副本；海外、国内 DTS 分别使用独立 Ga
 模块选择是项目构建配置，
 不是运行时环境变量，也不会自动把项目放到正确数据中心。
 诊断模块内置 Kafka Java Client 1.0.0，完整输出 SDK/Kafka 协议日志和解码记录；它会推进所选
-消费组位点。使用前必须留底数据库 checkpoint、停止 Python 消费者，出现首条 HEARTBEAT 或
+消费组位点。该路径已在国内 PRE 实际读取并解码 DTS 记录，因此正式 `dts-ingest` 复用同一
+官方 Kafka 1.0 传输栈，但不复用会打印业务数据、异步推进位点的诊断 Main。使用前必须留底数据库 checkpoint、停止正式消费者，出现首条 HEARTBEAT 或
 明确错误后立即停止并切回 `dts-ingest`。完整步骤、JAR 来源与 SHA-256 见
 [`gaea/README.md`](gaea/README.md) 和 [`gaea/dts-diagnose/SOURCE.md`](gaea/dts-diagnose/SOURCE.md)。
-每个 DTS 进程启动时先只读校验目标库，再从该 Pod 做无凭据的 bootstrap TCP 探针，最后校验
-Kafka 的 SASL/topic/partition/初始位点，全部通过后才写 readiness；探针不读取消息、不写目标库、
-不提交 offset。国内进程在 Kafka 探针成功后、readiness 之前幂等登记一条只含契约版本和 HMAC
+每个 DTS 进程启动时先只读校验目标库，再由官方 Java transport 校验 Kafka 的
+SASL/topic/partition/消费组位点/最早与末端 offset，全部通过后才写 readiness；启动阶段不读取
+消息、不写目标库、不提交 offset。国内进程在 Kafka 启动门禁成功后、readiness 之前幂等登记一条只含契约版本和 HMAC
 密钥 fingerprint 的受限状态行；该行不含密钥或学生标识。TCP 失败输出 `DTS_BROKER_TCP_*`
-稳定错误码；TCP 已通但 Kafka 请求超时输出
-`DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 启动日志先输出脱敏的客户端契约摘要（客户端版本、
+稳定错误码仍由保留的 `kafka_python` 回退模式提供；正式 Gaea 默认的 Java transport 会把官方
+Kafka 网络时间线写到 stderr，stdout 只用于 Java/Python NDJSON 协议。Java 启动或运行错误只向
+Python 返回稳定错误码，不把密码或原始 Avro 写入协议日志。
+
+仅当显式设置 `TIT_DTS_TRANSPORT=kafka_python` 做回退诊断时，旧 Kafka 启动日志先输出脱敏的客户端契约摘要（客户端版本、
 API 自动协商模式、SASL 协议、partition 和有界超时），再依次输出 `consumer_open`、`bootstrap_auth`、
 `topic_metadata`、`partition_check`、`advertised_broker_auth`、`group_coordinator`、
 `coordinator_auth`、`offset_fetch`，并按实际位点路径继续输出 `offsets_for_times`、
@@ -198,15 +204,17 @@ Broker API 2.7；实现因此让每个 fresh consumer 都重新协商。参见[�
 证明 Topic、advertised leader、消费组协调器或 offset 可用，后续阶段必须继续通过。消费者使用
 手工 partition assignment，不执行 `JoinGroup`；消费组可用性以 `group_coordinator` 和
 `offset_fetch` 为准。
-启动阶段默认按同一个 15 秒 deadline 收紧剩余请求超时；仅启动门禁可分别通过
+上述 `kafka_python` 回退启动阶段默认按同一个 15 秒 deadline 收紧剩余请求超时；仅该回退门禁可分别通过
 `TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` 与
 `TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` 在 `1–120000ms` 内调整。整轮共享 deadline
 取两者较大值；每个 Kafka 请求取“自身配置上限”和“当时整轮剩余预算”的较小值，因此较晚阶段
 可能短于配置值。脱敏客户端摘要明确输出三个超时/预算 `configured_*` 上限与独立的 Metadata 版本上限，每条 phase 再输出当时的
 `remaining_probe_budget_ms` 以及两个 `effective_*` 值；超时失败时动态值安全收敛为 `0`。
 这只是 kafka-python 阻塞 SASL/DNS 调用遵守超时的协作式预算，不是可强制终止进程的绝对
-wall-clock 上限；正式消费、位点续跑、commit 和 heartbeat 继续固定使用 15 秒，不会随诊断值放大。
-`--watch` 容器对明确白名单内的暂态网络、Kafka/数据库连接和激活依赖失败使用全新连接资源，
+wall-clock 上限；这两个变量不传给官方 Java transport。Java 1.0 使用官方客户端自身的请求
+超时和协议协商，数据库 durable ACK 之后通过同步 commit 推进位点。
+`--watch` 容器对明确白名单内的启动暂态网络、Kafka/数据库连接和激活依赖失败，以及稳态
+`official_java` 的暂态断线/超时，都会关闭当轮资源并使用全新连接，
 默认按 `15/30/60` 秒有界退避重跑完整启动门禁，不再靠进程退出制造 CrashLoop；重试期间不写 readiness 或
 heartbeat。认证/授权、配置、Schema/ACL、隐私/HMAC 和 offset 不变量错误仍失败退出。这些检查在
 每次容器进程启动或暂态重试时执行，不在镜像构建或周期健康检查中重复执行。Pod Ready 只表示

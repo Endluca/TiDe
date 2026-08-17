@@ -21,5 +21,8 @@ bounded PRE diagnosis documented in `gaea/README.md`, then switch the project
 back to the `dts-ingest` module.
 
 The bundle includes legacy Kafka 1.0.0, Log4j 1.2.17, Fastjson 1.2.31 and DTS
-SDK 1.4.0 dependencies. They are retained only to reproduce the vendor's
-official diagnostic path and are not an approved production runtime.
+SDK 1.4.0 dependencies. In addition to the bounded diagnostic module, the
+controlled PRE `dts-ingest` bridge reuses only its proven Kafka transport
+classes; Python still owns decoding, privacy and durable state. This is an
+explicit PRE compatibility exception, not approval to promote the bundle to a
+production runtime without a separate dependency and security review.

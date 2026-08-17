@@ -50,6 +50,24 @@ def test_projection_flag_defaults_off_and_accepts_explicit_values(
         _env_flag("TIT_DTS_PROJECTION_ENABLED", False)
 
 
+def test_transport_defaults_to_python_and_accepts_official_java() -> None:
+    assert run_dts_ingest._dts_transport_mode({}) == "kafka_python"
+    assert (
+        run_dts_ingest._dts_transport_mode(
+            {"TIT_DTS_TRANSPORT": "official_java"}
+        )
+        == "official_java"
+    )
+
+    with pytest.raises(
+        DtsConfigurationError,
+        match="^TIT_DTS_TRANSPORT_INVALID$",
+    ):
+        run_dts_ingest._dts_transport_mode(
+            {"TIT_DTS_TRANSPORT": "unknown"}
+        )
+
+
 def test_healthcheck_does_not_initialize_database_or_broker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -924,6 +942,13 @@ def test_startup_retry_interval_uses_cli_then_environment(
             "DTS_PROJECTION_CHECKPOINT_NOT_READY",
         ),
         (
+            run_dts_ingest.DtsJavaTransportError(
+                "DTS_OFFICIAL_JAVA_TRANSPORT_FAILED",
+                retriable=True,
+            ),
+            "DTS_OFFICIAL_JAVA_TRANSPORT_FAILED",
+        ),
+        (
             OperationalError(
                 "CONNECT",
                 {},
@@ -967,6 +992,10 @@ def test_only_explicit_transient_startup_errors_are_retryable(
         run_dts_ingest.DtsIngestStoreError(
             "DTS_TARGET_STATE_SCHEMA_MISMATCH"
         ),
+        run_dts_ingest.DtsJavaTransportError(
+            "DTS_OFFICIAL_JAVA_AUTHENTICATION_FAILED",
+            retriable=False,
+        ),
         RuntimeError("broker.internal password=secret"),
     ],
 )
@@ -980,6 +1009,127 @@ def test_permanent_or_unknown_startup_errors_are_not_retried(
         )
         is None
     )
+
+
+def test_official_java_startup_receives_database_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[object] = []
+    stream_settings = SimpleNamespace(
+        source_region="dom",
+        topic="dom-topic",
+        partition=0,
+        start_timestamp_seconds=1786523400,
+        domestic_student_hmac_fingerprint=lambda: "fingerprint",
+    )
+    database_settings = SimpleNamespace()
+
+    class Sink:
+        engine = object()
+
+        def resume_offset(self, **kwargs: object) -> int:
+            events.append(("resume", kwargs))
+            return 42
+
+        def validate_domestic_student_privacy_state(self) -> None:
+            events.append("privacy_state")
+
+        def validate_domestic_student_privacy_contract(
+            self, **kwargs: object
+        ) -> None:
+            events.append(("privacy_contract", kwargs))
+
+        def close(self) -> None:
+            events.append("sink_closed")
+
+    class Projector:
+        settings = SimpleNamespace(
+            require_subscription_boundary=lambda value: events.append(
+                ("subscription_boundary", value)
+            )
+        )
+
+    class JavaTransport:
+        def __init__(
+            self,
+            settings: object,
+            processor: object,
+            **kwargs: object,
+        ) -> None:
+            events.append(("java_init", settings, processor, kwargs))
+
+        def startup_probe(self, *, phase_callback: object) -> dict[str, object]:
+            assert callable(phase_callback)
+            events.append("java_probe")
+            return {
+                "status": "ok",
+                "transport": "official_java",
+                "initial_offset": 42,
+            }
+
+        def close(self) -> None:
+            events.append("java_closed")
+
+    sink = Sink()
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "PostgresDtsEventSink",
+        lambda settings, **kwargs: (
+            sink
+            if settings is database_settings
+            and kwargs == {"source_region": "dom"}
+            else (_ for _ in ()).throw(AssertionError("sink contract"))
+        ),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsWideProjector",
+        lambda *_args, **_kwargs: Projector(),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "OfficialJavaDtsTransport",
+        JavaTransport,
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "DtsKafkaConsumer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("python Kafka transport must not be constructed")
+        ),
+    )
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    contract = SimpleNamespace(
+        stream_settings=stream_settings,
+        database_settings=database_settings,
+        transport_mode="official_java",
+        activation_settings=None,
+    )
+    args = run_dts_ingest.build_parser().parse_args(
+        ["--idle-timeout-ms", "4321"]
+    )
+
+    started = run_dts_ingest._start_ingest_once(args, contract)
+
+    assert started is not None
+    assert started.checkpoint == 42
+    init = next(
+        item
+        for item in events
+        if isinstance(item, tuple) and item[0] == "java_init"
+    )
+    assert init[1] is stream_settings
+    assert init[3]["resume_offset"] == 42
+    assert init[3]["idle_timeout_ms"] == 4321
+    assert callable(init[3]["stop_requested"])
+    assert events.index("privacy_state") < events.index("java_probe")
+    assert events.index("java_probe") < next(
+        index
+        for index, item in enumerate(events)
+        if isinstance(item, tuple) and item[0] == "privacy_contract"
+    )
+    started.consumer.close()
+    started.sink.close()
 
 
 def test_watch_retries_transient_startup_with_fresh_resources_before_ready(
@@ -1359,3 +1509,175 @@ def test_sigterm_during_steady_work_removes_health_evidence(
     assert sink.lock_checked is (stop_stage == "projector")
     assert not readiness.exists()
     assert not heartbeat.exists()
+
+
+def test_sigterm_interrupting_java_transport_is_a_clean_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    readiness = tmp_path / "readiness.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    stream_settings = SimpleNamespace(
+        safe_summary=lambda: {"source_region": "dom"}
+    )
+    database_settings = SimpleNamespace(
+        sslmode="disable",
+        safe_summary=lambda: {"database": "tide_system_test"},
+    )
+    contract = SimpleNamespace(
+        stream_settings=stream_settings,
+        database_settings=database_settings,
+        projection_enabled=False,
+        startup_retry_seconds=15.0,
+    )
+
+    class Sink:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Consumer:
+        closed = False
+
+        def run(self, **_kwargs: object) -> dict[str, int]:
+            run_dts_ingest._stop_requested = True
+            raise run_dts_ingest.DtsJavaTransportError(
+                "DTS_OFFICIAL_JAVA_TRANSPORT_STOP_REQUESTED"
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    sink = Sink()
+    consumer = Consumer()
+    started = SimpleNamespace(
+        sink=sink,
+        consumer=consumer,
+        projector=SimpleNamespace(),
+        checkpoint=42,
+        broker_probe={"status": "ok"},
+    )
+    monkeypatch.setattr(
+        run_dts_ingest, "_load_runtime_contract", lambda _args: contract
+    )
+    monkeypatch.setattr(
+        run_dts_ingest, "_start_ingest_once", lambda *_args: started
+    )
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    assert run_dts_ingest._run(args) == 0
+    assert consumer.closed is True
+    assert sink.closed is True
+    assert not readiness.exists()
+    assert not heartbeat.exists()
+
+
+def test_watch_rebuilds_after_transient_java_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    readiness = tmp_path / "readiness.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    stream_settings = SimpleNamespace(
+        safe_summary=lambda: {"source_region": "dom"}
+    )
+    database_settings = SimpleNamespace(
+        sslmode="disable",
+        safe_summary=lambda: {"database": "tide_system_test"},
+    )
+    contract = SimpleNamespace(
+        stream_settings=stream_settings,
+        database_settings=database_settings,
+        projection_enabled=False,
+        startup_retry_seconds=1.0,
+    )
+
+    class Sink:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Consumer:
+        def __init__(self, attempt: int) -> None:
+            self.attempt = attempt
+            self.closed = False
+
+        def run(self, **_kwargs: object) -> dict[str, int]:
+            if self.attempt == 1:
+                raise run_dts_ingest.DtsJavaTransportError(
+                    "DTS_OFFICIAL_JAVA_TRANSPORT_FAILED",
+                    retriable=True,
+                )
+            args.watch = False
+            return {
+                "seen": 0,
+                "processed": 0,
+                "ignored": 0,
+                "duplicates": 0,
+                "committed": 0,
+            }
+
+        def close(self) -> None:
+            self.closed = True
+
+    sinks: list[Sink] = []
+    consumers: list[Consumer] = []
+
+    def start_once(*_args: object) -> SimpleNamespace:
+        sink = Sink()
+        consumer = Consumer(len(consumers) + 1)
+        sinks.append(sink)
+        consumers.append(consumer)
+        return SimpleNamespace(
+            sink=sink,
+            consumer=consumer,
+            projector=SimpleNamespace(),
+            checkpoint=42,
+            broker_probe={"status": "ok", "transport": "official_java"},
+        )
+
+    monkeypatch.setattr(
+        run_dts_ingest, "_load_runtime_contract", lambda _args: contract
+    )
+    monkeypatch.setattr(run_dts_ingest, "_start_ingest_once", start_once)
+    monkeypatch.setattr(
+        run_dts_ingest, "_wait_for_startup_retry", lambda _seconds: True
+    )
+    monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
+    args = run_dts_ingest.build_parser().parse_args(
+        [
+            "--watch",
+            "--heartbeat-path",
+            str(heartbeat),
+            "--readiness-path",
+            str(readiness),
+        ]
+    )
+
+    assert run_dts_ingest._run(args) == 0
+    assert len(consumers) == 2
+    assert all(consumer.closed for consumer in consumers)
+    assert all(sink.closed for sink in sinks)
+    assert json.loads(readiness.read_text(encoding="utf-8"))["status"] == (
+        "ready"
+    )
+    assert json.loads(heartbeat.read_text(encoding="utf-8"))["status"] == "ok"
+    retry = next(
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if '"mode": "DTS_STARTUP_RETRY"' in line
+    )
+    assert retry["error_code"] == "DTS_OFFICIAL_JAVA_TRANSPORT_FAILED"
+    assert retry["attempt"] == 1

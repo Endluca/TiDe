@@ -26,6 +26,10 @@ from app.dts_ingest_store import (  # noqa: E402
     DtsProjectionActivationSettings,
     PostgresDtsEventSink,
 )
+from app.dts_java_transport import (  # noqa: E402
+    DtsJavaTransportError,
+    OfficialJavaDtsTransport,
+)
 from app.dts_source_consumer import (  # noqa: E402
     DtsConfigurationError,
     DtsConsumerSettings,
@@ -82,12 +86,13 @@ class _RuntimeContract:
     projection_enabled: bool
     activation_settings: DtsProjectionActivationSettings | None
     startup_retry_seconds: float
+    transport_mode: str
 
 
 @dataclass(frozen=True)
 class _StartedIngest:
     sink: PostgresDtsEventSink
-    consumer: DtsKafkaConsumer
+    consumer: Any
     projector: DtsWideProjector
     checkpoint: int | None
     broker_probe: dict[str, object]
@@ -141,6 +146,18 @@ def _env_flag(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise DtsConfigurationError(f"{name}_INVALID")
+
+
+def _dts_transport_mode(
+    environ: dict[str, str] | None = None,
+) -> str:
+    """Select the Kafka transport; Gaea explicitly defaults this to Java."""
+
+    values = os.environ if environ is None else environ
+    value = values.get("TIT_DTS_TRANSPORT", "kafka_python").strip().lower()
+    if value not in {"kafka_python", "official_java"}:
+        raise DtsConfigurationError("TIT_DTS_TRANSPORT_INVALID")
+    return value
 
 
 def _startup_retry_seconds(args: argparse.Namespace) -> float:
@@ -346,6 +363,7 @@ def _load_runtime_contract(args: argparse.Namespace) -> _RuntimeContract:
         projection_enabled=projection_enabled,
         activation_settings=activation_settings,
         startup_retry_seconds=_startup_retry_seconds(args),
+        transport_mode=_dts_transport_mode(),
     )
 
 
@@ -363,6 +381,7 @@ def _start_ingest_once(
         source_region=stream_settings.source_region,
     )
     handoff = False
+    consumer: Any | None = None
     try:
         processor = DtsEventProcessor(sink)
         projector = DtsWideProjector(
@@ -384,11 +403,20 @@ def _start_ingest_once(
         sink.validate_domestic_student_privacy_state()
         if _stop_requested:
             return None
-        consumer = DtsKafkaConsumer(
-            stream_settings,
-            processor,
-            idle_timeout_ms=args.idle_timeout_ms,
-        )
+        if contract.transport_mode == "official_java":
+            consumer = OfficialJavaDtsTransport(
+                stream_settings,
+                processor,
+                resume_offset=checkpoint,
+                idle_timeout_ms=args.idle_timeout_ms,
+                stop_requested=lambda: _stop_requested,
+            )
+        else:
+            consumer = DtsKafkaConsumer(
+                stream_settings,
+                processor,
+                idle_timeout_ms=args.idle_timeout_ms,
+            )
         broker_probe = consumer.startup_probe(
             phase_callback=_emit_startup_probe,
         )
@@ -420,7 +448,13 @@ def _start_ingest_once(
         return started
     finally:
         if not handoff:
-            sink.close()
+            try:
+                if consumer is not None:
+                    close = getattr(consumer, "close", None)
+                    if callable(close):
+                        close()
+            finally:
+                sink.close()
 
 
 def _retryable_startup_diagnostic(
@@ -429,6 +463,15 @@ def _retryable_startup_diagnostic(
     sslmode: str | None,
 ) -> dict[str, bool | str] | None:
     """Return a safe diagnostic only for an explicit transient allowlist."""
+
+    if isinstance(exc, DtsJavaTransportError):
+        if exc.retriable:
+            return {
+                "error_code": exc.error_code,
+                "error_type": "DtsJavaTransportError",
+                "retriable": True,
+            }
+        return None
 
     kafka_diagnostic = safe_kafka_error_diagnostic(
         exc,
@@ -552,123 +595,188 @@ def _healthcheck(args: argparse.Namespace) -> int:
     return 0
 
 
+def _close_started_ingest(started: _StartedIngest) -> None:
+    try:
+        close = getattr(started.consumer, "close", None)
+        if callable(close):
+            close()
+    finally:
+        started.sink.close()
+
+
 def _run(args: argparse.Namespace) -> int:
     if args.healthcheck:
         return _healthcheck(args)
     _clear_health_files(args.heartbeat_path, args.readiness_path)
     contract = _load_runtime_contract(args)
     attempt = 0
-    started: _StartedIngest | None = None
     while not _stop_requested:
-        _clear_health_files(args.heartbeat_path, args.readiness_path)
-        try:
-            started = _start_ingest_once(args, contract)
-        except Exception as exc:
-            _clear_health_files(args.heartbeat_path, args.readiness_path)
-            diagnostic = _retryable_startup_diagnostic(
-                exc,
-                sslmode=contract.database_settings.sslmode,
-            )
-            if not args.watch or diagnostic is None:
-                raise
-            attempt += 1
-            retry_in_seconds = _startup_retry_delay(
-                contract.startup_retry_seconds,
-                attempt,
-            )
-            _emit_startup_retry(
-                attempt=attempt,
-                diagnostic=diagnostic,
-                retry_in_seconds=retry_in_seconds,
-            )
-            if not _wait_for_startup_retry(retry_in_seconds):
-                return 0
-            continue
-        break
-    if started is None or _stop_requested:
-        if started is not None:
-            started.sink.close()
-        return 0
-
-    stream_settings = contract.stream_settings
-    database_settings = contract.database_settings
-    projection_enabled = contract.projection_enabled
-    try:
-        started_at = datetime.now(timezone.utc).isoformat()
-        _write_health(
-            args.readiness_path,
-            {
-                "status": "ready",
-                "started_at": started_at,
-                "checkpoint": started.checkpoint,
-                "broker_probe": started.broker_probe,
-                "connection": stream_settings.safe_summary(),
-                "target": database_settings.safe_summary(),
-            },
-        )
-        if _stop_requested:
-            _clear_health_files(args.heartbeat_path, args.readiness_path)
-            return 0
+        started: _StartedIngest | None = None
         while not _stop_requested:
-            result = started.consumer.run(
-                max_messages=args.max_messages,
-                commit_offsets=True,
-            )
-            if _stop_requested:
-                _clear_health_files(args.heartbeat_path, args.readiness_path)
-                return 0
-            if projection_enabled:
-                # Prove the checked-out session is still the one that acquired
-                # the global projector lock before every projection batch.
-                started.sink.assert_projection_lock_held()
-                projection = started.projector.run_batch(
-                    max_keys=args.max_projection_keys
-                )
-            else:
-                projection = {
-                    "dirty_keys": 0,
-                    "lesson_upserts": 0,
-                    "lesson_deletes": 0,
-                    "teacher_upserts": 0,
-                    "teacher_deletes": 0,
-                    "unchanged": 0,
-                    "retries": 0,
-                }
-            if _stop_requested:
-                _clear_health_files(args.heartbeat_path, args.readiness_path)
-                return 0
-            heartbeat = {
-                "status": "ok",
-                "checked_at": datetime.now(timezone.utc).isoformat(),
-                "connection": stream_settings.safe_summary(),
-                "target": database_settings.safe_summary(),
-                "ingest": result,
-                "projection": projection,
-                "projection_enabled": projection_enabled,
-            }
-            _write_health(args.heartbeat_path, heartbeat)
-            print(
-                json.dumps(
-                    {"mode": "DTS_WIDE_PROJECTION", **heartbeat},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
-            if not args.watch:
-                break
-            if not _should_wait_before_next_batch(
-                seen=result["seen"],
-                max_messages=args.max_messages,
-            ):
-                continue
-            deadline = time.monotonic() + args.interval_seconds
-            while not _stop_requested and time.monotonic() < deadline:
-                time.sleep(min(0.2, deadline - time.monotonic()))
-        if _stop_requested:
             _clear_health_files(args.heartbeat_path, args.readiness_path)
-    finally:
-        started.sink.close()
+            try:
+                started = _start_ingest_once(args, contract)
+            except Exception as exc:
+                _clear_health_files(args.heartbeat_path, args.readiness_path)
+                diagnostic = _retryable_startup_diagnostic(
+                    exc,
+                    sslmode=contract.database_settings.sslmode,
+                )
+                if not args.watch or diagnostic is None:
+                    raise
+                attempt += 1
+                retry_in_seconds = _startup_retry_delay(
+                    contract.startup_retry_seconds,
+                    attempt,
+                )
+                _emit_startup_retry(
+                    attempt=attempt,
+                    diagnostic=diagnostic,
+                    retry_in_seconds=retry_in_seconds,
+                )
+                if not _wait_for_startup_retry(retry_in_seconds):
+                    return 0
+                continue
+            break
+        if started is None or _stop_requested:
+            if started is not None:
+                _close_started_ingest(started)
+            return 0
+
+        stream_settings = contract.stream_settings
+        database_settings = contract.database_settings
+        projection_enabled = contract.projection_enabled
+        retry_diagnostic: dict[str, bool | str] | None = None
+        try:
+            started_at = datetime.now(timezone.utc).isoformat()
+            _write_health(
+                args.readiness_path,
+                {
+                    "status": "ready",
+                    "started_at": started_at,
+                    "checkpoint": started.checkpoint,
+                    "broker_probe": started.broker_probe,
+                    "connection": stream_settings.safe_summary(),
+                    "target": database_settings.safe_summary(),
+                },
+            )
+            if _stop_requested:
+                _clear_health_files(
+                    args.heartbeat_path,
+                    args.readiness_path,
+                )
+                return 0
+            while not _stop_requested:
+                try:
+                    result = started.consumer.run(
+                        max_messages=args.max_messages,
+                        commit_offsets=True,
+                    )
+                except DtsJavaTransportError as exc:
+                    # A SIGTERM observed during the adapter's interruptible
+                    # wait is a clean shutdown. Explicit transient Java
+                    # failures rebuild the complete DB/Kafka startup contract
+                    # from the durable database checkpoint without exiting.
+                    if _stop_requested:
+                        _clear_health_files(
+                            args.heartbeat_path,
+                            args.readiness_path,
+                        )
+                        return 0
+                    diagnostic = _retryable_startup_diagnostic(
+                        exc,
+                        sslmode=database_settings.sslmode,
+                    )
+                    if not args.watch or diagnostic is None:
+                        raise
+                    retry_diagnostic = diagnostic
+                    _clear_health_files(
+                        args.heartbeat_path,
+                        args.readiness_path,
+                    )
+                    break
+                if _stop_requested:
+                    _clear_health_files(
+                        args.heartbeat_path,
+                        args.readiness_path,
+                    )
+                    return 0
+                if projection_enabled:
+                    # Prove the checked-out session is still the one that
+                    # acquired the global projector lock before every batch.
+                    started.sink.assert_projection_lock_held()
+                    projection = started.projector.run_batch(
+                        max_keys=args.max_projection_keys
+                    )
+                else:
+                    projection = {
+                        "dirty_keys": 0,
+                        "lesson_upserts": 0,
+                        "lesson_deletes": 0,
+                        "teacher_upserts": 0,
+                        "teacher_deletes": 0,
+                        "unchanged": 0,
+                        "retries": 0,
+                    }
+                if _stop_requested:
+                    _clear_health_files(
+                        args.heartbeat_path,
+                        args.readiness_path,
+                    )
+                    return 0
+                heartbeat = {
+                    "status": "ok",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "connection": stream_settings.safe_summary(),
+                    "target": database_settings.safe_summary(),
+                    "ingest": result,
+                    "projection": projection,
+                    "projection_enabled": projection_enabled,
+                }
+                _write_health(args.heartbeat_path, heartbeat)
+                attempt = 0
+                print(
+                    json.dumps(
+                        {"mode": "DTS_WIDE_PROJECTION", **heartbeat},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                if not args.watch:
+                    break
+                if not _should_wait_before_next_batch(
+                    seen=result["seen"],
+                    max_messages=args.max_messages,
+                ):
+                    continue
+                deadline = time.monotonic() + args.interval_seconds
+                while not _stop_requested and time.monotonic() < deadline:
+                    time.sleep(min(0.2, deadline - time.monotonic()))
+            if _stop_requested:
+                _clear_health_files(
+                    args.heartbeat_path,
+                    args.readiness_path,
+                )
+        finally:
+            _close_started_ingest(started)
+
+        if retry_diagnostic is None:
+            return 0
+        attempt += 1
+        retry_in_seconds = _startup_retry_delay(
+            contract.startup_retry_seconds,
+            attempt,
+        )
+        _emit_startup_retry(
+            attempt=attempt,
+            diagnostic=retry_diagnostic,
+            retry_in_seconds=retry_in_seconds,
+        )
+        if not _wait_for_startup_retry(retry_in_seconds):
+            return 0
+    if _stop_requested:
+        _clear_health_files(args.heartbeat_path, args.readiness_path)
     return 0
 
 

@@ -28,7 +28,9 @@ Gaea application 运行时使用 `gaea/application` 模块（根 `gaea/Dockerfil
 运营端、教师端和积分 Worker，并由 s6 在同一个 Pod 中管理五个常驻进程；海外、国内 DTS 项目
 都选择独立的 `gaea/dts-ingest` 轻量模块，海外项目必须位于新加坡、国内项目必须位于中国大陆；
 模块、镜像或区域环境变量不能替代平台地理放置。
-轻量模块只包含受限 Python 接入进程。运营与教师域名分别绑定 `8010/8080`，教师 NestJS 的
+轻量模块由受限 Python 父进程和官方 Kafka Java Client 1.0.0 子进程组成；Java 只负责 Kafka
+transport，Python 继续拥有国内 HMAC、数据库事务、checkpoint 和投影。两者以单条 in-flight
+ACK 协议保证数据库 durable 后才提交 Kafka `offset + 1`。运营与教师域名分别绑定 `8010/8080`，教师 NestJS 的
 `3000` 不对外开放。同一项目和镜像支持整套 Pod 使用 2 个或更多副本及 RollingUpdate：
 积分候选进程通过 PostgreSQL session advisory lock 保持逻辑单活，未持锁 standby 仍刷新
 本 Pod heartbeat；教师全局调度使用 `tide.job_leases`，照片处理按数据库行租约认领。
@@ -36,11 +38,13 @@ Gaea application 运行时使用 `gaea/application` 模块（根 `gaea/Dockerfil
 共享数据库账号，也不自动执行 TiDe Alembic 或教师端 migration；但同一 UID 的进程会继承
 容器级变量，所以这个合并形态只用于受控 TEST，不提供生产级秘密隔离。
 
-DTS 启动探针按 `DB → TCP → Kafka` 执行：先使用运行时数据库密钥完成目标库连接、传输、身份与
-Catalog/ACL 检查，再完成 bootstrap DNS 解析并从当前 Pod 对解析结果做无凭据 TCP 连接，最后
-使用 SASL 密钥校验 Kafka。5 秒 TCP 连接预算不覆盖前置 DNS 解析。日志/readiness 只允许安全摘要
-和稳定错误码，不输出密码、账号、Broker 解析地址或底层驱动原文。TCP 探针不收发应用数据，
-后续 Kafka 探针按 bootstrap 认证、Metadata、partition、advertised broker 认证、coordinator 与
+DTS 默认启动门禁按 `DB → official Java Kafka` 执行：先使用运行时数据库密钥完成目标库连接、
+传输、身份与 Catalog/ACL 检查，再由已验证可消费的官方 Kafka 1.0 协议栈完成认证、Metadata、
+partition 和 offset 校验。Java stdout 只用于受控 ACK 协议，Kafka 网络日志走 stderr；不打印
+密码或 raw Avro，但完整协议日志会包含排障必需的 endpoint、Topic、消费组等运行身份，只能进入受控
+日志系统。`DB → TCP → 分阶段 kafka-python` 探针仅在显式回退模式保留；该回退模式只输出安全摘要
+和稳定错误码，不输出连接身份或底层驱动原文。回退 TCP 探针不收发应用数据，
+后续回退 Kafka 探针按 bootstrap 认证、Metadata、partition、advertised broker 认证、coordinator 与
 offset 请求分段；Metadata 与 `kcat -L -t <topic>` 使用同类单 Topic Metadata API 语义，但不创建
 带密码的 kcat 配置文件。探针只读取
 metadata/offset，不消费业务消息、不产生目标写入、不推进消费组位点；Pod Ready

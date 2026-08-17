@@ -25,9 +25,11 @@ application 镜像由 s6-overlay 管理五个业务进程入口：
 | `score-settlement` | 无 | 固定任务积分结算候选进程、数据库选主和本 Pod heartbeat |
 | `source-wide` | 无 | 字段级源事件消费候选进程、数据库选主和本 Pod heartbeat/readiness |
 
-轻量 DTS 镜像不包含上述五个进程、Node、两个前端、教师 NestJS 或 Nginx，只以非 root
-Python PID 1 运行 `run_dts_ingest.py`，负责 DTS Avro 消费、接入状态事务、数据库位点、事务后
-ACK 和 23/55 字段宽表投影。脚本自身处理 SIGTERM/SIGINT，并通过 Pod 本地 heartbeat/readiness
+轻量 DTS 镜像不包含上述五个进程、Node、两个前端、教师 NestJS 或 Nginx。它以非 root
+Python PID 1 运行 `run_dts_ingest.py`，Python 持有数据库、国内 HMAC、账本与 23/55 字段宽表
+投影，并管理一个使用官方诊断包内 Kafka Java Client 1.0.0 的子进程。Java stdout 只传 NDJSON
+事件和提交确认，Kafka/SDK 诊断走 stderr；Python 数据库事务成功后才回 durable ACK，Java 随后
+同步提交 `offset + 1`。脚本自身处理 SIGTERM/SIGINT，并通过 Pod 本地 heartbeat/readiness
 执行 Docker HEALTHCHECK。
 
 运营端与教师端仍是两套独立 HTTP 服务，只在 `application` Profile 共享 Pod。运营、教师、SourceWide
@@ -246,7 +248,7 @@ SourceWide 健康探针会使用同一个受限数据库身份直接读取 Outbo
 
 这个工具是完整消费者，不是只读 Metadata 探针。`ASSIGN` 模式会读取并解码 CDC 记录，官方
 文档明确说明它会更新指定消费组的消费位点；默认 listener 还会输出 Schema、Before image 和
-After image。因此只能在当前国内 PRE 项目中有界运行，不能与 Python 消费者并发，也不能把
+After image。因此只能在当前国内 PRE 项目中有界运行，不能与正式 `dts-ingest` 消费者并发，也不能把
 容器健康解释为链路成功。
 
 发布前先在目标 `tide_system_test` 留底 durable checkpoint：
@@ -260,7 +262,7 @@ WHERE source_region = 'dom' AND partition_id = 0;
 
 随后按以下顺序执行：
 
-1. 关闭或缩容 `pre-tida-camp-dts-dom` 当前 `dts-ingest` Pod，确认不存在同组 Python 消费者；
+1. 关闭或缩容 `pre-tida-camp-dts-dom` 当前 `dts-ingest` Pod，确认不存在同组正式消费者；
 2. 保持原国内项目、团队、数据中心、broker、topic、sid、账号和密码不变，把构建模块临时改为
    `dts-diagnose`，副本数固定 1，禁止滚动阶段新旧模块重叠；
 3. 新增非敏感变量 `TIT_DTS_DIAG_INIT_CHECKPOINT=1786523400`，保持
@@ -307,6 +309,14 @@ application 项目也不配置任何 DTS 变量。
 国内密钥首次启动会登记单向 fingerprint，后续不匹配即退出；不得直接修改密钥值“轮换”，否则
 同一学生会被拆成多个身份。轮换必须单独评审 token 版本和存量迁移。
 
+Gaea 镜像固定 `TIT_DTS_TRANSPORT=official_java`。该模式复用已在国内 PRE 成功消费的官方
+Kafka Java Client 1.0.0 请求路径，但保留 Python 现有 `fastavro → 国内 HMAC → PostgreSQL`
+处理链。Java 启动时只解析 metadata/partition/committed/begin/end 和初始 offset，不拉取消息；
+进入稳态后始终保持单条 in-flight：`EVENT → Python DB durable → DURABLE_ACK → Kafka commitSync
+→ COMMITTED`。若 DB 已有 checkpoint，Java 必须精确 seek 该 `next_offset`，且 Kafka committed
+领先 DB 时失败关闭；DB 没有 checkpoint 时才按 `TIT_DTS_START_AT` 定位，忽略诊断包可能推进过
+的旧 committed。ACK 丢失只会导致按数据库 checkpoint 幂等重放，不会让 Kafka 领先数据库。
+
 首次追平阶段两个项目都必须关闭投影；激活后只允许海外项目启用全局宽表投影，国内项目固定
 `TIT_DTS_PROJECTION_ENABLED=false` 并只做 ingest。海外项目必须先通过数据库激活门禁，并持有
 全局 PostgreSQL session advisory lock；国内项目误开启投影会在启动时失败关闭。每个 DTS Pod
@@ -338,9 +348,10 @@ application 项目也不配置任何 DTS 变量。
 | 变量名 | 必填 | TEST 值/约束 | 说明 |
 |---|---:|---|---|
 | `TIT_PROCESS_PROFILE` | 是 | `dts-ingest` | 只启动 DTS 业务进程 |
-| `TIT_DTS_STARTUP_RETRY_SECONDS` | 否 | `15` | 仅 `--watch` 容器启动期使用；以该值起步、2 倍退避并在 60 秒封顶，默认 `15/30/60`，允许范围 `(0,60]` |
-| `TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` | 否 | `15000` | 仅 Kafka 启动门禁的 Metadata/Coordinator/Offset 等请求上限，允许 `1–120000`；PRE 兼容诊断可临时设为 `120000` |
-| `TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` | 否 | `15000` | 仅 Kafka 启动门禁的 ApiVersions 自动协商上限，允许 `1–120000`；PRE 兼容诊断可临时设为 `120000` |
+| `TIT_DTS_TRANSPORT` | 镜像固定 | `official_java` | 正式 Gaea 使用官方 Java 1.0 transport；`kafka_python` 只保留为显式回退诊断 |
+| `TIT_DTS_STARTUP_RETRY_SECONDS` | 否 | `15` | `--watch` 启动暂态与稳态 Java transport 暂态恢复使用；以该值起步、2 倍退避并在 60 秒封顶，默认 `15/30/60`，允许范围 `(0,60]` |
+| `TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` | 回退模式 | `15000` | 仅 `kafka_python` 回退启动门禁使用；不传给 `official_java` |
+| `TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` | 回退模式 | `15000` | 仅 `kafka_python` 回退 ApiVersions 使用；Java 1.0 无此参数 |
 | `TIT_DTS_PASSWORD` | 是 | 各自 Gaea 密钥 | 只用于本项目对应订阅的 DTS SASL |
 | `TIT_DTS_COHORT_START` | 否 | `2026-08-13` | 北京时间新教师 cohort 起点，按 `dom_teacher.status_on_time` 日期筛选；两项目必须一致 |
 | `TIT_DTS_COHORT_END_EXCLUSIVE` | 否 | 空 | 开放式人群；需要封闭批次时才设置不含当天的结束边界 |
@@ -374,10 +385,14 @@ application 项目也不配置任何 DTS 变量。
 最终再应用 `20260814_61_teacher_copy`，该迁移只更新经审核的教师文案。
 
 DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`。进程启动时先删除
-上一进程留下的两个文件；目标数据库连接/身份/Schema/ACL、bootstrap DNS 解析、当前 Pod 对解析
-结果执行的 5 秒共享连接预算无凭据 TCP 探针，以及 Kafka SASL、topic、partition 0、初始位点的
-只读探针全部通过后，才写本次进程的
-`readiness=ready`。TCP 探针不收发应用数据；TCP 失败输出 `DTS_BROKER_TCP_*`，TCP 成功会先打印
+上一进程留下的两个文件；目标数据库连接/身份/Schema/ACL 与所选 transport 的 Kafka
+SASL、topic、partition 0、初始位点门禁全部通过后，才写本次进程的 `readiness=ready`。正式
+`official_java` transport 使用官方 Kafka 1.0 的完整请求路径，Java/Kafka 日志输出到 stderr；
+stdout 只用于受控 ACK 协议，不打印 raw Avro。Java 协议日志会包含 endpoint、Topic、消费组等
+排障身份，只能进入受控日志系统。镜像为首次 Java 连接和首批 durable commit 保留 360 秒
+health start period，并安装 `gcompat` 承接官方旧 JAR 的本地压缩库；首次发布仍必须真实 Fetch、
+落库并提交至少一条消息，单看 Metadata/readiness 不能证明 Snappy/native 路径可用。下面的 5 秒 TCP 与分阶段 Kafka
+结构化探针仅适用于显式 `TIT_DTS_TRANSPORT=kafka_python` 回退模式。TCP 探针不收发应用数据；TCP 失败输出 `DTS_BROKER_TCP_*`，TCP 成功会先打印
 `DTS_STARTUP_PROBE/broker_tcp status=ok`，之后 Kafka 请求超时输出
 `DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 探针先输出脱敏的客户端契约摘要（客户端版本/API 自动协商模式、
 SASL 协议、partition 和有界超时），再按实际位点路径输出不含连接身份的固定阶段；阶段来自
@@ -385,8 +400,8 @@ SASL 协议、partition 和有界超时），再按实际位点路径输出不�
 `advertised_broker_auth`、`group_coordinator`、`coordinator_auth`、`offset_fetch`，并按实际位点
 路径继续输出 `offsets_for_times`、`beginning_offsets`、`end_offsets`，均带 `begin/ok/fail`。
 `topic_metadata` 是在失败 Pod 同一网络命名空间中执行的、与 `kcat -L -t <topic>` 同类语义的
-单 Topic Metadata 请求，随后由 `partition_check` 验证配置 partition 0。客户端保留真实 `ApiVersions` 自动协商，但仅将 Metadata API（key 3）上限限定为 v5，以对齐已成功消费的官方 Java 1.0 诊断客户端的 Metadata 版本边界；其他 Kafka API 仍按自动协商结果选择。`kafka_client_config` 输出 `configured_metadata_api_max_version=5` 与 `metadata_api_version_policy=auto_negotiated_cap`，`topic_metadata` 在完成版本选择后输出服务端声明的 min/max 与实际版本。实现复用正式 kafka-python 客户端，不创建含密码的 kcat 配置
-文件。该 v5 cap 只对齐已定位的 Metadata 路径，是否全链路兼容以发布后 partition/coordinator/offset/Fetch 阶段日志为准。`consumer_open` 会对 bootstrap 连接真实发送 `ApiVersions` 自动协商客户端兼容协议，再完成
+单 Topic Metadata 请求，随后由 `partition_check` 验证配置 partition 0。客户端保留真实 `ApiVersions` 自动协商，但仅将 Metadata API（key 3）上限限定为 v5。`kafka_client_config` 输出 `configured_metadata_api_max_version=5` 与 `metadata_api_version_policy=auto_negotiated_cap`，`topic_metadata` 在完成版本选择后输出服务端声明的 min/max 与实际版本。回退实现不创建含密码的 kcat 配置
+文件。`consumer_open` 会对 bootstrap 连接真实发送 `ApiVersions` 自动协商客户端兼容协议，再完成
 该连接的 SASL；日志中的协商结果只是 kafka-python 选择的兼容版本，不是 DTS Broker 精确版本。
 后续 `bootstrap_auth` 复核已认证连接，通常显示连接复用。协议分段适配器只接受锁定的
 kafka-python 2.2.20，依赖漂移会在发送 Kafka 凭据或协议请求前失败关闭。
@@ -416,6 +431,7 @@ phase 日志还会动态输出 `remaining_probe_budget_ms`、`effective_request_
 连接/超时、数据库连接或激活依赖未就绪时，不再退出制造 CrashLoop，而是在同一 PID 内按
 `TIT_DTS_STARTUP_RETRY_SECONDS` 起步、2 倍退避并在 60 秒封顶（默认 `15/30/60`）；每轮都关闭失败连接池并使用全新
 数据库连接、Kafka 客户端和投影锁会话重跑完整门禁。重试期间 readiness 与 heartbeat 都不存在，
+稳态 `official_java` 发生明确可重试的断线/超时也走同一路径，不退出 PID 1；永久错误仍失败关闭。
 因此 Pod 必须保持 NotReady/不健康，不能把“进程仍活着”解释成链路可用。SASL/Topic/Group/Cluster
 授权、协议不兼容或配置错误，以及数据库身份、Schema/ACL、隐私/HMAC/offset 不变量失败仍立即非零退出；
 非 `--watch` 诊断命令也保持单次失败退出。国内进程只有在探针成功后，才会在写 readiness 前幂等
