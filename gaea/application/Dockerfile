@@ -175,6 +175,7 @@ RUN rm -f /etc/nginx/http.d/default.conf /etc/nginx/conf.d/default.conf \
       < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf \
     && mkdir -p \
       /app/operations/logs \
+      /deployments/config \
       /var/lib/tide/uploads \
       /var/lib/tide/video-prefetch-runs \
       /var/lib/nginx \
@@ -188,6 +189,7 @@ RUN rm -f /etc/nginx/http.d/default.conf /etc/nginx/conf.d/default.conf \
     && ln -sf /dev/stdout /var/log/nginx/access.log \
     && chown -R gaea:gaea \
       /app \
+      /deployments/config \
       /usr/share/nginx/teacher \
       /var/lib/tide \
       /var/lib/nginx \
@@ -199,8 +201,8 @@ RUN rm -f /etc/nginx/http.d/default.conf /etc/nginx/conf.d/default.conf \
 EXPOSE 8010 8080
 
 HEALTHCHECK --interval=30s --timeout=20s --start-period=120s --retries=3 \
-  CMD ["/app/bin/healthcheck.sh"]
+  CMD ["/opt/venv/bin/python", "/app/bin/runtime-env.py", "healthcheck", "--fingerprint-file", "/run/tit-runtime-env/fingerprint", "--", "/app/bin/healthcheck.sh"]
 
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/init"]
+ENTRYPOINT ["/opt/venv/bin/python", "/app/bin/runtime-env.py", "start", "--fingerprint-file", "/run/tit-runtime-env/fingerprint", "--", "/init"]
 CMD ["sleep", "infinity"]
