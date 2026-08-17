@@ -27,9 +27,9 @@ application 镜像由 s6-overlay 管理五个业务进程入口：
 
 轻量 DTS 镜像不包含上述五个进程、Node、两个前端、教师 NestJS 或 Nginx。它以非 root
 Python PID 1 运行 `run_dts_ingest.py`，Python 持有数据库、国内 HMAC、账本与 23/55 字段宽表
-投影，并管理一个使用官方诊断包内 Kafka Java Client 1.0.0 的子进程。Java stdout 只传 NDJSON
-事件和提交确认，Kafka/SDK 诊断走 stderr；Python 数据库事务成功后才回 durable ACK，Java 随后
-同步提交 `offset + 1`。脚本自身处理 SIGTERM/SIGINT，并通过 Pod 本地 heartbeat/readiness
+投影，并管理一个运行官方 DTS SDK 1.4.0 主流程的 Java 子进程。Java stdout 只传 NDJSON
+事件和 SDK checkpoint 接受确认，Kafka/SDK 诊断走 stderr；Python 数据库事务成功后才回 durable
+ACK，Java 随后才调用 `DefaultUserRecord.commit()`，但不冒充 broker 同步提交成功。脚本自身处理 SIGTERM/SIGINT，并通过 Pod 本地 heartbeat/readiness
 执行 Docker HEALTHCHECK。
 
 运营端与教师端仍是两套独立 HTTP 服务，只在 `application` Profile 共享 Pod。运营、教师、SourceWide
@@ -309,13 +309,16 @@ application 项目也不配置任何 DTS 变量。
 国内密钥首次启动会登记单向 fingerprint，后续不匹配即退出；不得直接修改密钥值“轮换”，否则
 同一学生会被拆成多个身份。轮换必须单独评审 token 版本和存量迁移。
 
-Gaea 镜像固定 `TIT_DTS_TRANSPORT=official_java`。该模式复用已在国内 PRE 成功消费的官方
-Kafka Java Client 1.0.0 请求路径，但保留 Python 现有 `fastavro → 国内 HMAC → PostgreSQL`
-处理链。Java 启动时只解析 metadata/partition/committed/begin/end 和初始 offset，不拉取消息；
-进入稳态后始终保持单条 in-flight：`EVENT → Python DB durable → DURABLE_ACK → Kafka commitSync
-→ COMMITTED`。若 DB 已有 checkpoint，Java 必须精确 seek 该 `next_offset`，且 Kafka committed
-领先 DB 时失败关闭；DB 没有 checkpoint 时才按 `TIT_DTS_START_AT` 定位，忽略诊断包可能推进过
-的旧 committed。ACK 丢失只会导致按数据库 checkpoint 幂等重放，不会让 Kafka 领先数据库。
+Gaea 镜像固定 `TIT_DTS_TRANSPORT=official_java`。该模式运行已在国内 PRE 成功消费的官方
+DTS SDK 1.4.0 主流程：`ConsumerContext(ASSIGN) → DefaultDTSConsumer → KafkaRecordFetcher →
+UserRecordGenerator → EtlRecordProcessor → RecordListener`，其内置 Kafka Java Client 1.0.0；
+Python 保留现有 `fastavro → 国内 HMAC → PostgreSQL` 处理链。官方 listener 始终保持单条
+in-flight：`EVENT → Python DB durable → DURABLE_ACK → DefaultUserRecord.commit() →
+SDK_CHECKPOINT_ACCEPTED`。最后一步只表示 SDK 接受 checkpoint 请求；后续 Kafka checkpoint 是
+SDK 异步动作且没有同步成功回执。DB 已有 checkpoint 时，用其 `source_timestamp` 让官方 ASSIGN
+路径恢复，并以 `next_offset` 校验 replay：小于它的事件必须已存在于账本且不再次请求 SDK commit，
+等于它才推进，大于它立即按 offset 缺口失败关闭；DB 无 checkpoint 时才按 `TIT_DTS_START_AT`
+定位。PostgreSQL `next_offset + source_timestamp` 始终是恢复权威，ACK 丢失只会造成幂等重放。
 
 首次追平阶段两个项目都必须关闭投影；激活后只允许海外项目启用全局宽表投影，国内项目固定
 `TIT_DTS_PROJECTION_ENABLED=false` 并只做 ingest。海外项目必须先通过数据库激活门禁，并持有
@@ -385,13 +388,13 @@ Kafka Java Client 1.0.0 请求路径，但保留 Python 现有 `fastavro → 国
 最终再应用 `20260814_61_teacher_copy`，该迁移只更新经审核的教师文案。
 
 DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`。进程启动时先删除
-上一进程留下的两个文件；目标数据库连接/身份/Schema/ACL 与所选 transport 的 Kafka
-SASL、topic、partition 0、初始位点门禁全部通过后，才写本次进程的 `readiness=ready`。正式
-`official_java` transport 使用官方 Kafka 1.0 的完整请求路径，Java/Kafka 日志输出到 stderr；
+上一进程留下的两个文件；目标数据库连接/身份/Schema/ACL 与所选 transport 的启动门禁全部
+通过后，才写本次进程的 `readiness=ready`。正式 `official_java` transport 等待官方 SDK 首条
+`UserRecord` 到达受控 listener，覆盖其 precheck、KafkaRecordFetcher、Avro 解析和 listener 路径；Java/Kafka 日志输出到 stderr；
 stdout 只用于受控 ACK 协议，不打印 raw Avro。Java 协议日志会包含 endpoint、Topic、消费组等
-排障身份，只能进入受控日志系统。镜像为首次 Java 连接和首批 durable commit 保留 360 秒
+排障身份，只能进入受控日志系统。镜像为首次 Java 连接和首批 durable ACK 保留 360 秒
 health start period，并安装 `gcompat` 承接官方旧 JAR 的本地压缩库；首次发布仍必须真实 Fetch、
-落库并提交至少一条消息，单看 Metadata/readiness 不能证明 Snappy/native 路径可用。下面的 5 秒 TCP 与分阶段 Kafka
+落库并让 SDK 接受至少一条 ADVANCE checkpoint，单看 Metadata/readiness 不能证明 Snappy/native 路径可用。下面的 5 秒 TCP 与分阶段 Kafka
 结构化探针仅适用于显式 `TIT_DTS_TRANSPORT=kafka_python` 回退模式。TCP 探针不收发应用数据；TCP 失败输出 `DTS_BROKER_TCP_*`，TCP 成功会先打印
 `DTS_STARTUP_PROBE/broker_tcp status=ok`，之后 Kafka 请求超时输出
 `DTS_BROKER_KAFKA_REQUEST_TIMEOUT`。Kafka 探针先输出脱敏的客户端契约摘要（客户端版本/API 自动协商模式、

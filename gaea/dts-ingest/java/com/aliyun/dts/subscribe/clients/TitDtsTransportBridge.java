@@ -3,61 +3,65 @@ package com.aliyun.dts.subscribe.clients;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
-import com.aliyun.dts.subscribe.clients.common.Util;
+import com.aliyun.dts.subscribe.clients.ConsumerContext.ConsumerSubscribeMode;
+import com.aliyun.dts.subscribe.clients.common.RecordListener;
+import com.aliyun.dts.subscribe.clients.formats.avro.Record;
+import com.aliyun.dts.subscribe.clients.record.DefaultUserRecord;
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
-import java.util.Queue;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.common.PartitionInfo;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import org.apache.avro.io.BinaryEncoder;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.avro.specific.SpecificDatumWriter;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.AuthorizationException;
 import org.apache.kafka.common.errors.RetriableException;
-import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 
 /**
- * Stdio bridge around the exact Kafka client shipped by the official Aliyun
- * DTS diagnostic package.
+ * Durable-ACK bridge around the official Aliyun DTS SDK 1.4.0 consumer path.
  *
- * <p>Standard output is reserved for one-line JSON protocol messages. Kafka,
- * DTS SDK and bridge diagnostics must use standard error through the separate
- * Log4j configuration.
+ * <p>The SDK owns precheck, KafkaRecordFetcher, Avro generation and record
+ * processing. Standard output is reserved for the Python parent protocol;
+ * SDK/Kafka diagnostics are routed to standard error by log4j.properties.
  */
 public final class TitDtsTransportBridge {
     private static final String TYPE = "type";
+    private static final String ACTION_ADVANCE = "ADVANCE";
+    private static final String ACTION_REPLAY = "REPLAY";
     private static final int MAX_COMMAND_BYTES = 1024 * 1024;
     private static final int MAX_BATCH_MESSAGES = 1000;
     private static final long DEFAULT_IDLE_TIMEOUT_MS = 10000L;
+    private static final long SDK_START_TIMEOUT_MS = 305000L;
 
     private final BufferedReader input = new BufferedReader(
             new InputStreamReader(System.in, StandardCharsets.UTF_8));
     private final PrintWriter output = new PrintWriter(
             new OutputStreamWriter(System.out, StandardCharsets.UTF_8), true);
-    private final Queue<ConsumerRecord<byte[], byte[]>> bufferedRecords =
-            new ArrayDeque<ConsumerRecord<byte[], byte[]>>();
+    private final ArrayBlockingQueue<RecordEnvelope> records =
+            new ArrayBlockingQueue<RecordEnvelope>(1);
 
-    private KafkaConsumer<byte[], byte[]> consumer;
-    private TopicPartition topicPartition;
-    private ConsumerRecord<byte[], byte[]> inFlight;
+    private volatile Throwable sdkFailure;
+    private volatile Throwable listenerFailure;
+    private volatile boolean closed;
+    private DefaultDTSConsumer consumer;
+    private Thread consumerThread;
+    private RecordEnvelope firstRecord;
+    private RecordEnvelope inFlight;
     private long idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
     private boolean started;
-    private boolean closed;
 
     private TitDtsTransportBridge() {
     }
@@ -67,8 +71,7 @@ public final class TitDtsTransportBridge {
             emitStandaloneError("DTS_OFFICIAL_JAVA_ARGUMENTS_NOT_ALLOWED", false);
             return;
         }
-        TitDtsTransportBridge bridge = new TitDtsTransportBridge();
-        bridge.run();
+        new TitDtsTransportBridge().run();
     }
 
     private void run() {
@@ -123,117 +126,132 @@ public final class TitDtsTransportBridge {
         String password = requiredString(command, "password");
         int partition = requiredNonNegativeInt(command, "partition");
         Long resumeOffset = optionalNonNegativeLong(command, "resume_offset");
+        Long resumeSourceTimestamp = optionalNonNegativeLong(
+                command, "resume_source_timestamp");
         Long startTimestampSeconds = optionalNonNegativeLong(
                 command, "start_timestamp_seconds");
         Long requestedIdleTimeoutMs = optionalPositiveLong(
                 command, "idle_timeout_ms");
+        if (partition != 0) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_PARTITION_UNSUPPORTED");
+        }
+        if ((resumeOffset == null) != (resumeSourceTimestamp == null)) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_RESUME_CHECKPOINT_INCOMPLETE");
+        }
+        if (resumeOffset == null && startTimestampSeconds == null) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_INITIAL_CHECKPOINT_REQUIRED");
+        }
         if (requestedIdleTimeoutMs != null) {
             idleTimeoutMs = requestedIdleTimeoutMs.longValue();
         }
 
-        Properties sourceProperties = new Properties();
-        sourceProperties.setProperty("broker", join(brokers));
-        sourceProperties.setProperty("group", groupId);
-        sourceProperties.setProperty("user", account);
-        sourceProperties.setProperty("password", password);
+        final boolean resumeCheckpointPresent = resumeOffset != null;
+        final long checkpointTimestampSeconds = resumeCheckpointPresent
+                ? resumeSourceTimestamp.longValue()
+                : startTimestampSeconds.longValue();
+        final String initialCheckpoint = resumeCheckpointPresent
+                ? checkpointTimestampSeconds + "@" + resumeOffset.longValue()
+                : Long.toString(checkpointTimestampSeconds);
 
-        Properties kafkaProperties = new Properties();
-        // This is the vendor-owned configuration path used by the official
-        // diagnostic client. It builds the DTS username/group JAAS contract.
-        Util.mergeSourceKafkaProperties(sourceProperties, kafkaProperties);
-        kafkaProperties.setProperty(
-                ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        kafkaProperties.setProperty(
-                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,
-                ByteArrayDeserializer.class.getName());
-        kafkaProperties.setProperty(
-                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
-                ByteArrayDeserializer.class.getName());
-        kafkaProperties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1");
+        ConsumerContext context = new ConsumerContext(
+                join(brokers),
+                topic,
+                groupId,
+                account,
+                password,
+                initialCheckpoint,
+                ConsumerSubscribeMode.ASSIGN);
+        context.setForceUseCheckpoint(true);
+        context.setUseLocalCheckpointStore(false);
+        context.setCheckpointCommitInterval(0L);
 
-        try {
-            consumer = new KafkaConsumer<byte[], byte[]>(kafkaProperties);
-        } finally {
-            sourceProperties.clear();
-            kafkaProperties.clear();
-            password = null;
-        }
-
-        topicPartition = new TopicPartition(topic, partition);
-        List<PartitionInfo> partitions = consumer.partitionsFor(topic);
-        boolean partitionPresent = false;
-        for (PartitionInfo info : partitions) {
-            if (info.partition() == partition) {
-                partitionPresent = true;
-                break;
+        final DefaultDTSConsumer created = new DefaultDTSConsumer(context);
+        Map<String, RecordListener> listeners =
+                new HashMap<String, RecordListener>();
+        listeners.put("titDurableAckListener", new RecordListener() {
+            @Override
+            public void consume(DefaultUserRecord record) {
+                consumeOfficialRecord(record);
             }
-        }
-        if (!partitionPresent) {
-            throw new ProtocolException(
-                    "DTS_OFFICIAL_JAVA_PARTITION_NOT_FOUND");
-        }
+        });
+        created.addRecordListeners(listeners);
+        consumer = created;
+        password = null;
 
-        consumer.assign(Collections.singletonList(topicPartition));
-        OffsetAndMetadata committed = consumer.committed(topicPartition);
-        long beginOffset = onlyOffset(
-                consumer.beginningOffsets(
-                        Collections.singletonList(topicPartition)),
-                topicPartition,
-                "DTS_OFFICIAL_JAVA_BEGIN_OFFSET_UNAVAILABLE");
-        long endOffset = onlyOffset(
-                consumer.endOffsets(Collections.singletonList(topicPartition)),
-                topicPartition,
-                "DTS_OFFICIAL_JAVA_END_OFFSET_UNAVAILABLE");
-
-        long initialOffset;
-        if (resumeOffset != null) {
-            initialOffset = resumeOffset.longValue();
-            if (committed != null && committed.offset() > initialOffset) {
-                throw new ProtocolException(
-                        "DTS_KAFKA_OFFSET_AHEAD_OF_DATABASE");
+        consumerThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    created.start();
+                    if (!closed) {
+                        sdkFailure = new SdkTerminatedException();
+                        cancelPendingRecords();
+                    }
+                } catch (Throwable error) {
+                    sdkFailure = error;
+                    cancelPendingRecords();
+                }
             }
-        } else if (startTimestampSeconds != null) {
-            initialOffset = resolveTimestampOffset(
-                    startTimestampSeconds.longValue());
-        } else {
+        }, "tit-dts-official-consumer");
+        consumerThread.setDaemon(true);
+        consumerThread.start();
+
+        firstRecord = awaitRecord(SDK_START_TIMEOUT_MS);
+        DefaultUserRecord record = firstRecord.record;
+        TopicPartition topicPartition = requiredTopicPartition(record);
+        if (!topic.equals(topicPartition.topic())
+                || partition != topicPartition.partition()) {
             throw new ProtocolException(
-                    "DTS_OFFICIAL_JAVA_INITIAL_OFFSET_REQUIRED");
+                    "DTS_OFFICIAL_JAVA_RECORD_IDENTITY_MISMATCH");
         }
-        if (initialOffset < beginOffset || initialOffset > endOffset) {
-            throw new ProtocolException(
-                    "DTS_OFFICIAL_JAVA_INITIAL_OFFSET_OUT_OF_RANGE");
-        }
-        consumer.seek(topicPartition, initialOffset);
+        long firstOffset = requiredRecordOffset(record);
+        long firstSourceTimestamp = requiredSourceTimestamp(record);
 
         JSONObject ready = message("READY");
-        ready.put("initial_offset", initialOffset);
-        ready.put("committed_present", committed != null);
-        ready.put("begin_offset", beginOffset);
-        ready.put("end_offset", endOffset);
+        ready.put("transport", "official_dts_sdk");
+        ready.put("subscribe_mode", "ASSIGN");
+        ready.put("partition", topicPartition.partition());
+        ready.put("first_record_offset", firstOffset);
+        ready.put("first_record_source_timestamp", firstSourceTimestamp);
+        ready.put("resume_checkpoint_present", resumeCheckpointPresent);
+        ready.put("checkpoint_timestamp_seconds", checkpointTimestampSeconds);
         emit(ready);
         started = true;
         safeLog("DTS_OFFICIAL_JAVA_READY", null);
     }
 
-    private long resolveTimestampOffset(long timestampSeconds) {
-        if (timestampSeconds > Long.MAX_VALUE / 1000L) {
-            throw new ProtocolException(
-                    "DTS_OFFICIAL_JAVA_START_TIMESTAMP_INVALID");
+    private void consumeOfficialRecord(DefaultUserRecord record) {
+        if (record == null) {
+            listenerFailure = new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_RECORD_INVALID");
+            return;
         }
-        Map<TopicPartition, Long> query =
-                new HashMap<TopicPartition, Long>();
-        query.put(topicPartition, timestampSeconds * 1000L);
-        return resolveOffsetForTimes(query);
-    }
-
-    private long resolveOffsetForTimes(Map<TopicPartition, Long> query) {
-        org.apache.kafka.clients.consumer.OffsetAndTimestamp match =
-                consumer.offsetsForTimes(query).get(topicPartition);
-        if (match == null) {
-            throw new ProtocolException(
-                    "DTS_KAFKA_START_AT_OUTSIDE_AVAILABLE_RANGE");
+        RecordEnvelope envelope = new RecordEnvelope(record);
+        try {
+            while (!closed && !records.offer(envelope, 200L, TimeUnit.MILLISECONDS)) {
+                // Keep the official listener single-in-flight and stoppable.
+            }
+            if (closed) {
+                envelope.cancel();
+                return;
+            }
+            envelope.awaitDecision();
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            envelope.fail(error);
+            listenerFailure = error;
+        } catch (RuntimeException error) {
+            envelope.fail(error);
+            listenerFailure = error;
+            throw error;
+        } catch (Error error) {
+            envelope.fail(error);
+            listenerFailure = error;
+            throw error;
         }
-        return match.offset();
     }
 
     private void handlePoll(JSONObject command) throws IOException {
@@ -250,17 +268,22 @@ public final class TitDtsTransportBridge {
 
         int seen = 0;
         while (seen < maxMessages && !closed) {
-            ConsumerRecord<byte[], byte[]> record = nextRecord();
-            if (record == null) {
+            RecordEnvelope envelope;
+            if (firstRecord != null) {
+                envelope = firstRecord;
+                firstRecord = null;
+            } else {
+                envelope = awaitRecord(idleTimeoutMs);
+            }
+            if (envelope == null) {
                 break;
             }
-            inFlight = record;
-            emitEvent(record);
+            inFlight = envelope;
+            emitEvent(envelope.record);
 
             JSONObject acknowledgement = readCommand();
             if (acknowledgement == null) {
-                throw new ProtocolException(
-                        "DTS_OFFICIAL_JAVA_ACK_REQUIRED");
+                throw new ProtocolException("DTS_OFFICIAL_JAVA_ACK_REQUIRED");
             }
             String acknowledgementType = requiredString(acknowledgement, TYPE);
             if ("CLOSE".equals(acknowledgementType)) {
@@ -268,10 +291,10 @@ public final class TitDtsTransportBridge {
                 return;
             }
             if (!"DURABLE_ACK".equals(acknowledgementType)) {
-                throw new ProtocolException(
-                        "DTS_OFFICIAL_JAVA_ACK_REQUIRED");
+                throw new ProtocolException("DTS_OFFICIAL_JAVA_ACK_REQUIRED");
             }
-            commitAcknowledgedRecord(acknowledgement);
+            acceptDurableAcknowledgement(envelope, acknowledgement);
+            inFlight = null;
             seen += 1;
         }
 
@@ -282,63 +305,139 @@ public final class TitDtsTransportBridge {
         }
     }
 
-    private ConsumerRecord<byte[], byte[]> nextRecord() {
-        ConsumerRecord<byte[], byte[]> buffered = bufferedRecords.poll();
-        if (buffered != null) {
-            return buffered;
+    private RecordEnvelope awaitRecord(long timeoutMs) {
+        long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        while (!closed) {
+            if (consumeCloseCommandIfAvailable()) {
+                return null;
+            }
+            throwRecordedFailureIfPresent();
+            long remainingNanos = deadline - System.nanoTime();
+            if (remainingNanos <= 0L) {
+                if (timeoutMs == idleTimeoutMs && started) {
+                    return null;
+                }
+                throw new TransportTimeoutException();
+            }
+            try {
+                RecordEnvelope envelope = records.poll(
+                        Math.min(remainingNanos,
+                                TimeUnit.MILLISECONDS.toNanos(200L)),
+                        TimeUnit.NANOSECONDS);
+                if (envelope != null) {
+                    return envelope;
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new TransportTimeoutException();
+            }
         }
-        ConsumerRecords<byte[], byte[]> records = consumer.poll(idleTimeoutMs);
-        for (ConsumerRecord<byte[], byte[]> record : records) {
-            bufferedRecords.add(record);
-        }
-        return bufferedRecords.poll();
+        return null;
     }
 
-    private void emitEvent(ConsumerRecord<byte[], byte[]> record) {
-        byte[] value = record.value();
-        if (value == null || value.length == 0) {
+    private boolean consumeCloseCommandIfAvailable() {
+        try {
+            if (!input.ready()) {
+                return false;
+            }
+            JSONObject command = readCommand();
+            if (command == null) {
+                closed = true;
+                closeConsumer();
+                return true;
+            }
+            if (!"CLOSE".equals(requiredString(command, TYPE))) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_COMMAND_UNEXPECTED");
+            }
+            handleClose();
+            return true;
+        } catch (IOException error) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
+        }
+    }
+
+    private void emitEvent(DefaultUserRecord userRecord) {
+        TopicPartition topicPartition = requiredTopicPartition(userRecord);
+        long offset = requiredRecordOffset(userRecord);
+        Record avroRecord = userRecord.getAvroRecord();
+        if (avroRecord == null) {
             throw new ProtocolException(
                     "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID");
         }
+
+        byte[] payload;
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            SpecificDatumWriter<Record> writer =
+                    new SpecificDatumWriter<Record>(Record.class);
+            BinaryEncoder encoder = EncoderFactory.get()
+                    .directBinaryEncoder(bytes, null);
+            writer.write(avroRecord, encoder);
+            encoder.flush();
+            payload = bytes.toByteArray();
+        } catch (IOException error) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED");
+        }
+        if (payload.length == 0) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID");
+        }
+
         JSONObject event = message("EVENT");
-        event.put("topic", record.topic());
-        event.put("partition", record.partition());
-        event.put("offset", record.offset());
-        event.put(
-                "payload_base64",
-                Base64.getEncoder().encodeToString(value));
+        event.put("topic", topicPartition.topic());
+        event.put("partition", topicPartition.partition());
+        event.put("offset", offset);
+        event.put("source_timestamp", requiredSourceTimestamp(userRecord));
+        event.put("payload_base64", Base64.getEncoder().encodeToString(payload));
         emit(event);
     }
 
-    private void commitAcknowledgedRecord(JSONObject acknowledgement) {
-        ConsumerRecord<byte[], byte[]> record = inFlight;
-        if (record == null) {
-            throw new ProtocolException(
-                    "DTS_OFFICIAL_JAVA_ACK_WITHOUT_EVENT");
-        }
+    private void acceptDurableAcknowledgement(
+            RecordEnvelope envelope, JSONObject acknowledgement) {
+        DefaultUserRecord record = envelope.record;
+        long recordOffset = requiredRecordOffset(record);
         long acknowledgedOffset = requiredNonNegativeLong(
                 acknowledgement, "offset");
         long nextOffset = requiredNonNegativeLong(
                 acknowledgement, "next_offset");
         long sourceTimestamp = requiredNonNegativeLong(
                 acknowledgement, "source_timestamp");
-        if (acknowledgedOffset != record.offset()
-                || record.offset() == Long.MAX_VALUE
-                || nextOffset != record.offset() + 1L) {
+        String action = requiredString(acknowledgement, "checkpoint_action");
+        if (acknowledgedOffset != recordOffset
+                || sourceTimestamp != requiredSourceTimestamp(record)) {
             throw new ProtocolException(
                     "DTS_OFFICIAL_JAVA_ACK_OFFSET_MISMATCH");
         }
+        if (ACTION_ADVANCE.equals(action)) {
+            if (recordOffset == Long.MAX_VALUE
+                    || nextOffset != recordOffset + 1L) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_ACK_OFFSET_MISMATCH");
+            }
+        } else if (ACTION_REPLAY.equals(action)) {
+            if (nextOffset <= recordOffset) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_ACK_OFFSET_MISMATCH");
+            }
+        } else {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_CHECKPOINT_ACTION_INVALID");
+        }
 
-        OffsetAndMetadata offsetAndMetadata = new OffsetAndMetadata(
-                nextOffset, Long.toString(sourceTimestamp));
-        consumer.commitSync(Collections.singletonMap(
-                topicPartition, offsetAndMetadata));
+        envelope.decide(action, sourceTimestamp);
+        envelope.awaitApplied();
+        throwFailure(envelope.failure);
+        throwRecordedFailureIfPresent();
 
-        JSONObject committed = message("COMMITTED");
-        committed.put("offset", acknowledgedOffset);
-        committed.put("next_offset", nextOffset);
-        emit(committed);
-        inFlight = null;
+        JSONObject accepted = message("SDK_CHECKPOINT_ACCEPTED");
+        accepted.put("offset", acknowledgedOffset);
+        accepted.put("next_offset", nextOffset);
+        accepted.put("checkpoint_action", action);
+        emit(accepted);
     }
 
     private void handleClose() {
@@ -346,13 +445,15 @@ public final class TitDtsTransportBridge {
             return;
         }
         closed = true;
+        cancelPendingRecords();
         closeConsumer();
         emit(message("CLOSED"));
         safeLog("DTS_OFFICIAL_JAVA_CLOSED", null);
     }
 
     private void closeConsumer() {
-        KafkaConsumer<byte[], byte[]> current = consumer;
+        cancelPendingRecords();
+        DefaultDTSConsumer current = consumer;
         consumer = null;
         if (current != null) {
             try {
@@ -361,15 +462,104 @@ public final class TitDtsTransportBridge {
                 safeLog("DTS_OFFICIAL_JAVA_CLOSE_FAILED", error);
             }
         }
-        bufferedRecords.clear();
+        Thread currentThread = consumerThread;
+        consumerThread = null;
+        if (currentThread != null && currentThread != Thread.currentThread()) {
+            currentThread.interrupt();
+            try {
+                currentThread.join(3000L);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+            if (currentThread.isAlive()) {
+                safeLog("DTS_OFFICIAL_JAVA_CLOSE_INCOMPLETE", null);
+            }
+        }
+        records.clear();
+        firstRecord = null;
         inFlight = null;
     }
 
+    private void cancelPendingRecords() {
+        RecordEnvelope current = inFlight;
+        if (current != null) {
+            current.cancel();
+        }
+        current = firstRecord;
+        if (current != null) {
+            current.cancel();
+        }
+        for (RecordEnvelope envelope : records) {
+            envelope.cancel();
+        }
+    }
+
     private void requireStarted() {
-        if (!started || consumer == null || topicPartition == null || closed) {
+        if (!started || consumer == null || closed) {
             throw new ProtocolException(
                     "DTS_OFFICIAL_JAVA_TRANSPORT_NOT_READY");
         }
+        throwRecordedFailureIfPresent();
+    }
+
+    private void throwRecordedFailureIfPresent() {
+        Throwable failure = listenerFailure;
+        if (failure == null) {
+            failure = sdkFailure;
+        }
+        throwFailure(failure);
+    }
+
+    private static void throwFailure(Throwable failure) {
+        if (failure == null) {
+            return;
+        }
+        Throwable current = failure;
+        for (int depth = 0; depth < 8 && current != null; depth += 1) {
+            if (current instanceof AuthenticationException) {
+                throw (AuthenticationException) current;
+            }
+            if (current instanceof AuthorizationException) {
+                throw (AuthorizationException) current;
+            }
+            if (current instanceof RetriableException) {
+                throw (RetriableException) current;
+            }
+            current = current.getCause();
+        }
+        if (failure instanceof ProtocolException) {
+            throw (ProtocolException) failure;
+        }
+        throw new SdkFailureException(failure);
+    }
+
+    private static TopicPartition requiredTopicPartition(
+            DefaultUserRecord record) {
+        TopicPartition value = record.getTopicPartition();
+        if (value == null || value.topic() == null || value.topic().isEmpty()
+                || value.partition() < 0) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_RECORD_INVALID");
+        }
+        return value;
+    }
+
+    private static long requiredRecordOffset(DefaultUserRecord record) {
+        long value = record.getOffset();
+        if (value < 0L) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_RECORD_INVALID");
+        }
+        return value;
+    }
+
+    private static long requiredSourceTimestamp(DefaultUserRecord record) {
+        long value = record.getSourceTimestamp();
+        if (value < 0L) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_RECORD_INVALID");
+        }
+        return value;
     }
 
     private JSONObject readCommand() throws IOException {
@@ -450,7 +640,7 @@ public final class TitDtsTransportBridge {
                     "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
         }
         long result = ((Number) value).longValue();
-        if (result < 0) {
+        if (result < 0L) {
             throw new ProtocolException(
                     "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
         }
@@ -473,17 +663,6 @@ public final class TitDtsTransportBridge {
                     "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
         }
         return value;
-    }
-
-    private static long onlyOffset(
-            Map<TopicPartition, Long> offsets,
-            TopicPartition partition,
-            String errorCode) {
-        Long value = offsets.get(partition);
-        if (value == null || value.longValue() < 0L) {
-            throw new ProtocolException(errorCode);
-        }
-        return value.longValue();
     }
 
     private static String join(List<String> values) {
@@ -518,7 +697,7 @@ public final class TitDtsTransportBridge {
         try {
             emit(error);
         } catch (Throwable ignored) {
-            // The parent process will classify EOF if stdout is already gone.
+            // The parent process classifies EOF if stdout is already gone.
         }
     }
 
@@ -538,6 +717,66 @@ public final class TitDtsTransportBridge {
         System.err.println(code + " error_type=" + errorType);
     }
 
+    private static final class RecordEnvelope {
+        private final DefaultUserRecord record;
+        private final CountDownLatch decisionReady = new CountDownLatch(1);
+        private final CountDownLatch decisionApplied = new CountDownLatch(1);
+        private volatile String action;
+        private volatile long sourceTimestamp;
+        private volatile Throwable failure;
+
+        RecordEnvelope(DefaultUserRecord record) {
+            this.record = record;
+        }
+
+        void decide(String requestedAction, long requestedSourceTimestamp) {
+            action = requestedAction;
+            sourceTimestamp = requestedSourceTimestamp;
+            decisionReady.countDown();
+        }
+
+        void awaitDecision() throws InterruptedException {
+            decisionReady.await();
+            try {
+                if (ACTION_ADVANCE.equals(action)) {
+                    record.commit(Long.toString(sourceTimestamp));
+                }
+            } catch (RuntimeException error) {
+                failure = error;
+                throw error;
+            } catch (Error error) {
+                failure = error;
+                throw error;
+            } finally {
+                decisionApplied.countDown();
+            }
+        }
+
+        void awaitApplied() {
+            try {
+                if (!decisionApplied.await(
+                        SDK_START_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    throw new TransportTimeoutException();
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new TransportTimeoutException();
+            }
+        }
+
+        void cancel() {
+            action = "CLOSE";
+            decisionReady.countDown();
+            decisionApplied.countDown();
+        }
+
+        void fail(Throwable error) {
+            failure = error;
+            decisionReady.countDown();
+            decisionApplied.countDown();
+        }
+    }
+
     private static final class ProtocolException extends RuntimeException {
         private static final long serialVersionUID = 1L;
         private final String errorCode;
@@ -548,4 +787,29 @@ public final class TitDtsTransportBridge {
         }
     }
 
+    private static final class TransportTimeoutException
+            extends RetriableException {
+        private static final long serialVersionUID = 1L;
+
+        TransportTimeoutException() {
+            super("DTS_OFFICIAL_JAVA_TRANSPORT_TIMEOUT");
+        }
+    }
+
+    private static final class SdkFailureException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        SdkFailureException(Throwable cause) {
+            super("DTS_OFFICIAL_JAVA_SDK_FAILED", cause);
+        }
+    }
+
+    private static final class SdkTerminatedException
+            extends RetriableException {
+        private static final long serialVersionUID = 1L;
+
+        SdkTerminatedException() {
+            super("DTS_OFFICIAL_JAVA_SDK_TERMINATED");
+        }
+    }
 }

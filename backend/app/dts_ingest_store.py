@@ -407,6 +407,14 @@ class DtsIngestStoreError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class DtsResumeCheckpoint:
+    """Database-authoritative position used to resume the official DTS SDK."""
+
+    next_offset: int
+    source_timestamp: int
+
+
+@dataclass(frozen=True)
 class DtsIngestDatabaseSettings:
     host: str
     password: str = field(repr=False)
@@ -1647,17 +1655,50 @@ class PostgresDtsEventSink:
         topic: str,
         partition: int,
     ) -> int | None:
+        checkpoint = self.resume_checkpoint(
+            source_region=source_region,
+            topic=topic,
+            partition=partition,
+        )
+        return None if checkpoint is None else checkpoint.next_offset
+
+    def resume_checkpoint(
+        self,
+        *,
+        source_region: str,
+        topic: str,
+        partition: int,
+    ) -> DtsResumeCheckpoint | None:
+        """Read the exact DB offset and its DTS timestamp in one snapshot."""
+
         self._require_source_region(source_region)
         self._validate_runtime()
         table = DtsIngestCheckpointRecord.__table__
         with self.engine.connect() as connection:
-            return connection.execute(
-                select(table.c.next_offset).where(
+            row = connection.execute(
+                select(table.c.next_offset, table.c.source_timestamp).where(
                     table.c.source_region == source_region,
                     table.c.topic == topic,
                     table.c.partition_id == partition,
                 )
-            ).scalar_one_or_none()
+            ).mappings().one_or_none()
+        if row is None:
+            return None
+        next_offset = row.get("next_offset")
+        source_timestamp = row.get("source_timestamp")
+        if (
+            isinstance(next_offset, bool)
+            or not isinstance(next_offset, int)
+            or next_offset < 0
+            or isinstance(source_timestamp, bool)
+            or not isinstance(source_timestamp, int)
+            or source_timestamp < 0
+        ):
+            raise DtsIngestStoreError("DTS_DATABASE_CHECKPOINT_INVALID")
+        return DtsResumeCheckpoint(
+            next_offset=next_offset,
+            source_timestamp=source_timestamp,
+        )
 
     def validate_domestic_student_privacy_state(self) -> None:
         """Refuse startup if an earlier domestic run persisted a raw ID."""
@@ -2192,6 +2233,7 @@ class PostgresDtsEventSink:
 
 __all__ = [
     "DtsIngestDatabaseSettings",
+    "DtsResumeCheckpoint",
     "DtsIngestStoreError",
     "DtsProjectionActivationSettings",
     "EXPECTED_DATABASE",

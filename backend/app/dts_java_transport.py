@@ -3,8 +3,9 @@
 The Java child owns only Kafka/DTS transport.  Python remains the authority
 for decoding, privacy protection, durable PostgreSQL writes, projection and
 health.  The two processes exchange one JSON object per line so the child can
-commit a Kafka offset only after Python confirms that the corresponding
-database transaction is durable.
+accept an official SDK checkpoint only after Python confirms that the
+corresponding database transaction is durable.  This protocol never claims a
+synchronous Kafka broker commit.
 """
 
 from __future__ import annotations
@@ -37,11 +38,12 @@ JAVA_TRANSPORT_COMMAND_ENV = "TIT_DTS_JAVA_TRANSPORT_COMMAND"
 DEFAULT_JAVA_TRANSPORT_COMMAND = (
     "java",
     "-cp",
-    "/deployments/dts-transport.jar:/deployments/dts-diagnose.jar",
+    "/deployments/config:/deployments/dts-transport.jar:"
+    "/deployments/dts-diagnose.jar",
     "com.aliyun.dts.subscribe.clients.TitDtsTransportBridge",
 )
 JAVA_TRANSPORT_START_TIMEOUT_SECONDS = 305.0
-JAVA_TRANSPORT_CLOSE_TIMEOUT_SECONDS = 5.0
+JAVA_TRANSPORT_CLOSE_TIMEOUT_SECONDS = 15.0
 _ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,127}$")
 _EOF = object()
 _JAVA_CHILD_ENV_ALLOWLIST = frozenset(
@@ -121,6 +123,7 @@ class OfficialJavaDtsTransport:
         processor: DtsEventProcessor,
         *,
         resume_offset: int | None,
+        resume_source_timestamp: int | None,
         idle_timeout_ms: int = 10_000,
         command: Sequence[str] | None = None,
         process_factory: Callable[..., Any] = subprocess.Popen,
@@ -133,6 +136,23 @@ class OfficialJavaDtsTransport:
             or resume_offset < 0
         ):
             raise DtsJavaTransportError("DTS_DATABASE_OFFSET_INVALID")
+        if resume_source_timestamp is not None and (
+            isinstance(resume_source_timestamp, bool)
+            or not isinstance(resume_source_timestamp, int)
+            or resume_source_timestamp < 0
+        ):
+            raise DtsJavaTransportError(
+                "DTS_DATABASE_CHECKPOINT_TIMESTAMP_INVALID"
+            )
+        if (resume_offset is None) != (resume_source_timestamp is None):
+            raise DtsJavaTransportError("DTS_DATABASE_CHECKPOINT_INCOMPLETE")
+        if (
+            resume_offset is None
+            and settings.start_timestamp_seconds is None
+        ):
+            raise DtsJavaTransportError(
+                "DTS_OFFICIAL_JAVA_INITIAL_CHECKPOINT_REQUIRED"
+            )
         if (
             isinstance(idle_timeout_ms, bool)
             or not isinstance(idle_timeout_ms, int)
@@ -142,6 +162,7 @@ class OfficialJavaDtsTransport:
         self.settings = settings
         self.processor = processor
         self.resume_offset = resume_offset
+        self.resume_source_timestamp = resume_source_timestamp
         self.idle_timeout_ms = idle_timeout_ms
         self._command = tuple(command or java_transport_command())
         self._process_factory = process_factory
@@ -152,7 +173,6 @@ class OfficialJavaDtsTransport:
         self._reader: threading.Thread | None = None
         self._started = False
         self._closed = False
-        self._initial_offset: int | None = None
         self._expected_offset: int | None = resume_offset
 
     def startup_probe(
@@ -161,7 +181,7 @@ class OfficialJavaDtsTransport:
         phase_callback: Callable[[dict[str, bool | int | str]], None]
         | None = None,
     ) -> dict[str, int | str]:
-        """Start the child and resolve its initial offset without DB writes."""
+        """Start the child and inspect its first official SDK record."""
 
         if self._started:
             raise DtsJavaTransportError(
@@ -187,6 +207,7 @@ class OfficialJavaDtsTransport:
                     "password": self.settings.password,
                     "partition": self.settings.partition,
                     "resume_offset": self.resume_offset,
+                    "resume_source_timestamp": self.resume_source_timestamp,
                     "start_timestamp_seconds": (
                         self.settings.start_timestamp_seconds
                     ),
@@ -197,28 +218,50 @@ class OfficialJavaDtsTransport:
                 expected={"READY"},
                 timeout_seconds=JAVA_TRANSPORT_START_TIMEOUT_SECONDS,
             )
-            initial_offset = self._required_non_negative_int(
+            first_record_offset = self._required_non_negative_int(
                 ready,
-                "initial_offset",
+                "first_record_offset",
             )
+            first_record_source_timestamp = self._required_non_negative_int(
+                ready,
+                "first_record_source_timestamp",
+            )
+            resume_checkpoint_present = ready.get("resume_checkpoint_present")
             if (
-                self.resume_offset is not None
-                and initial_offset != self.resume_offset
+                not isinstance(resume_checkpoint_present, bool)
+                or resume_checkpoint_present != (self.resume_offset is not None)
             ):
                 raise DtsJavaTransportError(
-                    "DTS_OFFICIAL_JAVA_RESUME_OFFSET_MISMATCH"
+                    "DTS_OFFICIAL_JAVA_RESUME_CHECKPOINT_MISMATCH"
                 )
-            committed_present = ready.get("committed_present")
-            if not isinstance(committed_present, bool):
+            if (
+                ready.get("transport") != "official_dts_sdk"
+                or ready.get("subscribe_mode") != "ASSIGN"
+            ):
                 raise DtsJavaTransportError(
-                    "DTS_OFFICIAL_JAVA_TRANSPORT_PROTOCOL_INVALID"
+                    "DTS_OFFICIAL_JAVA_READY_IDENTITY_MISMATCH"
                 )
-            for field in ("begin_offset", "end_offset"):
-                value = ready.get(field)
-                if value is not None:
-                    self._required_non_negative_int(ready, field)
-            self._initial_offset = initial_offset
-            self._expected_offset = initial_offset
+            if self.resume_source_timestamp is not None:
+                checkpoint_timestamp_seconds = self._required_non_negative_int(
+                    ready,
+                    "checkpoint_timestamp_seconds",
+                )
+                if (
+                    checkpoint_timestamp_seconds
+                    != self.resume_source_timestamp
+                ):
+                    raise DtsJavaTransportError(
+                        "DTS_OFFICIAL_JAVA_RESUME_TIMESTAMP_MISMATCH"
+                    )
+            if (
+                self.resume_offset is not None
+                and first_record_offset > self.resume_offset
+            ):
+                raise DtsJavaTransportError(
+                    "DTS_OFFICIAL_JAVA_FIRST_RECORD_AHEAD_OF_DATABASE"
+                )
+            if self.resume_offset is None:
+                self._expected_offset = first_record_offset
             self._started = True
             if phase_callback is not None:
                 phase_callback(
@@ -226,23 +269,31 @@ class OfficialJavaDtsTransport:
                         "phase": "official_java_start",
                         "request_type": "START",
                         "status": "ok",
-                        "transport": "official_java",
-                        "initial_offset": initial_offset,
-                        "committed_present": committed_present,
+                        "transport": "official_dts_sdk",
+                        "first_record_offset": first_record_offset,
+                        "first_record_source_timestamp": (
+                            first_record_source_timestamp
+                        ),
+                        "resume_checkpoint_present": (
+                            resume_checkpoint_present
+                        ),
                     }
                 )
             return {
                 "status": "ok",
-                "transport": "official_java",
+                "transport": "official_dts_sdk",
                 "partition": self.settings.partition,
-                "initial_offset": initial_offset,
+                "first_record_offset": first_record_offset,
+                "first_record_source_timestamp": (
+                    first_record_source_timestamp
+                ),
             }
         except Exception:
             self.close(force=True)
             raise
 
     def run(self, *, max_messages: int, commit_offsets: bool) -> dict[str, int]:
-        """Process one bounded child poll and commit only durable events."""
+        """Process one bounded poll and ACK only database-durable events."""
 
         if not self._started or self._closed:
             raise DtsJavaTransportError(
@@ -260,6 +311,7 @@ class OfficialJavaDtsTransport:
             "ignored": 0,
             "duplicates": 0,
             "committed": 0,
+            "sdk_checkpoint_accepted": 0,
         }
         self._send({"type": "POLL", "max_messages": max_messages})
         poll_timeout = max(
@@ -280,13 +332,16 @@ class OfficialJavaDtsTransport:
                 return counters
 
             event = self._parse_event(message)
-            if (
-                self._expected_offset is not None
-                and event.offset != self._expected_offset
-            ):
+            expected_offset = self._expected_offset
+            if expected_offset is None:  # pragma: no cover - READY sets this
+                raise DtsJavaTransportError(
+                    "DTS_OFFICIAL_JAVA_TRANSPORT_PROTOCOL_INVALID"
+                )
+            if event.offset > expected_offset:
                 raise DtsJavaTransportError(
                     "DTS_OFFICIAL_JAVA_EVENT_OFFSET_NOT_CONTIGUOUS"
                 )
+            replay = event.offset < expected_offset
             record = decode_dts_avro(event.payload)
             change_event = build_change_event(
                 record,
@@ -302,6 +357,10 @@ class OfficialJavaDtsTransport:
             # PostgresDtsEventSink.apply() commits its transaction before this
             # call returns.  Do not acknowledge Java before that boundary.
             result = self.processor.process(change_event)
+            if replay and result.status != "DUPLICATE":
+                raise DtsJavaTransportError(
+                    "DTS_OFFICIAL_JAVA_REPLAY_NOT_DURABLE"
+                )
             counters["seen"] += 1
             if result.status == "PROCESSED":
                 counters["processed"] += 1
@@ -310,33 +369,37 @@ class OfficialJavaDtsTransport:
             else:
                 counters["ignored"] += 1
 
-            next_offset = event.offset + 1
+            checkpoint_action = "REPLAY" if replay else "ADVANCE"
+            next_offset = expected_offset if replay else event.offset + 1
             self._send(
                 {
                     "type": "DURABLE_ACK",
                     "offset": event.offset,
                     "next_offset": next_offset,
                     "source_timestamp": change_event.source_timestamp,
+                    "checkpoint_action": checkpoint_action,
                 }
             )
-            committed = self._receive(
-                expected={"COMMITTED"},
+            accepted = self._receive(
+                expected={"SDK_CHECKPOINT_ACCEPTED"},
                 timeout_seconds=JAVA_TRANSPORT_START_TIMEOUT_SECONDS,
             )
             if (
-                self._required_non_negative_int(committed, "offset")
+                self._required_non_negative_int(accepted, "offset")
                 != event.offset
                 or self._required_non_negative_int(
-                    committed,
+                    accepted,
                     "next_offset",
                 )
                 != next_offset
+                or accepted.get("checkpoint_action") != checkpoint_action
             ):
                 raise DtsJavaTransportError(
-                    "DTS_OFFICIAL_JAVA_COMMIT_MISMATCH"
+                    "DTS_OFFICIAL_JAVA_CHECKPOINT_ACK_MISMATCH"
                 )
-            counters["committed"] += 1
-            self._expected_offset = next_offset
+            if not replay:
+                counters["sdk_checkpoint_accepted"] += 1
+                self._expected_offset = next_offset
 
     def close(self, *, force: bool = False) -> None:
         """Close the protocol and reap the child without exposing stderr."""

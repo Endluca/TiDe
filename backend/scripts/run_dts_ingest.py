@@ -395,11 +395,29 @@ def _start_ingest_once(
             stream_settings.start_timestamp_seconds
         )
         # These checks create no source rows and advance no offsets.
-        checkpoint = sink.resume_offset(
-            source_region=stream_settings.source_region,
-            topic=stream_settings.topic,
-            partition=stream_settings.partition,
-        )
+        resume_source_timestamp: int | None = None
+        if contract.transport_mode == "official_java":
+            resume_checkpoint = sink.resume_checkpoint(
+                source_region=stream_settings.source_region,
+                topic=stream_settings.topic,
+                partition=stream_settings.partition,
+            )
+            checkpoint = (
+                None
+                if resume_checkpoint is None
+                else resume_checkpoint.next_offset
+            )
+            resume_source_timestamp = (
+                None
+                if resume_checkpoint is None
+                else resume_checkpoint.source_timestamp
+            )
+        else:
+            checkpoint = sink.resume_offset(
+                source_region=stream_settings.source_region,
+                topic=stream_settings.topic,
+                partition=stream_settings.partition,
+            )
         sink.validate_domestic_student_privacy_state()
         if _stop_requested:
             return None
@@ -408,6 +426,7 @@ def _start_ingest_once(
                 stream_settings,
                 processor,
                 resume_offset=checkpoint,
+                resume_source_timestamp=resume_source_timestamp,
                 idle_timeout_ms=args.idle_timeout_ms,
                 stop_requested=lambda: _stop_requested,
             )

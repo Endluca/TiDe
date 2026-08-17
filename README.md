@@ -170,14 +170,16 @@ Pod 设置为 `2` 个或更多副本；海外、国内 DTS 分别使用独立 Ga
 `tide_system_test` PRE 专线例外可由国内、海外 DTS 复用既有两项覆盖，不能把通道隔离写成传输加密。
 模块选择是项目构建配置，
 不是运行时环境变量，也不会自动把项目放到正确数据中心。
-诊断模块内置 Kafka Java Client 1.0.0，完整输出 SDK/Kafka 协议日志和解码记录；它会推进所选
+诊断模块内置 DTS SDK 1.4.0 与 Kafka Java Client 1.0.0，完整输出 SDK/Kafka 协议日志和解码记录；它会推进所选
 消费组位点。该路径已在国内 PRE 实际读取并解码 DTS 记录，因此正式 `dts-ingest` 复用同一
-官方 Kafka 1.0 传输栈，但不复用会打印业务数据、异步推进位点的诊断 Main。使用前必须留底数据库 checkpoint、停止正式消费者，出现首条 HEARTBEAT 或
+`DefaultDTSConsumer → KafkaRecordFetcher → UserRecordGenerator → EtlRecordProcessor` 官方主流程，
+但用受控 listener 取代会打印业务数据的诊断 Main。使用前必须留底数据库 checkpoint、停止正式消费者，出现首条 HEARTBEAT 或
 明确错误后立即停止并切回 `dts-ingest`。完整步骤、JAR 来源与 SHA-256 见
 [`gaea/README.md`](gaea/README.md) 和 [`gaea/dts-diagnose/SOURCE.md`](gaea/dts-diagnose/SOURCE.md)。
-每个 DTS 进程启动时先只读校验目标库，再由官方 Java transport 校验 Kafka 的
-SASL/topic/partition/消费组位点/最早与末端 offset，全部通过后才写 readiness；启动阶段不读取
-消息、不写目标库、不提交 offset。国内进程在 Kafka 启动门禁成功后、readiness 之前幂等登记一条只含契约版本和 HMAC
+每个 DTS 进程启动时先只读校验目标库，再启动官方 SDK 主流程；首条官方 `UserRecord` 到达受控
+listener 后才证明 Kafka 消费与 DTS 解码路径已建立。该记录仍须先经 Python 解码、国内 HMAC 和
+PostgreSQL 单事务持久化，Java 收到 durable ACK 后才调用官方 `DefaultUserRecord.commit()`。国内进程
+在该启动门禁成功后、readiness 之前幂等登记一条只含契约版本和 HMAC
 密钥 fingerprint 的受限状态行；该行不含密钥或学生标识。TCP 失败输出 `DTS_BROKER_TCP_*`
 稳定错误码仍由保留的 `kafka_python` 回退模式提供；正式 Gaea 默认的 Java transport 会把官方
 Kafka 网络时间线写到 stderr，stdout 只用于 Java/Python NDJSON 协议。Java 启动或运行错误只向
@@ -212,7 +214,9 @@ Broker API 2.7；实现因此让每个 fresh consumer 都重新协商。参见[�
 `remaining_probe_budget_ms` 以及两个 `effective_*` 值；超时失败时动态值安全收敛为 `0`。
 这只是 kafka-python 阻塞 SASL/DNS 调用遵守超时的协作式预算，不是可强制终止进程的绝对
 wall-clock 上限；这两个变量不传给官方 Java transport。Java 1.0 使用官方客户端自身的请求
-超时和协议协商，数据库 durable ACK 之后通过同步 commit 推进位点。
+超时和协议协商。数据库 durable ACK 之后只表示官方 SDK 已接受 checkpoint 请求；SDK 后续异步
+推进 Kafka 位点且没有同步成功回执，因此 PostgreSQL 事件账本与 `next_offset + source_timestamp`
+始终是恢复权威，不能把 `SDK_CHECKPOINT_ACCEPTED` 写成 broker 已同步提交。
 `--watch` 容器对明确白名单内的启动暂态网络、Kafka/数据库连接和激活依赖失败，以及稳态
 `official_java` 的暂态断线/超时，都会关闭当轮资源并使用全新连接，
 默认按 `15/30/60` 秒有界退避重跑完整启动门禁，不再靠进程退出制造 CrashLoop；重试期间不写 readiness 或

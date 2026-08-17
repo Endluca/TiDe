@@ -17,40 +17,70 @@ BRIDGE = (
 LOG4J = ROOT / "gaea" / "dts-ingest" / "log4j-bridge.properties"
 
 
-def test_official_java_bridge_preserves_database_before_kafka_commit() -> None:
+def test_official_java_bridge_uses_the_vendor_sdk_main_path() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
 
-    assert "Util.mergeSourceKafkaProperties" in source
-    assert "ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, \"false\"" in source
-    assert "ConsumerConfig.MAX_POLL_RECORDS_CONFIG, \"1\"" in source
-    assert "ConsumerConfig.CLIENT_ID_CONFIG" not in source
+    required = (
+        "new ConsumerContext(",
+        "ConsumerSubscribeMode.ASSIGN",
+        "context.setForceUseCheckpoint(true)",
+        "context.setUseLocalCheckpointStore(false)",
+        "context.setCheckpointCommitInterval(0L)",
+        "new DefaultDTSConsumer(context)",
+        "created.addRecordListeners(listeners)",
+        "created.start()",
+        "consume(DefaultUserRecord record)",
+        "userRecord.getAvroRecord()",
+        "new SpecificDatumWriter<Record>(Record.class)",
+    )
+    for marker in required:
+        assert marker in source
+
+    forbidden = (
+        "KafkaConsumer<",
+        "ConsumerRecord<",
+        "consumer.partitionsFor",
+        "consumer.poll",
+        "consumer.committed",
+        "consumer.offsetsForTimes",
+        "consumer.commitSync",
+        "OffsetAndMetadata",
+        "Util.mergeSourceKafkaProperties",
+    )
+    for marker in forbidden:
+        assert marker not in source
+
+
+def test_official_java_bridge_preserves_database_before_sdk_checkpoint() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+
     assert '"payload_base64"' in source
     assert '"DURABLE_ACK"' in source
-    assert "nextOffset != record.offset() + 1L" in source
-    assert (
-        "new OffsetAndMetadata(\n"
-        "                nextOffset, Long.toString(sourceTimestamp))"
-    ) in source
-    assert "consumer.commitSync" in source
-    assert source.index('"DURABLE_ACK"') < source.index("consumer.commitSync")
-    assert source.index("consumer.commitSync") < source.index('message("COMMITTED")')
-    assert "else if (committed != null)" not in source
-    assert "DTS_KAFKA_OFFSET_AHEAD_OF_DATABASE" in source
-    assert source.index("if (resumeOffset != null)") < source.index(
-        "else if (startTimestampSeconds != null)"
+    assert 'message("SDK_CHECKPOINT_ACCEPTED")' in source
+    assert "record.commit(Long.toString(sourceTimestamp))" in source
+    assert source.index('"DURABLE_ACK"') < source.index(
+        "record.commit(Long.toString(sourceTimestamp))"
     )
+    advance_branch = source[source.index("void awaitDecision()") :]
+    assert (
+        "if (ACTION_ADVANCE.equals(action)) {\n"
+        "                    record.commit(Long.toString(sourceTimestamp));"
+    ) in advance_branch
+    assert "ACTION_REPLAY" in source
+    assert 'message("COMMITTED")' not in source
 
 
-def test_official_java_bridge_fails_when_start_time_has_no_offset() -> None:
+def test_official_java_bridge_resumes_from_database_timestamp_and_offset() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
 
-    assert "DTS_KAFKA_START_AT_OUTSIDE_AVAILABLE_RANGE" in source
-    assert "match == null ? endOffset" not in source
+    assert 'optionalNonNegativeLong(command, "resume_offset")' in source
     assert (
-        'if (match == null) {\n'
-        '            throw new ProtocolException(\n'
-        '                    "DTS_KAFKA_START_AT_OUTSIDE_AVAILABLE_RANGE");'
+        'optionalNonNegativeLong(\n'
+        '                command, "resume_source_timestamp")'
     ) in source
+    assert 'checkpointTimestampSeconds + "@" + resumeOffset.longValue()' in source
+    assert "resumeCheckpointPresent" in source
+    assert 'ready.put("first_record_offset", firstOffset)' in source
 
 
 def test_official_java_bridge_keeps_logs_off_protocol_stdout() -> None:
@@ -69,3 +99,21 @@ def test_official_java_bridge_keeps_logs_off_protocol_stdout() -> None:
         "org.apache.kafka.common.security.authenticator."
         "SaslClientAuthenticator=TRACE"
     ) in log4j
+
+
+def test_official_java_bridge_never_reports_idle_after_sdk_termination() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+
+    assert (
+        "created.start();\n"
+        "                    if (!closed) {\n"
+        "                        sdkFailure = new SdkTerminatedException();"
+    ) in source
+    assert "throwRecordedFailureIfPresent();" in source
+    assert "consumeCloseCommandIfAvailable()" in source
+    assert '"CLOSE".equals(requiredString(command, TYPE))' in source
+    assert "currentThread.join(3000L)" in source
+    assert (
+        "private static final class SdkTerminatedException\n"
+        "            extends RetriableException"
+    ) in source

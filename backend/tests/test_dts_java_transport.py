@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import queue
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -55,8 +56,8 @@ class _FakeProcess:
         self,
         *,
         event_payload: bytes = b"avro",
-        ready_initial_offset: int = 42,
-        fail_processor: bool = False,
+        first_record_offset: int = 42,
+        first_record_source_timestamp: int = 1786550400,
     ) -> None:
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.stdout = _FakeStdout(self.lines)
@@ -64,8 +65,8 @@ class _FakeProcess:
         self.returncode: int | None = None
         self.commands: list[dict[str, Any]] = []
         self.event_payload = event_payload
-        self.ready_initial_offset = ready_initial_offset
-        self.fail_processor = fail_processor
+        self.first_record_offset = first_record_offset
+        self.first_record_source_timestamp = first_record_source_timestamp
         self.terminated = False
         self.spawn_kwargs: dict[str, object] = {}
 
@@ -73,13 +74,24 @@ class _FakeProcess:
         self.commands.append(message)
         message_type = message["type"]
         if message_type == "START":
+            checkpoint_timestamp = (
+                message["resume_source_timestamp"]
+                if message["resume_source_timestamp"] is not None
+                else message["start_timestamp_seconds"]
+            )
             self.emit(
                 {
                     "type": "READY",
-                    "initial_offset": self.ready_initial_offset,
-                    "committed_present": True,
-                    "begin_offset": 0,
-                    "end_offset": 100,
+                    "first_record_offset": self.first_record_offset,
+                    "first_record_source_timestamp": (
+                        self.first_record_source_timestamp
+                    ),
+                    "resume_checkpoint_present": (
+                        message["resume_offset"] is not None
+                    ),
+                    "checkpoint_timestamp_seconds": checkpoint_timestamp,
+                    "transport": "official_dts_sdk",
+                    "subscribe_mode": "ASSIGN",
                 }
             )
         elif message_type == "POLL":
@@ -88,7 +100,7 @@ class _FakeProcess:
                     "type": "EVENT",
                     "topic": "ovs-topic",
                     "partition": 0,
-                    "offset": self.ready_initial_offset,
+                    "offset": self.first_record_offset,
                     "payload_base64": base64.b64encode(
                         self.event_payload
                     ).decode("ascii"),
@@ -97,9 +109,10 @@ class _FakeProcess:
         elif message_type == "DURABLE_ACK":
             self.emit(
                 {
-                    "type": "COMMITTED",
+                    "type": "SDK_CHECKPOINT_ACCEPTED",
                     "offset": message["offset"],
                     "next_offset": message["next_offset"],
+                    "checkpoint_action": message["checkpoint_action"],
                 }
             )
             self.emit({"type": "BATCH_COMPLETE", "seen": 1})
@@ -140,6 +153,7 @@ def _settings() -> DtsConsumerSettings:
         password="runtime-secret",
         partition=0,
         execution_region="sg",
+        start_timestamp_seconds=1786523400,
     )
 
 
@@ -154,6 +168,13 @@ def _factory(process: _FakeProcess):
 
 
 def test_command_is_injectable_without_credentials() -> None:
+    assert java_transport_command({}) == (
+        "java",
+        "-cp",
+        "/deployments/config:/deployments/dts-transport.jar:"
+        "/deployments/dts-diagnose.jar",
+        "com.aliyun.dts.subscribe.clients.TitDtsTransportBridge",
+    )
     assert java_transport_command(
         {"TIT_DTS_JAVA_TRANSPORT_COMMAND": "java -jar bridge.jar"}
     ) == ("java", "-jar", "bridge.jar")
@@ -188,7 +209,7 @@ def test_java_child_environment_excludes_database_and_hmac_secrets() -> None:
     }
 
 
-def test_database_write_precedes_ack_and_commit_confirmation(
+def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     process = _FakeProcess()
@@ -237,6 +258,7 @@ def test_database_write_precedes_ack_and_commit_confirmation(
         _settings(),
         Processor(),  # type: ignore[arg-type]
         resume_offset=42,
+        resume_source_timestamp=1786550300,
         command=("java", "bridge"),
         process_factory=_factory(process),
     )
@@ -247,16 +269,18 @@ def test_database_write_precedes_ack_and_commit_confirmation(
 
     assert probe == {
         "status": "ok",
-        "transport": "official_java",
+        "transport": "official_dts_sdk",
         "partition": 0,
-        "initial_offset": 42,
+        "first_record_offset": 42,
+        "first_record_source_timestamp": 1786550400,
     }
     assert result == {
         "seen": 1,
         "processed": 1,
         "ignored": 0,
         "duplicates": 0,
-        "committed": 1,
+        "committed": 0,
+        "sdk_checkpoint_accepted": 1,
     }
     assert observed_commands_at_process == [["START", "POLL"]]
     assert [item["type"] for item in process.commands] == [
@@ -266,6 +290,7 @@ def test_database_write_precedes_ack_and_commit_confirmation(
         "CLOSE",
     ]
     assert process.commands[0]["resume_offset"] == 42
+    assert process.commands[0]["resume_source_timestamp"] == 1786550300
     assert process.commands[0]["password"] == "runtime-secret"
     child_env = process.spawn_kwargs["env"]
     assert isinstance(child_env, dict)
@@ -275,6 +300,7 @@ def test_database_write_precedes_ack_and_commit_confirmation(
         "offset": 42,
         "next_offset": 43,
         "source_timestamp": 1786550400,
+        "checkpoint_action": "ADVANCE",
     }
 
 
@@ -304,6 +330,7 @@ def test_failed_database_transaction_never_acknowledges_java(
         _settings(),
         Processor(),  # type: ignore[arg-type]
         resume_offset=42,
+        resume_source_timestamp=1786550300,
         command=("java", "bridge"),
         process_factory=_factory(process),
     )
@@ -316,20 +343,120 @@ def test_failed_database_transaction_never_acknowledges_java(
     assert [item["type"] for item in process.commands] == ["START", "POLL"]
 
 
-def test_database_resume_offset_is_fail_closed() -> None:
-    process = _FakeProcess(ready_initial_offset=41)
+def test_first_official_record_ahead_of_database_is_fail_closed() -> None:
+    process = _FakeProcess(first_record_offset=43)
     transport = OfficialJavaDtsTransport(
         _settings(),
         SimpleNamespace(),  # type: ignore[arg-type]
         resume_offset=42,
+        resume_source_timestamp=1786550300,
         command=("java", "bridge"),
         process_factory=_factory(process),
     )
 
     with pytest.raises(
         DtsJavaTransportError,
-        match="^DTS_OFFICIAL_JAVA_RESUME_OFFSET_MISMATCH$",
+        match="^DTS_OFFICIAL_JAVA_FIRST_RECORD_AHEAD_OF_DATABASE$",
     ):
         transport.startup_probe()
 
     assert process.terminated is True
+
+
+def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeProcess(first_record_offset=41)
+
+    class Processor:
+        def process(self, event: object) -> object:
+            del event
+            return SimpleNamespace(status="DUPLICATE")
+
+    change_event = SimpleNamespace(source_timestamp=1786550400)
+    monkeypatch.setattr(dts_java_transport, "decode_dts_avro", lambda _: {})
+    monkeypatch.setattr(
+        dts_java_transport,
+        "build_change_event",
+        lambda *_args, **_kwargs: change_event,
+    )
+    monkeypatch.setattr(
+        dts_java_transport,
+        "protect_domestic_student_ids",
+        lambda event, _settings: event,
+    )
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+
+    transport.startup_probe()
+    result = transport.run(max_messages=1, commit_offsets=True)
+    transport.close()
+
+    assert result == {
+        "seen": 1,
+        "processed": 0,
+        "ignored": 0,
+        "duplicates": 1,
+        "committed": 0,
+        "sdk_checkpoint_accepted": 0,
+    }
+    assert process.commands[2] == {
+        "type": "DURABLE_ACK",
+        "offset": 41,
+        "next_offset": 42,
+        "source_timestamp": 1786550400,
+        "checkpoint_action": "REPLAY",
+    }
+
+
+def test_first_official_record_initializes_empty_database_checkpoint() -> None:
+    process = _FakeProcess(first_record_offset=17)
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        SimpleNamespace(),  # type: ignore[arg-type]
+        resume_offset=None,
+        resume_source_timestamp=None,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+
+    probe = transport.startup_probe()
+    transport.close()
+
+    assert probe["first_record_offset"] == 17
+    assert process.commands[0]["resume_offset"] is None
+    assert process.commands[0]["resume_source_timestamp"] is None
+
+
+def test_resume_checkpoint_requires_offset_and_timestamp_together() -> None:
+    with pytest.raises(
+        DtsJavaTransportError,
+        match="^DTS_DATABASE_CHECKPOINT_INCOMPLETE$",
+    ):
+        OfficialJavaDtsTransport(
+            _settings(),
+            SimpleNamespace(),  # type: ignore[arg-type]
+            resume_offset=42,
+            resume_source_timestamp=None,
+        )
+
+
+def test_empty_database_requires_a_configured_start_timestamp() -> None:
+    settings = replace(_settings(), start_timestamp_seconds=None)
+
+    with pytest.raises(
+        DtsJavaTransportError,
+        match="^DTS_OFFICIAL_JAVA_INITIAL_CHECKPOINT_REQUIRED$",
+    ):
+        OfficialJavaDtsTransport(
+            settings,
+            SimpleNamespace(),  # type: ignore[arg-type]
+            resume_offset=None,
+            resume_source_timestamp=None,
+        )

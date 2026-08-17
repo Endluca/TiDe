@@ -9,6 +9,7 @@ from sqlalchemy.dialects import postgresql
 from app.dts_ingest_store import (
     APPROVED_INSECURE_PRE_HOST,
     DtsIngestDatabaseSettings,
+    DtsResumeCheckpoint,
     DtsIngestStoreError,
     DtsProjectionActivationSettings,
     EXPECTED_DTS_STATE_COLUMNS,
@@ -1945,6 +1946,55 @@ def test_duplicate_offset_keeps_mirror_dirty_queue_and_checkpoint_unchanged() ->
 
     assert duplicate is True
     assert len(connection.statements) == 4
+
+
+def test_resume_checkpoint_reads_offset_and_source_timestamp_atomically() -> None:
+    connection = _ContextConnection(
+        [
+            _Result(
+                mapping={
+                    "next_offset": 43,
+                    "source_timestamp": 1786342560,
+                }
+            )
+        ]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+    sink.source_region = "dom"
+    sink._validated = True
+    sink.engine = _ActivationEngine(connection)
+
+    checkpoint = sink.resume_checkpoint(
+        source_region="dom",
+        topic="dom-topic",
+        partition=0,
+    )
+
+    assert checkpoint == DtsResumeCheckpoint(
+        next_offset=43,
+        source_timestamp=1786342560,
+    )
+    assert len(connection.statements) == 1
+
+
+def test_resume_checkpoint_rejects_invalid_database_state() -> None:
+    connection = _ContextConnection(
+        [_Result(mapping={"next_offset": 43, "source_timestamp": None})]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+    sink.source_region = "dom"
+    sink._validated = True
+    sink.engine = _ActivationEngine(connection)
+
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="^DTS_DATABASE_CHECKPOINT_INVALID$",
+    ):
+        sink.resume_checkpoint(
+            source_region="dom",
+            topic="dom-topic",
+            partition=0,
+        )
 
 
 def test_transaction_rejects_a_new_noncontiguous_offset() -> None:

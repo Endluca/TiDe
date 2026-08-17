@@ -1027,9 +1027,12 @@ def test_official_java_startup_receives_database_checkpoint(
     class Sink:
         engine = object()
 
-        def resume_offset(self, **kwargs: object) -> int:
+        def resume_checkpoint(self, **kwargs: object) -> object:
             events.append(("resume", kwargs))
-            return 42
+            return SimpleNamespace(
+                next_offset=42,
+                source_timestamp=1786523300,
+            )
 
         def validate_domestic_student_privacy_state(self) -> None:
             events.append("privacy_state")
@@ -1063,8 +1066,9 @@ def test_official_java_startup_receives_database_checkpoint(
             events.append("java_probe")
             return {
                 "status": "ok",
-                "transport": "official_java",
-                "initial_offset": 42,
+                "transport": "official_dts_sdk",
+                "first_record_offset": 41,
+                "first_record_source_timestamp": 1786523300,
             }
 
         def close(self) -> None:
@@ -1120,6 +1124,7 @@ def test_official_java_startup_receives_database_checkpoint(
     )
     assert init[1] is stream_settings
     assert init[3]["resume_offset"] == 42
+    assert init[3]["resume_source_timestamp"] == 1786523300
     assert init[3]["idle_timeout_ms"] == 4321
     assert callable(init[3]["stop_requested"])
     assert events.index("privacy_state") < events.index("java_probe")
