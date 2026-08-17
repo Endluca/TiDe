@@ -5,14 +5,15 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.aliyun.dts.subscribe.clients.ConsumerContext.ConsumerSubscribeMode;
 import com.aliyun.dts.subscribe.clients.common.RecordListener;
+import com.aliyun.dts.subscribe.clients.formats.avro.EmptyObject;
 import com.aliyun.dts.subscribe.clients.formats.avro.Record;
 import com.aliyun.dts.subscribe.clients.record.DefaultUserRecord;
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -24,9 +25,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.apache.avro.SchemaNormalization;
-import org.apache.avro.io.BinaryEncoder;
-import org.apache.avro.io.EncoderFactory;
-import org.apache.avro.specific.SpecificDatumWriter;
+import org.apache.avro.generic.GenericData;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.AuthorizationException;
@@ -45,6 +44,7 @@ public final class TitDtsTransportBridge {
     private static final String ACTION_REPLAY = "REPLAY";
     private static final int MAX_COMMAND_BYTES = 1024 * 1024;
     private static final int MAX_BATCH_MESSAGES = 1000;
+    private static final int AVRO_SINGLE_OBJECT_HEADER_BYTES = 10;
     private static final long DEFAULT_IDLE_TIMEOUT_MS = 10000L;
     private static final long SDK_START_TIMEOUT_MS = 305000L;
 
@@ -203,6 +203,10 @@ public final class TitDtsTransportBridge {
 
         firstRecord = awaitRecord(SDK_START_TIMEOUT_MS);
         DefaultUserRecord record = firstRecord.record;
+        // Materialize the first official SDK record before READY so an
+        // encoder/schema incompatibility is a startup failure, not a false
+        // healthy transition followed by a deterministic POLL failure.
+        firstRecord.encodedPayload();
         TopicPartition topicPartition = requiredTopicPartition(record);
         if (!topic.equals(topicPartition.topic())
                 || partition != topicPartition.partition()) {
@@ -303,7 +307,7 @@ public final class TitDtsTransportBridge {
                 break;
             }
             inFlight = envelope;
-            emitEvent(envelope.record);
+            emitEvent(envelope);
 
             JSONObject acknowledgement = readCommand();
             if (acknowledgement == null) {
@@ -383,33 +387,11 @@ public final class TitDtsTransportBridge {
         }
     }
 
-    private void emitEvent(DefaultUserRecord userRecord) {
+    private void emitEvent(RecordEnvelope envelope) {
+        DefaultUserRecord userRecord = envelope.record;
         TopicPartition topicPartition = requiredTopicPartition(userRecord);
         long offset = requiredRecordOffset(userRecord);
-        Record avroRecord = userRecord.getAvroRecord();
-        if (avroRecord == null) {
-            throw new ProtocolException(
-                    "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID");
-        }
-
-        byte[] payload;
-        try {
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-            SpecificDatumWriter<Record> writer =
-                    new SpecificDatumWriter<Record>(Record.class);
-            BinaryEncoder encoder = EncoderFactory.get()
-                    .directBinaryEncoder(bytes, null);
-            writer.write(avroRecord, encoder);
-            encoder.flush();
-            payload = bytes.toByteArray();
-        } catch (IOException error) {
-            throw new ProtocolException(
-                    "DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED");
-        }
-        if (payload.length == 0) {
-            throw new ProtocolException(
-                    "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID");
-        }
+        byte[] payload = envelope.encodedPayload();
 
         JSONObject event = message("EVENT");
         event.put("topic", topicPartition.topic());
@@ -418,6 +400,114 @@ public final class TitDtsTransportBridge {
         event.put("source_timestamp", requiredSourceTimestamp(userRecord));
         event.put("payload_base64", Base64.getEncoder().encodeToString(payload));
         emit(event);
+    }
+
+    /**
+     * Encode with the model bundled in the pinned official SDK.
+     *
+     * <p>The SDK 1.4 generated {@link EmptyObject} enum lives under the
+     * {@code com.aliyun} package while its Avro schema retains the historic
+     * {@code com.alibaba} namespace. The generated encoder therefore cannot
+     * resolve only that enum when it is stored in an image union. Replacing
+     * that value with the equivalent Avro enum symbol preserves the official
+     * schema and lets {@link Record#toByteBuffer()} own all wire encoding.
+     */
+    static byte[] encodeOfficialRecord(Record sourceRecord) {
+        final Record avroRecord;
+        final ByteBuffer encoded;
+        final byte[] expectedFingerprint;
+        try {
+            avroRecord = normalizeOfficialEmptyObjects(sourceRecord);
+            encoded = avroRecord.toByteBuffer().duplicate();
+            expectedFingerprint = SchemaNormalization.parsingFingerprint(
+                    "CRC-64-AVRO", Record.getClassSchema());
+        } catch (IOException error) {
+            safeLog("DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED", error);
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED");
+        } catch (NoSuchAlgorithmException error) {
+            safeLog("DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED", error);
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED");
+        } catch (RuntimeException error) {
+            safeLog("DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED", error);
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED");
+        }
+
+        if (encoded.remaining() <= AVRO_SINGLE_OBJECT_HEADER_BYTES
+                || (encoded.get() & 0xff) != 0xc3
+                || (encoded.get() & 0xff) != 0x01
+                || expectedFingerprint.length != Long.BYTES) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED");
+        }
+
+        for (byte expectedByte : expectedFingerprint) {
+            if (encoded.get() != expectedByte) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED");
+            }
+        }
+        if (!encoded.hasRemaining()) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED");
+        }
+
+        byte[] payload = new byte[encoded.remaining()];
+        encoded.get(payload);
+        return payload;
+    }
+
+    private static Record normalizeOfficialEmptyObjects(Record sourceRecord) {
+        Object beforeImages = normalizeOfficialEmptyObjectList(
+                sourceRecord.getBeforeImages());
+        Object afterImages = normalizeOfficialEmptyObjectList(
+                sourceRecord.getAfterImages());
+        if (beforeImages == sourceRecord.getBeforeImages()
+                && afterImages == sourceRecord.getAfterImages()) {
+            return sourceRecord;
+        }
+        return new Record(
+                sourceRecord.getVersion(),
+                sourceRecord.getId(),
+                sourceRecord.getSourceTimestamp(),
+                sourceRecord.getSourcePosition(),
+                sourceRecord.getSafeSourcePosition(),
+                sourceRecord.getSourceTxid(),
+                sourceRecord.getSource(),
+                sourceRecord.getOperation(),
+                sourceRecord.getObjectName(),
+                sourceRecord.getProcessTimestamps(),
+                sourceRecord.getTags(),
+                sourceRecord.getFields(),
+                beforeImages,
+                afterImages);
+    }
+
+    private static Object normalizeOfficialEmptyObjectList(Object value) {
+        if (!(value instanceof List<?>)) {
+            return value;
+        }
+        List<?> items = (List<?>) value;
+        List<Object> normalized = null;
+        for (int index = 0; index < items.size(); index += 1) {
+            Object item = items.get(index);
+            if (!(item instanceof EmptyObject)) {
+                if (normalized != null) {
+                    normalized.add(item);
+                }
+                continue;
+            }
+            if (normalized == null) {
+                normalized = new ArrayList<Object>(items.size());
+                normalized.addAll(items.subList(0, index));
+            }
+            EmptyObject emptyObject = (EmptyObject) item;
+            normalized.add(new GenericData.EnumSymbol(
+                    EmptyObject.getClassSchema(), emptyObject.name()));
+        }
+        return normalized == null ? value : normalized;
     }
 
     private void acceptDurableAcknowledgement(
@@ -748,9 +838,23 @@ public final class TitDtsTransportBridge {
         private volatile String action;
         private volatile long sourceTimestamp;
         private volatile Throwable failure;
+        private byte[] payload;
 
         RecordEnvelope(DefaultUserRecord record) {
             this.record = record;
+        }
+
+        byte[] encodedPayload() {
+            if (payload == null) {
+                DefaultUserRecord userRecord = record;
+                Record avroRecord = userRecord.getAvroRecord();
+                if (avroRecord == null) {
+                    throw new ProtocolException(
+                            "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID");
+                }
+                payload = encodeOfficialRecord(avroRecord);
+            }
+            return payload;
         }
 
         void decide(String requestedAction, long requestedSourceTimestamp) {

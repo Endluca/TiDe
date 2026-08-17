@@ -18,6 +18,8 @@ RUN echo "${DTS_OFFICIAL_JAR_SHA256}  /build/dts-diagnose.jar" \
       -cp /build/dts-diagnose.jar \
       -d /build/classes \
       @/build/java-sources.list \
+    && java -cp /build/classes:/build/dts-diagnose.jar \
+      com.aliyun.dts.subscribe.clients.TitDtsTransportBridgeAvroSelfTest \
     && jar cf /build/dts-transport.jar -C /build/classes .
 
 # ========== Stage 2: install the DTS-only Python dependency closure ==========

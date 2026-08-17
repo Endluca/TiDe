@@ -219,6 +219,10 @@ def test_gaea_dts_module_omits_the_application_build_graph() -> None:
     )[1]
     assert "COPY gaea/dts-ingest/java /build/src" in java_build
     assert "javac -encoding UTF-8 -source 1.8 -target 1.8" in java_build
+    assert (
+        "com.aliyun.dts.subscribe.clients."
+        "TitDtsTransportBridgeAvroSelfTest"
+    ) in java_build
     assert "dts-diagnose.jar" in java_build
     assert "sha256sum -c -" in java_build
     assert "COPY backend/requirements-dts-ingest.txt" in dts_build

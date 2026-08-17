@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import queue
 from dataclasses import replace
@@ -8,8 +9,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastavro import schemaless_writer
 
-from app import dts_java_transport
+from app import dts_java_transport, dts_source_consumer
 from app.dts_java_transport import (
     DtsJavaTransportError,
     OfficialJavaDtsTransport,
@@ -64,6 +66,7 @@ class _FakeProcess:
         avro_writer_schema_fingerprint: str | None = (
             DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256
         ),
+        poll_error_code: str | None = None,
     ) -> None:
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.stdout = _FakeStdout(self.lines)
@@ -76,6 +79,7 @@ class _FakeProcess:
         self.avro_writer_schema_fingerprint = (
             avro_writer_schema_fingerprint
         )
+        self.poll_error_code = poll_error_code
         self.terminated = False
         self.spawn_kwargs: dict[str, object] = {}
 
@@ -107,6 +111,15 @@ class _FakeProcess:
                 )
             self.emit(ready)
         elif message_type == "POLL":
+            if self.poll_error_code is not None:
+                self.emit(
+                    {
+                        "type": "ERROR",
+                        "error_code": self.poll_error_code,
+                        "retriable": False,
+                    }
+                )
+                return
             self.emit(
                 {
                     "type": "EVENT",
@@ -354,6 +367,137 @@ def test_failed_database_transaction_never_acknowledges_java(
     transport.startup_probe()
 
     with pytest.raises(RuntimeError, match="database transaction failed"):
+        transport.run(max_messages=1, commit_offsets=True)
+    transport.close(force=True)
+
+    assert [item["type"] for item in process.commands] == ["START", "POLL"]
+
+
+def test_official_generated_union_payload_reaches_durable_ack() -> None:
+    raw = {
+        "version": 1,
+        "id": 8202,
+        "sourceTimestamp": 1786550400,
+        "sourcePosition": "lsn:3",
+        "safeSourcePosition": "lsn:3",
+        "sourceTxid": "tx-3",
+        "source": {"sourceType": "PostgreSQL", "version": "14"},
+        "operation": "INSERT",
+        "objectName": "public.ovs_appoint",
+        "processTimestamps": None,
+        "tags": {},
+        "fields": [
+            {"name": "id", "dataTypeNumber": 20},
+            {"name": "nullable_value", "dataTypeNumber": 12},
+        ],
+        "beforeImages": None,
+        "afterImages": [
+            (
+                "com.alibaba.dts.formats.avro.Integer",
+                {"precision": 20, "value": "8"},
+            ),
+            ("com.alibaba.dts.formats.avro.EmptyObject", "NONE"),
+        ],
+    }
+    payload = io.BytesIO()
+    schemaless_writer(
+        payload,
+        dts_source_consumer._parsed_dts_sdk_1_4_avro_writer_schema(),
+        raw,
+    )
+    process = _FakeProcess(event_payload=payload.getvalue())
+    observed_commands_at_process: list[list[str]] = []
+
+    class Processor:
+        def process(self, event: object) -> object:
+            observed_commands_at_process.append(
+                [item["type"] for item in process.commands]
+            )
+            assert event.source_timestamp == 1786550400
+            assert event.table_name == "ovs_appoint"
+            assert event.after == {"id": "8", "nullable_value": None}
+            return SimpleNamespace(status="PROCESSED")
+
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+
+    transport.startup_probe()
+    result = transport.run(max_messages=1, commit_offsets=True)
+    transport.close()
+
+    assert observed_commands_at_process == [["START", "POLL"]]
+    assert result["processed"] == 1
+    assert result["sdk_checkpoint_accepted"] == 1
+    assert [item["type"] for item in process.commands] == [
+        "START",
+        "POLL",
+        "DURABLE_ACK",
+        "CLOSE",
+    ]
+
+
+def test_official_java_encoding_failure_never_reaches_database_or_ack() -> None:
+    process = _FakeProcess(
+        poll_error_code="DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED"
+    )
+
+    class Processor:
+        def process(self, event: object) -> object:
+            del event
+            raise AssertionError("encoding failure must precede database write")
+
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+    transport.startup_probe()
+
+    with pytest.raises(
+        DtsJavaTransportError,
+        match="^DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED$",
+    ):
+        transport.run(max_messages=1, commit_offsets=True)
+    transport.close(force=True)
+
+    assert [item["type"] for item in process.commands] == ["START", "POLL"]
+
+
+def test_single_object_header_leak_never_reaches_database_or_ack() -> None:
+    # The Java bridge must strip Avro's C3 01 + fingerprint envelope before
+    # sending the schemaless datum expected by the Python reader.
+    process = _FakeProcess(
+        event_payload=b"\xc3\x01" + (b"\x00" * 8) + b"not-a-datum"
+    )
+
+    class Processor:
+        def process(self, event: object) -> object:
+            del event
+            raise AssertionError("invalid envelope must fail before DB write")
+
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+    transport.startup_probe()
+
+    with pytest.raises(
+        dts_source_consumer.DtsRecordError,
+        match="^DTS_AVRO_DECODE_FAILED$",
+    ):
         transport.run(max_messages=1, commit_offsets=True)
     transport.close(force=True)
 
