@@ -1584,8 +1584,15 @@ def test_transaction_writes_receipt_mirror_dirty_keys_then_checkpoint() -> None:
     # advisory lock, checkpoint SELECT, source-row SELECT, receipt, mirror,
     # one batched dirty-key UPSERT and checkpoint UPSERT
     connection = _Connection(
-        [_Result(), _Result(scalar=None), _Result(mapping=None)]
-        + [_Result()] * 4
+        [
+            _Result(),
+            _Result(scalar=None),
+            _Result(mapping=None),
+            _Result(scalar=event.offset, rowcount=-1),
+            _Result(),
+            _Result(),
+            _Result(),
+        ]
     )
 
     duplicate = sink._apply_transaction(connection, event, dirty)
@@ -1596,6 +1603,10 @@ def test_transaction_writes_receipt_mirror_dirty_keys_then_checkpoint() -> None:
     assert connection.parameters[0] == {
         "stream_identity": '["ovs","topic-v2",0]',
     }
+    receipt_sql = str(
+        connection.statements[3].compile(dialect=postgresql.dialect())
+    )
+    assert "RETURNING dts_ingest_events.offset_value" in receipt_sql
     assert _compiled_dirty_rows(connection.statements[5]) == {
         ("COURSE", "99", ""),
         ("TEACHER", "10", ""),
@@ -1635,7 +1646,7 @@ def test_partial_update_recomputes_dependencies_and_dirties_old_and_new_owners()
                     }
                 }
             ),
-            _Result(),  # receipt
+            _Result(scalar=event.offset, rowcount=-1),  # receipt
             _Result(),  # source mirror
             _Result(),  # batched dirty keys
             _Result(),  # checkpoint
@@ -1728,7 +1739,7 @@ def test_dom_teacher_upsert_redirties_existing_dom_and_ovs_courses(
                     },
                 ]
             ),
-            _Result(),  # receipt
+            _Result(scalar=event.offset, rowcount=-1),  # receipt
             _Result(),  # source mirror
             _Result(),  # batched dirty keys
             _Result(),  # checkpoint
@@ -1791,7 +1802,7 @@ def test_dom_teacher_non_scope_update_does_not_fanout_courses() -> None:
             _Result(
                 mapping={"source_row": existing_row, "is_deleted": False}
             ),
-            _Result(),  # receipt
+            _Result(scalar=event.offset, rowcount=-1),  # receipt
             _Result(),  # source mirror
             _Result(),  # batched teacher dirty key
             _Result(),  # checkpoint
@@ -1834,7 +1845,7 @@ def test_dom_teacher_course_fanout_batches_dirty_key_upserts() -> None:
             _Result(scalar=None),
             _Result(mapping=None),
             _Result(rows=appoint_dependencies),
-            _Result(),  # receipt
+            _Result(scalar=event.offset, rowcount=-1),  # receipt
             _Result(),  # source mirror
             _Result(),  # first dirty-key batch
             _Result(),  # second dirty-key batch
@@ -1885,7 +1896,7 @@ def test_sparse_delete_keeps_tombstone_dependencies_and_routes_previous_owner() 
                     "is_deleted": False,
                 }
             ),
-            _Result(),  # receipt
+            _Result(scalar=event.offset, rowcount=-1),  # receipt
             _Result(),  # source mirror
             _Result(),  # batched dirty keys
             _Result(),  # checkpoint
@@ -1934,7 +1945,7 @@ def test_duplicate_offset_keeps_mirror_dirty_queue_and_checkpoint_unchanged() ->
             _Result(
                 mapping={"source_row": event.after, "is_deleted": False}
             ),
-            _Result(rowcount=0),
+            _Result(scalar=None, rowcount=-1),
         ]
     )
 
@@ -1946,6 +1957,56 @@ def test_duplicate_offset_keeps_mirror_dirty_queue_and_checkpoint_unchanged() ->
 
     assert duplicate is True
     assert len(connection.statements) == 4
+
+
+def test_missing_receipt_return_with_missing_checkpoint_fails_closed() -> None:
+    sink = object.__new__(PostgresDtsEventSink)
+    event = _event(offset=42)
+    connection = _Connection(
+        [
+            _Result(),  # advisory lock
+            _Result(scalar=None),
+            _Result(
+                mapping={"source_row": event.after, "is_deleted": False}
+            ),
+            _Result(scalar=None, rowcount=-1),
+        ]
+    )
+
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="^DTS_LEDGER_CHECKPOINT_INCONSISTENT$",
+    ):
+        sink._apply_transaction(
+            connection,
+            event,
+            route_dirty_keys(event),
+        )
+
+
+def test_zero_offset_return_is_treated_as_a_new_receipt() -> None:
+    sink = object.__new__(PostgresDtsEventSink)
+    event = _event(offset=0)
+    connection = _Connection(
+        [
+            _Result(),  # advisory lock
+            _Result(scalar=None),
+            _Result(mapping=None),
+            _Result(scalar=0, rowcount=-1),
+            _Result(),  # source mirror
+            _Result(),  # batched dirty keys
+            _Result(),  # checkpoint
+        ]
+    )
+
+    duplicate = sink._apply_transaction(
+        connection,
+        event,
+        route_dirty_keys(event),
+    )
+
+    assert duplicate is False
+    assert len(connection.statements) == 7
 
 
 def test_resume_checkpoint_reads_offset_and_source_timestamp_atomically() -> None:

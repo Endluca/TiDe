@@ -2082,8 +2082,12 @@ class PostgresDtsEventSink:
                 event_table.c.partition_id,
                 event_table.c.offset_value,
             ]
-        )
-        inserted = connection.execute(receipt).rowcount == 1
+        ).returning(event_table.c.offset_value)
+        # psycopg 3 does not guarantee a meaningful rowcount for this INSERT;
+        # SQLAlchemy may expose -1 for both an inserted row and a conflict.
+        # RETURNING is the database-authored proof that this transaction
+        # inserted the receipt, while no row means the receipt already exists.
+        inserted = connection.execute(receipt).scalar_one_or_none() is not None
         if not inserted:
             if current_next_offset is None or current_next_offset < event.offset + 1:
                 raise DtsIngestStoreError("DTS_LEDGER_CHECKPOINT_INCONSISTENT")

@@ -1700,9 +1700,12 @@ class DtsWideProjector:
                 index_elements=[table.c[name] for name in primary_keys],
                 set_={name: excluded[name] for name in mutable},
                 where=changed,
-            )
+            ).returning(table.c[primary_keys[0]])
         )
-        return result.rowcount == 1
+        # psycopg 3 may expose rowcount=-1 after SQLAlchemy closes an INSERT
+        # cursor.  A returned non-null primary key is the unambiguous
+        # PostgreSQL signal that this INSERT/UPDATE changed the target row.
+        return result.scalar_one_or_none() is not None
 
 
 def _slot_identity(row: Mapping[str, Any]) -> str:

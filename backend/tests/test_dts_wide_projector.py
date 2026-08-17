@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from app.db_models import TeacherSourceWideRecord
 from app.dts_wide_projector import (
     DtsWideProjectionError,
     DtsWideProjectionSettings,
@@ -164,6 +165,37 @@ class _BeginContext:
 class _BatchEngine:
     def begin(self) -> _BeginContext:
         return _BeginContext(object())
+
+
+def test_upsert_uses_returning_when_insert_rowcount_is_unknown() -> None:
+    connection = _ReadOnlyConnection(
+        first_values=["teacher-1"],
+        rowcounts=[-1],
+    )
+
+    changed = DtsWideProjector._upsert(
+        connection,
+        TeacherSourceWideRecord.__table__,
+        {"tchr_id": "teacher-1", "status": "active"},
+        primary_keys=("tchr_id",),
+    )
+
+    assert changed is True
+    sql = str(connection.statements[0].compile(dialect=postgresql.dialect()))
+    assert "RETURNING teacher_source_wide.tchr_id" in sql
+
+
+def test_upsert_without_returned_key_is_unchanged_despite_rowcount() -> None:
+    connection = _ReadOnlyConnection(first_values=[None], rowcounts=[1])
+
+    changed = DtsWideProjector._upsert(
+        connection,
+        TeacherSourceWideRecord.__table__,
+        {"tchr_id": "teacher-1", "status": "active"},
+        primary_keys=("tchr_id",),
+    )
+
+    assert changed is False
 
 
 class _FailingBatchProjector(DtsWideProjector):
