@@ -7,6 +7,7 @@ it does not calculate TiDe scores.  The selected sink controls persistence.
 
 from __future__ import annotations
 
+import copy
 import errno
 import hashlib
 import hmac
@@ -174,6 +175,25 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
 }
 INFRASTRUCTURE_TABLES = frozenset({"dts_postgres_heartbeat"})
 SCHEMA_BUNDLE_PATH = Path(__file__).with_name("dts_record_schemas.json")
+DTS_SDK_1_4_RECORD_FIELDS = (
+    "version",
+    "id",
+    "sourceTimestamp",
+    "sourcePosition",
+    "safeSourcePosition",
+    "sourceTxid",
+    "source",
+    "operation",
+    "objectName",
+    "processTimestamps",
+    "tags",
+    "fields",
+    "beforeImages",
+    "afterImages",
+)
+DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256 = (
+    "8e09ff77c1dda884016d5cc9c010a8c1fab67b6d07e82079ae050df1d7ed491b"
+)
 KAFKA_REQUEST_TIMEOUT_MS = 15_000
 KAFKA_STARTUP_TIMEOUT_MAX_MS = 120_000
 KAFKA_CLOSE_TIMEOUT_MS = 1_000
@@ -1545,6 +1565,49 @@ def _parsed_avro_schema() -> dict[str, Any]:
     return parse_schema(schemas[-1], named_schemas=named_schemas)
 
 
+@lru_cache(maxsize=1)
+def _parsed_dts_sdk_1_4_avro_writer_schema() -> dict[str, Any]:
+    """Return a binary-compatible writer schema for the pinned SDK 1.4 JAR.
+
+    The SDK's generated ``Record`` predates the final ``bornTimestamp`` field
+    in our current published reader schema.  Avro defaults are applied only
+    during writer/reader schema resolution; treating the current reader schema
+    as the wire schema makes fastavro read past the end of every SDK record.
+    The Java transport independently reports the canonical fingerprint of the
+    actual generated schema before Python accepts any event.
+    """
+
+    try:
+        from fastavro import parse_schema
+    except ImportError as exc:  # pragma: no cover - runtime dependency guard
+        raise DtsConfigurationError("FASTAVRO_DEPENDENCY_REQUIRED") from exc
+
+    schemas = json.loads(SCHEMA_BUNDLE_PATH.read_text(encoding="utf-8"))
+    writer_schema = copy.deepcopy(schemas[-1])
+    fields = writer_schema.get("fields")
+    if not isinstance(fields, list) or len(fields) != 15:
+        raise DtsConfigurationError("DTS_SDK_1_4_AVRO_SCHEMA_INCOMPATIBLE")
+    writer_field_names = tuple(
+        field.get("name") if isinstance(field, Mapping) else None
+        for field in fields[:-1]
+    )
+    born_timestamp = fields[-1]
+    if (
+        writer_field_names != DTS_SDK_1_4_RECORD_FIELDS
+        or not isinstance(born_timestamp, Mapping)
+        or born_timestamp.get("name") != "bornTimestamp"
+        or born_timestamp.get("type") != "long"
+        or born_timestamp.get("default") != 0
+    ):
+        raise DtsConfigurationError("DTS_SDK_1_4_AVRO_SCHEMA_INCOMPATIBLE")
+    writer_schema["fields"] = fields[:-1]
+
+    named_schemas: dict[str, Any] = {}
+    for child_schema in schemas[:-1]:
+        parse_schema(child_schema, named_schemas=named_schemas)
+    return parse_schema(writer_schema, named_schemas=named_schemas)
+
+
 def decode_dts_avro(payload: bytes) -> dict[str, Any]:
     """Decode one Kafka value using Alibaba Cloud's published Avro schema."""
 
@@ -1554,6 +1617,23 @@ def decode_dts_avro(payload: bytes) -> dict[str, Any]:
         raise DtsConfigurationError("FASTAVRO_DEPENDENCY_REQUIRED") from exc
     try:
         return schemaless_reader(io.BytesIO(payload), _parsed_avro_schema())
+    except Exception as exc:
+        raise DtsRecordError("DTS_AVRO_DECODE_FAILED") from exc
+
+
+def decode_dts_sdk_1_4_avro(payload: bytes) -> dict[str, Any]:
+    """Decode bytes re-encoded by the pinned official DTS SDK 1.4 JAR."""
+
+    try:
+        from fastavro import schemaless_reader
+    except ImportError as exc:  # pragma: no cover - runtime dependency guard
+        raise DtsConfigurationError("FASTAVRO_DEPENDENCY_REQUIRED") from exc
+    try:
+        return schemaless_reader(
+            io.BytesIO(payload),
+            _parsed_dts_sdk_1_4_avro_writer_schema(),
+            _parsed_avro_schema(),
+        )
     except Exception as exc:
         raise DtsRecordError("DTS_AVRO_DECODE_FAILED") from exc
 
@@ -3479,6 +3559,8 @@ __all__ = [
     "assert_domestic_event_protected",
     "build_change_event",
     "decode_dts_avro",
+    "decode_dts_sdk_1_4_avro",
+    "DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256",
     "derive_penalty_flags",
     "is_peak_lesson",
     "project_appoint_candidate",

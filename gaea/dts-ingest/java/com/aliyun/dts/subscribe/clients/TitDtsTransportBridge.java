@@ -14,6 +14,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -22,6 +23,7 @@ import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.apache.avro.SchemaNormalization;
 import org.apache.avro.io.BinaryEncoder;
 import org.apache.avro.io.EncoderFactory;
 import org.apache.avro.specific.SpecificDatumWriter;
@@ -216,11 +218,33 @@ public final class TitDtsTransportBridge {
         ready.put("partition", topicPartition.partition());
         ready.put("first_record_offset", firstOffset);
         ready.put("first_record_source_timestamp", firstSourceTimestamp);
+        ready.put(
+                "avro_writer_schema_fingerprint_sha256",
+                avroWriterSchemaFingerprintSha256());
         ready.put("resume_checkpoint_present", resumeCheckpointPresent);
         ready.put("checkpoint_timestamp_seconds", checkpointTimestampSeconds);
         emit(ready);
         started = true;
         safeLog("DTS_OFFICIAL_JAVA_READY", null);
+    }
+
+    private static String avroWriterSchemaFingerprintSha256() {
+        final byte[] fingerprint;
+        try {
+            fingerprint = SchemaNormalization.parsingFingerprint(
+                    "SHA-256", Record.getClassSchema());
+        } catch (NoSuchAlgorithmException error) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_AVRO_SCHEMA_UNAVAILABLE");
+        }
+        final char[] hexadecimal = "0123456789abcdef".toCharArray();
+        char[] encoded = new char[fingerprint.length * 2];
+        for (int index = 0; index < fingerprint.length; index++) {
+            int value = fingerprint[index] & 0xff;
+            encoded[index * 2] = hexadecimal[value >>> 4];
+            encoded[index * 2 + 1] = hexadecimal[value & 0x0f];
+        }
+        return new String(encoded);
     }
 
     private void consumeOfficialRecord(DefaultUserRecord record) {

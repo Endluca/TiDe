@@ -26,10 +26,12 @@ from app.dts_source_consumer import (
     _KafkaConnectionTrace,
     _KafkaMetadataRequestTrace,
     _parsed_avro_schema,
+    _parsed_dts_sdk_1_4_avro_writer_schema,
     _run_kafka_startup_phase,
     assert_domestic_event_protected,
     build_change_event,
     decode_dts_avro,
+    decode_dts_sdk_1_4_avro,
     derive_penalty_flags,
     is_peak_lesson,
     project_appoint_candidate,
@@ -1404,6 +1406,55 @@ def test_official_avro_schema_round_trips_postgresql_dml_image() -> None:
 
     assert event.table_name == "ovs_appoint"
     assert event.after == {"id": "7"}
+
+
+def test_dts_sdk_1_4_avro_resolves_missing_born_timestamp() -> None:
+    raw = {
+        "version": 1,
+        "id": 8202,
+        "sourceTimestamp": 1786342560,
+        "sourcePosition": "lsn:3",
+        "safeSourcePosition": "lsn:3",
+        "sourceTxid": "tx-3",
+        "source": {"sourceType": "PostgreSQL", "version": "14"},
+        "operation": "INSERT",
+        "objectName": "public.ovs_appoint",
+        "processTimestamps": None,
+        "tags": {},
+        "fields": [{"name": "id", "dataTypeNumber": 20}],
+        "beforeImages": None,
+        "afterImages": [
+            (
+                "com.alibaba.dts.formats.avro.Integer",
+                {"precision": 20, "value": "8"},
+            )
+        ],
+    }
+    writer_schema = _parsed_dts_sdk_1_4_avro_writer_schema()
+    assert [field["name"] for field in writer_schema["fields"]] == [
+        "version",
+        "id",
+        "sourceTimestamp",
+        "sourcePosition",
+        "safeSourcePosition",
+        "sourceTxid",
+        "source",
+        "operation",
+        "objectName",
+        "processTimestamps",
+        "tags",
+        "fields",
+        "beforeImages",
+        "afterImages",
+    ]
+    buffer = io.BytesIO()
+    schemaless_writer(buffer, writer_schema, raw)
+
+    decoded = decode_dts_sdk_1_4_avro(buffer.getvalue())
+    event = event_from_record(decoded)
+
+    assert decoded["bornTimestamp"] == 0
+    assert event.after == {"id": "8"}
 
 
 def test_build_change_event_maps_full_images_and_identity() -> None:

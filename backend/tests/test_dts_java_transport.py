@@ -16,7 +16,10 @@ from app.dts_java_transport import (
     java_child_environment,
     java_transport_command,
 )
-from app.dts_source_consumer import DtsConsumerSettings
+from app.dts_source_consumer import (
+    DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256,
+    DtsConsumerSettings,
+)
 
 
 class _FakeStdout:
@@ -58,6 +61,9 @@ class _FakeProcess:
         event_payload: bytes = b"avro",
         first_record_offset: int = 42,
         first_record_source_timestamp: int = 1786550400,
+        avro_writer_schema_fingerprint: str | None = (
+            DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256
+        ),
     ) -> None:
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.stdout = _FakeStdout(self.lines)
@@ -67,6 +73,9 @@ class _FakeProcess:
         self.event_payload = event_payload
         self.first_record_offset = first_record_offset
         self.first_record_source_timestamp = first_record_source_timestamp
+        self.avro_writer_schema_fingerprint = (
+            avro_writer_schema_fingerprint
+        )
         self.terminated = False
         self.spawn_kwargs: dict[str, object] = {}
 
@@ -79,21 +88,24 @@ class _FakeProcess:
                 if message["resume_source_timestamp"] is not None
                 else message["start_timestamp_seconds"]
             )
-            self.emit(
-                {
-                    "type": "READY",
-                    "first_record_offset": self.first_record_offset,
-                    "first_record_source_timestamp": (
-                        self.first_record_source_timestamp
-                    ),
-                    "resume_checkpoint_present": (
-                        message["resume_offset"] is not None
-                    ),
-                    "checkpoint_timestamp_seconds": checkpoint_timestamp,
-                    "transport": "official_dts_sdk",
-                    "subscribe_mode": "ASSIGN",
-                }
-            )
+            ready = {
+                "type": "READY",
+                "first_record_offset": self.first_record_offset,
+                "first_record_source_timestamp": (
+                    self.first_record_source_timestamp
+                ),
+                "resume_checkpoint_present": (
+                    message["resume_offset"] is not None
+                ),
+                "checkpoint_timestamp_seconds": checkpoint_timestamp,
+                "transport": "official_dts_sdk",
+                "subscribe_mode": "ASSIGN",
+            }
+            if self.avro_writer_schema_fingerprint is not None:
+                ready["avro_writer_schema_fingerprint_sha256"] = (
+                    self.avro_writer_schema_fingerprint
+                )
+            self.emit(ready)
         elif message_type == "POLL":
             self.emit(
                 {
@@ -226,7 +238,7 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     change_event = SimpleNamespace(source_timestamp=1786550400)
     monkeypatch.setattr(
         dts_java_transport,
-        "decode_dts_avro",
+        "decode_dts_sdk_1_4_avro",
         lambda payload: {"payload": payload},
     )
     monkeypatch.setattr(
@@ -273,6 +285,7 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
         "partition": 0,
         "first_record_offset": 42,
         "first_record_source_timestamp": 1786550400,
+        "avro_writer_schema_compatible": True,
     }
     assert result == {
         "seen": 1,
@@ -315,7 +328,11 @@ def test_failed_database_transaction_never_acknowledges_java(
             raise RuntimeError("database transaction failed")
 
     change_event = SimpleNamespace(source_timestamp=1786550400)
-    monkeypatch.setattr(dts_java_transport, "decode_dts_avro", lambda _: {})
+    monkeypatch.setattr(
+        dts_java_transport,
+        "decode_dts_sdk_1_4_avro",
+        lambda _: {},
+    )
     monkeypatch.setattr(
         dts_java_transport,
         "build_change_event",
@@ -363,6 +380,36 @@ def test_first_official_record_ahead_of_database_is_fail_closed() -> None:
     assert process.terminated is True
 
 
+@pytest.mark.parametrize(
+    "fingerprint",
+    [None, "0" * 64],
+    ids=["missing", "mismatch"],
+)
+def test_official_writer_schema_mismatch_is_rejected_before_poll(
+    fingerprint: str | None,
+) -> None:
+    process = _FakeProcess(
+        avro_writer_schema_fingerprint=fingerprint,
+    )
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        SimpleNamespace(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+
+    with pytest.raises(
+        DtsJavaTransportError,
+        match="^DTS_OFFICIAL_JAVA_AVRO_SCHEMA_MISMATCH$",
+    ):
+        transport.startup_probe()
+
+    assert process.terminated is True
+    assert [item["type"] for item in process.commands] == ["START"]
+
+
 def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -374,7 +421,11 @@ def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
             return SimpleNamespace(status="DUPLICATE")
 
     change_event = SimpleNamespace(source_timestamp=1786550400)
-    monkeypatch.setattr(dts_java_transport, "decode_dts_avro", lambda _: {})
+    monkeypatch.setattr(
+        dts_java_transport,
+        "decode_dts_sdk_1_4_avro",
+        lambda _: {},
+    )
     monkeypatch.setattr(
         dts_java_transport,
         "build_change_event",

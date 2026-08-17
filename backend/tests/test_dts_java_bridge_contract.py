@@ -32,6 +32,9 @@ def test_official_java_bridge_uses_the_vendor_sdk_main_path() -> None:
         "consume(DefaultUserRecord record)",
         "userRecord.getAvroRecord()",
         "new SpecificDatumWriter<Record>(Record.class)",
+        "SchemaNormalization.parsingFingerprint(",
+        '"SHA-256", Record.getClassSchema()',
+        '"avro_writer_schema_fingerprint_sha256"',
     )
     for marker in required:
         assert marker in source

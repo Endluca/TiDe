@@ -25,11 +25,12 @@ from dataclasses import dataclass
 from typing import Any, IO
 
 from .dts_source_consumer import (
+    DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256,
     DtsConfigurationError,
     DtsConsumerSettings,
     DtsEventProcessor,
     build_change_event,
-    decode_dts_avro,
+    decode_dts_sdk_1_4_avro,
     protect_domestic_student_ids,
 )
 
@@ -241,6 +242,17 @@ class OfficialJavaDtsTransport:
                 raise DtsJavaTransportError(
                     "DTS_OFFICIAL_JAVA_READY_IDENTITY_MISMATCH"
                 )
+            avro_writer_schema_fingerprint = ready.get(
+                "avro_writer_schema_fingerprint_sha256"
+            )
+            if (
+                not isinstance(avro_writer_schema_fingerprint, str)
+                or avro_writer_schema_fingerprint
+                != DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256
+            ):
+                raise DtsJavaTransportError(
+                    "DTS_OFFICIAL_JAVA_AVRO_SCHEMA_MISMATCH"
+                )
             if self.resume_source_timestamp is not None:
                 checkpoint_timestamp_seconds = self._required_non_negative_int(
                     ready,
@@ -277,6 +289,7 @@ class OfficialJavaDtsTransport:
                         "resume_checkpoint_present": (
                             resume_checkpoint_present
                         ),
+                        "avro_writer_schema_compatible": True,
                     }
                 )
             return {
@@ -287,6 +300,7 @@ class OfficialJavaDtsTransport:
                 "first_record_source_timestamp": (
                     first_record_source_timestamp
                 ),
+                "avro_writer_schema_compatible": True,
             }
         except Exception:
             self.close(force=True)
@@ -342,7 +356,7 @@ class OfficialJavaDtsTransport:
                     "DTS_OFFICIAL_JAVA_EVENT_OFFSET_NOT_CONTIGUOUS"
                 )
             replay = event.offset < expected_offset
-            record = decode_dts_avro(event.payload)
+            record = decode_dts_sdk_1_4_avro(event.payload)
             change_event = build_change_event(
                 record,
                 source_region=self.settings.source_region,
