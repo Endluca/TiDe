@@ -232,6 +232,15 @@ application 的两个 Worker 分别通过 PostgreSQL session advisory lock 保�
 standby 仍刷新本 Pod heartbeat，并用数据库探测维持 readiness。教师全局调度使用
 `tide.job_leases`；G04 图片审核属于任务提交校验，不再运行独立照片 Worker。
 
+Gaea application 的非敏感运行参数可集中上传为配置文件并挂载到
+`/deployments/config/application.env`，平台保留
+`TIT_PROCESS_PROFILE=application`，并设置
+`TIT_RUNTIME_ENV_FILE=/deployments/config/application.env`。模板见
+[`gaea/application/application.runtime.env.example`](gaea/application/application.runtime.env.example)；
+平台环境变量优先，数据库 URL、密码、JWT/API Key 继续走 Gaea 敏感变量，DTS 参数禁止混入。
+配置文件不热加载，改版本后必须执行 `RollingUpdate`。完整迁移步骤与失败关闭规则见
+[`gaea/README.md`](gaea/README.md)。
+
 多副本的私有文件首选 OSS；`FILE_STORAGE_PROVIDER=LOCAL` 只允许所有 Pod 共享同一块
 `ReadWriteMany (RWX)` 卷。视频预热脚本的本地幂等账本若被执行，也必须使用跨执行节点可见
 的 RWX 状态目录；Worker heartbeat 必须留在各 Pod 的 `/tmp`，不能共享。完整环境变量、

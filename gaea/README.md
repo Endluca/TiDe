@@ -38,6 +38,44 @@ Python PID 1 运行 `run_dts_ingest.py`，Python 持有数据库、国内 HMAC�
 API 路由和认证逻辑不合并。FastAPI、NestJS、Nginx 或积分 Worker 任一非零退出，s6 都会
 终止整个容器，让 Kubernetes 重建完整 Pod。
 
+### application 统一配置文件
+
+application 镜像支持把**非敏感**运行参数集中到一个 Gaea 配置文件。先复制
+[`application/application.runtime.env.example`](application/application.runtime.env.example)
+到 Git 工作区外，替换其中的 `REPLACE_WITH_*` 值，然后在 `pre-tida-camp` 的“配置文件”
+区域上传并挂载为：
+
+```text
+/deployments/config/application.env
+```
+
+Gaea 环境变量中只需新增：
+
+```text
+TIT_RUNTIME_ENV_FILE=/deployments/config/application.env
+TIT_PROCESS_PROFILE=application
+```
+
+平台环境变量优先于配置文件。迁入文件的普通变量必须从 Gaea 环境变量列表删除，否则旧值会
+继续覆盖文件，看起来像“修改配置未生效”。`MEMORY_SIZE` 仍由平台管理；`DATABASE_URL`、
+`TIDE_DATABASE_URL`、`SHIWEN_READ_DATABASE_URL`、各类 `PASSWORD` / `SECRET` / API Key
+仍必须使用 Gaea 的敏感环境变量，禁止写进普通配置文件。国内、海外 DTS 的任何参数也不得
+进入 application 文件。
+
+PRE 切换时还要删除办公室 TEST 兼容层的 `COMPANY_TEST_DATABASE_ENABLED`、
+`TIDE_ADMIN_DB_*` 和 `TIDE_APP_DB_*`；教师写入与来源读取改为分别由 Gaea 敏感变量注入
+`TIDE_DATABASE_URL` 与 `SHIWEN_READ_DATABASE_URL`。不要同时保留两套数据库配置。
+
+镜像不会执行 shell `source`，也不会展开 `$()`、反引号或 `${...}`。加载器只接受当前版本
+明确允许的字面量 `KEY=VALUE`，并在监听端口前拒绝重复键、`TII_*` 错拼、未知键、敏感键、
+`TIT_DTS_*`、自由文本、无效 UTF-8 和超过 128 KiB 的文件。现有散装示例若包含 `TII_*`、
+重复 `MAIL_DELIVERY_PROVIDER`、账号清单或明文凭据，不能原样上传；只能用来核对字段。
+
+启动时镜像记录配置文件 SHA-256，周期健康检查只接受同一版本。Gaea 在线替换挂载文件不会
+热加载；文件发生变化后健康检查会要求 `RollingUpdate`，确保五个业务进程和健康检查不会
+同时使用两版配置。不设置 `TIT_RUNTIME_ENV_FILE` 时保持原有“全部由平台环境变量注入”的
+兼容模式。
+
 因此 DTS 不能把密码注入 `application` 项目。完整 application 镜像内的多个业务进程仍以
 同一 UID `1001` 运行，因此其中一个进程被利用后可能读取同 Pod 的数据库、JWT、OSS 或邮件
 凭据；海外和国内 DTS 则通过独立项目、轻量镜像、独立密钥集合和强制数据中心放置与 application

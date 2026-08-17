@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import zipfile
@@ -32,6 +33,10 @@ DTS_DIAG_JAR = (
 GAEA_MODULES = GAEA_DIR / "gaea.yml"
 README = GAEA_DIR / "README.md"
 HEALTHCHECK = GAEA_DIR / "bin" / "healthcheck.sh"
+RUNTIME_ENV_LOADER = GAEA_DIR / "bin" / "runtime-env.py"
+APPLICATION_RUNTIME_ENV = (
+    GAEA_DIR / "application" / "application.runtime.env.example"
+)
 SOURCE_WIDE_ENABLED = GAEA_DIR / "bin" / "source-wide-enabled.sh"
 NGINX_CONF = GAEA_DIR / "nginx" / "nginx.conf"
 TEACHER_CONF = GAEA_DIR / "nginx" / "teacher.conf"
@@ -926,7 +931,11 @@ def test_gaea_image_uses_internal_sources_and_s6_supervision() -> None:
     assert "S6_KEEP_ENV=1" in dockerfile
     assert "S6_CMD_RECEIVE_SIGNALS=" not in dockerfile
     assert "SIGTERM must reach pid 1" in dockerfile
-    assert 'ENTRYPOINT ["/init"]' in dockerfile
+    assert (
+        'ENTRYPOINT ["/opt/venv/bin/python", "/app/bin/runtime-env.py", '
+        '"start", "--fingerprint-file", "/run/tit-runtime-env/fingerprint", '
+        '"--", "/init"]'
+    ) in dockerfile
     assert 'CMD ["sleep", "infinity"]' in dockerfile
     assert "USER gaea" not in dockerfile
     assert "nginx -t" in dockerfile
@@ -1088,7 +1097,12 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     healthcheck = HEALTHCHECK.read_text(encoding="utf-8")
 
     assert "HEALTHCHECK --interval=30s --timeout=20s" in dockerfile
-    assert 'CMD ["/app/bin/healthcheck.sh"]' in dockerfile
+    assert (
+        'CMD ["/opt/venv/bin/python", "/app/bin/runtime-env.py", '
+        '"healthcheck", "--fingerprint-file", '
+        '"/run/tit-runtime-env/fingerprint", "--", '
+        '"/app/bin/healthcheck.sh"]'
+    ) in dockerfile
     assert "http://127.0.0.1:8010/api/health" in healthcheck
     assert "http://127.0.0.1:8080/healthz" in healthcheck
     assert "http://127.0.0.1:8080/health/ready" in healthcheck
@@ -1184,6 +1198,361 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "SIGTERM must reach pid 1" in dockerfile
 
 
+def _runtime_env_base() -> str:
+    return "\n".join(
+        (
+            "APP_ENV=production",
+            "TIT_MIGRATION_MODE=false",
+            "TASK_CATALOG_PUBLIC_WRITE=false",
+            "TIT_SOURCE_WIDE_ENABLED=false",
+            "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED=false",
+            "LOG_LEVEL=debug",
+            "",
+        )
+    )
+
+
+def _run_runtime_env(
+    tmp_path: Path,
+    *,
+    content: bytes | None,
+    mode: str = "start",
+    extra_env: dict[str, str] | None = None,
+    command: list[str] | None = None,
+    config_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    path = config_path or (tmp_path / "application.env")
+    environment = os.environ.copy()
+    for key in tuple(environment):
+        if key.startswith(
+            ("TII_", "TIT_DTS_", "TIDE_ADMIN_DB_", "TIDE_APP_DB_")
+        ):
+            environment.pop(key)
+    environment.pop("COMPANY_TEST_DATABASE_ENABLED", None)
+    environment.pop("TIT_SOURCE_WORKER_DATABASE_URL", None)
+    if content is None:
+        environment.pop("TIT_RUNTIME_ENV_FILE", None)
+    else:
+        path.write_bytes(content)
+        for raw_line in content.decode("utf-8", errors="ignore").splitlines():
+            stripped = raw_line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                environment.pop(stripped.split("=", 1)[0].strip(), None)
+        environment["TIT_RUNTIME_ENV_FILE"] = str(path)
+        environment["TIT_PROCESS_PROFILE"] = "application"
+    if extra_env:
+        environment.update(extra_env)
+    child = command or [sys.executable, "-c", "raise SystemExit(0)"]
+    return subprocess.run(
+        [
+            sys.executable,
+            str(RUNTIME_ENV_LOADER),
+            mode,
+            "--fingerprint-file",
+            str(tmp_path / "fingerprints" / "runtime.sha256"),
+            "--",
+            *child,
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+
+def test_gaea_runtime_env_loads_literals_with_platform_precedence(
+    tmp_path: Path,
+) -> None:
+    untouched = tmp_path / "must-not-exist"
+    content = (
+        _runtime_env_base()
+        + "CRM_ENTRY_URL=\"https://crm.example.test/entry#fragment\"\n"
+        + f"ALLOWED_EMAIL_DOMAINS=$(touch {untouched})\n"
+    ).encode()
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import json, os; "
+            "print(json.dumps({key: os.environ.get(key) for key in "
+            "('LOG_LEVEL','CRM_ENTRY_URL','ALLOWED_EMAIL_DOMAINS')}))"
+        ),
+    ]
+    result = _run_runtime_env(
+        tmp_path,
+        content=content,
+        extra_env={
+            "LOG_LEVEL": "warn",
+            "DATABASE_URL": "postgresql://runtime-secret@database.test/app",
+            "TIT_DTS_INGEST_HEARTBEAT": "/tmp/tit-dts-ingest-heartbeat",
+            "TIT_DTS_INGEST_READINESS": "/tmp/tit-dts-ingest-readiness",
+        },
+        command=child,
+    )
+
+    assert result.returncode == 0, result.stderr
+    loaded = json.loads(result.stdout)
+    assert loaded == {
+        "LOG_LEVEL": "warn",
+        "CRM_ENTRY_URL": "https://crm.example.test/entry#fragment",
+        "ALLOWED_EMAIL_DOMAINS": f"$(touch {untouched})",
+    }
+    assert not untouched.exists()
+    assert "file_keys=8" in result.stderr
+    assert "platform_overrides=1" in result.stderr
+    assert "runtime-secret" not in result.stderr
+
+
+def test_gaea_runtime_env_accepts_projected_symlink_and_freezes_health_version(
+    tmp_path: Path,
+) -> None:
+    first_version = tmp_path / "..2026_08_17_01"
+    first_version.mkdir()
+    first_target = first_version / "application.env"
+    first_target.write_text(_runtime_env_base(), encoding="utf-8")
+    data_link = tmp_path / "..data"
+    data_link.symlink_to(first_version.name, target_is_directory=True)
+    mounted = tmp_path / "application.env"
+    mounted.symlink_to(Path("..data") / "application.env")
+    environment = {"TIT_RUNTIME_ENV_FILE": str(mounted)}
+
+    started = _run_runtime_env(
+        tmp_path,
+        content=first_target.read_bytes(),
+        extra_env=environment,
+        config_path=first_target,
+    )
+    assert started.returncode == 0, started.stderr
+    fingerprint_dir = tmp_path / "fingerprints"
+    fingerprint = fingerprint_dir / "runtime.sha256"
+    assert stat.S_IMODE(fingerprint_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(fingerprint.stat().st_mode) == 0o600
+
+    healthy = _run_runtime_env(
+        tmp_path,
+        content=first_target.read_bytes(),
+        mode="healthcheck",
+        extra_env=environment,
+        config_path=first_target,
+    )
+    assert healthy.returncode == 0, healthy.stderr
+
+    second_version = tmp_path / "..2026_08_17_02"
+    second_version.mkdir()
+    second_target = second_version / "application.env"
+    second_target.write_text(
+        _runtime_env_base().replace("LOG_LEVEL=debug", "LOG_LEVEL=info"),
+        encoding="utf-8",
+    )
+    replacement_link = tmp_path / "..data-replacement"
+    replacement_link.symlink_to(second_version.name, target_is_directory=True)
+    os.replace(replacement_link, data_link)
+    changed = _run_runtime_env(
+        tmp_path,
+        content=second_target.read_bytes(),
+        mode="healthcheck",
+        extra_env=environment,
+        config_path=second_target,
+    )
+    assert changed.returncode == 78
+    assert "RollingUpdate is required" in changed.stderr
+
+
+def test_gaea_runtime_env_fails_closed_for_invalid_or_missing_fingerprint(
+    tmp_path: Path,
+) -> None:
+    missing = _run_runtime_env(
+        tmp_path,
+        content=_runtime_env_base().encode(),
+        mode="healthcheck",
+    )
+    assert missing.returncode == 78
+    assert "fingerprint is missing or unreadable" in missing.stderr
+
+    broad = tmp_path / "broad"
+    broad.mkdir()
+    fingerprint_dir = broad / "fingerprints"
+    fingerprint_dir.mkdir(mode=0o755)
+    os.chmod(fingerprint_dir, 0o755)
+    invalid_permissions = _run_runtime_env(
+        broad,
+        content=_runtime_env_base().encode(),
+    )
+    assert invalid_permissions.returncode == 78
+    assert "permissions are too broad" in invalid_permissions.stderr
+    assert "Traceback" not in invalid_permissions.stderr
+
+
+def test_gaea_runtime_env_rejects_unsafe_or_malformed_files_without_values(
+    tmp_path: Path,
+) -> None:
+    sentinel = "secret-value-must-not-appear"
+    invalid_cases = (
+        _runtime_env_base() + "LOG_LEVEL=info\n",
+        _runtime_env_base() + "TII_API_WORKERS=2\n",
+        _runtime_env_base() + f"DATABASE_URL={sentinel}\n",
+        _runtime_env_base() + "TIT_DTS_TOPIC=forbidden\n",
+        _runtime_env_base() + "NOT_A_SETTING\n",
+        _runtime_env_base() + "UNKNOWN_RUNTIME_KEY=value\n",
+        _runtime_env_base() + "PUBLIC_APP_URL=http://[\n",
+    )
+    for index, content in enumerate(invalid_cases):
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        result = _run_runtime_env(case_dir, content=content.encode())
+        assert result.returncode == 78
+        assert sentinel not in result.stderr
+
+    invalid_utf8 = tmp_path / "invalid-utf8"
+    invalid_utf8.mkdir()
+    result = _run_runtime_env(invalid_utf8, content=b"APP_ENV=\xff\n")
+    assert result.returncode == 78
+    assert "valid UTF-8" in result.stderr
+
+    nul = tmp_path / "nul"
+    nul.mkdir()
+    result = _run_runtime_env(nul, content=b"APP_ENV=production\x00\n")
+    assert result.returncode == 78
+    assert "NUL" in result.stderr
+
+    oversized = tmp_path / "oversized"
+    oversized.mkdir()
+    result = _run_runtime_env(
+        oversized,
+        content=b"#" * (128 * 1024 + 1),
+    )
+    assert result.returncode == 78
+    assert "128 KiB" in result.stderr
+
+    blank_path = tmp_path / "blank-path"
+    blank_path.mkdir()
+    result = _run_runtime_env(
+        blank_path,
+        content=None,
+        extra_env={"TIT_RUNTIME_ENV_FILE": "   "},
+    )
+    assert result.returncode == 78
+    assert "must not be empty" in result.stderr
+
+    missing_profile = tmp_path / "missing-profile"
+    missing_profile.mkdir()
+    result = _run_runtime_env(
+        missing_profile,
+        content=_runtime_env_base().encode(),
+        extra_env={"TIT_PROCESS_PROFILE": ""},
+    )
+    assert result.returncode == 78
+    assert "TIT_PROCESS_PROFILE=application" in result.stderr
+
+
+def test_gaea_runtime_env_rejects_legacy_company_test_database_variables(
+    tmp_path: Path,
+) -> None:
+    for index, key in enumerate(
+        ("COMPANY_TEST_DATABASE_ENABLED", "TIDE_ADMIN_DB_HOST", "TIDE_APP_DB_USER")
+    ):
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        result = _run_runtime_env(
+            case_dir,
+            content=_runtime_env_base().encode(),
+            extra_env={key: "legacy-value"},
+        )
+        assert result.returncode == 78
+        assert "legacy company-test database variables" in result.stderr
+        assert "legacy-value" not in result.stderr
+
+
+def test_gaea_runtime_env_keeps_platform_only_mode_backward_compatible(
+    tmp_path: Path,
+) -> None:
+    started = _run_runtime_env(tmp_path, content=None)
+    assert started.returncode == 0, started.stderr
+    assert "mode=platform" in started.stderr
+
+    healthy = _run_runtime_env(tmp_path, content=None, mode="healthcheck")
+    assert healthy.returncode == 0, healthy.stderr
+
+
+def test_gaea_application_runtime_env_template_is_non_secret_and_current(
+    tmp_path: Path,
+) -> None:
+    content = APPLICATION_RUNTIME_ENV.read_text(encoding="utf-8")
+    assignments: dict[str, str] = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        assert "=" in stripped
+        key, value = stripped.split("=", 1)
+        assert re.fullmatch(r"[A-Z][A-Z0-9_]*", key)
+        assert key not in assignments
+        assignments[key] = value
+
+    forbidden = {
+        "ARK_API_KEY",
+        "AUTH_JWT_SECRET",
+        "CDN_ACCESS_KEY_ID",
+        "CDN_ACCESS_KEY_SECRET",
+        "CRM_SSO_JWT_SECRET_CURRENT",
+        "CRM_SSO_JWT_SECRET_PREVIOUS",
+        "DATABASE_URL",
+        "DATA_HASH_SECRET",
+        "KUOZHI_APP_KEY",
+        "KUOZHI_SECRET_KEY",
+        "MAIL_API_ACCESS_KEY",
+        "OPENAI_API_KEY",
+        "OSS_ACCESS_KEY_ID",
+        "OSS_ACCESS_KEY_SECRET",
+        "SHIWEN_READ_DATABASE_URL",
+        "TIDE_DATABASE_URL",
+    }
+    assert forbidden.isdisjoint(assignments)
+    assert not any(key.startswith(("TII_", "TIT_DTS_")) for key in assignments)
+    assert assignments["APP_ENV"] == "production"
+    assert assignments["TIT_MIGRATION_MODE"] == "false"
+    assert assignments["TIT_SOURCE_WIDE_ENABLED"] == "false"
+    assert assignments["TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED"] == "false"
+    assert assignments["TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS"] == "900"
+    assert assignments["TASK_CATALOG_PUBLIC_WRITE"] == "false"
+    assert assignments["TIT_ALLOWED_HOSTS"] == "tide-camp-ops.test.51talk.biz"
+    assert assignments["TIT_HEALTHCHECK_HOST"] == "tide-camp-ops.test.51talk.biz"
+    assert "TIT_SOURCE_WORKER_DATABASE_URL" not in assignments
+    assert "COMPANY_TEST_DATABASE_ENABLED" not in assignments
+    assert "CDN_API_ENDPOINT" not in assignments
+    assert "VIDEO_PREFETCH_STATE_DIR" not in assignments
+    assert not any(key.startswith("PUBLIC_ASSET_") for key in assignments)
+    assert "TIT_RUNTIME_ENV_FILE=/deployments/config/application.env" in content
+
+    runnable = content.replace(
+        "REPLACE_WITH_INGRESS_IP_OR_CIDR",
+        "10.0.0.8/32",
+    )
+    result = _run_runtime_env(tmp_path, content=runnable.encode())
+    assert result.returncode == 0, result.stderr
+
+    operations_contract = _run_runtime_env(
+        tmp_path,
+        content=runnable.encode(),
+        extra_env={
+            "DATABASE_URL": (
+                "postgresql+psycopg://tit_growth_app:dummy@db.example.test/"
+                "tide_system_test?sslmode=verify-full"
+            ),
+            "PYTHONPATH": str(ROOT / "backend"),
+        },
+        command=[
+            str(ROOT / "backend" / ".venv" / "bin" / "python"),
+            "-c",
+            (
+                "from app.runtime_settings import validate_production_runtime; "
+                "validate_production_runtime()"
+            ),
+        ],
+    )
+    assert operations_contract.returncode == 0, operations_contract.stderr
+
+
 def test_source_wide_enable_gate_defaults_true_and_rejects_invalid_values() -> None:
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 
@@ -1236,6 +1605,13 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "推送和发布" in readme
     assert "模块选择不会自动创建 Gaea 项目" in readme
     assert "五个业务进程入口" in readme
+    assert "application.runtime.env.example" in readme
+    assert "TIT_RUNTIME_ENV_FILE=/deployments/config/application.env" in readme
+    assert "TIT_PROCESS_PROFILE=application" in readme
+    assert "平台环境变量优先于配置文件" in readme
+    assert "TII_*" in readme
+    assert "挂载文件不会\n热加载" in readme
+    assert "RollingUpdate" in readme
     assert "非 root" in readme
     assert "multi_module" in readme
     assert "8010" in readme and "8080" in readme and "3000" in readme

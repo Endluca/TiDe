@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { parseCorsOrigins, validateEnvironment } from './environment';
 
 const validProductionEnvironment = {
@@ -19,6 +22,28 @@ const validProductionEnvironment = {
   DATA_HASH_SECRET: 'data-hash-secret-with-at-least-32-characters',
   AUTH_JWT_SECRET: 'auth-jwt-secret-with-at-least-32-characters',
 } as const;
+
+function gaeaApplicationRuntimeEnvironment(): Record<string, string> {
+  const path = resolve(
+    __dirname,
+    '../../../../../gaea/application/application.runtime.env.example',
+  );
+  const environment: Record<string, string> = {};
+  for (const rawLine of readFileSync(path, 'utf8').split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+    const separator = line.indexOf('=');
+    expect(separator).toBeGreaterThan(0);
+    const key = line.slice(0, separator);
+    expect(environment[key]).toBeUndefined();
+    environment[key] = line
+      .slice(separator + 1)
+      .replace('REPLACE_WITH_INGRESS_IP_OR_CIDR', '10.0.0.8/32');
+  }
+  return environment;
+}
 
 describe('environment configuration', () => {
   it('normalizes defaults and comma-separated CORS origins', () => {
@@ -229,6 +254,30 @@ describe('environment configuration', () => {
     const environment = validateEnvironment(validProductionEnvironment);
 
     expect(environment.NODE_ENV).toBe('production');
+    expect(environment.FILE_STORAGE_PROVIDER).toBe('OSS');
+  });
+
+  it('accepts the reviewed Gaea application runtime template in production', () => {
+    const environment = validateEnvironment({
+      ...gaeaApplicationRuntimeEnvironment(),
+      NODE_ENV: 'production',
+      BIND_HOST: '127.0.0.1',
+      PORT: '3000',
+      FILE_UPLOAD_MAX_BYTES: '10485760',
+      TIDE_DATABASE_URL:
+        'postgresql://tit_teacher_crud:dummy@db.example.test/tide_system_test?sslmode=verify-full',
+      SHIWEN_READ_DATABASE_URL:
+        'postgresql://tit_teacher_crud:dummy@db.example.test/tide_system_test?sslmode=verify-full',
+      DATA_HASH_SECRET: 'dummy-data-hash-secret-at-least-32-characters',
+      AUTH_JWT_SECRET: 'dummy-auth-jwt-secret-at-least-32-characters',
+      KUOZHI_APP_KEY: 'dummy-kuozhi-app-key',
+      KUOZHI_SECRET_KEY: 'dummy-kuozhi-secret-key',
+      OSS_ACCESS_KEY_ID: 'dummy-oss-access-key-id',
+      OSS_ACCESS_KEY_SECRET: 'dummy-oss-access-key-secret',
+    });
+
+    expect(environment.NODE_ENV).toBe('production');
+    expect(environment.SHIWEN_READ_MODE).toBe('DIRECT_TABLES');
     expect(environment.FILE_STORAGE_PROVIDER).toBe('OSS');
   });
 
