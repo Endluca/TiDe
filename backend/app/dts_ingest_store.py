@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from typing import Any
@@ -28,6 +28,7 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    tuple_,
 )
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.dialects import postgresql
@@ -74,6 +75,7 @@ MUTABLE_RELATIONS = frozenset(
 )
 TEACHER_COURSE_SCOPE_FIELDS = frozenset({"course", "status_on_time"})
 DIRTY_KEY_UPSERT_BATCH_SIZE = 500
+SOURCE_ROW_UPSERT_BATCH_SIZE = 500
 PROJECTION_ADVISORY_LOCK_NAME = "tit-dts-wide-projector-v1"
 DOMESTIC_STUDENT_TOKEN_SQL_PATTERN = r"^dom:v1:[0-9a-f]{64}$"
 DOMESTIC_STUDENT_KEY_FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
@@ -412,6 +414,20 @@ class DtsResumeCheckpoint:
 
     next_offset: int
     source_timestamp: int
+
+
+@dataclass(frozen=True)
+class _EventPersistencePlan:
+    ignored: bool
+    source_write_state: tuple[
+        str,
+        dict[str, str],
+        dict[str, list[str]],
+        dict[str, Any],
+        bool,
+    ] | None
+    key_rows: tuple[tuple[str, str, str], ...]
+    issue_codes: list[str]
 
 
 @dataclass(frozen=True)
@@ -1908,9 +1924,888 @@ class PostgresDtsEventSink:
         with self.engine.begin() as connection:
             return self._apply_transaction(connection, event, dirty_keys)
 
+    def apply_batch(
+        self,
+        items: Sequence[
+            tuple[
+                DtsChangeEvent,
+                DirtyKeySet,
+                AppointProjectionCandidate | None,
+            ]
+        ],
+    ) -> tuple[bool, ...]:
+        """Persist one ordered stream batch in one PostgreSQL transaction.
+
+        The event ledger is inserted with one statement and the authoritative
+        checkpoint is updated once, after every new event in the batch has
+        been persisted.  Existing replay receipts are returned as duplicates;
+        a gap or a ledger/checkpoint disagreement rolls back the whole batch.
+        """
+
+        if not items:
+            return ()
+        prepared = tuple((event, dirty_keys) for event, dirty_keys, _ in items)
+        first_event = prepared[0][0]
+        stream_identity = (
+            first_event.source_region,
+            first_event.topic,
+            first_event.partition,
+        )
+        previous_offset: int | None = None
+        for event, _dirty_keys in prepared:
+            self._require_source_region(event.source_region)
+            # Protect every domestic event before any value from this batch
+            # can become an overseas SQL bind parameter.
+            assert_domestic_event_protected(event)
+            if (
+                event.source_region,
+                event.topic,
+                event.partition,
+            ) != stream_identity:
+                raise DtsIngestStoreError("DTS_DATABASE_BATCH_STREAM_MISMATCH")
+            if previous_offset is not None and event.offset <= previous_offset:
+                raise DtsIngestStoreError(
+                    "DTS_DATABASE_BATCH_OFFSET_ORDER_INVALID"
+                )
+            previous_offset = event.offset
+        self._validate_runtime()
+        with self.engine.begin() as connection:
+            return self._apply_batch_transaction(connection, prepared)
+
     def _require_source_region(self, source_region: str) -> None:
         if self.source_region is not None and source_region != self.source_region:
             raise DtsIngestStoreError("DTS_SOURCE_REGION_MISMATCH")
+
+    @staticmethod
+    def _stream_identity(event: DtsChangeEvent) -> str:
+        return json.dumps(
+            [event.source_region, event.topic, event.partition],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+
+    def _lock_stream_checkpoint(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+    ) -> int | None:
+        checkpoint = DtsIngestCheckpointRecord.__table__
+        connection.execute(
+            text(
+                "SELECT pg_catalog.pg_advisory_xact_lock("
+                "pg_catalog.hashtextextended(:stream_identity, 0)"
+                ")"
+            ),
+            {"stream_identity": self._stream_identity(event)},
+        )
+        return connection.execute(
+            select(checkpoint.c.next_offset)
+            .where(
+                checkpoint.c.source_region == event.source_region,
+                checkpoint.c.topic == event.topic,
+                checkpoint.c.partition_id == event.partition,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+
+    def _plan_event_persistence(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+        dirty_keys: DirtyKeySet,
+    ) -> _EventPersistencePlan:
+        source_table = DtsSourceRowRecord.__table__
+        ignored = dirty_keys.ignored_reason is not None
+        row_state = _source_row_state(event)
+        source_write_state: tuple[
+            str,
+            dict[str, str],
+            dict[str, list[str]],
+            dict[str, Any],
+            bool,
+        ] | None = None
+        key_row_values = set(_dirty_key_rows(dirty_keys))
+        if not ignored and row_state is not None:
+            source_key, key_data, _incoming_keys, incoming_row, is_deleted = (
+                row_state
+            )
+            existing = connection.execute(
+                select(source_table.c.source_row, source_table.c.is_deleted)
+                .where(
+                    source_table.c.source_region == event.source_region,
+                    source_table.c.source_table == event.table_name,
+                    source_table.c.source_key == source_key,
+                )
+                .with_for_update()
+            ).mappings().one_or_none()
+            existing_row: dict[str, Any] = {}
+            if existing is not None:
+                raw_existing_row = existing["source_row"]
+                if not isinstance(raw_existing_row, Mapping):
+                    raise DtsIngestStoreError("DTS_STORED_SOURCE_ROW_INVALID")
+                existing_row = dict(raw_existing_row)
+
+            suffix = source_table_suffix(event)
+            if suffix is None:  # pragma: no cover - guarded by source state
+                raise DtsIngestStoreError("DTS_SOURCE_TABLE_PROFILE_MISSING")
+            old_dependency_keys = _dependency_keys(suffix, existing_row)
+            merged_row = {**existing_row, **incoming_row}
+            merged_dependency_keys = _dependency_keys(suffix, merged_row)
+            key_row_values.update(
+                _dependency_dirty_key_rows(old_dependency_keys)
+            )
+            key_row_values.update(
+                _dependency_dirty_key_rows(merged_dependency_keys)
+            )
+            scope_changed = any(
+                existing_row.get(field_name) != merged_row.get(field_name)
+                for field_name in TEACHER_COURSE_SCOPE_FIELDS
+            )
+            should_fanout_teacher_courses = (
+                event.source_region == "dom"
+                and suffix == "teacher"
+                and event.operation in {"INSERT", "UPDATE"}
+                and (
+                    existing is None
+                    or bool(existing.get("is_deleted", False))
+                    or scope_changed
+                )
+            )
+            if should_fanout_teacher_courses:
+                teacher_ids = merged_dependency_keys["teacher_ids"]
+                if teacher_ids:
+                    dependency = {"teacher_ids": [teacher_ids[0]]}
+                    appoint_dependencies = connection.execute(
+                        select(source_table.c.dependency_keys).where(
+                            or_(
+                                and_(
+                                    source_table.c.source_region == "dom",
+                                    source_table.c.source_table == "dom_appoint",
+                                ),
+                                and_(
+                                    source_table.c.source_region == "ovs",
+                                    source_table.c.source_table == "ovs_appoint",
+                                ),
+                            ),
+                            source_table.c.is_deleted.is_(False),
+                            source_table.c.dependency_keys.op("@>")(
+                                cast(dependency, JSONB)
+                            ),
+                        )
+                    ).scalars().all()
+                    for appoint_dependency in appoint_dependencies:
+                        if not isinstance(appoint_dependency, Mapping):
+                            raise DtsIngestStoreError(
+                                "DTS_STORED_DEPENDENCY_KEYS_INVALID"
+                            )
+                        key_row_values.update(
+                            (
+                                "COURSE",
+                                str(course_id).strip(),
+                                "",
+                            )
+                            for course_id in appoint_dependency.get(
+                                "course_ids", []
+                            )
+                            if str(course_id).strip()
+                        )
+            source_write_state = (
+                source_key,
+                key_data,
+                merged_dependency_keys,
+                merged_row,
+                is_deleted,
+            )
+
+        return _EventPersistencePlan(
+            ignored=ignored,
+            source_write_state=source_write_state,
+            key_rows=tuple(sorted(key_row_values)),
+            issue_codes=list(
+                dict.fromkeys(
+                    (
+                        *dirty_keys.issues,
+                        *((dirty_keys.ignored_reason,) if ignored else ()),
+                    )
+                )
+            ),
+        )
+
+    @staticmethod
+    def _receipt_values(
+        event: DtsChangeEvent,
+        plan: _EventPersistencePlan,
+    ) -> dict[str, Any]:
+        return {
+            "source_region": event.source_region,
+            "topic": event.topic,
+            "partition_id": event.partition,
+            "offset_value": event.offset,
+            "record_id": event.record_id,
+            "source_timestamp": event.source_timestamp,
+            "source_txid": event.source_txid,
+            "source_position": event.source_position,
+            "operation": event.operation,
+            "source_database": event.database_name,
+            "source_schema": event.schema_name,
+            "source_table": event.table_name,
+            "route_status": "IGNORED" if plan.ignored else "PROCESSED",
+            "dirty_key_count": len(plan.key_rows),
+            "issue_codes": plan.issue_codes,
+        }
+
+    def _write_event_state(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+        dirty_keys: DirtyKeySet,
+        plan: _EventPersistencePlan,
+    ) -> None:
+        source_table = DtsSourceRowRecord.__table__
+        dirty_table = DtsDirtyKeyRecord.__table__
+        if plan.source_write_state is not None:
+            source_key, key_data, dependency_keys, source_row, is_deleted = (
+                plan.source_write_state
+            )
+            source_insert = insert(source_table).values(
+                source_region=event.source_region,
+                source_table=event.table_name,
+                source_key=source_key,
+                source_key_data=key_data,
+                dependency_keys=dependency_keys,
+                source_row=source_row,
+                is_deleted=is_deleted,
+                source_timestamp=event.source_timestamp,
+                last_record_id=event.record_id,
+                source_position=event.source_position,
+                last_topic=event.topic,
+                last_partition=event.partition,
+                last_offset=event.offset,
+                row_version=1,
+            )
+            excluded = source_insert.excluded
+            newer = or_(
+                excluded.source_timestamp > source_table.c.source_timestamp,
+                and_(
+                    excluded.source_timestamp == source_table.c.source_timestamp,
+                    excluded.last_record_id > source_table.c.last_record_id,
+                ),
+                and_(
+                    excluded.source_timestamp == source_table.c.source_timestamp,
+                    excluded.last_record_id == source_table.c.last_record_id,
+                    excluded.last_offset > source_table.c.last_offset,
+                ),
+            )
+            connection.execute(
+                source_insert.on_conflict_do_update(
+                    index_elements=[
+                        source_table.c.source_region,
+                        source_table.c.source_table,
+                        source_table.c.source_key,
+                    ],
+                    set_={
+                        "source_key_data": excluded.source_key_data,
+                        "dependency_keys": excluded.dependency_keys,
+                        "source_row": excluded.source_row,
+                        "is_deleted": excluded.is_deleted,
+                        "source_timestamp": excluded.source_timestamp,
+                        "last_record_id": excluded.last_record_id,
+                        "source_position": excluded.source_position,
+                        "last_topic": excluded.last_topic,
+                        "last_partition": excluded.last_partition,
+                        "last_offset": excluded.last_offset,
+                        "row_version": source_table.c.row_version + 1,
+                        "updated_at": text("clock_timestamp()"),
+                    },
+                    where=newer,
+                )
+            )
+
+        for batch_start in range(
+            0, len(plan.key_rows), DIRTY_KEY_UPSERT_BATCH_SIZE
+        ):
+            batch = plan.key_rows[
+                batch_start : batch_start + DIRTY_KEY_UPSERT_BATCH_SIZE
+            ]
+            dirty_insert = insert(dirty_table).values(
+                [
+                    {
+                        "key_type": key_type,
+                        "key_part_1": key_part_1,
+                        "key_part_2": key_part_2,
+                        "status": "PENDING",
+                        "pending_event_count": 1,
+                        "attempt_count": 0,
+                        "last_source_region": event.source_region,
+                        "last_source_table": event.table_name,
+                        "last_topic": event.topic,
+                        "last_partition": event.partition,
+                        "last_offset": event.offset,
+                        "issue_codes": list(dirty_keys.issues),
+                        "row_version": 1,
+                    }
+                    for key_type, key_part_1, key_part_2 in batch
+                ]
+            )
+            excluded = dirty_insert.excluded
+            connection.execute(
+                dirty_insert.on_conflict_do_update(
+                    index_elements=[
+                        dirty_table.c.key_type,
+                        dirty_table.c.key_part_1,
+                        dirty_table.c.key_part_2,
+                    ],
+                    set_={
+                        "status": "PENDING",
+                        "pending_event_count": (
+                            dirty_table.c.pending_event_count + 1
+                        ),
+                        "attempt_count": 0,
+                        "last_source_region": excluded.last_source_region,
+                        "last_source_table": excluded.last_source_table,
+                        "last_topic": excluded.last_topic,
+                        "last_partition": excluded.last_partition,
+                        "last_offset": excluded.last_offset,
+                        "issue_codes": dirty_table.c.issue_codes.op("||")(
+                            excluded.issue_codes
+                        ),
+                        "last_error_code": None,
+                        "next_attempt_at": None,
+                        "claimed_at": None,
+                        "claimed_by": None,
+                        "row_version": dirty_table.c.row_version + 1,
+                        "last_seen_at": text("clock_timestamp()"),
+                    },
+                )
+            )
+
+    @staticmethod
+    def _write_checkpoint(
+        connection: Any,
+        event: DtsChangeEvent,
+    ) -> None:
+        checkpoint = DtsIngestCheckpointRecord.__table__
+        checkpoint_insert = insert(checkpoint).values(
+            source_region=event.source_region,
+            topic=event.topic,
+            partition_id=event.partition,
+            next_offset=event.offset + 1,
+            source_timestamp=event.source_timestamp,
+            source_position=event.source_position,
+        )
+        excluded = checkpoint_insert.excluded
+        connection.execute(
+            checkpoint_insert.on_conflict_do_update(
+                index_elements=[
+                    checkpoint.c.source_region,
+                    checkpoint.c.topic,
+                    checkpoint.c.partition_id,
+                ],
+                set_={
+                    "next_offset": excluded.next_offset,
+                    "source_timestamp": excluded.source_timestamp,
+                    "source_position": excluded.source_position,
+                    "updated_at": text("clock_timestamp()"),
+                },
+            )
+        )
+
+    def _plan_batch_state(
+        self,
+        connection: Any,
+        prepared: Sequence[tuple[DtsChangeEvent, DirtyKeySet]],
+    ) -> tuple[
+        tuple[_EventPersistencePlan, ...],
+        tuple[dict[str, Any], ...],
+    ]:
+        """Resolve source state once and fold ordered changes in memory."""
+
+        source_table = DtsSourceRowRecord.__table__
+        row_states: list[
+            tuple[
+                str,
+                dict[str, str],
+                dict[str, list[str]],
+                dict[str, Any],
+                bool,
+            ]
+            | None
+        ] = []
+        source_identities: set[tuple[str, str, str]] = set()
+        for event, dirty_keys in prepared:
+            row_state = _source_row_state(event)
+            row_states.append(row_state)
+            if row_state is not None and dirty_keys.ignored_reason is None:
+                source_key = row_state[0]
+                if event.table_name is None:  # pragma: no cover - guarded
+                    raise DtsIngestStoreError(
+                        "DTS_SOURCE_TABLE_PROFILE_MISSING"
+                    )
+                source_identities.add(
+                    (event.source_region, event.table_name, source_key)
+                )
+
+        stored_states: dict[tuple[str, str, str], dict[str, Any]] = {}
+        if source_identities:
+            identity_columns = tuple_(
+                source_table.c.source_region,
+                source_table.c.source_table,
+                source_table.c.source_key,
+            )
+            stored_rows = connection.execute(
+                select(
+                    source_table.c.source_region,
+                    source_table.c.source_table,
+                    source_table.c.source_key,
+                    source_table.c.source_row,
+                    source_table.c.is_deleted,
+                    source_table.c.source_timestamp,
+                    source_table.c.last_record_id,
+                    source_table.c.last_offset,
+                )
+                .where(identity_columns.in_(sorted(source_identities)))
+                .with_for_update()
+            ).mappings().all()
+            for stored in stored_rows:
+                raw_source_row = stored.get("source_row")
+                raw_is_deleted = stored.get("is_deleted")
+                source_timestamp = stored.get("source_timestamp")
+                last_record_id = stored.get("last_record_id")
+                last_offset = stored.get("last_offset")
+                if (
+                    not isinstance(raw_source_row, Mapping)
+                    or not isinstance(raw_is_deleted, bool)
+                    or isinstance(source_timestamp, bool)
+                    or not isinstance(source_timestamp, int)
+                    or isinstance(last_record_id, bool)
+                    or not isinstance(last_record_id, int)
+                    or isinstance(last_offset, bool)
+                    or not isinstance(last_offset, int)
+                ):
+                    raise DtsIngestStoreError(
+                        "DTS_STORED_SOURCE_ROW_INVALID"
+                    )
+                identity = (
+                    str(stored["source_region"]),
+                    str(stored["source_table"]),
+                    str(stored["source_key"]),
+                )
+                stored_states[identity] = {
+                    "exists": True,
+                    "source_row": dict(raw_source_row),
+                    "is_deleted": raw_is_deleted,
+                    "version": (
+                        source_timestamp,
+                        last_record_id,
+                        last_offset,
+                    ),
+                    "dependency_keys": _dependency_keys(
+                        identity[1].removeprefix("dom_").removeprefix("ovs_"),
+                        raw_source_row,
+                    ),
+                }
+
+        source_writes: dict[tuple[str, str, str], dict[str, Any]] = {}
+        plan_drafts: list[dict[str, Any]] = []
+        fanout_plan_indexes: dict[str, set[int]] = {}
+        for index, ((event, dirty_keys), row_state) in enumerate(
+            zip(prepared, row_states)
+        ):
+            ignored = dirty_keys.ignored_reason is not None
+            key_row_values = set(_dirty_key_rows(dirty_keys))
+            if not ignored and row_state is not None:
+                (
+                    source_key,
+                    key_data,
+                    _incoming_keys,
+                    incoming_row,
+                    is_deleted,
+                ) = row_state
+                if event.table_name is None:  # pragma: no cover - guarded
+                    raise DtsIngestStoreError(
+                        "DTS_SOURCE_TABLE_PROFILE_MISSING"
+                    )
+                identity = (
+                    event.source_region,
+                    event.table_name,
+                    source_key,
+                )
+                state = stored_states.get(identity)
+                state_exists = state is not None and bool(state["exists"])
+                if state is None:
+                    state = {
+                        "exists": False,
+                        "source_row": {},
+                        "is_deleted": False,
+                        "version": (-1, -1, -1),
+                        "dependency_keys": {
+                            "course_ids": [],
+                            "teacher_ids": [],
+                            "student_subjects": [],
+                            "label_ids": [],
+                            "category_ids": [],
+                        },
+                    }
+                    stored_states[identity] = state
+                existing_row = dict(state["source_row"])
+                suffix = source_table_suffix(event)
+                if suffix is None:  # pragma: no cover - guarded by row state
+                    raise DtsIngestStoreError(
+                        "DTS_SOURCE_TABLE_PROFILE_MISSING"
+                    )
+                old_dependency_keys = _dependency_keys(suffix, existing_row)
+                merged_row = {**existing_row, **incoming_row}
+                merged_dependency_keys = _dependency_keys(suffix, merged_row)
+                key_row_values.update(
+                    _dependency_dirty_key_rows(old_dependency_keys)
+                )
+                key_row_values.update(
+                    _dependency_dirty_key_rows(merged_dependency_keys)
+                )
+                scope_changed = any(
+                    existing_row.get(field_name)
+                    != merged_row.get(field_name)
+                    for field_name in TEACHER_COURSE_SCOPE_FIELDS
+                )
+                should_fanout_teacher_courses = (
+                    event.source_region == "dom"
+                    and suffix == "teacher"
+                    and event.operation in {"INSERT", "UPDATE"}
+                    and (
+                        not state_exists
+                        or bool(state["is_deleted"])
+                        or scope_changed
+                    )
+                )
+                if should_fanout_teacher_courses:
+                    for teacher_id in merged_dependency_keys["teacher_ids"]:
+                        fanout_plan_indexes.setdefault(
+                            teacher_id, set()
+                        ).add(index)
+
+                incoming_version = (
+                    event.source_timestamp,
+                    event.record_id,
+                    event.offset,
+                )
+                if not state_exists or incoming_version > state["version"]:
+                    state.update(
+                        {
+                            "exists": True,
+                            "source_row": merged_row,
+                            "is_deleted": is_deleted,
+                            "version": incoming_version,
+                            "dependency_keys": merged_dependency_keys,
+                        }
+                    )
+                    source_writes[identity] = {
+                        "source_region": event.source_region,
+                        "source_table": event.table_name,
+                        "source_key": source_key,
+                        "source_key_data": key_data,
+                        "dependency_keys": merged_dependency_keys,
+                        "source_row": merged_row,
+                        "is_deleted": is_deleted,
+                        "source_timestamp": event.source_timestamp,
+                        "last_record_id": event.record_id,
+                        "source_position": event.source_position,
+                        "last_topic": event.topic,
+                        "last_partition": event.partition,
+                        "last_offset": event.offset,
+                        "row_version": 1,
+                    }
+
+            plan_drafts.append(
+                {
+                    "ignored": ignored,
+                    "key_rows": key_row_values,
+                    "issue_codes": list(
+                        dict.fromkeys(
+                            (
+                                *dirty_keys.issues,
+                                *((
+                                    dirty_keys.ignored_reason,
+                                ) if ignored else ()),
+                            )
+                        )
+                    ),
+                }
+            )
+
+        if fanout_plan_indexes:
+            teacher_ids = sorted(fanout_plan_indexes)
+            appoint_dependencies = connection.execute(
+                text(
+                    """
+                    SELECT dependency_keys
+                    FROM public.dts_source_rows
+                    WHERE (
+                        (source_region = 'dom'
+                         AND source_table = 'dom_appoint')
+                        OR
+                        (source_region = 'ovs'
+                         AND source_table = 'ovs_appoint')
+                    )
+                      AND is_deleted IS FALSE
+                      AND (dependency_keys -> 'teacher_ids')
+                          ?| CAST(:teacher_ids AS text[])
+                    """
+                ),
+                {"teacher_ids": teacher_ids},
+            ).scalars().all()
+            appoint_dependencies.extend(
+                state["dependency_keys"]
+                for identity, state in stored_states.items()
+                if identity[1] in {"dom_appoint", "ovs_appoint"}
+                and bool(state["exists"])
+                and not bool(state["is_deleted"])
+            )
+            for dependency_keys in appoint_dependencies:
+                if not isinstance(dependency_keys, Mapping):
+                    raise DtsIngestStoreError(
+                        "DTS_STORED_DEPENDENCY_KEYS_INVALID"
+                    )
+                course_ids = {
+                    str(value).strip()
+                    for value in dependency_keys.get("course_ids", [])
+                    if str(value).strip()
+                }
+                for teacher_id in dependency_keys.get("teacher_ids", []):
+                    for plan_index in fanout_plan_indexes.get(
+                        str(teacher_id).strip(), set()
+                    ):
+                        plan_drafts[plan_index]["key_rows"].update(
+                            ("COURSE", course_id, "")
+                            for course_id in course_ids
+                        )
+
+        plans = tuple(
+            _EventPersistencePlan(
+                ignored=bool(draft["ignored"]),
+                source_write_state=None,
+                key_rows=tuple(sorted(draft["key_rows"])),
+                issue_codes=list(draft["issue_codes"]),
+            )
+            for draft in plan_drafts
+        )
+        return plans, tuple(source_writes.values())
+
+    @staticmethod
+    def _write_batch_source_rows(
+        connection: Any,
+        source_rows: Sequence[dict[str, Any]],
+    ) -> None:
+        source_table = DtsSourceRowRecord.__table__
+        for batch_start in range(
+            0, len(source_rows), SOURCE_ROW_UPSERT_BATCH_SIZE
+        ):
+            batch = source_rows[
+                batch_start : batch_start + SOURCE_ROW_UPSERT_BATCH_SIZE
+            ]
+            source_insert = insert(source_table).values(list(batch))
+            excluded = source_insert.excluded
+            newer = or_(
+                excluded.source_timestamp > source_table.c.source_timestamp,
+                and_(
+                    excluded.source_timestamp == source_table.c.source_timestamp,
+                    excluded.last_record_id > source_table.c.last_record_id,
+                ),
+                and_(
+                    excluded.source_timestamp == source_table.c.source_timestamp,
+                    excluded.last_record_id == source_table.c.last_record_id,
+                    excluded.last_offset > source_table.c.last_offset,
+                ),
+            )
+            connection.execute(
+                source_insert.on_conflict_do_update(
+                    index_elements=[
+                        source_table.c.source_region,
+                        source_table.c.source_table,
+                        source_table.c.source_key,
+                    ],
+                    set_={
+                        "source_key_data": excluded.source_key_data,
+                        "dependency_keys": excluded.dependency_keys,
+                        "source_row": excluded.source_row,
+                        "is_deleted": excluded.is_deleted,
+                        "source_timestamp": excluded.source_timestamp,
+                        "last_record_id": excluded.last_record_id,
+                        "source_position": excluded.source_position,
+                        "last_topic": excluded.last_topic,
+                        "last_partition": excluded.last_partition,
+                        "last_offset": excluded.last_offset,
+                        "row_version": source_table.c.row_version + 1,
+                        "updated_at": text("clock_timestamp()"),
+                    },
+                    where=newer,
+                )
+            )
+
+    @staticmethod
+    def _write_batch_dirty_keys(
+        connection: Any,
+        prepared: Sequence[tuple[DtsChangeEvent, DirtyKeySet]],
+        plans: Sequence[_EventPersistencePlan],
+    ) -> None:
+        dirty_table = DtsDirtyKeyRecord.__table__
+        aggregate: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for (event, dirty_keys), plan in zip(prepared, plans):
+            for key_type, key_part_1, key_part_2 in plan.key_rows:
+                identity = (key_type, key_part_1, key_part_2)
+                row = aggregate.get(identity)
+                if row is None:
+                    row = {
+                        "key_type": key_type,
+                        "key_part_1": key_part_1,
+                        "key_part_2": key_part_2,
+                        "status": "PENDING",
+                        "pending_event_count": 0,
+                        "attempt_count": 0,
+                        "last_source_region": event.source_region,
+                        "last_source_table": event.table_name,
+                        "last_topic": event.topic,
+                        "last_partition": event.partition,
+                        "last_offset": event.offset,
+                        "issue_codes": [],
+                        "row_version": 1,
+                    }
+                    aggregate[identity] = row
+                row["pending_event_count"] += 1
+                row["last_source_region"] = event.source_region
+                row["last_source_table"] = event.table_name
+                row["last_topic"] = event.topic
+                row["last_partition"] = event.partition
+                row["last_offset"] = event.offset
+                row["issue_codes"].extend(dirty_keys.issues)
+
+        rows = tuple(aggregate.values())
+        for batch_start in range(
+            0, len(rows), DIRTY_KEY_UPSERT_BATCH_SIZE
+        ):
+            batch = rows[
+                batch_start : batch_start + DIRTY_KEY_UPSERT_BATCH_SIZE
+            ]
+            dirty_insert = insert(dirty_table).values(list(batch))
+            excluded = dirty_insert.excluded
+            connection.execute(
+                dirty_insert.on_conflict_do_update(
+                    index_elements=[
+                        dirty_table.c.key_type,
+                        dirty_table.c.key_part_1,
+                        dirty_table.c.key_part_2,
+                    ],
+                    set_={
+                        "status": "PENDING",
+                        "pending_event_count": (
+                            dirty_table.c.pending_event_count
+                            + excluded.pending_event_count
+                        ),
+                        "attempt_count": 0,
+                        "last_source_region": excluded.last_source_region,
+                        "last_source_table": excluded.last_source_table,
+                        "last_topic": excluded.last_topic,
+                        "last_partition": excluded.last_partition,
+                        "last_offset": excluded.last_offset,
+                        "issue_codes": dirty_table.c.issue_codes.op("||")(
+                            excluded.issue_codes
+                        ),
+                        "last_error_code": None,
+                        "next_attempt_at": None,
+                        "claimed_at": None,
+                        "claimed_by": None,
+                        "row_version": dirty_table.c.row_version + 1,
+                        "last_seen_at": text("clock_timestamp()"),
+                    },
+                )
+            )
+
+    def _apply_batch_transaction(
+        self,
+        connection: Any,
+        prepared: Sequence[tuple[DtsChangeEvent, DirtyKeySet]],
+    ) -> tuple[bool, ...]:
+        first_event = prepared[0][0]
+        event_table = DtsIngestEventRecord.__table__
+        current_next_offset = self._lock_stream_checkpoint(
+            connection, first_event
+        )
+        offsets = [event.offset for event, _dirty_keys in prepared]
+        existing_offsets = {
+            int(value)
+            for value in connection.execute(
+                select(event_table.c.offset_value).where(
+                    event_table.c.source_region == first_event.source_region,
+                    event_table.c.topic == first_event.topic,
+                    event_table.c.partition_id == first_event.partition,
+                    event_table.c.offset_value.in_(offsets),
+                )
+            ).scalars().all()
+        }
+
+        duplicate_flags: list[bool] = []
+        expected_next_offset = current_next_offset
+        new_offsets: set[int] = set()
+        for event, _dirty_keys in prepared:
+            if event.offset in existing_offsets:
+                if (
+                    expected_next_offset is None
+                    or expected_next_offset < event.offset + 1
+                ):
+                    raise DtsIngestStoreError(
+                        "DTS_LEDGER_CHECKPOINT_INCONSISTENT"
+                    )
+                duplicate_flags.append(True)
+                continue
+            if (
+                expected_next_offset is not None
+                and event.offset != expected_next_offset
+            ):
+                raise DtsIngestStoreError(
+                    "DTS_DATABASE_OFFSET_NOT_CONTIGUOUS"
+                )
+            duplicate_flags.append(False)
+            new_offsets.add(event.offset)
+            expected_next_offset = event.offset + 1
+
+        new_prepared = tuple(
+            item
+            for item, duplicate in zip(prepared, duplicate_flags)
+            if not duplicate
+        )
+        receipt_rows: list[dict[str, Any]] = []
+        last_advanced_event: DtsChangeEvent | None = None
+        if new_prepared:
+            plans, source_rows = self._plan_batch_state(
+                connection, new_prepared
+            )
+            self._write_batch_source_rows(connection, source_rows)
+            self._write_batch_dirty_keys(connection, new_prepared, plans)
+            receipt_rows = [
+                self._receipt_values(event, plan)
+                for (event, _dirty_keys), plan in zip(new_prepared, plans)
+            ]
+            last_advanced_event = new_prepared[-1][0]
+
+        if receipt_rows:
+            receipt = insert(event_table).values(receipt_rows).on_conflict_do_nothing(
+                index_elements=[
+                    event_table.c.source_region,
+                    event_table.c.topic,
+                    event_table.c.partition_id,
+                    event_table.c.offset_value,
+                ]
+            ).returning(event_table.c.offset_value)
+            inserted_offsets = {
+                int(value)
+                for value in connection.execute(receipt).scalars().all()
+            }
+            if inserted_offsets != new_offsets:
+                raise DtsIngestStoreError(
+                    "DTS_LEDGER_CHECKPOINT_INCONSISTENT"
+                )
+        if last_advanced_event is not None:
+            self._write_checkpoint(connection, last_advanced_event)
+        return tuple(duplicate_flags)
 
     def _apply_transaction(
         self,

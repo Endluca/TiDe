@@ -1266,6 +1266,17 @@ class _ContextConnection(_Connection):
         self.close()
 
 
+class _BatchEngine(_ActivationEngine):
+    def __init__(self, connection: _ContextConnection) -> None:
+        super().__init__(connection)
+        self.begin_count = 0
+
+    def begin(self) -> _ContextConnection:
+        self.begin_count += 1
+        assert isinstance(self.connection, _ContextConnection)
+        return self.connection
+
+
 @pytest.mark.parametrize(
     ("source_region", "violation", "expected_error"),
     [
@@ -1620,6 +1631,358 @@ def test_transaction_writes_receipt_mirror_dirty_keys_then_checkpoint() -> None:
         f"attempt_count = %({name})s" in dirty_sql and value == 0
         for name, value in compiled_dirty.params.items()
     )
+
+
+def _control_event(offset: int) -> DtsChangeEvent:
+    event = _event(offset=offset)
+    return DtsChangeEvent(
+        **{
+            **event.__dict__,
+            "record_id": 9000 + offset,
+            "source_timestamp": 1786342560 + offset,
+            "source_position": f"lsn:{offset}",
+            "operation": "HEARTBEAT",
+            "database_name": None,
+            "schema_name": None,
+            "table_name": None,
+            "before": None,
+            "after": None,
+        }
+    )
+
+
+def test_batch_bulk_inserts_receipts_and_writes_only_final_checkpoint() -> None:
+    first = _control_event(42)
+    second = _control_event(43)
+    connection = _ContextConnection(
+        [
+            _Result(),  # advisory lock
+            _Result(scalar=42),  # checkpoint
+            _Result(rows=[]),  # existing receipts
+            _Result(rows=[42, 43]),  # bulk INSERT RETURNING
+            _Result(),  # final checkpoint
+        ]
+    )
+    engine = _BatchEngine(connection)
+    sink = object.__new__(PostgresDtsEventSink)
+    sink.source_region = "ovs"
+    sink._validated = True
+    sink.engine = engine
+
+    duplicates = sink.apply_batch(
+        (
+            (first, route_dirty_keys(first), None),
+            (second, route_dirty_keys(second), None),
+        )
+    )
+
+    assert duplicates == (False, False)
+    assert engine.begin_count == 1
+    assert len(connection.statements) == 5
+    receipt = connection.statements[3].compile(dialect=postgresql.dialect())
+    assert "INSERT INTO dts_ingest_events" in str(receipt)
+    assert "RETURNING dts_ingest_events.offset_value" in str(receipt)
+    assert sorted(
+        value
+        for name, value in receipt.params.items()
+        if name.startswith("offset_value_m")
+    ) == [42, 43]
+    checkpoint = connection.statements[4].compile(
+        dialect=postgresql.dialect()
+    )
+    assert any(
+        name.startswith("next_offset") and value == 44
+        for name, value in checkpoint.params.items()
+    )
+
+
+def test_batch_accepts_replay_prefix_then_advances_contiguous_suffix() -> None:
+    replay = _control_event(41)
+    advance = _control_event(42)
+    connection = _ContextConnection(
+        [
+            _Result(),
+            _Result(scalar=42),
+            _Result(rows=[41]),
+            _Result(rows=[42]),
+            _Result(),
+        ]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+
+    duplicates = sink._apply_batch_transaction(
+        connection,
+        (
+            (replay, route_dirty_keys(replay)),
+            (advance, route_dirty_keys(advance)),
+        ),
+    )
+
+    assert duplicates == (True, False)
+    receipt = connection.statements[3].compile(dialect=postgresql.dialect())
+    assert [
+        value
+        for name, value in receipt.params.items()
+        if name.startswith("offset_value_m")
+    ] == [42]
+
+
+def test_batch_gap_fails_before_state_receipt_or_checkpoint_writes() -> None:
+    first = _control_event(42)
+    gap = _control_event(44)
+    connection = _ContextConnection(
+        [_Result(), _Result(scalar=42), _Result(rows=[])]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="^DTS_DATABASE_OFFSET_NOT_CONTIGUOUS$",
+    ):
+        sink._apply_batch_transaction(
+            connection,
+            (
+                (first, route_dirty_keys(first)),
+                (gap, route_dirty_keys(gap)),
+            ),
+        )
+
+    assert len(connection.statements) == 3
+
+
+def test_batch_duplicate_only_does_not_rewrite_checkpoint() -> None:
+    first = _control_event(40)
+    second = _control_event(41)
+    connection = _ContextConnection(
+        [_Result(), _Result(scalar=42), _Result(rows=[40, 41])]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+
+    duplicates = sink._apply_batch_transaction(
+        connection,
+        (
+            (first, route_dirty_keys(first)),
+            (second, route_dirty_keys(second)),
+        ),
+    )
+
+    assert duplicates == (True, True)
+    assert len(connection.statements) == 3
+
+
+def test_batch_keeps_processed_source_and_dirty_writes_in_event_order() -> None:
+    first = _event(offset=42)
+    second = DtsChangeEvent(
+        **{
+            **_event(offset=43).__dict__,
+            "record_id": 9002,
+            "source_position": "lsn:2",
+            "after": {
+                **(_event(offset=43).after or {}),
+                "status": "completed",
+            },
+        }
+    )
+    connection = _ContextConnection(
+        [
+            _Result(),
+            _Result(scalar=42),
+            _Result(rows=[]),
+            _Result(
+                rows=[
+                    {
+                        "source_region": "ovs",
+                        "source_table": "ovs_appoint",
+                        "source_key": json.dumps(
+                            {"id": "99"}, separators=(",", ":")
+                        ),
+                        "source_row": {
+                            "id": "99",
+                            "t_id": "9",
+                            "s_id": "20",
+                            "status": "booked",
+                        },
+                        "is_deleted": False,
+                        "source_timestamp": 1786342500,
+                        "last_record_id": 8999,
+                        "last_offset": 41,
+                    }
+                ]
+            ),  # one batched source-state read
+            _Result(),  # one final source-row UPSERT
+            _Result(),  # one aggregated dirty-key UPSERT
+            _Result(rows=[42, 43]),
+            _Result(),
+        ]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+
+    duplicates = sink._apply_batch_transaction(
+        connection,
+        (
+            (first, route_dirty_keys(first)),
+            (second, route_dirty_keys(second)),
+        ),
+    )
+
+    assert duplicates == (False, False)
+    assert len(connection.statements) == 8
+    assert "dts_source_rows" in str(connection.statements[3])
+    assert "INSERT INTO dts_source_rows" in str(connection.statements[4])
+    assert "INSERT INTO dts_dirty_keys" in str(connection.statements[5])
+    assert "INSERT INTO dts_ingest_events" in str(connection.statements[6])
+    source_write = connection.statements[4].compile(
+        dialect=postgresql.dialect()
+    )
+    assert [
+        value
+        for name, value in source_write.params.items()
+        if name.startswith("last_offset_m")
+    ] == [43]
+    assert any(
+        name.startswith("source_row_m")
+        and isinstance(value, dict)
+        and value.get("status") == "completed"
+        for name, value in source_write.params.items()
+    )
+    dirty_write = connection.statements[5].compile(
+        dialect=postgresql.dialect()
+    )
+    assert {
+        value
+        for name, value in dirty_write.params.items()
+        if name.startswith("pending_event_count_m")
+    } == {1, 2}
+
+
+def test_batch_receipt_returning_mismatch_fails_before_checkpoint() -> None:
+    first = _control_event(42)
+    second = _control_event(43)
+    connection = _ContextConnection(
+        [
+            _Result(),
+            _Result(scalar=42),
+            _Result(rows=[]),
+            _Result(rows=[42]),
+        ]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="^DTS_LEDGER_CHECKPOINT_INCONSISTENT$",
+    ):
+        sink._apply_batch_transaction(
+            connection,
+            (
+                (first, route_dirty_keys(first)),
+                (second, route_dirty_keys(second)),
+            ),
+        )
+
+    assert len(connection.statements) == 4
+
+
+@pytest.mark.parametrize(
+    "processed_count",
+    [41, 100],
+    ids=["mixed_41_processed", "all_100_processed"],
+)
+def test_hundred_record_batch_uses_constant_sql_round_trips(
+    processed_count: int,
+) -> None:
+    events: list[DtsChangeEvent] = []
+    for offset in range(100, 200):
+        if offset < 100 + processed_count:
+            base = _event(offset=offset)
+            source_id = str(offset)
+            event = DtsChangeEvent(
+                **{
+                    **base.__dict__,
+                    "record_id": 9000 + offset,
+                    "source_timestamp": 1786342560 + offset,
+                    "source_position": f"lsn:{offset}",
+                    "before": {
+                        "id": source_id,
+                        "t_id": "10",
+                        "s_id": "20",
+                    },
+                    "after": {
+                        **(base.after or {}),
+                        "id": source_id,
+                    },
+                }
+            )
+        else:
+            event = _control_event(offset)
+        events.append(event)
+    connection = _ContextConnection(
+        [
+            _Result(),
+            _Result(scalar=100),
+            _Result(rows=[]),
+            _Result(rows=[]),  # all source identities in one FOR UPDATE
+            _Result(),  # 41 source rows in one UPSERT
+            _Result(),  # all dirty keys in one aggregated UPSERT
+            _Result(rows=list(range(100, 200))),
+            _Result(),
+        ]
+    )
+    sink = object.__new__(PostgresDtsEventSink)
+
+    duplicates = sink._apply_batch_transaction(
+        connection,
+        tuple((event, route_dirty_keys(event)) for event in events),
+    )
+
+    assert duplicates == (False,) * 100
+    assert len(connection.statements) == 8
+    source_write = connection.statements[4].compile(
+        dialect=postgresql.dialect()
+    )
+    assert len(
+        [
+            name
+            for name in source_write.params
+            if name.startswith("source_key_m")
+        ]
+    ) == processed_count
+    receipt = connection.statements[6].compile(
+        dialect=postgresql.dialect()
+    )
+    assert len(
+        [
+            name
+            for name in receipt.params
+            if name.startswith("offset_value_m")
+        ]
+    ) == 100
+
+
+def test_batch_rejects_raw_domestic_id_before_begin_or_execute() -> None:
+    original = _event(offset=42)
+    event = DtsChangeEvent(
+        **{
+            **original.__dict__,
+            "source_region": "dom",
+            "table_name": "dom_appoint",
+        }
+    )
+    connection = _ContextConnection([])
+    engine = _BatchEngine(connection)
+    sink = object.__new__(PostgresDtsEventSink)
+    sink.source_region = "dom"
+    sink._validated = True
+    sink.engine = engine
+
+    with pytest.raises(
+        DtsRecordError,
+        match="^DTS_DOM_RAW_STUDENT_ID_FORBIDDEN$",
+    ):
+        sink.apply_batch(((event, route_dirty_keys(event), None),))
+
+    assert engine.begin_count == 0
+    assert connection.statements == []
 
 
 def test_partial_update_recomputes_dependencies_and_dirties_old_and_new_owners() -> None:

@@ -307,7 +307,14 @@ class OfficialJavaDtsTransport:
             raise
 
     def run(self, *, max_messages: int, commit_offsets: bool) -> dict[str, int]:
-        """Process one bounded poll and ACK only database-durable events."""
+        """Process one bounded batch and ACK only after its DB commit.
+
+        Java streams individual EVENT frames to keep the line protocol
+        bounded, then closes the batch with BATCH_COMPLETE.  Python decodes
+        and protects every domestic identifier before issuing any SQL.  The
+        sink commits the ordered batch atomically; only then is one batched
+        acknowledgement sent back to the official SDK bridge.
+        """
 
         if not self._started or self._closed:
             raise DtsJavaTransportError(
@@ -326,12 +333,24 @@ class OfficialJavaDtsTransport:
             "duplicates": 0,
             "committed": 0,
             "sdk_checkpoint_accepted": 0,
+            "batch_bytes": 0,
+            "db_elapsed_ms": 0,
+            "sdk_ack_elapsed_ms": 0,
+            "batch_elapsed_ms": 0,
+            "durable_next_offset": (
+                0 if self._expected_offset is None else self._expected_offset
+            ),
         }
+        batch_started = self._monotonic()
         self._send({"type": "POLL", "max_messages": max_messages})
         poll_timeout = max(
             JAVA_TRANSPORT_START_TIMEOUT_SECONDS,
             self.idle_timeout_ms / 1000 + 5.0,
         )
+        events: list[_JavaEvent] = []
+        changes = []
+        acknowledgements: list[dict[str, int | str]] = []
+        working_expected_offset = self._expected_offset
         while True:
             message = self._receive(
                 expected={"EVENT", "BATCH_COMPLETE"},
@@ -339,14 +358,23 @@ class OfficialJavaDtsTransport:
             )
             if message["type"] == "BATCH_COMPLETE":
                 child_seen = self._required_non_negative_int(message, "seen")
-                if child_seen != counters["seen"]:
+                if child_seen != len(events):
                     raise DtsJavaTransportError(
                         "DTS_OFFICIAL_JAVA_BATCH_COUNT_MISMATCH"
                     )
-                return counters
+                child_batch_bytes = message.get("batch_bytes")
+                if child_batch_bytes is not None and (
+                    isinstance(child_batch_bytes, bool)
+                    or not isinstance(child_batch_bytes, int)
+                    or child_batch_bytes != counters["batch_bytes"]
+                ):
+                    raise DtsJavaTransportError(
+                        "DTS_OFFICIAL_JAVA_BATCH_BYTES_MISMATCH"
+                    )
+                break
 
             event = self._parse_event(message)
-            expected_offset = self._expected_offset
+            expected_offset = working_expected_offset
             if expected_offset is None:  # pragma: no cover - READY sets this
                 raise DtsJavaTransportError(
                     "DTS_OFFICIAL_JAVA_TRANSPORT_PROTOCOL_INVALID"
@@ -368,9 +396,47 @@ class OfficialJavaDtsTransport:
                 change_event,
                 self.settings,
             )
-            # PostgresDtsEventSink.apply() commits its transaction before this
-            # call returns.  Do not acknowledge Java before that boundary.
-            result = self.processor.process(change_event)
+            checkpoint_action = "REPLAY" if replay else "ADVANCE"
+            next_offset = expected_offset if replay else event.offset + 1
+            events.append(event)
+            changes.append(change_event)
+            counters["batch_bytes"] += len(event.payload)
+            acknowledgements.append(
+                {
+                    "offset": event.offset,
+                    "next_offset": next_offset,
+                    "source_timestamp": change_event.source_timestamp,
+                    "checkpoint_action": checkpoint_action,
+                }
+            )
+            if not replay:
+                working_expected_offset = next_offset
+
+        if not events:
+            counters["batch_elapsed_ms"] = max(
+                0,
+                int((self._monotonic() - batch_started) * 1000),
+            )
+            return counters
+
+        database_started = self._monotonic()
+        # The production sink commits the entire ordered batch before this
+        # call returns.  No Java checkpoint request is sent on any exception.
+        results = tuple(self.processor.process_batch(tuple(changes)))
+        database_finished = self._monotonic()
+        if len(results) != len(events):
+            raise DtsJavaTransportError(
+                "DTS_OFFICIAL_JAVA_BATCH_RESULT_COUNT_MISMATCH"
+            )
+        counters["db_elapsed_ms"] = max(
+            0,
+            int((database_finished - database_started) * 1000),
+        )
+        for result, acknowledgement in zip(
+            results,
+            acknowledgements,
+        ):
+            replay = acknowledgement["checkpoint_action"] == "REPLAY"
             if replay and result.status != "DUPLICATE":
                 raise DtsJavaTransportError(
                     "DTS_OFFICIAL_JAVA_REPLAY_NOT_DURABLE"
@@ -383,37 +449,50 @@ class OfficialJavaDtsTransport:
             else:
                 counters["ignored"] += 1
 
-            checkpoint_action = "REPLAY" if replay else "ADVANCE"
-            next_offset = expected_offset if replay else event.offset + 1
-            self._send(
-                {
-                    "type": "DURABLE_ACK",
-                    "offset": event.offset,
-                    "next_offset": next_offset,
-                    "source_timestamp": change_event.source_timestamp,
-                    "checkpoint_action": checkpoint_action,
-                }
+        sdk_ack_started = self._monotonic()
+        self._send(
+            {
+                "type": "DURABLE_ACK_BATCH",
+                "acks": acknowledgements,
+            }
+        )
+        accepted = self._receive(
+            expected={"SDK_CHECKPOINTS_ACCEPTED"},
+            timeout_seconds=JAVA_TRANSPORT_START_TIMEOUT_SECONDS,
+        )
+        replayed = sum(
+            acknowledgement["checkpoint_action"] == "REPLAY"
+            for acknowledgement in acknowledgements
+        )
+        advanced = len(acknowledgements) - replayed
+        if (
+            self._required_non_negative_int(accepted, "seen")
+            != len(acknowledgements)
+            or self._required_non_negative_int(accepted, "advanced")
+            != advanced
+            or self._required_non_negative_int(accepted, "replayed")
+            != replayed
+        ):
+            raise DtsJavaTransportError(
+                "DTS_OFFICIAL_JAVA_CHECKPOINT_ACK_MISMATCH"
             )
-            accepted = self._receive(
-                expected={"SDK_CHECKPOINT_ACCEPTED"},
-                timeout_seconds=JAVA_TRANSPORT_START_TIMEOUT_SECONDS,
+        sdk_ack_finished = self._monotonic()
+        counters["sdk_ack_elapsed_ms"] = max(
+            0,
+            int((sdk_ack_finished - sdk_ack_started) * 1000),
+        )
+        counters["sdk_checkpoint_accepted"] = advanced
+        if working_expected_offset is None:  # pragma: no cover - READY guard
+            raise DtsJavaTransportError(
+                "DTS_OFFICIAL_JAVA_TRANSPORT_PROTOCOL_INVALID"
             )
-            if (
-                self._required_non_negative_int(accepted, "offset")
-                != event.offset
-                or self._required_non_negative_int(
-                    accepted,
-                    "next_offset",
-                )
-                != next_offset
-                or accepted.get("checkpoint_action") != checkpoint_action
-            ):
-                raise DtsJavaTransportError(
-                    "DTS_OFFICIAL_JAVA_CHECKPOINT_ACK_MISMATCH"
-                )
-            if not replay:
-                counters["sdk_checkpoint_accepted"] += 1
-                self._expected_offset = next_offset
+        self._expected_offset = working_expected_offset
+        counters["durable_next_offset"] = working_expected_offset
+        counters["batch_elapsed_ms"] = max(
+            0,
+            int((sdk_ack_finished - batch_started) * 1000),
+        )
+        return counters
 
     def close(self, *, force: bool = False) -> None:
         """Close the protocol and reap the child without exposing stderr."""

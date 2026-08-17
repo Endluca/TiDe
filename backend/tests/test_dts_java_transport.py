@@ -131,16 +131,23 @@ class _FakeProcess:
                     ).decode("ascii"),
                 }
             )
-        elif message_type == "DURABLE_ACK":
+            self.emit({"type": "BATCH_COMPLETE", "seen": 1})
+        elif message_type == "DURABLE_ACK_BATCH":
+            acknowledgements = message["acks"]
             self.emit(
                 {
-                    "type": "SDK_CHECKPOINT_ACCEPTED",
-                    "offset": message["offset"],
-                    "next_offset": message["next_offset"],
-                    "checkpoint_action": message["checkpoint_action"],
+                    "type": "SDK_CHECKPOINTS_ACCEPTED",
+                    "seen": len(acknowledgements),
+                    "advanced": sum(
+                        acknowledgement["checkpoint_action"] == "ADVANCE"
+                        for acknowledgement in acknowledgements
+                    ),
+                    "replayed": sum(
+                        acknowledgement["checkpoint_action"] == "REPLAY"
+                        for acknowledgement in acknowledgements
+                    ),
                 }
             )
-            self.emit({"type": "BATCH_COMPLETE", "seen": 1})
         elif message_type == "CLOSE":
             self.emit({"type": "CLOSED"})
             self.lines.put(None)
@@ -168,6 +175,43 @@ class _FakeProcess:
         self.lines.put(None)
 
 
+class _FakeBatchProcess(_FakeProcess):
+    def __init__(
+        self,
+        *,
+        offsets: tuple[int, ...],
+        completed_seen: int | None = None,
+    ) -> None:
+        if not offsets:
+            raise ValueError("offsets must not be empty")
+        super().__init__(first_record_offset=offsets[0])
+        self.offsets = offsets
+        self.completed_seen = (
+            len(offsets) if completed_seen is None else completed_seen
+        )
+
+    def accept(self, message: dict[str, Any]) -> None:
+        if message["type"] != "POLL":
+            super().accept(message)
+            return
+        self.commands.append(message)
+        for offset in self.offsets:
+            self.emit(
+                {
+                    "type": "EVENT",
+                    "topic": "ovs-topic",
+                    "partition": 0,
+                    "offset": offset,
+                    "payload_base64": base64.b64encode(b"avro").decode(
+                        "ascii"
+                    ),
+                }
+            )
+        self.emit(
+            {"type": "BATCH_COMPLETE", "seen": self.completed_seen}
+        )
+
+
 def _settings() -> DtsConsumerSettings:
     return DtsConsumerSettings(
         source_region="ovs",
@@ -190,6 +234,58 @@ def _factory(process: _FakeProcess):
         return process
 
     return build
+
+
+def _patch_batch_event_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        dts_java_transport,
+        "decode_dts_sdk_1_4_avro",
+        lambda _: {},
+    )
+    monkeypatch.setattr(
+        dts_java_transport,
+        "build_change_event",
+        lambda *_args, **kwargs: SimpleNamespace(
+            source_timestamp=1786550400 + int(kwargs["offset"]),
+            offset=int(kwargs["offset"]),
+        ),
+    )
+    monkeypatch.setattr(
+        dts_java_transport,
+        "protect_domestic_student_ids",
+        lambda event, _settings: event,
+    )
+
+
+def _assert_batch_result(
+    result: dict[str, int],
+    *,
+    seen: int,
+    processed: int,
+    ignored: int,
+    duplicates: int,
+    sdk_checkpoint_accepted: int,
+    batch_bytes: int,
+    durable_next_offset: int,
+) -> None:
+    assert result["db_elapsed_ms"] >= 0
+    assert result["sdk_ack_elapsed_ms"] >= 0
+    assert result["batch_elapsed_ms"] >= result["db_elapsed_ms"]
+    assert result == {
+        "seen": seen,
+        "processed": processed,
+        "ignored": ignored,
+        "duplicates": duplicates,
+        "committed": 0,
+        "sdk_checkpoint_accepted": sdk_checkpoint_accepted,
+        "batch_bytes": batch_bytes,
+        "db_elapsed_ms": result["db_elapsed_ms"],
+        "sdk_ack_elapsed_ms": result["sdk_ack_elapsed_ms"],
+        "batch_elapsed_ms": result["batch_elapsed_ms"],
+        "durable_next_offset": durable_next_offset,
+    }
 
 
 def test_command_is_injectable_without_credentials() -> None:
@@ -241,12 +337,12 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     observed_commands_at_process: list[list[str]] = []
 
     class Processor:
-        def process(self, event: object) -> object:
-            del event
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            assert len(events) == 1
             observed_commands_at_process.append(
                 [item["type"] for item in process.commands]
             )
-            return SimpleNamespace(status="PROCESSED")
+            return (SimpleNamespace(status="PROCESSED"),)
 
     change_event = SimpleNamespace(source_timestamp=1786550400)
     monkeypatch.setattr(
@@ -300,19 +396,21 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
         "first_record_source_timestamp": 1786550400,
         "avro_writer_schema_compatible": True,
     }
-    assert result == {
-        "seen": 1,
-        "processed": 1,
-        "ignored": 0,
-        "duplicates": 0,
-        "committed": 0,
-        "sdk_checkpoint_accepted": 1,
-    }
+    _assert_batch_result(
+        result,
+        seen=1,
+        processed=1,
+        ignored=0,
+        duplicates=0,
+        sdk_checkpoint_accepted=1,
+        batch_bytes=4,
+        durable_next_offset=43,
+    )
     assert observed_commands_at_process == [["START", "POLL"]]
     assert [item["type"] for item in process.commands] == [
         "START",
         "POLL",
-        "DURABLE_ACK",
+        "DURABLE_ACK_BATCH",
         "CLOSE",
     ]
     assert process.commands[0]["resume_offset"] == 42
@@ -322,11 +420,15 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     assert isinstance(child_env, dict)
     assert not any(name.startswith("TIT_") for name in child_env)
     assert process.commands[2] == {
-        "type": "DURABLE_ACK",
-        "offset": 42,
-        "next_offset": 43,
-        "source_timestamp": 1786550400,
-        "checkpoint_action": "ADVANCE",
+        "type": "DURABLE_ACK_BATCH",
+        "acks": [
+            {
+                "offset": 42,
+                "next_offset": 43,
+                "source_timestamp": 1786550400,
+                "checkpoint_action": "ADVANCE",
+            }
+        ],
     }
 
 
@@ -336,8 +438,8 @@ def test_failed_database_transaction_never_acknowledges_java(
     process = _FakeProcess()
 
     class Processor:
-        def process(self, event: object) -> object:
-            del event
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            del events
             raise RuntimeError("database transaction failed")
 
     change_event = SimpleNamespace(source_timestamp=1786550400)
@@ -368,6 +470,193 @@ def test_failed_database_transaction_never_acknowledges_java(
 
     with pytest.raises(RuntimeError, match="database transaction failed"):
         transport.run(max_messages=1, commit_offsets=True)
+    transport.close(force=True)
+
+    assert [item["type"] for item in process.commands] == ["START", "POLL"]
+
+
+def test_three_events_use_one_database_batch_before_one_durable_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeBatchProcess(offsets=(42, 43, 44))
+    observed_commands: list[list[str]] = []
+    observed_offsets: list[tuple[int, ...]] = []
+
+    class Processor:
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            observed_commands.append(
+                [item["type"] for item in process.commands]
+            )
+            observed_offsets.append(tuple(event.offset for event in events))
+            return tuple(
+                SimpleNamespace(status=status)
+                for status in ("PROCESSED", "IGNORED", "PROCESSED")
+            )
+
+    _patch_batch_event_decoding(monkeypatch)
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+
+    transport.startup_probe()
+    result = transport.run(max_messages=3, commit_offsets=True)
+    transport.close()
+
+    assert observed_commands == [["START", "POLL"]]
+    assert observed_offsets == [(42, 43, 44)]
+    _assert_batch_result(
+        result,
+        seen=3,
+        processed=2,
+        ignored=1,
+        duplicates=0,
+        sdk_checkpoint_accepted=3,
+        batch_bytes=12,
+        durable_next_offset=45,
+    )
+    assert [item["type"] for item in process.commands] == [
+        "START",
+        "POLL",
+        "DURABLE_ACK_BATCH",
+        "CLOSE",
+    ]
+    assert process.commands[2] == {
+        "type": "DURABLE_ACK_BATCH",
+        "acks": [
+            {
+                "offset": offset,
+                "next_offset": offset + 1,
+                "source_timestamp": 1786550400 + offset,
+                "checkpoint_action": "ADVANCE",
+            }
+            for offset in (42, 43, 44)
+        ],
+    }
+
+
+def test_failed_database_batch_sends_zero_acknowledgements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeBatchProcess(offsets=(42, 43, 44))
+    observed_offsets: list[tuple[int, ...]] = []
+
+    class Processor:
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            observed_offsets.append(tuple(event.offset for event in events))
+            raise RuntimeError("database batch rolled back")
+
+    _patch_batch_event_decoding(monkeypatch)
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+    transport.startup_probe()
+
+    with pytest.raises(RuntimeError, match="database batch rolled back"):
+        transport.run(max_messages=3, commit_offsets=True)
+    transport.close(force=True)
+
+    assert observed_offsets == [(42, 43, 44)]
+    assert [item["type"] for item in process.commands] == ["START", "POLL"]
+
+
+def test_batch_replay_and_advances_preserve_checkpoint_order_and_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeBatchProcess(offsets=(41, 42, 43))
+
+    class Processor:
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            assert tuple(event.offset for event in events) == (41, 42, 43)
+            return tuple(
+                SimpleNamespace(status=status)
+                for status in ("DUPLICATE", "PROCESSED", "IGNORED")
+            )
+
+    _patch_batch_event_decoding(monkeypatch)
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+
+    transport.startup_probe()
+    result = transport.run(max_messages=3, commit_offsets=True)
+    transport.close()
+
+    _assert_batch_result(
+        result,
+        seen=3,
+        processed=1,
+        ignored=1,
+        duplicates=1,
+        sdk_checkpoint_accepted=2,
+        batch_bytes=12,
+        durable_next_offset=44,
+    )
+    assert process.commands[2] == {
+        "type": "DURABLE_ACK_BATCH",
+        "acks": [
+            {
+                "offset": 41,
+                "next_offset": 42,
+                "source_timestamp": 1786550441,
+                "checkpoint_action": "REPLAY",
+            },
+            {
+                "offset": 42,
+                "next_offset": 43,
+                "source_timestamp": 1786550442,
+                "checkpoint_action": "ADVANCE",
+            },
+            {
+                "offset": 43,
+                "next_offset": 44,
+                "source_timestamp": 1786550443,
+                "checkpoint_action": "ADVANCE",
+            },
+        ],
+    }
+
+
+def test_batch_count_mismatch_fails_before_database_and_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeBatchProcess(offsets=(42, 43, 44), completed_seen=2)
+
+    class Processor:
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            del events
+            raise AssertionError("invalid batch must not reach database")
+
+    _patch_batch_event_decoding(monkeypatch)
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+    transport.startup_probe()
+
+    with pytest.raises(
+        DtsJavaTransportError,
+        match="^DTS_OFFICIAL_JAVA_BATCH_COUNT_MISMATCH$",
+    ):
+        transport.run(max_messages=3, commit_offsets=True)
     transport.close(force=True)
 
     assert [item["type"] for item in process.commands] == ["START", "POLL"]
@@ -409,14 +698,16 @@ def test_official_generated_union_payload_reaches_durable_ack() -> None:
     observed_commands_at_process: list[list[str]] = []
 
     class Processor:
-        def process(self, event: object) -> object:
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            assert len(events) == 1
+            event = events[0]
             observed_commands_at_process.append(
                 [item["type"] for item in process.commands]
             )
             assert event.source_timestamp == 1786550400
             assert event.table_name == "ovs_appoint"
             assert event.after == {"id": "8", "nullable_value": None}
-            return SimpleNamespace(status="PROCESSED")
+            return (SimpleNamespace(status="PROCESSED"),)
 
     transport = OfficialJavaDtsTransport(
         _settings(),
@@ -437,7 +728,7 @@ def test_official_generated_union_payload_reaches_durable_ack() -> None:
     assert [item["type"] for item in process.commands] == [
         "START",
         "POLL",
-        "DURABLE_ACK",
+        "DURABLE_ACK_BATCH",
         "CLOSE",
     ]
 
@@ -448,8 +739,8 @@ def test_official_java_encoding_failure_never_reaches_database_or_ack() -> None:
     )
 
     class Processor:
-        def process(self, event: object) -> object:
-            del event
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            del events
             raise AssertionError("encoding failure must precede database write")
 
     transport = OfficialJavaDtsTransport(
@@ -480,8 +771,8 @@ def test_single_object_header_leak_never_reaches_database_or_ack() -> None:
     )
 
     class Processor:
-        def process(self, event: object) -> object:
-            del event
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            del events
             raise AssertionError("invalid envelope must fail before DB write")
 
     transport = OfficialJavaDtsTransport(
@@ -560,9 +851,9 @@ def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
     process = _FakeProcess(first_record_offset=41)
 
     class Processor:
-        def process(self, event: object) -> object:
-            del event
-            return SimpleNamespace(status="DUPLICATE")
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            assert len(events) == 1
+            return (SimpleNamespace(status="DUPLICATE"),)
 
     change_event = SimpleNamespace(source_timestamp=1786550400)
     monkeypatch.setattr(
@@ -593,20 +884,26 @@ def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
     result = transport.run(max_messages=1, commit_offsets=True)
     transport.close()
 
-    assert result == {
-        "seen": 1,
-        "processed": 0,
-        "ignored": 0,
-        "duplicates": 1,
-        "committed": 0,
-        "sdk_checkpoint_accepted": 0,
-    }
+    _assert_batch_result(
+        result,
+        seen=1,
+        processed=0,
+        ignored=0,
+        duplicates=1,
+        sdk_checkpoint_accepted=0,
+        batch_bytes=4,
+        durable_next_offset=42,
+    )
     assert process.commands[2] == {
-        "type": "DURABLE_ACK",
-        "offset": 41,
-        "next_offset": 42,
-        "source_timestamp": 1786550400,
-        "checkpoint_action": "REPLAY",
+        "type": "DURABLE_ACK_BATCH",
+        "acks": [
+            {
+                "offset": 41,
+                "next_offset": 42,
+                "source_timestamp": 1786550400,
+                "checkpoint_action": "REPLAY",
+            }
+        ],
     }
 
 

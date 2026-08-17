@@ -76,9 +76,10 @@ Python durable ACK，也未请求 SDK checkpoint；`DB → TCP → Kafka` 的细
 因此 Pod Ready 只代表具备开始消费的条件；CDC 是否实际进入系统仍以事件账本、数据库 checkpoint、
 消费组位点和字段对账为准。
 
-正式消费由 Python 父进程和 Java 子进程单条串行协作：官方 listener 把 Avro Record 重编码为
-EVENT，Python 完成国内 HMAC 与数据库事务后才返回 DURABLE_ACK，Java 再调用
-`DefaultUserRecord.commit()`。该调用只是让 SDK 接受 checkpoint 请求，后续 Kafka 位点异步推进且
+正式消费由 Python 父进程和 Java 子进程按有界批次协作：官方 listener 把 Avro Record 重编码为
+`EVENT × N` 并以 `BATCH_COMPLETE` 封口；Python 完成整批国内 HMAC 与原子数据库事务后才返回
+`DURABLE_ACK_BATCH`；Java 完整校验后仅对最后一条 ADVANCE 调用 `DefaultUserRecord.commit()`，
+REPLAY 不提交。该调用只是让 SDK 接受 checkpoint 请求，后续 Kafka 位点异步推进且
 没有同步回执；数据库 `next_offset + source_timestamp` 始终是恢复权威，ACK 丢失最多造成幂等
 重放，不会让 Kafka 位点越过未落库事件。
 

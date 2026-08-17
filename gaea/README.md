@@ -28,8 +28,9 @@ application 镜像由 s6-overlay 管理五个业务进程入口：
 轻量 DTS 镜像不包含上述五个进程、Node、两个前端、教师 NestJS 或 Nginx。它以非 root
 Python PID 1 运行 `run_dts_ingest.py`，Python 持有数据库、国内 HMAC、账本与 23/55 字段宽表
 投影，并管理一个运行官方 DTS SDK 1.4.0 主流程的 Java 子进程。Java stdout 只传 NDJSON
-事件和 SDK checkpoint 接受确认，Kafka/SDK 诊断走 stderr；Python 数据库事务成功后才回 durable
-ACK，Java 随后才调用 `DefaultUserRecord.commit()`，但不冒充 broker 同步提交成功。脚本自身处理 SIGTERM/SIGINT，并通过 Pod 本地 heartbeat/readiness
+事件和 SDK checkpoint 接受确认，Kafka/SDK 诊断走 stderr；Java 先发送有界批次的 `EVENT`
+和 `BATCH_COMPLETE`，Python 整批数据库事务成功后才回一个 `DURABLE_ACK_BATCH`。Java 随后仅对最后一条连续 ADVANCE
+调用 `DefaultUserRecord.commit()`，REPLAY 不调用；该确认不冒充 broker 同步提交成功。脚本自身处理 SIGTERM/SIGINT，并通过 Pod 本地 heartbeat/readiness
 执行 Docker HEALTHCHECK。
 
 运营端与教师端仍是两套独立 HTTP 服务，只在 `application` Profile 共享 Pod。运营、教师、SourceWide
@@ -312,13 +313,18 @@ application 项目也不配置任何 DTS 变量。
 Gaea 镜像固定 `TIT_DTS_TRANSPORT=official_java`。该模式运行已在国内 PRE 成功消费的官方
 DTS SDK 1.4.0 主流程：`ConsumerContext(ASSIGN) → DefaultDTSConsumer → KafkaRecordFetcher →
 UserRecordGenerator → EtlRecordProcessor → RecordListener`，其内置 Kafka Java Client 1.0.0；
-Python 保留现有 `fastavro → 国内 HMAC → PostgreSQL` 处理链。官方 listener 始终保持单条
-in-flight：`EVENT → Python DB durable → DURABLE_ACK → DefaultUserRecord.commit() →
-SDK_CHECKPOINT_ACCEPTED`。最后一步只表示 SDK 接受 checkpoint 请求；后续 Kafka checkpoint 是
+Python 保留现有 `fastavro → 国内 HMAC → PostgreSQL` 处理链。官方 listener 的旧单条
+in-flight 路径已替换为有界批协议：`EVENT × N → BATCH_COMPLETE → Python DB 整批 durable
+→ DURABLE_ACK_BATCH → DefaultUserRecord.commit(最后一条 ADVANCE) → SDK_CHECKPOINTS_ACCEPTED`。
+REPLAY 不调用 commit；Java 完整校验后仅对最后一条 ADVANCE 请求 SDK checkpoint。批次默认 100 条、硬上限 128 条，并同时受 Java 侧 8 MiB payload 上限
+保护。任一解码、隐私或数据库错误都不发送 ACK。
+最后一步只表示 SDK 接受 checkpoint 请求；后续 Kafka checkpoint 是
 SDK 异步动作且没有同步成功回执。DB 已有 checkpoint 时，用其 `source_timestamp` 让官方 ASSIGN
 路径恢复，并以 `next_offset` 校验 replay：小于它的事件必须已存在于账本且不再次请求 SDK commit，
 等于它才推进，大于它立即按 offset 缺口失败关闭；DB 无 checkpoint 时才按 `TIT_DTS_START_AT`
 定位。PostgreSQL `next_offset + source_timestamp` 始终是恢复权威，ACK 丢失只会造成幂等重放。
+每批 heartbeat 的 `batch_bytes`、`db_elapsed_ms`、`sdk_ack_elapsed_ms`、`batch_elapsed_ms` 与 `durable_next_offset` 用于区分 SDK 拉取、
+跨区数据库事务和 checkpoint 推进瓶颈；日志不得包含 Avro payload 或业务字段值。
 
 首次追平阶段两个项目都必须关闭投影；激活后只允许海外项目启用全局宽表投影，国内项目固定
 `TIT_DTS_PROJECTION_ENABLED=false` 并只做 ingest。海外项目必须先通过数据库激活门禁，并持有

@@ -2285,6 +2285,18 @@ class DtsEventSink(Protocol):
     ) -> bool:
         """Return True when this idempotency key was already processed."""
 
+    def apply_batch(
+        self,
+        items: Sequence[
+            tuple[
+                DtsChangeEvent,
+                DirtyKeySet,
+                AppointProjectionCandidate | None,
+            ]
+        ],
+    ) -> tuple[bool, ...]:
+        """Durably apply one ordered, single-partition event batch."""
+
     def resume_offset(
         self,
         *,
@@ -2316,6 +2328,18 @@ class InMemoryShadowSink:
         self.processed.append((event, dirty_keys, appoint_candidate))
         return False
 
+    def apply_batch(
+        self,
+        items: Sequence[
+            tuple[
+                DtsChangeEvent,
+                DirtyKeySet,
+                AppointProjectionCandidate | None,
+            ]
+        ],
+    ) -> tuple[bool, ...]:
+        return tuple(self.apply(*item) for item in items)
+
     def resume_offset(
         self,
         *,
@@ -2332,17 +2356,73 @@ class DtsEventProcessor:
         self._sink = sink
 
     def process(self, event: DtsChangeEvent) -> ProcessResult:
+        # Keep the kafka-python fallback on its established single-event
+        # persistence path.  Only the official Java transport opts into the
+        # bounded batch contract below.
         dirty_keys = route_dirty_keys(event)
         candidate = project_appoint_candidate(event)
         duplicate = self._sink.apply(event, dirty_keys, candidate)
-        if duplicate:
-            status = "DUPLICATE"
-        elif dirty_keys.ignored_reason:
-            status = "IGNORED"
+        return self._process_result(
+            duplicate=duplicate,
+            dirty_keys=dirty_keys,
+            candidate=candidate,
+        )
+
+    def process_batch(
+        self,
+        events: Sequence[DtsChangeEvent],
+    ) -> tuple[ProcessResult, ...]:
+        """Prepare and durably apply one ordered batch.
+
+        The production PostgreSQL sink commits the whole batch before this
+        method returns.  Lightweight/test sinks that predate ``apply_batch``
+        retain their single-event behaviour through the explicit fallback.
+        """
+
+        prepared = tuple(
+            (
+                event,
+                route_dirty_keys(event),
+                project_appoint_candidate(event),
+            )
+            for event in events
+        )
+        if not prepared:
+            return ()
+        batch_apply = getattr(self._sink, "apply_batch", None)
+        if callable(batch_apply):
+            duplicates = tuple(batch_apply(prepared))
         else:
-            status = "PROCESSED"
+            duplicates = tuple(self._sink.apply(*item) for item in prepared)
+        if len(duplicates) != len(prepared):
+            raise DtsRecordError("DTS_SINK_BATCH_RESULT_COUNT_MISMATCH")
+        return tuple(
+            self._process_result(
+                duplicate=duplicate,
+                dirty_keys=dirty_keys,
+                candidate=candidate,
+            )
+            for (_, dirty_keys, candidate), duplicate in zip(
+                prepared,
+                duplicates,
+            )
+        )
+
+    @staticmethod
+    def _process_result(
+        *,
+        duplicate: bool,
+        dirty_keys: DirtyKeySet,
+        candidate: AppointProjectionCandidate | None,
+    ) -> ProcessResult:
         return ProcessResult(
-            status=status,
+            status=(
+                "DUPLICATE"
+                if duplicate
+                else "IGNORED"
+                if dirty_keys.ignored_reason
+                else "PROCESSED"
+            ),
             dirty_keys=dirty_keys,
             appoint_candidate=candidate,
         )

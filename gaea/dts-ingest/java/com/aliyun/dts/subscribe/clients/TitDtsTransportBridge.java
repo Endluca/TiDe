@@ -22,7 +22,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.apache.avro.SchemaNormalization;
 import org.apache.avro.generic.GenericData;
@@ -43,7 +42,9 @@ public final class TitDtsTransportBridge {
     private static final String ACTION_ADVANCE = "ADVANCE";
     private static final String ACTION_REPLAY = "REPLAY";
     private static final int MAX_COMMAND_BYTES = 1024 * 1024;
-    private static final int MAX_BATCH_MESSAGES = 1000;
+    private static final int MAX_BATCH_MESSAGES = 128;
+    private static final int MAX_BATCH_PAYLOAD_BYTES = 8 * 1024 * 1024;
+    private static final long BATCH_LINGER_MS = 50L;
     private static final int AVRO_SINGLE_OBJECT_HEADER_BYTES = 10;
     private static final long DEFAULT_IDLE_TIMEOUT_MS = 10000L;
     private static final long SDK_START_TIMEOUT_MS = 305000L;
@@ -53,7 +54,7 @@ public final class TitDtsTransportBridge {
     private final PrintWriter output = new PrintWriter(
             new OutputStreamWriter(System.out, StandardCharsets.UTF_8), true);
     private final ArrayBlockingQueue<RecordEnvelope> records =
-            new ArrayBlockingQueue<RecordEnvelope>(1);
+            new ArrayBlockingQueue<RecordEnvelope>(MAX_BATCH_MESSAGES);
 
     private volatile Throwable sdkFailure;
     private volatile Throwable listenerFailure;
@@ -61,7 +62,8 @@ public final class TitDtsTransportBridge {
     private DefaultDTSConsumer consumer;
     private Thread consumerThread;
     private RecordEnvelope firstRecord;
-    private RecordEnvelope inFlight;
+    private RecordEnvelope deferredRecord;
+    private List<RecordEnvelope> inFlightBatch;
     private long idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
     private boolean started;
 
@@ -190,11 +192,9 @@ public final class TitDtsTransportBridge {
                     created.start();
                     if (!closed) {
                         sdkFailure = new SdkTerminatedException();
-                        cancelPendingRecords();
                     }
                 } catch (Throwable error) {
                     sdkFailure = error;
-                    cancelPendingRecords();
                 }
             }
         }, "tit-dts-official-consumer");
@@ -260,23 +260,19 @@ public final class TitDtsTransportBridge {
         RecordEnvelope envelope = new RecordEnvelope(record);
         try {
             while (!closed && !records.offer(envelope, 200L, TimeUnit.MILLISECONDS)) {
-                // Keep the official listener single-in-flight and stoppable.
+                // Bound retained official records while allowing one database
+                // transaction to durably acknowledge a complete protocol batch.
             }
             if (closed) {
-                envelope.cancel();
                 return;
             }
-            envelope.awaitDecision();
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            envelope.fail(error);
             listenerFailure = error;
         } catch (RuntimeException error) {
-            envelope.fail(error);
             listenerFailure = error;
             throw error;
         } catch (Error error) {
-            envelope.fail(error);
             listenerFailure = error;
             throw error;
         }
@@ -284,7 +280,7 @@ public final class TitDtsTransportBridge {
 
     private void handlePoll(JSONObject command) throws IOException {
         requireStarted();
-        if (inFlight != null) {
+        if (inFlightBatch != null) {
             throw new ProtocolException(
                     "DTS_OFFICIAL_JAVA_EVENT_ALREADY_IN_FLIGHT");
         }
@@ -294,46 +290,79 @@ public final class TitDtsTransportBridge {
                     "DTS_OFFICIAL_JAVA_MAX_MESSAGES_INVALID");
         }
 
-        int seen = 0;
-        while (seen < maxMessages && !closed) {
-            RecordEnvelope envelope;
-            if (firstRecord != null) {
-                envelope = firstRecord;
-                firstRecord = null;
-            } else {
-                envelope = awaitRecord(idleTimeoutMs);
-            }
+        List<RecordEnvelope> batch = new ArrayList<RecordEnvelope>(maxMessages);
+        int batchBytes = 0;
+        while (batch.size() < maxMessages && !closed) {
+            long waitMs = batch.isEmpty() ? idleTimeoutMs : BATCH_LINGER_MS;
+            RecordEnvelope envelope = nextRecord(waitMs);
             if (envelope == null) {
                 break;
             }
-            inFlight = envelope;
+            int payloadBytes = envelope.encodedPayload().length;
+            if (payloadBytes > MAX_BATCH_PAYLOAD_BYTES) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_TOO_LARGE");
+            }
+            if (!batch.isEmpty()
+                    && batchBytes > MAX_BATCH_PAYLOAD_BYTES - payloadBytes) {
+                deferredRecord = envelope;
+                break;
+            }
+            batch.add(envelope);
+            batchBytes += payloadBytes;
+        }
+
+        if (closed) {
+            return;
+        }
+        inFlightBatch = batch;
+        for (RecordEnvelope envelope : batch) {
             emitEvent(envelope);
-
-            JSONObject acknowledgement = readCommand();
-            if (acknowledgement == null) {
-                throw new ProtocolException("DTS_OFFICIAL_JAVA_ACK_REQUIRED");
-            }
-            String acknowledgementType = requiredString(acknowledgement, TYPE);
-            if ("CLOSE".equals(acknowledgementType)) {
-                handleClose();
-                return;
-            }
-            if (!"DURABLE_ACK".equals(acknowledgementType)) {
-                throw new ProtocolException("DTS_OFFICIAL_JAVA_ACK_REQUIRED");
-            }
-            acceptDurableAcknowledgement(envelope, acknowledgement);
-            inFlight = null;
-            seen += 1;
+        }
+        JSONObject complete = message("BATCH_COMPLETE");
+        complete.put("seen", batch.size());
+        complete.put("batch_bytes", batchBytes);
+        emit(complete);
+        if (batch.isEmpty()) {
+            inFlightBatch = null;
+            return;
         }
 
-        if (!closed) {
-            JSONObject complete = message("BATCH_COMPLETE");
-            complete.put("seen", seen);
-            emit(complete);
+        JSONObject acknowledgement = readCommand();
+        if (acknowledgement == null) {
+            throw new ProtocolException("DTS_OFFICIAL_JAVA_ACK_REQUIRED");
         }
+        String acknowledgementType = requiredString(acknowledgement, TYPE);
+        if ("CLOSE".equals(acknowledgementType)) {
+            handleClose();
+            return;
+        }
+        if (!"DURABLE_ACK_BATCH".equals(acknowledgementType)) {
+            throw new ProtocolException("DTS_OFFICIAL_JAVA_ACK_REQUIRED");
+        }
+        acceptDurableAcknowledgementBatch(batch, acknowledgement);
+        inFlightBatch = null;
+    }
+
+    private RecordEnvelope nextRecord(long timeoutMs) {
+        if (firstRecord != null) {
+            RecordEnvelope result = firstRecord;
+            firstRecord = null;
+            return result;
+        }
+        if (deferredRecord != null) {
+            RecordEnvelope result = deferredRecord;
+            deferredRecord = null;
+            return result;
+        }
+        return awaitRecord(timeoutMs, true);
     }
 
     private RecordEnvelope awaitRecord(long timeoutMs) {
+        return awaitRecord(timeoutMs, false);
+    }
+
+    private RecordEnvelope awaitRecord(long timeoutMs, boolean allowEmpty) {
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
         while (!closed) {
@@ -343,7 +372,7 @@ public final class TitDtsTransportBridge {
             throwRecordedFailureIfPresent();
             long remainingNanos = deadline - System.nanoTime();
             if (remainingNanos <= 0L) {
-                if (timeoutMs == idleTimeoutMs && started) {
+                if (allowEmpty && started) {
                     return null;
                 }
                 throw new TransportTimeoutException();
@@ -510,7 +539,7 @@ public final class TitDtsTransportBridge {
         return normalized == null ? value : normalized;
     }
 
-    private void acceptDurableAcknowledgement(
+    private AcknowledgementDecision validateDurableAcknowledgement(
             RecordEnvelope envelope, JSONObject acknowledgement) {
         DefaultUserRecord record = envelope.record;
         long recordOffset = requiredRecordOffset(record);
@@ -541,16 +570,58 @@ public final class TitDtsTransportBridge {
             throw new ProtocolException(
                     "DTS_OFFICIAL_JAVA_CHECKPOINT_ACTION_INVALID");
         }
+        return new AcknowledgementDecision(action, sourceTimestamp);
+    }
 
-        envelope.decide(action, sourceTimestamp);
-        envelope.awaitApplied();
-        throwFailure(envelope.failure);
+    private void acceptDurableAcknowledgementBatch(
+            List<RecordEnvelope> batch, JSONObject acknowledgement) {
+        JSONArray acknowledgements = acknowledgement.getJSONArray("acks");
+        if (acknowledgements == null || acknowledgements.size() != batch.size()) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_ACK_BATCH_COUNT_MISMATCH");
+        }
+
+        List<AcknowledgementDecision> decisions =
+                new ArrayList<AcknowledgementDecision>(batch.size());
+        for (int index = 0; index < batch.size(); index += 1) {
+            JSONObject item = acknowledgements.getJSONObject(index);
+            if (item == null) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
+            }
+            decisions.add(validateDurableAcknowledgement(
+                    batch.get(index), item));
+        }
+
+        int advanced = 0;
+        int replayed = 0;
+        int lastAdvanceIndex = -1;
+        // Validate the complete durable ACK before accepting any SDK
+        // checkpoint. A malformed later item can therefore never partially
+        // advance the official consumer. The official SDK exposes one pending
+        // checkpoint slot, so only the highest contiguous ADVANCE is submitted;
+        // it covers every earlier ADVANCE without racing repeated async commits.
+        // REPLAY never calls commit.
+        for (int index = 0; index < batch.size(); index += 1) {
+            AcknowledgementDecision decision = decisions.get(index);
+            if (ACTION_ADVANCE.equals(decision.action)) {
+                advanced += 1;
+                lastAdvanceIndex = index;
+            } else {
+                replayed += 1;
+            }
+        }
+        if (lastAdvanceIndex >= 0) {
+            AcknowledgementDecision lastAdvance = decisions.get(lastAdvanceIndex);
+            batch.get(lastAdvanceIndex).record.commit(
+                    Long.toString(lastAdvance.sourceTimestamp));
+        }
         throwRecordedFailureIfPresent();
 
-        JSONObject accepted = message("SDK_CHECKPOINT_ACCEPTED");
-        accepted.put("offset", acknowledgedOffset);
-        accepted.put("next_offset", nextOffset);
-        accepted.put("checkpoint_action", action);
+        JSONObject accepted = message("SDK_CHECKPOINTS_ACCEPTED");
+        accepted.put("seen", batch.size());
+        accepted.put("advanced", advanced);
+        accepted.put("replayed", replayed);
         emit(accepted);
     }
 
@@ -559,14 +630,13 @@ public final class TitDtsTransportBridge {
             return;
         }
         closed = true;
-        cancelPendingRecords();
         closeConsumer();
         emit(message("CLOSED"));
         safeLog("DTS_OFFICIAL_JAVA_CLOSED", null);
     }
 
     private void closeConsumer() {
-        cancelPendingRecords();
+        closed = true;
         DefaultDTSConsumer current = consumer;
         consumer = null;
         if (current != null) {
@@ -591,21 +661,8 @@ public final class TitDtsTransportBridge {
         }
         records.clear();
         firstRecord = null;
-        inFlight = null;
-    }
-
-    private void cancelPendingRecords() {
-        RecordEnvelope current = inFlight;
-        if (current != null) {
-            current.cancel();
-        }
-        current = firstRecord;
-        if (current != null) {
-            current.cancel();
-        }
-        for (RecordEnvelope envelope : records) {
-            envelope.cancel();
-        }
+        deferredRecord = null;
+        inFlightBatch = null;
     }
 
     private void requireStarted() {
@@ -833,11 +890,6 @@ public final class TitDtsTransportBridge {
 
     private static final class RecordEnvelope {
         private final DefaultUserRecord record;
-        private final CountDownLatch decisionReady = new CountDownLatch(1);
-        private final CountDownLatch decisionApplied = new CountDownLatch(1);
-        private volatile String action;
-        private volatile long sourceTimestamp;
-        private volatile Throwable failure;
         private byte[] payload;
 
         RecordEnvelope(DefaultUserRecord record) {
@@ -856,52 +908,15 @@ public final class TitDtsTransportBridge {
             }
             return payload;
         }
+    }
 
-        void decide(String requestedAction, long requestedSourceTimestamp) {
-            action = requestedAction;
-            sourceTimestamp = requestedSourceTimestamp;
-            decisionReady.countDown();
-        }
+    private static final class AcknowledgementDecision {
+        private final String action;
+        private final long sourceTimestamp;
 
-        void awaitDecision() throws InterruptedException {
-            decisionReady.await();
-            try {
-                if (ACTION_ADVANCE.equals(action)) {
-                    record.commit(Long.toString(sourceTimestamp));
-                }
-            } catch (RuntimeException error) {
-                failure = error;
-                throw error;
-            } catch (Error error) {
-                failure = error;
-                throw error;
-            } finally {
-                decisionApplied.countDown();
-            }
-        }
-
-        void awaitApplied() {
-            try {
-                if (!decisionApplied.await(
-                        SDK_START_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                    throw new TransportTimeoutException();
-                }
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
-                throw new TransportTimeoutException();
-            }
-        }
-
-        void cancel() {
-            action = "CLOSE";
-            decisionReady.countDown();
-            decisionApplied.countDown();
-        }
-
-        void fail(Throwable error) {
-            failure = error;
-            decisionReady.countDown();
-            decisionApplied.countDown();
+        AcknowledgementDecision(String action, long sourceTimestamp) {
+            this.action = action;
+            this.sourceTimestamp = sourceTimestamp;
         }
     }
 

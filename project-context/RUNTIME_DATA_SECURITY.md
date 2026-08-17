@@ -29,8 +29,9 @@ Gaea application 运行时使用 `gaea/application` 模块（根 `gaea/Dockerfil
 都选择独立的 `gaea/dts-ingest` 轻量模块，海外项目必须位于新加坡、国内项目必须位于中国大陆；
 模块、镜像或区域环境变量不能替代平台地理放置。
 轻量模块由受限 Python 父进程和官方 Kafka Java Client 1.0.0 子进程组成；Java 只负责 Kafka
-transport，Python 继续拥有国内 HMAC、数据库事务、checkpoint 和投影。两者以单条 in-flight
-ACK 协议保证数据库 durable 后才提交 Kafka `offset + 1`。运营与教师域名分别绑定 `8010/8080`，教师 NestJS 的
+transport，Python 继续拥有国内 HMAC、数据库事务、checkpoint 和投影。两者使用有界批 ACK
+协议：Java 发出 `EVENT × N + BATCH_COMPLETE`，Python 整批事务 durable 后才回
+`DURABLE_ACK_BATCH`；数据库失败时零 ACK。运营与教师域名分别绑定 `8010/8080`，教师 NestJS 的
 `3000` 不对外开放。同一项目和镜像支持整套 Pod 使用 2 个或更多副本及 RollingUpdate：
 积分候选进程通过 PostgreSQL session advisory lock 保持逻辑单活，未持锁 standby 仍刷新
 本 Pod heartbeat；教师全局调度使用 `tide.job_leases`，照片处理按数据库行租约认领。

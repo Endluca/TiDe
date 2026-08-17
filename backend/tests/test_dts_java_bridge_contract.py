@@ -67,7 +67,7 @@ def test_official_java_bridge_validates_and_strips_single_object_header() -> Non
     source = BRIDGE.read_text(encoding="utf-8")
     encoding = source[
         source.index("static byte[] encodeOfficialRecord(") : source.index(
-            "private void acceptDurableAcknowledgement("
+            "private AcknowledgementDecision validateDurableAcknowledgement("
         )
     ]
     lower = encoding.lower()
@@ -93,7 +93,9 @@ def test_official_java_bridge_only_normalizes_empty_image_enums() -> None:
     normalization = source[
         source.index(
             "private static Record normalizeOfficialEmptyObjects("
-        ) : source.index("private void acceptDurableAcknowledgement(")
+        ) : source.index(
+            "private AcknowledgementDecision validateDurableAcknowledgement("
+        )
     ]
 
     assert "sourceRecord.getBeforeImages()" in normalization
@@ -179,19 +181,62 @@ def test_official_java_bridge_preserves_database_before_sdk_checkpoint() -> None
     source = BRIDGE.read_text(encoding="utf-8")
 
     assert '"payload_base64"' in source
-    assert '"DURABLE_ACK"' in source
-    assert 'message("SDK_CHECKPOINT_ACCEPTED")' in source
-    assert "record.commit(Long.toString(sourceTimestamp))" in source
-    assert source.index('"DURABLE_ACK"') < source.index(
-        "record.commit(Long.toString(sourceTimestamp))"
+    assert '"DURABLE_ACK_BATCH"' in source
+    assert 'message("SDK_CHECKPOINTS_ACCEPTED")' in source
+    batch_ack = source[
+        source.index("private void acceptDurableAcknowledgementBatch(") :
+        source.index("private void handleClose()")
+    ]
+    assert batch_ack.index('acknowledgement.getJSONArray("acks")') < (
+        batch_ack.index(".record.commit(")
     )
-    advance_branch = source[source.index("void awaitDecision()") :]
-    assert (
-        "if (ACTION_ADVANCE.equals(action)) {\n"
-        "                    record.commit(Long.toString(sourceTimestamp));"
-    ) in advance_branch
-    assert "ACTION_REPLAY" in source
+    assert batch_ack.index("acknowledgements.size() != batch.size()") < (
+        batch_ack.index(".record.commit(")
+    )
+    assert batch_ack.index("decisions.add(validateDurableAcknowledgement(") < (
+        batch_ack.index(".record.commit(")
+    )
+    assert "lastAdvanceIndex = index" in batch_ack
+    assert "if (lastAdvanceIndex >= 0)" in batch_ack
+    assert "batch.get(lastAdvanceIndex).record.commit(" in batch_ack
+    assert batch_ack.index("lastAdvanceIndex = index") < batch_ack.index(
+        ".record.commit("
+    )
+    assert batch_ack.count(".record.commit(") == 1
+    assert "REPLAY never calls commit" in batch_ack
     assert 'message("COMMITTED")' not in source
+
+
+def test_official_java_bridge_uses_one_bounded_durable_ack_per_batch() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+    listener = source[
+        source.index("private void consumeOfficialRecord(") : source.index(
+            "private void handlePoll("
+        )
+    ]
+    poll = source[
+        source.index("private void handlePoll(") : source.index(
+            "private RecordEnvelope awaitRecord("
+        )
+    ]
+
+    assert "new ArrayBlockingQueue<RecordEnvelope>(MAX_BATCH_MESSAGES)" in source
+    assert "MAX_BATCH_MESSAGES = 128" in source
+    assert "MAX_BATCH_PAYLOAD_BYTES = 8 * 1024 * 1024" in source
+    assert "BATCH_LINGER_MS = 50L" in source
+    assert "envelope.awaitDecision()" not in listener
+    assert "records.offer(envelope, 200L, TimeUnit.MILLISECONDS)" in listener
+    assert "payloadBytes > MAX_BATCH_PAYLOAD_BYTES" in poll
+    assert "deferredRecord = envelope" in poll
+    assert "batch.isEmpty() ? idleTimeoutMs : BATCH_LINGER_MS" in poll
+    assert poll.index("emitEvent(envelope)") < poll.index(
+        'message("BATCH_COMPLETE")'
+    )
+    assert poll.index('message("BATCH_COMPLETE")') < poll.index(
+        '"DURABLE_ACK_BATCH"'
+    )
+    assert 'complete.put("batch_bytes", batchBytes)' in poll
+    assert poll.count("readCommand()") == 1
 
 
 def test_official_java_bridge_resumes_from_database_timestamp_and_offset() -> None:
