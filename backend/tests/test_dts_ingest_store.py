@@ -25,6 +25,7 @@ from app.dts_ingest_store import (
     _validate_projection_activation_state,
     _validate_dts_physical_connection_transport,
     build_dts_ingest_engine,
+    _dependency_keys,
     _dirty_key_rows,
     _source_row_state,
 )
@@ -1174,6 +1175,23 @@ def test_dom_shared_tables_route_their_smallest_dirty_keys() -> None:
     )
 
 
+def test_complaint_dependency_keys_drop_absent_level_sentinels() -> None:
+    assert _dependency_keys(
+        "complaint",
+        {
+            "complaint_type": "13",
+            "complaint_type_child": "-1",
+            "complaint_type_grandson": 0,
+            "cate_parent": "",
+        },
+    )["category_ids"] == ["13"]
+
+    assert _dependency_keys(
+        "complaint_cate",
+        {"id": "13", "cate_parent": "0"},
+    )["category_ids"] == ["13"]
+
+
 class _Result:
     def __init__(
         self,
@@ -1450,6 +1468,7 @@ def test_projection_activation_holds_one_global_session_lock_until_close() -> No
     ):
         assert f"'{source_table}'" in dependency_sql
     assert "complaints.is_deleted IS FALSE" in dependency_sql
+    assert "category_refs.category_id NOT IN ('-1', '0')" in dependency_sql
 
     sink.assert_projection_lock_held()
 

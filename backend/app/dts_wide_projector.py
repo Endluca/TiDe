@@ -160,6 +160,11 @@ def _string_id(value: Any) -> str | None:
     return rendered or None
 
 
+def _complaint_category_id(value: Any) -> str | None:
+    rendered = _string_id(value)
+    return None if rendered in {"-1", "0"} else rendered
+
+
 def _int_value(value: Any) -> int | None:
     if value is None or str(value).strip() == "":
         return None
@@ -1043,9 +1048,9 @@ class DtsWideProjector:
             if _string_id(item.row.get("id")) is not None
         }
         ids = (
-            _string_id(latest.get("complaint_type")),
-            _string_id(latest.get("complaint_type_child")),
-            _string_id(latest.get("complaint_type_grandson")),
+            _complaint_category_id(latest.get("complaint_type")),
+            _complaint_category_id(latest.get("complaint_type_child")),
+            _complaint_category_id(latest.get("complaint_type_grandson")),
         )
         if any(
             category_id is not None and category_id not in categories
