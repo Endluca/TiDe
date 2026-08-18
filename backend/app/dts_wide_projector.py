@@ -74,6 +74,51 @@ _TEACHER_FEEDBACK_SUFFIXES = (
 )
 _DEPENDENCY_QUERY_CHUNK_SIZE = 100
 
+# Keep the two queue states independently indexable.  A combined
+# ``status IN (...)`` predicate forced PostgreSQL to scan and top-N sort the
+# complete multi-million-row queue for every projected key because the retry
+# readiness predicate and FIFO order could not use the old composite index.
+# Each branch now reads one candidate from its matching partial index; the
+# final join locks whichever candidate has the older source observation.
+_LOCK_NEXT_DIRTY_KEY = text(
+    """
+    WITH pending_candidate AS (
+        SELECT key_type, key_part_1, key_part_2, last_seen_at
+        FROM public.dts_dirty_keys
+        WHERE status = 'PENDING'
+        ORDER BY last_seen_at, key_type, key_part_1, key_part_2
+        LIMIT 1
+    ),
+    retry_candidate AS (
+        SELECT key_type, key_part_1, key_part_2, last_seen_at
+        FROM public.dts_dirty_keys
+        WHERE status = 'RETRY'
+          AND next_attempt_at <= statement_timestamp()
+          AND next_attempt_at < 'infinity'::timestamptz
+        ORDER BY next_attempt_at, last_seen_at,
+                 key_type, key_part_1, key_part_2
+        LIMIT 1
+    ),
+    next_candidate AS (
+        SELECT key_type, key_part_1, key_part_2
+        FROM (
+            SELECT * FROM pending_candidate
+            UNION ALL
+            SELECT * FROM retry_candidate
+        ) AS candidates
+        ORDER BY last_seen_at, key_type, key_part_1, key_part_2
+        LIMIT 1
+    )
+    SELECT dirty.*
+    FROM public.dts_dirty_keys AS dirty
+    JOIN next_candidate AS candidate
+      ON candidate.key_type = dirty.key_type
+     AND candidate.key_part_1 = dirty.key_part_1
+     AND candidate.key_part_2 = dirty.key_part_2
+    FOR UPDATE OF dirty SKIP LOCKED
+    """
+)
+
 
 class DtsWideProjectionError(RuntimeError):
     """Stable, non-sensitive projection failure."""
@@ -417,20 +462,7 @@ class DtsWideProjector:
         return result.as_dict()
 
     def _lock_next_dirty_key(self, connection: Any) -> Mapping[str, Any] | None:
-        table = DtsDirtyKeyRecord.__table__
-        return connection.execute(
-            select(table)
-            .where(
-                table.c.status.in_(("PENDING", "RETRY")),
-                or_(
-                    table.c.next_attempt_at.is_(None),
-                    table.c.next_attempt_at <= text("clock_timestamp()"),
-                ),
-            )
-            .order_by(table.c.last_seen_at, table.c.key_type, table.c.key_part_1)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        ).mappings().first()
+        return connection.execute(_LOCK_NEXT_DIRTY_KEY).mappings().first()
 
     def _mark_completed(
         self,

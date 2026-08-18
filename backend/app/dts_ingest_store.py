@@ -215,6 +215,17 @@ EXPECTED_DTS_STATE_CONSTRAINTS = (
 EXPECTED_DTS_STATE_INDEXES = (
     (
         "dts_dirty_keys",
+        "ix_dts_dirty_keys_pending_fifo",
+        "btree",
+        True,
+        True,
+        False,
+        ("last_seen_at", "key_type", "key_part_1", "key_part_2"),
+        ("timestamptz_ops", "text_ops", "text_ops", "text_ops"),
+        True,
+    ),
+    (
+        "dts_dirty_keys",
         "ix_dts_dirty_keys_ready",
         "btree",
         True,
@@ -223,6 +234,29 @@ EXPECTED_DTS_STATE_INDEXES = (
         ("status", "next_attempt_at", "last_seen_at"),
         ("text_ops", "timestamptz_ops", "timestamptz_ops"),
         False,
+    ),
+    (
+        "dts_dirty_keys",
+        "ix_dts_dirty_keys_retry_due",
+        "btree",
+        True,
+        True,
+        False,
+        (
+            "next_attempt_at",
+            "last_seen_at",
+            "key_type",
+            "key_part_1",
+            "key_part_2",
+        ),
+        (
+            "timestamptz_ops",
+            "timestamptz_ops",
+            "text_ops",
+            "text_ops",
+            "text_ops",
+        ),
+        True,
     ),
     (
         "dts_ingest_events",

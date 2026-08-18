@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260814_61_teacher_copy`、teacher `0041_crm_sso_hybrid`，teacher 为精确 36 条 canonical 账本。rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块，rev55 将教师源表收敛为确认的 55 列，release rev56/0038 追加个性化环境拍照，release rev57/0039/0040 发布 G02 原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 汇合 release 内容链与 rev56–58 ACL/DTS 分支，public 60 在其后增加国内学生标识的数据库 fail-closed 边界，public 61 只更新经审核的教师文案，最终权限以 `docs/数据库角色与权限最终版.md` 为准。业务字段所有权、状态机、不可逆事实和幂等账本继续由 Trigger/约束保护。公司 TEST 库 `tit_growth_test_v2` 上次已验证到 public `20260812_56_lean_roles`、teacher `0037_g04_remove_device_check`（精确 32 条 canonical 账本），不等于已应用 public 61 / teacher 0041；上线前仍须执行剩余迁移并以真实运行角色复验。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这不代表外部日更、业务验收或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260818_62_dts_claim_idx`、teacher `0041_crm_sso_hybrid`，teacher 为精确 36 条 canonical 账本。rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块，rev55 将教师源表收敛为确认的 55 列，release rev56/0038 追加个性化环境拍照，release rev57/0039/0040 发布 G02 原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 汇合 release 内容链与 rev56–58 ACL/DTS 分支，public 60 在其后增加国内学生标识的数据库 fail-closed 边界，public 61 只更新经审核的教师文案，public 62 并发建立匹配 `PENDING` / 到期 `RETRY` 领取顺序的部分索引，最终权限以 `docs/数据库角色与权限最终版.md` 为准。业务字段所有权、状态机、不可逆事实和幂等账本继续由 Trigger/约束保护。公司 TEST 库 `tit_growth_test_v2` 上次已验证到 public `20260812_56_lean_roles`、teacher `0037_g04_remove_device_check`（精确 32 条 canonical 账本），不等于已应用 public 62 / teacher 0041；上线前仍须执行剩余迁移并以真实运行角色复验。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这不代表外部日更、业务验收或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -224,7 +224,8 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   账号、通知、工单和逐课结果的字段边界由 Trigger 强制，教师 G01 只读两列受限视图。
 - `20260812_59_simple_acl` 合并 release 内容分支与 ACL 分支，落实最终三列表中的表级权限；DTS 状态表虽授予 CRUD，物理删除、事件账本改写和位点回退仍由 Trigger 拒绝。
 - `20260813_60_dom_privacy` 在 rev59 之后校验既有 DTS/课程状态，并用数据库 Trigger 拒绝任何国内原始学生 ID 或非法 token 落入海外目标库。
-- `20260814_61_teacher_copy` 是当前 public head；它仅原位更新 G01、G08、Lesson Memo 和 Attendance 的经审核教师文案，不改 assignment 和状态事实。
+- `20260814_61_teacher_copy` 仅原位更新 G01、G08、Lesson Memo 和 Attendance 的经审核教师文案，不改 assignment 和状态事实。
+- `20260818_62_dts_claim_idx` 是当前 public head；它用 `CREATE INDEX CONCURRENTLY` 为 `PENDING` FIFO 和到期 `RETRY` 队列增加部分索引，不改业务事实。
 - `seed_database.py` 只幂等补齐 14 个当前任务模板，不创建教师或任何运行时业务事实，也不修改投诉规则导入或触发结果。G01–G09 assignment 由教师写入流程初始化；初始化不创建通知、提醒或投递意图。隔离测试中的 Mock fixture 不进入运营运行库。
 - `seed_config_center.py` 只创建本地默认配置版本；空库读取不会由 API 隐式补配置。
 - 两个 Seed 脚本都要求 `APP_ENV` 明确为 `local / dev / development / test`，否则拒绝执行。

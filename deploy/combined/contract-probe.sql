@@ -87,14 +87,15 @@ BEGIN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
 
-    -- Final public 61 must include the reviewed release content through
+    -- Final public 62 must include the reviewed release content through
     -- 20260811_57_g02_document, the public 59 ACL/DTS merge, and the
-    -- domestic-student privacy boundary and the reviewed teacher-copy update;
+    -- domestic-student privacy boundary, reviewed teacher-copy update, and
+    -- index-aligned DTS dirty-key claim path;
     -- concrete rows and guards are checked below.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260814_61_teacher_copy' THEN
+    ) IS DISTINCT FROM '20260818_62_dts_claim_idx' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 

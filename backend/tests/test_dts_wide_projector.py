@@ -152,6 +152,42 @@ class _ReadOnlyConnection:
         )
 
 
+def test_dirty_key_claim_splits_pending_and_retry_into_indexable_candidates(
+) -> None:
+    expected = {
+        "key_type": "COURSE",
+        "key_part_1": "123",
+        "key_part_2": "",
+    }
+    connection = _ReadOnlyConnection(first_values=[expected])
+    projector = DtsWideProjector(
+        object(),
+        worker_id="test",
+        settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
+    )
+
+    claimed = projector._lock_next_dirty_key(connection)
+
+    assert claimed == expected
+    assert connection.execute_count == 1
+    sql = " ".join(str(connection.statements[0]).split())
+    assert "WHERE status = 'PENDING'" in sql
+    assert "WHERE status = 'RETRY'" in sql
+    assert "next_attempt_at <= statement_timestamp()" in sql
+    assert "next_attempt_at < 'infinity'::timestamptz" in sql
+    assert (
+        "ORDER BY next_attempt_at, last_seen_at, key_type, key_part_1, "
+        "key_part_2 LIMIT 1" in sql
+    )
+    assert "UNION ALL" in sql
+    assert (
+        "ORDER BY last_seen_at, key_type, key_part_1, key_part_2 LIMIT 1"
+        in sql
+    )
+    assert "FOR UPDATE OF dirty SKIP LOCKED" in sql
+    assert "status IN" not in sql
+
+
 class _BeginContext:
     def __init__(self, connection: object) -> None:
         self.connection = connection

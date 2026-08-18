@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260814_61_teacher_copy"
+EXPECTED_PUBLIC_HEAD="20260818_62_dts_claim_idx"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -1214,4 +1214,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：public 61 与 canonical Tide 0041 账本/checksum/实存结构只读门禁、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、教师英文文案、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、国内学生隐私边界与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public 62 与 canonical Tide 0041 账本/checksum/实存结构只读门禁、DTS 脏键领取索引、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、教师英文文案、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、国内学生隐私边界与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"

@@ -330,6 +330,26 @@ class DtsDirtyKeyRecord(Base):
             "next_attempt_at",
             "last_seen_at",
         ),
+        Index(
+            "ix_dts_dirty_keys_pending_fifo",
+            "last_seen_at",
+            "key_type",
+            "key_part_1",
+            "key_part_2",
+            postgresql_where=text("status = 'PENDING'"),
+        ),
+        Index(
+            "ix_dts_dirty_keys_retry_due",
+            "next_attempt_at",
+            "last_seen_at",
+            "key_type",
+            "key_part_1",
+            "key_part_2",
+            postgresql_where=text(
+                "status = 'RETRY' "
+                "AND next_attempt_at < 'infinity'::timestamptz"
+            ),
+        ),
     )
 
     key_type: Mapped[str] = mapped_column(String(32), primary_key=True)
