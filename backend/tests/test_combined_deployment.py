@@ -280,8 +280,8 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "CREATE TABLE tide.crm_sso_logins" in preflight
     assert "20260811_56_p_fb_negative_copy" in preflight
     assert "20260811_57_g02_document" in preflight
-    assert "20260814_61_teacher_copy" in preflight
-    assert "public60→public61" in preflight
+    assert "20260818_62_dts_claim_idx" in preflight
+    assert "public61→public62" in preflight
     assert "DELETE FROM tide.task_step_definitions" in preflight
     assert (
         '"requiredStepKeys":\\["g02-environment-photo",'
@@ -304,7 +304,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
     assert "20260811_57_g02_document" in probe
-    assert "20260814_61_teacher_copy" in probe
+    assert "20260818_62_dts_claim_idx" in probe
     assert "guard_dom_lesson_student_privacy_v1" in probe
     assert "tgenabled IN ('O', 'A')" in probe
     assert "tgtype = 23" in probe

@@ -206,9 +206,9 @@ bash database/scripts/test-production-migrator.sh
 ## 公司测试库
 
 - 迁移配置必须放在 Git/镜像工作区之外，权限精确为 `600`；不要使用仓库内的 `database/.env.company-test` 作为迁移入口。
-- 代码侧初始化门禁面向完整 release 内容链、最终 ACL merge、国内学生隐私边界和审核后教师文案；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。最终目标必须同时达到 public 61 / teacher 0041；仅有旧升级记录不代表权限、隐私或文案迁移已完成。
-- 从仓库根目录运行 `backend/scripts/upgrade_company_test_database.py`。省略 `--apply` 时只读检查并输出计划；提交时必须同时给出 `--backup-confirmed --maintenance-window-confirmed`。脚本按 public 54（含 rev51）→ teacher 0037（含 0033）→ public 55 → public 56 → teacher 0038 → public 57 → teacher 0040（含 0039）→ teacher 0041 逐段执行和读回；随后仍须完成 public 58/59 最终权限迁移、public 60 隐私迁移与 public 61 文案迁移。未知组合、错序、账本/checksum 漂移均失败关闭。
-- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260814_61_teacher_copy` 与精确 36 条 canonical Tide 0041 账本。它逐项核对顺序、文件名、SHA-256、最终实存结构和 rev60 隐私 Trigger 后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL、Mock Seed 或共享模板写入。
+- 代码侧初始化门禁面向完整 release 内容链、最终 ACL merge、国内学生隐私边界、审核后教师文案和 DTS 脏键领取索引；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。最终目标必须同时达到 public 62 / teacher 0041；仅有旧升级记录不代表权限、隐私、文案或索引迁移已完成。
+- 从仓库根目录运行 `backend/scripts/upgrade_company_test_database.py`。省略 `--apply` 时只读检查并输出计划；提交时必须同时给出 `--backup-confirmed --maintenance-window-confirmed`。脚本按 public 54（含 rev51）→ teacher 0037（含 0033）→ public 55 → public 56 → teacher 0038 → public 57 → teacher 0040（含 0039）→ teacher 0041 逐段执行和读回；随后仍须完成 public 58/59 最终权限迁移、public 60 隐私迁移、public 61 文案迁移与 public 62 DTS 索引迁移。未知组合、错序、账本/checksum 漂移均失败关闭。
+- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260818_62_dts_claim_idx` 与精确 36 条 canonical Tide 0041 账本。它逐项核对顺序、文件名、SHA-256、最终实存结构和 rev60 隐私 Trigger 后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL、Mock Seed 或共享模板写入。
 - 初始化器不得与 public/Tide migrator 并发运行；受控部署必须先完成迁移并释放迁移窗口，再执行初始化器。
 - 日常应用账号固定为 `tit_teacher_crud`，对 public 使用最终文档列出的 6 个只读对象和 4 张 CRUD 表，对普通 `tide.*` 表使用表级 CRUD；`tide.crm_sso_logins` 只保留 `SELECT / INSERT / UPDATE`，禁止删除一次性兑换事实。不读取原始积分、课程事实或评分配置表，越权业务写入由 Trigger/约束拒绝。
 - 内部测试后端的 `TIDE_DATABASE_URL` 和 `SHIWEN_READ_DATABASE_URL` 均由该配置生成并指向同一公司测试库；运行时不再使用本地 PostgreSQL 或本地数据回退。

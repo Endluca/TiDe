@@ -303,7 +303,7 @@ export class DatabaseService implements OnModuleDestroy {
         ) = '0041_crm_sso_hybrid'
         AND public_migration_state.migration_count = 1
         AND public_migration_state.version_num =
-          '20260814_61_teacher_copy'
+          '20260818_62_dts_claim_idx'
         AND to_regprocedure(
           'public.dom_student_json_is_safe_v1(jsonb)'
         ) IS NOT NULL

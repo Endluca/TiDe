@@ -618,7 +618,9 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
     assert indexes_parameters == {
         **state_columns_parameters,
         "index_names": [
+            "ix_dts_dirty_keys_pending_fifo",
             "ix_dts_dirty_keys_ready",
+            "ix_dts_dirty_keys_retry_due",
             "ix_dts_ingest_events_source_table_processed",
             "ix_dts_source_rows_dependency_keys",
             "ix_dts_source_rows_table_active",
@@ -859,14 +861,19 @@ def test_dts_runtime_rejects_state_index_drift(drift: str) -> None:
     if drift == "missing":
         indexes.pop()
     else:
-        row = list(indexes[2])
+        row_index = next(
+            index
+            for index, definition in enumerate(indexes)
+            if definition[1] == "ix_dts_source_rows_dependency_keys"
+        )
+        row = list(indexes[row_index])
         if drift == "method":
             row[2] = "btree"
         elif drift == "opclass":
             row[7] = ("jsonb_ops",)
         else:
             row[3] = False
-        indexes[2] = tuple(row)
+        indexes[row_index] = tuple(row)
     sink, _connection = _validation_sink(state_indexes=indexes)
 
     with pytest.raises(

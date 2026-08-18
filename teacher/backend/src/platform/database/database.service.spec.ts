@@ -251,7 +251,7 @@ describe('DatabaseService', () => {
       expect.stringContaining('FROM public.alembic_version'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('20260814_61_teacher_copy'),
+      expect.stringContaining('20260818_62_dts_claim_idx'),
     );
     expect(productionQuery).toContain(
       'public.dom_student_json_is_safe_v1(jsonb)',

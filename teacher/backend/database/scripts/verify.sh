@@ -34,7 +34,7 @@ server_version="$("${PSQL[@]}" -Atqc "show server_version")"
 deployment_heads_ready="$("${PSQL[@]}" -Atqc "
   select
     (select version_num from public.alembic_version)
-      = '20260814_61_teacher_copy'
+      = '20260818_62_dts_claim_idx'
     and (
       select array_agg(migration_id order by migration_order)
       from tide.schema_migrations
@@ -712,7 +712,7 @@ final_acl_ready="$("${PSQL[@]}" -Atqc "
         and not tgisinternal
     )
 ")"
-assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 61 + Tide canonical 0041"
+assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 62 + Tide canonical 0041"
 assert_equals "${template_count}" "9" "共享 G01-G09 任务模板数异常"
 assert_equals "${score_total}" "30" "G01-G09 分值合计异常"
 assert_equals "${assignment_count}" "9" "Mock 当前固定任务数异常"
@@ -1431,4 +1431,4 @@ $verify$;
 ROLLBACK;
 SQL
 
-echo "PostgreSQL ${server_version}：public 61、Tide 0041、教师英文文案、最终表级 ACL、国内学生隐私边界、运行时 Trigger、审计/Outbox 和消息回写验证通过。"
+echo "PostgreSQL ${server_version}：public 62、Tide 0041、DTS 脏键领取索引、教师英文文案、最终表级 ACL、国内学生隐私边界、运行时 Trigger、审计/Outbox 和消息回写验证通过。"

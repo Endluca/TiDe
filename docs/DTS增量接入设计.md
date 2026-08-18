@@ -108,9 +108,15 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 23/55 字段投影和国内/海外双运行配置已经进入持久化进程，不再停留在候选字段或影子输出。
 截至 2026-08-14，`tide_system_test` 已实证为 public `20260814_61_teacher_copy`、teacher 精确
 36 条且 head `0041_crm_sso_hybrid`，并已通过当前 release 的完整只读联合契约探针。rev61
-只更新 4 条稳定任务模板文案，不改变 DTS 状态表、Trigger 或隐私函数；数据库发布门禁已经
-关闭，但两个 DTS 仍须以 `projection=false` 完成真实 Kafka 连通性、readiness/heartbeat、
+只更新 4 条稳定任务模板文案，不改变 DTS 状态表、Trigger 或隐私函数；该历史 rev61 发布
+门禁不能替代 rev62 的迁移与性能复验，当前数据库发布门禁重新打开。两个 DTS 仍须以
+`projection=false` 完成真实 Kafka 连通性、readiness/heartbeat、
 双流 checkpoint 和事件账本验收，不能把数据库契约通过写成全链路完成。
+代码 rev62 将投影领取拆成 `PENDING` 与到期 `RETRY` 两个索引候选，再按候选时间选择并锁定
+一行；两个部分索引以 `CREATE INDEX CONCURRENTLY` 建立。它针对 2026-08-18 实测的
+`Parallel Seq Scan → top-N heapsort → Gather Merge` 热路径（约 286 万脏键、单次领取
+413 ms），不改变事件幂等、重试上限或脏键业务身份。上线收益必须在目标库应用 rev62 并发布
+新投影代码后，以 `EXPLAIN (ANALYZE, BUFFERS)` 和同窗吞吐采样重新验证。
 国内订阅已明确使用“AI 效率中心”团队的独立 Gaea 项目
 `tida-camp-dts-dom` 并选择中国大陆集群；仍须从新 Pod 读回平台地域和运行配置。国内跨境写入还要求目标 PostgreSQL
 默认和正式环境提供可由 `verify-full` 验证的 TLS；当前 PRE 仅在固定专线范围允许明文试跑，
