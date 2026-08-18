@@ -243,34 +243,62 @@ def test_transient_projection_failure_retries_below_the_limit() -> None:
     result = projector.run_batch(max_keys=2)
 
     assert result["retries"] == 1
+    assert result["quarantined"] == 0
     assert projector.dispatch_calls == 1
     assert projector.retry_calls == 1
 
 
-def test_projection_failure_raises_stable_error_when_retry_limit_is_reached() -> None:
+def test_projection_failure_is_quarantined_when_retry_limit_is_reached() -> None:
     projector = _FailingBatchProjector(persisted_attempts=1, next_attempt=2)
 
-    with pytest.raises(
-        DtsWideProjectionError,
-        match="^DTS_WIDE_PROJECTION_RETRY_EXHAUSTED$",
-    ):
-        projector.run_batch(max_keys=1)
+    result = projector.run_batch(max_keys=1)
 
+    assert result["retries"] == 1
+    assert result["quarantined"] == 1
     assert projector.dispatch_calls == 1
     assert projector.retry_calls == 1
 
 
-def test_persisted_exhausted_key_fails_again_without_dispatching() -> None:
+def test_persisted_exhausted_key_gets_one_attempt_under_new_projection_rules() -> None:
     projector = _FailingBatchProjector(persisted_attempts=2, next_attempt=3)
 
-    with pytest.raises(
-        DtsWideProjectionError,
-        match="^DTS_WIDE_PROJECTION_RETRY_EXHAUSTED$",
-    ):
-        projector.run_batch(max_keys=1)
+    result = projector.run_batch(max_keys=1)
 
-    assert projector.dispatch_calls == 0
-    assert projector.retry_calls == 0
+    assert result["retries"] == 1
+    assert result["quarantined"] == 1
+    assert projector.dispatch_calls == 1
+    assert projector.retry_calls == 1
+
+
+class _RetryEngine:
+    def __init__(self, connection: object) -> None:
+        self.connection = connection
+
+    def begin(self) -> _BeginContext:
+        return _BeginContext(self.connection)
+
+
+def test_exhausted_retry_is_parked_at_postgres_infinity() -> None:
+    connection = _ReadOnlyConnection(first_values=[(1,)])
+    projector = DtsWideProjector(
+        _RetryEngine(connection),
+        worker_id="test",
+        settings=DtsWideProjectionSettings(
+            cohort_start=date(2026, 8, 13),
+            retry_max_attempts=2,
+        ),
+    )
+
+    attempt = projector._mark_retry(
+        ("COURSE", "course-1", ""),
+        DtsWideProjectionError("DTS_APPOINT_DEPENDENCY_PENDING"),
+    )
+
+    assert attempt == 2
+    update_sql = str(
+        connection.statements[1].compile(dialect=postgresql.dialect())
+    )
+    assert "next_attempt_at='infinity'::timestamptz" in update_sql
 
 
 class _TeacherPendingProjector(DtsWideProjector):
@@ -316,6 +344,119 @@ def test_course_retries_without_emitting_a_source_wide_row_until_teacher_is_know
         )
 
     assert connection.execute_count == 2
+
+
+class _MissingAppointProjector(DtsWideProjector):
+    def __init__(self, *, before_cohort: bool) -> None:
+        super().__init__(
+            object(),
+            worker_id="test",
+            settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
+        )
+        self.before_cohort = before_cohort
+
+    def _appoint_source(self, _connection: object, _course_id: str) -> None:
+        return None
+
+    def _appoint_tombstoned(
+        self,
+        _connection: object,
+        _course_id: str,
+    ) -> bool:
+        return False
+
+    def _course_dependency_is_definitively_before_cohort(
+        self,
+        _connection: object,
+        _course_id: str,
+    ) -> bool:
+        return self.before_cohort
+
+
+def test_missing_pre_cohort_appoint_is_ignored_instead_of_retried() -> None:
+    projector = _MissingAppointProjector(before_cohort=True)
+    connection = _ReadOnlyConnection(first_values=[None], rowcounts=[0, 0])
+
+    result = projector._project_course(connection, "course-1", {})
+
+    assert result.lesson_deletes == 0
+    assert result.unchanged == 1
+    assert connection.execute_count == 2
+
+
+def test_missing_appoint_without_pre_cohort_evidence_still_retries() -> None:
+    projector = _MissingAppointProjector(before_cohort=False)
+    connection = _ReadOnlyConnection(first_values=[None])
+
+    with pytest.raises(
+        DtsWideProjectionError,
+        match="^DTS_APPOINT_DEPENDENCY_PENDING$",
+    ):
+        projector._project_course(connection, "course-1", {})
+
+
+class _CourseDateEvidenceProjector(DtsWideProjector):
+    def __init__(self, rows: list[object]) -> None:
+        super().__init__(
+            object(),
+            worker_id="test",
+            settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
+        )
+        self.rows = rows
+
+    def _active_source_rows(
+        self,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[object]:
+        return self.rows
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        (
+            [
+                SimpleNamespace(
+                    table="ovs_qa_task_fake_early_leave_record",
+                    row={"start_time": "2026-08-10 13:30:00"},
+                )
+            ],
+            True,
+        ),
+        (
+            [
+                SimpleNamespace(
+                    table="ovs_qa_task_fake_early_leave_record",
+                    row={"start_time": "2026-08-13 13:30:00"},
+                )
+            ],
+            False,
+        ),
+        (
+            [
+                SimpleNamespace(
+                    table="ovs_user_complaint",
+                    row={"add_time": "2026-08-10 13:30:00"},
+                )
+            ],
+            False,
+        ),
+    ],
+)
+def test_pre_cohort_course_classification_requires_trusted_lesson_date(
+    rows: list[object],
+    expected: bool,
+) -> None:
+    projector = _CourseDateEvidenceProjector(rows)
+
+    assert (
+        projector._course_dependency_is_definitively_before_cohort(
+            object(),
+            "course-1",
+        )
+        is expected
+    )
 
 
 class _TeacherTombstonedCourseProjector(_TeacherPendingProjector):
@@ -416,6 +557,13 @@ def test_teacher_update_outside_cohort_deletes_lessons_before_teacher() -> None:
 class _AppointPendingProjector(DtsWideProjector):
     def _appoint_source(self, _connection: object, _course_id: str) -> None:
         return None
+
+    def _course_dependency_is_definitively_before_cohort(
+        self,
+        _connection: object,
+        _course_id: str,
+    ) -> bool:
+        return False
 
 
 def test_missing_appoint_is_retried_instead_of_deleting_an_existing_lesson() -> None:

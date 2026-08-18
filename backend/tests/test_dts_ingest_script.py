@@ -622,7 +622,7 @@ def test_shadow_main_emits_safe_kafka_error(
     assert "runtime-secret" not in stderr
 
 
-def test_exhausted_projection_prevents_a_success_heartbeat(
+def test_unexpected_projection_failure_prevents_a_success_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -678,9 +678,7 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
         )
 
         def run_batch(self, **_kwargs: object) -> object:
-            raise DtsWideProjectionError(
-                "DTS_WIDE_PROJECTION_RETRY_EXHAUSTED"
-            )
+            raise DtsWideProjectionError("DTS_WIDE_PROJECTION_FAILED")
 
     class Consumer:
         startup_probed = False
@@ -765,7 +763,7 @@ def test_exhausted_projection_prevents_a_success_heartbeat(
 
     with pytest.raises(
         DtsWideProjectionError,
-        match="^DTS_WIDE_PROJECTION_RETRY_EXHAUSTED$",
+        match="^DTS_WIDE_PROJECTION_FAILED$",
     ):
         run_dts_ingest._run(args)
 
@@ -1483,6 +1481,7 @@ def test_sigterm_during_steady_work_removes_health_evidence(
                 "teacher_deletes": 0,
                 "unchanged": 0,
                 "retries": 0,
+                "quarantined": 0,
             }
 
     sink = Sink()
