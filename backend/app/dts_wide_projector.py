@@ -15,6 +15,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from time import monotonic
 from typing import Any
 
 from sqlalchemy import Engine, cast, delete, or_, select, text, update
@@ -49,6 +50,29 @@ _COURSE_DATE_FIELDS_BY_SUFFIX: dict[str, tuple[str, ...]] = {
     "teacher_penalty": ("lesson_start_time",),
     "user_teacher_grading": ("start_time",),
 }
+_COURSE_SOURCE_SUFFIXES = (
+    "appoint",
+    "complaint",
+    "grading_label_log",
+    "qa_ac_classroom_record",
+    "qa_task_close_camera_record",
+    "qa_task_fake_early_leave_record",
+    "teacher_absent_reason",
+    "teacher_penalty",
+    "user_complaint",
+    "user_teacher_grading",
+)
+_RELATIONSHIP_SOURCE_SUFFIXES = (
+    "appoint",
+    "teacher_blacklist",
+    "teacher_favorite",
+)
+_TEACHER_FEEDBACK_SUFFIXES = (
+    "complaint",
+    "user_complaint",
+    "user_teacher_grading",
+)
+_DEPENDENCY_QUERY_CHUNK_SIZE = 100
 
 
 class DtsWideProjectionError(RuntimeError):
@@ -141,6 +165,10 @@ class _ProjectionCounts:
     unchanged: int = 0
     retries: int = 0
     quarantined: int = 0
+    source_queries: int = 0
+    cache_hits: int = 0
+    elapsed_ms: int = 0
+    budget_exhausted: int = 0
 
     def add(self, other: _ProjectionCounts) -> None:
         self.lesson_upserts += other.lesson_upserts
@@ -159,6 +187,10 @@ class _ProjectionCounts:
             "unchanged": self.unchanged,
             "retries": self.retries,
             "quarantined": self.quarantined,
+            "source_queries": self.source_queries,
+            "cache_hits": self.cache_hits,
+            "elapsed_ms": self.elapsed_ms,
+            "budget_exhausted": self.budget_exhausted,
         }
 
 
@@ -312,35 +344,76 @@ class DtsWideProjector:
         self.engine = engine
         self.worker_id = worker_id.strip()[:128]
         self.settings = settings or DtsWideProjectionSettings.from_env()
+        self._source_row_cache: dict[
+            tuple[tuple[str, ...], str | None, str | None, tuple[str, ...]],
+            list[_SourceRow],
+        ] | None = None
+        self._source_query_count = 0
+        self._source_cache_hits = 0
 
-    def run_batch(self, *, max_keys: int = 100) -> dict[str, int]:
+    def run_batch(
+        self,
+        *,
+        max_keys: int = 100,
+        max_seconds: float | None = None,
+    ) -> dict[str, int]:
         if max_keys < 1:
             raise DtsWideProjectionError("DTS_PROJECTOR_MAX_KEYS_INVALID")
+        if max_seconds is not None and (
+            not math.isfinite(max_seconds) or max_seconds <= 0
+        ):
+            raise DtsWideProjectionError("DTS_PROJECTOR_MAX_SECONDS_INVALID")
+        started_at = monotonic()
+        deadline = (
+            started_at + max_seconds
+            if max_seconds is not None
+            else None
+        )
+        self._source_query_count = 0
+        self._source_cache_hits = 0
         result = _ProjectionCounts()
-        for _ in range(max_keys):
-            current_key: tuple[str, str, str] | None = None
-            try:
-                with self.engine.begin() as connection:
-                    dirty = self._lock_next_dirty_key(connection)
-                    if dirty is None:
-                        break
-                    current_key = (
-                        str(dirty["key_type"]),
-                        str(dirty["key_part_1"]),
-                        str(dirty["key_part_2"]),
+        # Reuse one checked-out connection for the bounded batch. Each key
+        # still owns an independent transaction, preserving rollback and retry
+        # isolation while avoiding one pool checkout (and its transport
+        # validation queries) per key.
+        with self.engine.connect() as connection:
+            for _ in range(max_keys):
+                if deadline is not None and monotonic() >= deadline:
+                    result.budget_exhausted = 1
+                    break
+                current_key: tuple[str, str, str] | None = None
+                try:
+                    with connection.begin():
+                        dirty = self._lock_next_dirty_key(connection)
+                        if dirty is None:
+                            break
+                        current_key = (
+                            str(dirty["key_type"]),
+                            str(dirty["key_part_1"]),
+                            str(dirty["key_part_2"]),
+                        )
+                        self._source_row_cache = {}
+                        try:
+                            projected = self._dispatch(connection, dirty)
+                        finally:
+                            self._source_row_cache = None
+                        self._mark_completed(connection, current_key)
+                        result.dirty_keys += 1
+                        result.add(projected)
+                except Exception as exc:
+                    if current_key is None:
+                        raise
+                    attempt = self._mark_retry(
+                        current_key,
+                        exc,
+                        connection=connection,
                     )
-                    self._mark_processing(connection, current_key)
-                    projected = self._dispatch(connection, dirty)
-                    self._mark_completed(connection, current_key)
-                    result.dirty_keys += 1
-                    result.add(projected)
-            except Exception as exc:
-                if current_key is None:
-                    raise
-                attempt = self._mark_retry(current_key, exc)
-                result.retries += 1
-                if attempt >= self.settings.retry_max_attempts:
-                    result.quarantined += 1
+                    result.retries += 1
+                    if attempt >= self.settings.retry_max_attempts:
+                        result.quarantined += 1
+        result.source_queries = self._source_query_count
+        result.cache_hits = self._source_cache_hits
+        result.elapsed_ms = max(0, int((monotonic() - started_at) * 1000))
         return result.as_dict()
 
     def _lock_next_dirty_key(self, connection: Any) -> Mapping[str, Any] | None:
@@ -358,27 +431,6 @@ class DtsWideProjector:
             .limit(1)
             .with_for_update(skip_locked=True)
         ).mappings().first()
-
-    def _mark_processing(
-        self,
-        connection: Any,
-        key: tuple[str, str, str],
-    ) -> None:
-        table = DtsDirtyKeyRecord.__table__
-        connection.execute(
-            update(table)
-            .where(
-                table.c.key_type == key[0],
-                table.c.key_part_1 == key[1],
-                table.c.key_part_2 == key[2],
-            )
-            .values(
-                status="PROCESSING",
-                claimed_at=text("clock_timestamp()"),
-                claimed_by=self.worker_id,
-                row_version=table.c.row_version + 1,
-            )
-        )
 
     def _mark_completed(
         self,
@@ -408,6 +460,24 @@ class DtsWideProjector:
         self,
         key: tuple[str, str, str],
         exc: Exception,
+        *,
+        connection: Any | None = None,
+    ) -> int:
+        if connection is None:
+            with self.engine.begin() as retry_connection:
+                return self._mark_retry_in_transaction(
+                    retry_connection,
+                    key,
+                    exc,
+                )
+        with connection.begin():
+            return self._mark_retry_in_transaction(connection, key, exc)
+
+    def _mark_retry_in_transaction(
+        self,
+        connection: Any,
+        key: tuple[str, str, str],
+        exc: Exception,
     ) -> int:
         table = DtsDirtyKeyRecord.__table__
         error_code = (
@@ -415,51 +485,50 @@ class DtsWideProjector:
             if isinstance(exc, DtsWideProjectionError) and str(exc)
             else "DTS_WIDE_PROJECTION_FAILED"
         )[:128]
-        with self.engine.begin() as connection:
-            dirty = connection.execute(
-                select(table.c.attempt_count)
-                .where(
-                    table.c.key_type == key[0],
-                    table.c.key_part_1 == key[1],
-                    table.c.key_part_2 == key[2],
-                )
-                .with_for_update()
-            ).first()
-            if dirty is None:
-                raise DtsWideProjectionError("DTS_DIRTY_KEY_LOST_DURING_RETRY")
-            attempt = int(dirty[0]) + 1
-            exhausted = attempt >= self.settings.retry_max_attempts
-            if exhausted:
-                # Keep the failure visible while preventing one poison key
-                # from terminating or hot-looping the whole projector.  A
-                # later real CDC event resets the key to PENDING in the ingest
-                # store, so quarantine does not suppress new source evidence.
-                next_attempt_at = text("'infinity'::timestamptz")
-            else:
-                delay = min(
-                    self.settings.retry_max_seconds,
-                    self.settings.retry_base_seconds * (2 ** min(attempt - 1, 8)),
-                )
-                next_attempt_at = datetime.now(timezone.utc) + timedelta(
-                    seconds=delay
-                )
-            connection.execute(
-                update(table)
-                .where(
-                    table.c.key_type == key[0],
-                    table.c.key_part_1 == key[1],
-                    table.c.key_part_2 == key[2],
-                )
-                .values(
-                    status="RETRY",
-                    attempt_count=attempt,
-                    last_error_code=error_code,
-                    next_attempt_at=next_attempt_at,
-                    claimed_at=None,
-                    claimed_by=None,
-                    row_version=table.c.row_version + 1,
-                )
+        dirty = connection.execute(
+            select(table.c.attempt_count)
+            .where(
+                table.c.key_type == key[0],
+                table.c.key_part_1 == key[1],
+                table.c.key_part_2 == key[2],
             )
+            .with_for_update()
+        ).first()
+        if dirty is None:
+            raise DtsWideProjectionError("DTS_DIRTY_KEY_LOST_DURING_RETRY")
+        attempt = int(dirty[0]) + 1
+        exhausted = attempt >= self.settings.retry_max_attempts
+        if exhausted:
+            # Keep the failure visible while preventing one poison key
+            # from terminating or hot-looping the whole projector.  A
+            # later real CDC event resets the key to PENDING in the ingest
+            # store, so quarantine does not suppress new source evidence.
+            next_attempt_at = text("'infinity'::timestamptz")
+        else:
+            delay = min(
+                self.settings.retry_max_seconds,
+                self.settings.retry_base_seconds * (2 ** min(attempt - 1, 8)),
+            )
+            next_attempt_at = datetime.now(timezone.utc) + timedelta(
+                seconds=delay
+            )
+        connection.execute(
+            update(table)
+            .where(
+                table.c.key_type == key[0],
+                table.c.key_part_1 == key[1],
+                table.c.key_part_2 == key[2],
+            )
+            .values(
+                status="RETRY",
+                attempt_count=attempt,
+                last_error_code=error_code,
+                next_attempt_at=next_attempt_at,
+                claimed_at=None,
+                claimed_by=None,
+                row_version=table.c.row_version + 1,
+            )
+        )
         return attempt
 
     def _dispatch(
@@ -526,6 +595,70 @@ class DtsWideProjector:
         dependency_value: str | None = None,
         regions: Sequence[str] = _REGIONS,
     ) -> list[_SourceRow]:
+        normalized_suffixes = tuple(sorted(set(suffixes)))
+        normalized_regions = tuple(sorted(set(regions)))
+        cache_key = (
+            normalized_suffixes,
+            dependency_name,
+            dependency_value,
+            normalized_regions,
+        )
+        if self._source_row_cache is not None:
+            cached = self._source_row_cache.get(cache_key)
+            if cached is not None:
+                self._source_cache_hits += 1
+                return cached
+            requested_suffixes = set(normalized_suffixes)
+            requested_regions = set(normalized_regions)
+            for candidate_key, candidate_rows in tuple(
+                self._source_row_cache.items()
+            ):
+                (
+                    candidate_suffixes,
+                    candidate_dependency_name,
+                    candidate_dependency_value,
+                    candidate_regions,
+                ) = candidate_key
+                if (
+                    candidate_dependency_name == dependency_name
+                    and candidate_dependency_value == dependency_value
+                    and requested_suffixes.issubset(candidate_suffixes)
+                    and requested_regions.issubset(candidate_regions)
+                ):
+                    source_tables = {
+                        f"{region}_{suffix}"
+                        for region in requested_regions
+                        for suffix in requested_suffixes
+                    }
+                    cached = [
+                        item
+                        for item in candidate_rows
+                        if item.table in source_tables
+                    ]
+                    self._source_row_cache[cache_key] = cached
+                    self._source_cache_hits += 1
+                    return cached
+
+        rows = self._query_active_source_rows(
+            connection,
+            suffixes=normalized_suffixes,
+            dependency_name=dependency_name,
+            dependency_value=dependency_value,
+            regions=normalized_regions,
+        )
+        if self._source_row_cache is not None:
+            self._source_row_cache[cache_key] = rows
+        return rows
+
+    def _query_active_source_rows(
+        self,
+        connection: Any,
+        *,
+        suffixes: Sequence[str],
+        dependency_name: str | None = None,
+        dependency_value: str | None = None,
+        regions: Sequence[str] = _REGIONS,
+    ) -> list[_SourceRow]:
         table = DtsSourceRowRecord.__table__
         source_tables = [
             f"{region}_{suffix}"
@@ -550,6 +683,7 @@ class DtsWideProjector:
                 table.c.last_record_id,
             ).where(*clauses)
         ).mappings()
+        self._source_query_count += 1
         return [
             _SourceRow(
                 region=str(item["source_region"]),
@@ -560,6 +694,74 @@ class DtsWideProjector:
             )
             for item in rows
         ]
+
+    def _active_source_rows_for_dependency_values(
+        self,
+        connection: Any,
+        *,
+        suffixes: Sequence[str],
+        dependency_name: str,
+        dependency_values: Sequence[str],
+        regions: Sequence[str] = _REGIONS,
+    ) -> list[_SourceRow]:
+        values = sorted(
+            {
+                str(value).strip()
+                for value in dependency_values
+                if value is not None and str(value).strip()
+            }
+        )
+        if not values:
+            return []
+        table = DtsSourceRowRecord.__table__
+        source_tables = [
+            f"{region}_{suffix}"
+            for region in sorted(set(regions))
+            for suffix in sorted(set(suffixes))
+        ]
+        result: list[_SourceRow] = []
+        seen: set[tuple[str, str, int]] = set()
+        for start in range(0, len(values), _DEPENDENCY_QUERY_CHUNK_SIZE):
+            batch = values[start : start + _DEPENDENCY_QUERY_CHUNK_SIZE]
+            dependency_clauses = [
+                table.c.dependency_keys.op("@>")(
+                    cast({dependency_name: [value]}, JSONB)
+                )
+                for value in batch
+            ]
+            rows = connection.execute(
+                select(
+                    table.c.source_region,
+                    table.c.source_table,
+                    table.c.source_row,
+                    table.c.source_timestamp,
+                    table.c.last_record_id,
+                ).where(
+                    table.c.source_table.in_(source_tables),
+                    table.c.is_deleted.is_(False),
+                    or_(*dependency_clauses),
+                )
+            ).mappings()
+            self._source_query_count += 1
+            for item in rows:
+                identity = (
+                    str(item["source_region"]),
+                    str(item["source_table"]),
+                    int(item["last_record_id"]),
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                result.append(
+                    _SourceRow(
+                        region=identity[0],
+                        table=identity[1],
+                        row=item["source_row"],
+                        source_timestamp=int(item["source_timestamp"]),
+                        last_record_id=identity[2],
+                    )
+                )
+        return result
 
     def _course_ids_for_dependency(
         self,
@@ -659,6 +861,13 @@ class DtsWideProjector:
         existing = connection.execute(
             select(lesson_table).where(lesson_table.c["课程id"] == course_id)
         ).mappings().first()
+        if self._source_row_cache is not None:
+            self._active_source_rows(
+                connection,
+                suffixes=_COURSE_SOURCE_SUFFIXES,
+                dependency_name="course_ids",
+                dependency_value=course_id,
+            )
         appoint_source = self._appoint_source(connection, course_id)
         if appoint_source is None:
             # A relation/QA event can arrive before the appoint event on the
@@ -772,8 +981,7 @@ class DtsWideProjector:
             deleted = connection.execute(
                 delete(lesson_table).where(lesson_table.c["课程id"] == course_id)
             ).rowcount
-            self._enqueue_teacher(connection, teacher_id, dirty)
-            if existing is not None:
+            if deleted and existing is not None:
                 self._enqueue_teacher(
                     connection,
                     _string_id(existing["老师id"]),
@@ -818,6 +1026,14 @@ class DtsWideProjector:
         grading_type = str(grading.get("type") or "").strip().lower() if grading else ""
         feedback_detail = self._feedback_detail(connection, course_id)
         complaint_names = self._complaint_names(connection, course_id)
+        if self._source_row_cache is not None:
+            self._active_source_rows(
+                connection,
+                suffixes=_RELATIONSHIP_SOURCE_SUFFIXES,
+                dependency_name="teacher_ids",
+                dependency_value=teacher_id,
+                regions=(appoint_source.region,),
+            )
         is_blocked = self._relationship_assigned_to_course(
             connection,
             relation_suffix="teacher_blacklist",
@@ -906,9 +1122,13 @@ class DtsWideProjector:
             primary_keys=("课程id",),
         )
         old_teacher = _string_id(existing["老师id"]) if existing is not None else None
-        self._enqueue_teacher(connection, teacher_id, dirty)
-        if old_teacher != teacher_id:
-            self._enqueue_teacher(connection, old_teacher, dirty)
+        self._enqueue_lesson_teachers_if_changed(
+            connection,
+            changed=changed,
+            teacher_id=teacher_id,
+            old_teacher_id=old_teacher,
+            origin=dirty,
+        )
         if changed:
             result.lesson_upserts += 1
         else:
@@ -1308,6 +1528,21 @@ class DtsWideProjector:
             )
         )
 
+    def _enqueue_lesson_teachers_if_changed(
+        self,
+        connection: Any,
+        *,
+        changed: bool,
+        teacher_id: str,
+        old_teacher_id: str | None,
+        origin: Mapping[str, Any],
+    ) -> None:
+        if not changed:
+            return
+        self._enqueue_teacher(connection, teacher_id, origin)
+        if old_teacher_id != teacher_id:
+            self._enqueue_teacher(connection, old_teacher_id, origin)
+
     @staticmethod
     def _delete_teacher_projection(
         connection: Any,
@@ -1363,11 +1598,13 @@ class DtsWideProjector:
             return self._delete_teacher_projection(connection, teacher_id)
         onboard_end = onboard + timedelta(days=29)
         lessons = self._teacher_lessons(connection, teacher_id, onboard, onboard_end)
+        course_ids = {str(row["课程id"]) for row in lessons}
         completed = [row for row in lessons if row["课程状态"] == _COMPLETED_STATUS]
         absent = [row for row in lessons if row["课程状态"] == _ABSENT_STATUS]
-        during_absence_ids = self._during_lesson_absence_course_ids(
+        no_notice, during_absence_ids = self._teacher_absence_facts(
             connection,
             teacher_id,
+            lessons,
         )
         late = [
             row
@@ -1393,14 +1630,11 @@ class DtsWideProjector:
             and row["早退"] is not True
             and str(row["课程id"]) not in during_absence_ids
         ]
-        course_ids = {str(row["课程id"]) for row in lessons}
-        no_notice = self._no_notice_course_ids(connection, teacher_id) & course_ids
-        evaluated_ids = {
-            course_id
-            for course_id in course_ids
-            if self._latest_grading(connection, course_id) is not None
-        }
-        complaint_total, valid_complaint_total = self._teacher_complaint_counts(
+        (
+            evaluated_ids,
+            complaint_total,
+            valid_complaint_total,
+        ) = self._teacher_feedback_facts(
             connection,
             course_ids,
         )
@@ -1591,27 +1825,12 @@ class DtsWideProjector:
             and start <= schedule_date <= end
         ]
 
-    def _no_notice_course_ids(self, connection: Any, teacher_id: str) -> set[str]:
-        rows = self._active_source_rows(
-            connection,
-            suffixes=("teacher_absent_reason",),
-            dependency_name="teacher_ids",
-            dependency_value=teacher_id,
-            regions=("dom",),
-        )
-        return {
-            course_id
-            for item in rows
-            if str(item.row.get("reason_type") or "").strip().lower()
-            == "no notification"
-            and (course_id := _string_id(item.row.get("appoint_id"))) is not None
-        }
-
-    def _during_lesson_absence_course_ids(
+    def _teacher_absence_facts(
         self,
         connection: Any,
         teacher_id: str,
-    ) -> set[str]:
+        lessons: Sequence[Mapping[str, Any]],
+    ) -> tuple[set[str], set[str]]:
         rows = self._active_source_rows(
             connection,
             suffixes=("teacher_absent_reason",),
@@ -1619,54 +1838,85 @@ class DtsWideProjector:
             dependency_value=teacher_id,
             regions=("dom",),
         )
-        result: set[str] = set()
+        lesson_starts: dict[str, datetime] = {}
+        for lesson in lessons:
+            course_id = _string_id(lesson.get("课程id"))
+            lesson_date = _date_value(lesson.get("上课日期"))
+            lesson_time = _time_value(lesson.get("上课时间"))
+            if (
+                course_id is not None
+                and lesson_date is not None
+                and lesson_time is not None
+            ):
+                lesson_starts[course_id] = datetime.combine(
+                    lesson_date,
+                    lesson_time,
+                )
+        no_notice: set[str] = set()
+        during_lesson: set[str] = set()
         for item in rows:
             course_id = _string_id(item.row.get("appoint_id"))
-            added_at = _datetime_value(item.row.get("add_time"))
-            if course_id is None or added_at is None:
+            if course_id is None or course_id not in lesson_starts:
                 continue
-            appoint = self._appoint_source(connection, course_id)
-            started_at = (
-                _datetime_value(appoint.row.get("start_time"))
-                if appoint is not None
-                else None
-            )
-            if started_at is not None and added_at >= started_at:
-                result.add(course_id)
-        return result
+            if (
+                str(item.row.get("reason_type") or "").strip().lower()
+                == "no notification"
+            ):
+                no_notice.add(course_id)
+            added_at = _datetime_value(item.row.get("add_time"))
+            if added_at is not None and added_at >= lesson_starts[course_id]:
+                during_lesson.add(course_id)
+        return no_notice, during_lesson
 
-    def _teacher_complaint_counts(
+    def _teacher_feedback_facts(
         self,
         connection: Any,
         course_ids: set[str],
-    ) -> tuple[int, int]:
-        all_keys: set[tuple[str, str]] = set()
+    ) -> tuple[set[str], int, int]:
+        rows = self._active_source_rows_for_dependency_values(
+            connection,
+            suffixes=_TEACHER_FEEDBACK_SUFFIXES,
+            dependency_name="course_ids",
+            dependency_values=tuple(course_ids),
+        )
+        gradings: dict[str, list[Mapping[str, Any]]] = {}
+        user_complaints: dict[str, list[Mapping[str, Any]]] = {}
+        complaints: dict[str, list[Mapping[str, Any]]] = {}
+        complaint_courses: set[str] = set()
+        for item in rows:
+            course_id = _string_id(item.row.get("appoint_id"))
+            if course_id is None or course_id not in course_ids:
+                continue
+            if item.table.endswith("_user_teacher_grading"):
+                if (
+                    _int_value(item.row.get("is_del")) in (None, 0)
+                    and _int_value(item.row.get("status")) in (None, 0)
+                ):
+                    gradings.setdefault(course_id, []).append(item.row)
+            elif item.table.endswith("_user_complaint"):
+                complaint_courses.add(course_id)
+                user_complaints.setdefault(course_id, []).append(item.row)
+            elif item.table.endswith("_complaint"):
+                complaint_courses.add(course_id)
+                complaints.setdefault(course_id, []).append(item.row)
+
+        evaluated_ids = {
+            course_id
+            for course_id, grading_rows in gradings.items()
+            if _latest(
+                grading_rows,
+                time_fields=("update_time", "create_time"),
+            )
+            is not None
+        }
         valid_courses: set[str] = set()
-        for course_id in course_ids:
-            user_rows = [
-                item.row
-                for item in self._active_source_rows(
-                    connection,
-                    suffixes=("user_complaint",),
-                    dependency_name="course_ids",
-                    dependency_value=course_id,
-                )
-            ]
-            complaint_rows = [
-                item.row
-                for item in self._active_source_rows(
-                    connection,
-                    suffixes=("complaint",),
-                    dependency_name="course_ids",
-                    dependency_value=course_id,
-                )
-            ]
-            for row in (*user_rows, *complaint_rows):
-                student_id = student_subject(row) or ""
-                all_keys.add((student_id, course_id))
-            if reduce_latest_complaints(user_rows, complaint_rows):
+        for course_id in complaint_courses:
+            if reduce_latest_complaints(
+                user_complaints.get(course_id, []),
+                complaints.get(course_id, []),
+            ):
                 valid_courses.add(course_id)
-        return len({key[1] for key in all_keys}), len(valid_courses)
+        return evaluated_ids, len(complaint_courses), len(valid_courses)
 
     @staticmethod
     def _tesol_state(

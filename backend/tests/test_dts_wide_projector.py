@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from app import dts_wide_projector as projector_module
 from app.db_models import TeacherSourceWideRecord
 from app.dts_wide_projector import (
     DtsWideProjectionError,
@@ -162,9 +163,26 @@ class _BeginContext:
         return False
 
 
-class _BatchEngine:
+class _BatchConnection:
+    def __init__(self) -> None:
+        self.transaction_count = 0
+
     def begin(self) -> _BeginContext:
-        return _BeginContext(object())
+        self.transaction_count += 1
+        return _BeginContext(self)
+
+
+class _BatchEngine:
+    def __init__(self) -> None:
+        self.connection = _BatchConnection()
+        self.connect_calls = 0
+
+    def connect(self) -> _BeginContext:
+        self.connect_calls += 1
+        return _BeginContext(self.connection)
+
+    def begin(self) -> _BeginContext:
+        return _BeginContext(self.connection)
 
 
 def test_upsert_uses_returning_when_insert_rowcount_is_unknown() -> None:
@@ -213,6 +231,7 @@ class _FailingBatchProjector(DtsWideProjector):
         self.lock_calls = 0
         self.dispatch_calls = 0
         self.retry_calls = 0
+        self.retry_connection: object | None = None
 
     def _lock_next_dirty_key(self, _connection: object) -> object:
         self.lock_calls += 1
@@ -225,16 +244,57 @@ class _FailingBatchProjector(DtsWideProjector):
             "attempt_count": self.persisted_attempts,
         }
 
-    def _mark_processing(self, *_args: object) -> None:
-        return None
-
     def _dispatch(self, *_args: object) -> object:
         self.dispatch_calls += 1
         raise DtsWideProjectionError("DTS_TEACHER_DEPENDENCY_PENDING")
 
-    def _mark_retry(self, *_args: object) -> int:
+    def _mark_retry(self, *_args: object, **_kwargs: object) -> int:
         self.retry_calls += 1
+        self.retry_connection = _kwargs.get("connection")
         return self.next_attempt
+
+
+class _SuccessfulBatchProjector(DtsWideProjector):
+    def __init__(self) -> None:
+        super().__init__(
+            _BatchEngine(),
+            worker_id="test",
+            settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
+        )
+        self.lock_calls = 0
+
+    def _lock_next_dirty_key(self, _connection: object) -> object:
+        self.lock_calls += 1
+        if self.lock_calls > 2:
+            return None
+        return {
+            "key_type": "COURSE",
+            "key_part_1": f"course-{self.lock_calls}",
+            "key_part_2": "",
+        }
+
+    def _dispatch(self, *_args: object) -> object:
+        return SimpleNamespace(
+            lesson_upserts=0,
+            lesson_deletes=0,
+            teacher_upserts=0,
+            teacher_deletes=0,
+            unchanged=1,
+        )
+
+    def _mark_completed(self, *_args: object) -> None:
+        return None
+
+
+def test_projection_batch_reuses_one_checkout_across_key_transactions() -> None:
+    projector = _SuccessfulBatchProjector()
+
+    result = projector.run_batch(max_keys=10)
+
+    assert result["dirty_keys"] == 2
+    assert result["unchanged"] == 2
+    assert projector.engine.connect_calls == 1
+    assert projector.engine.connection.transaction_count == 3
 
 
 def test_transient_projection_failure_retries_below_the_limit() -> None:
@@ -246,6 +306,7 @@ def test_transient_projection_failure_retries_below_the_limit() -> None:
     assert result["quarantined"] == 0
     assert projector.dispatch_calls == 1
     assert projector.retry_calls == 1
+    assert projector.retry_connection is projector.engine.connection
 
 
 def test_projection_failure_is_quarantined_when_retry_limit_is_reached() -> None:
@@ -268,6 +329,34 @@ def test_persisted_exhausted_key_gets_one_attempt_under_new_projection_rules() -
     assert result["quarantined"] == 1
     assert projector.dispatch_calls == 1
     assert projector.retry_calls == 1
+
+
+def test_projection_batch_stops_at_its_time_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projector = _FailingBatchProjector(persisted_attempts=0, next_attempt=1)
+    times = iter((10.0, 11.0, 11.0))
+    monkeypatch.setattr(projector_module, "monotonic", lambda: next(times))
+
+    result = projector.run_batch(max_keys=1000, max_seconds=0.5)
+
+    assert result["dirty_keys"] == 0
+    assert result["budget_exhausted"] == 1
+    assert result["elapsed_ms"] == 1000
+    assert projector.lock_calls == 0
+
+
+@pytest.mark.parametrize("max_seconds", [0.0, -1.0, float("inf")])
+def test_projection_batch_time_budget_must_be_positive_and_finite(
+    max_seconds: float,
+) -> None:
+    projector = _FailingBatchProjector(persisted_attempts=0, next_attempt=1)
+
+    with pytest.raises(
+        DtsWideProjectionError,
+        match="^DTS_PROJECTOR_MAX_SECONDS_INVALID$",
+    ):
+        projector.run_batch(max_seconds=max_seconds)
 
 
 class _RetryEngine:
@@ -457,6 +546,239 @@ def test_pre_cohort_course_classification_requires_trusted_lesson_date(
         )
         is expected
     )
+
+
+class _SourceRowCacheProjector(DtsWideProjector):
+    def __init__(self) -> None:
+        super().__init__(
+            object(),
+            worker_id="test",
+            settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
+        )
+        self.query_calls = 0
+
+    def _query_active_source_rows(
+        self,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[object]:
+        self.query_calls += 1
+        return [
+            SimpleNamespace(
+                region="ovs",
+                table="ovs_appoint",
+                row={"id": "course-1"},
+            ),
+            SimpleNamespace(
+                region="ovs",
+                table="ovs_qa_task_fake_early_leave_record",
+                row={"appoint_id": "course-1"},
+            ),
+        ]
+
+
+def test_source_row_cache_serves_narrow_queries_from_one_course_prefetch() -> None:
+    projector = _SourceRowCacheProjector()
+    projector._source_row_cache = {}
+
+    projector._active_source_rows(
+        object(),
+        suffixes=("appoint", "qa_task_fake_early_leave_record"),
+        dependency_name="course_ids",
+        dependency_value="course-1",
+    )
+    fake_early = projector._active_source_rows(
+        object(),
+        suffixes=("qa_task_fake_early_leave_record",),
+        dependency_name="course_ids",
+        dependency_value="course-1",
+        regions=("ovs",),
+    )
+    repeated = projector._active_source_rows(
+        object(),
+        suffixes=("qa_task_fake_early_leave_record",),
+        dependency_name="course_ids",
+        dependency_value="course-1",
+        regions=("ovs",),
+    )
+
+    assert projector.query_calls == 1
+    assert projector._source_cache_hits == 2
+    assert [item.table for item in fake_early] == [
+        "ovs_qa_task_fake_early_leave_record"
+    ]
+    assert repeated == fake_early
+
+
+def test_multi_course_dependency_lookup_uses_one_indexable_query() -> None:
+    class EmptyRows:
+        def mappings(self) -> EmptyRows:
+            return self
+
+        def __iter__(self):
+            return iter(())
+
+    class CaptureConnection:
+        def __init__(self) -> None:
+            self.statements: list[object] = []
+
+        def execute(self, statement: object) -> EmptyRows:
+            self.statements.append(statement)
+            return EmptyRows()
+
+    projector = DtsWideProjector(
+        object(),
+        worker_id="test",
+        settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
+    )
+    connection = CaptureConnection()
+
+    rows = projector._active_source_rows_for_dependency_values(
+        connection,
+        suffixes=("complaint", "user_teacher_grading"),
+        dependency_name="course_ids",
+        dependency_values=("course-1", "course-2"),
+    )
+
+    sql = str(connection.statements[0].compile(dialect=postgresql.dialect()))
+    assert rows == []
+    assert len(connection.statements) == 1
+    assert sql.count("@>") == 2
+    assert "dts_source_rows.dependency_keys" in sql
+
+
+class _TeacherFactsProjector(DtsWideProjector):
+    def __init__(
+        self,
+        *,
+        absence_rows: list[object] | None = None,
+        feedback_rows: list[object] | None = None,
+    ) -> None:
+        super().__init__(
+            object(),
+            worker_id="test",
+            settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
+        )
+        self.absence_rows = absence_rows or []
+        self.feedback_rows = feedback_rows or []
+        self.feedback_query_calls = 0
+
+    def _active_source_rows(self, *_args: object, **_kwargs: object) -> list[object]:
+        return self.absence_rows
+
+    def _active_source_rows_for_dependency_values(
+        self,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[object]:
+        self.feedback_query_calls += 1
+        return self.feedback_rows
+
+
+def test_teacher_absence_facts_reuse_projected_lesson_start_times() -> None:
+    projector = _TeacherFactsProjector(
+        absence_rows=[
+            SimpleNamespace(
+                row={
+                    "appoint_id": "course-1",
+                    "reason_type": "No Notification",
+                    "add_time": "2026-08-13 13:31:00",
+                }
+            ),
+            SimpleNamespace(
+                row={
+                    "appoint_id": "course-2",
+                    "reason_type": "other",
+                    "add_time": "2026-08-13 13:29:00",
+                }
+            ),
+        ]
+    )
+    lessons = [
+        {
+            "课程id": "course-1",
+            "上课日期": date(2026, 8, 13),
+            "上课时间": "13:30:00",
+        },
+        {
+            "课程id": "course-2",
+            "上课日期": date(2026, 8, 13),
+            "上课时间": "13:30:00",
+        },
+    ]
+
+    no_notice, during_lesson = projector._teacher_absence_facts(
+        object(),
+        "teacher-1",
+        lessons,
+    )
+
+    assert no_notice == {"course-1"}
+    assert during_lesson == {"course-1"}
+
+
+def test_teacher_feedback_facts_bulk_reduce_all_courses_once() -> None:
+    projector = _TeacherFactsProjector(
+        feedback_rows=[
+            SimpleNamespace(
+                table="ovs_user_teacher_grading",
+                row={
+                    "id": "1",
+                    "appoint_id": "course-1",
+                    "score": 5,
+                    "status": 0,
+                    "is_del": 0,
+                    "update_time": "2026-08-13 14:00:00",
+                },
+            ),
+            SimpleNamespace(
+                table="ovs_user_teacher_grading",
+                row={
+                    "id": "2",
+                    "appoint_id": "course-2",
+                    "score": 1,
+                    "status": 1,
+                    "is_del": 0,
+                },
+            ),
+            SimpleNamespace(
+                table="ovs_complaint",
+                row={
+                    "id": "10",
+                    "stu_id": "student-1",
+                    "appoint_id": "course-1",
+                    "complaint_type": 13,
+                    "complaint_type_grandson": 81,
+                    "approve": "y",
+                    "validity": 1,
+                },
+            ),
+            SimpleNamespace(
+                table="ovs_complaint",
+                row={
+                    "id": "11",
+                    "stu_id": "student-2",
+                    "appoint_id": "course-2",
+                    "complaint_type": 13,
+                    "complaint_type_grandson": 81,
+                    "approve": "n",
+                    "validity": 0,
+                },
+            ),
+        ]
+    )
+
+    evaluated, complaint_total, valid_complaint_total = (
+        projector._teacher_feedback_facts(
+            object(),
+            {"course-1", "course-2"},
+        )
+    )
+
+    assert projector.feedback_query_calls == 1
+    assert evaluated == {"course-1"}
+    assert complaint_total == 2
+    assert valid_complaint_total == 1
 
 
 class _TeacherTombstonedCourseProjector(_TeacherPendingProjector):
@@ -753,3 +1075,42 @@ def test_internal_teacher_redirty_resets_an_exhausted_retry_cycle() -> None:
         f"attempt_count = %({name})s" in sql and value == 0
         for name, value in compiled.params.items()
     )
+
+
+class _TeacherEnqueueTrackingProjector(DtsWideProjector):
+    def __init__(self) -> None:
+        super().__init__(
+            object(),
+            worker_id="test",
+            settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
+        )
+        self.enqueued: list[str | None] = []
+
+    def _enqueue_teacher(
+        self,
+        _connection: object,
+        teacher_id: str | None,
+        _origin: object,
+    ) -> None:
+        self.enqueued.append(teacher_id)
+
+
+def test_unchanged_lesson_does_not_amplify_teacher_dirty_keys() -> None:
+    projector = _TeacherEnqueueTrackingProjector()
+
+    projector._enqueue_lesson_teachers_if_changed(
+        object(),
+        changed=False,
+        teacher_id="teacher-1",
+        old_teacher_id="teacher-1",
+        origin={},
+    )
+    projector._enqueue_lesson_teachers_if_changed(
+        object(),
+        changed=True,
+        teacher_id="teacher-2",
+        old_teacher_id="teacher-1",
+        origin={},
+    )
+
+    assert projector.enqueued == ["teacher-2", "teacher-1"]
