@@ -845,6 +845,7 @@ def _validate_projection_activation_state(
                 )
                   AND complaints.is_deleted IS FALSE
                   AND NULLIF(BTRIM(category_refs.category_id), '') IS NOT NULL
+                  AND category_refs.category_id NOT IN ('-1', '0')
             )
             SELECT referenced_categories.category_id
             FROM referenced_categories
@@ -949,6 +950,19 @@ def _normalized_ids(*values: Any) -> list[str]:
     )
 
 
+_COMPLAINT_CATEGORY_SENTINELS = frozenset({"-1", "0"})
+
+
+def _normalized_complaint_category_ids(*values: Any) -> list[str]:
+    """Drop source sentinels that mean that a category level is absent."""
+
+    return [
+        value
+        for value in _normalized_ids(*values)
+        if value not in _COMPLAINT_CATEGORY_SENTINELS
+    ]
+
+
 def _dependency_keys(
     suffix: str,
     row: Mapping[str, Any],
@@ -963,7 +977,7 @@ def _dependency_keys(
     )
     student_subjects = _normalized_ids(student_subject(row))
     label_ids = _normalized_ids(row.get("label_id"))
-    category_ids = _normalized_ids(
+    category_ids = _normalized_complaint_category_ids(
         row.get("complaint_type"),
         row.get("complaint_type_child"),
         row.get("complaint_type_grandson"),
@@ -976,7 +990,10 @@ def _dependency_keys(
     if suffix == "grading_label":
         label_ids = _normalized_ids(row.get("id"))
     if suffix == "complaint_cate":
-        category_ids = _normalized_ids(row.get("id"), row.get("cate_parent"))
+        category_ids = _normalized_complaint_category_ids(
+            row.get("id"),
+            row.get("cate_parent"),
+        )
     if suffix == "qa_ac_classroom_record":
         qa_ids, _issue = _qa_appoint_ids(row.get("info"))
         course_ids = sorted(qa_ids)

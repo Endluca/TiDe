@@ -487,13 +487,21 @@ def test_existing_teacher_wide_identity_is_not_reprojected() -> None:
 
 
 class _ComplaintCategoryProjector(DtsWideProjector):
-    def __init__(self, categories: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        categories: list[dict[str, object]],
+        *,
+        complaint_type_child: object = "14",
+        complaint_type_grandson: object = "15",
+    ) -> None:
         super().__init__(
             object(),
             worker_id="test",
             settings=DtsWideProjectionSettings(cohort_start=date(2026, 8, 13)),
         )
         self.categories = categories
+        self.complaint_type_child = complaint_type_child
+        self.complaint_type_grandson = complaint_type_grandson
 
     def _active_source_rows(
         self,
@@ -513,8 +521,8 @@ class _ComplaintCategoryProjector(DtsWideProjector):
                         "stu_id": "student-1",
                         "appoint_id": "lesson-1",
                         "complaint_type": "13",
-                        "complaint_type_child": "14",
-                        "complaint_type_grandson": "15",
+                        "complaint_type_child": self.complaint_type_child,
+                        "complaint_type_grandson": self.complaint_type_grandson,
                         "approve": "y",
                         "validity": 1,
                     },
@@ -551,6 +559,23 @@ def test_complaint_projection_uses_the_complete_category_path() -> None:
         "一级",
         "二级",
         "三级",
+    )
+
+
+@pytest.mark.parametrize("sentinel", ["-1", "0", -1, 0])
+def test_complaint_projection_treats_absent_level_sentinels_as_null(
+    sentinel: object,
+) -> None:
+    projector = _ComplaintCategoryProjector(
+        [{"id": "13", "cate_cn_name": "一级"}],
+        complaint_type_child=sentinel,
+        complaint_type_grandson=sentinel,
+    )
+
+    assert projector._complaint_names(object(), "lesson-1") == (
+        "一级",
+        None,
+        None,
     )
 
 
