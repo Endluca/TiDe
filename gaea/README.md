@@ -403,7 +403,7 @@ SDK 异步动作且没有同步成功回执。DB 已有 checkpoint 时，用其 
 | `TIT_DTS_COHORT_START` | 否 | `2026-08-13` | 北京时间新教师 cohort 起点，按 `dom_teacher.status_on_time` 日期筛选；两项目必须一致 |
 | `TIT_DTS_COHORT_END_EXCLUSIVE` | 否 | 空 | 开放式人群；需要封闭批次时才设置不含当天的结束边界 |
 | `TIT_DTS_PROJECTION_ENABLED` | 否 | `false` | 国内项目始终为 `false`；双流追平并通过激活门禁后，只允许海外项目改为 `true` |
-| `TIT_DTS_PROJECTION_MAX_ATTEMPTS` | 否 | `8` | 同一脏键周期的投影尝试上限，范围 `1–100`；默认约 15 分钟退避窗口后失败关闭 |
+| `TIT_DTS_PROJECTION_MAX_ATTEMPTS` | 否 | `8` | 同一脏键周期的投影尝试上限，范围 `1–100`；默认约 15 分钟退避后保留错误并隔离该键，不终止其他投影和接入 |
 | `TIT_DTS_ACTIVATION_AT` | 投影开启时 | 显式带时区时间 | 两条订阅都必须追平到该 source time；两个项目使用同一值 |
 | `TIT_DTS_REQUIRED_OVS_TOPIC` | 投影开启时 | 海外 topic | 激活门禁核对海外 partition 0 数据库 checkpoint |
 | `TIT_DTS_REQUIRED_DOM_TOPIC` | 投影开启时 | 国内 topic | 激活门禁核对国内 partition 0 数据库 checkpoint |
@@ -497,9 +497,10 @@ checkpoint 均存在且 `source_timestamp >= TIT_DTS_ACTIVATION_AT`，要求未�
 `dom_complaint_cate` 字典非空，并拒绝任何未删除投诉引用字典中不存在的 `category_ids`；
 三项新变量在投影关闭时均不读取。门禁通过且取得全局投影锁后，国内和海外当前态才通过
 同一脏键机制汇合计算。暂态依赖缺失按指数退避；同一脏键达到
-`TIT_DTS_PROJECTION_MAX_ATTEMPTS` 后不再写成功 heartbeat，DTS 进程以稳定错误
-`DTS_WIDE_PROJECTION_RETRY_EXHAUSTED` 退出。脏键记录保留，重启后仍失败关闭；只有该键收到
-新的源事件并重置为新一轮 `PENDING` 后才恢复，不能用 Pod 重启掩盖永久毒键。
+`TIT_DTS_PROJECTION_MAX_ATTEMPTS` 后保留 `RETRY`、错误码和尝试次数，以 PostgreSQL
+`infinity` 停放并计入 heartbeat 的 `projection.quarantined`，但不终止其他投影和接入。该键收到
+新的真实源事件后由接入事务重置为新一轮 `PENDING`；明确带有可信课程日期且早于 cohort 的
+历史关系事件直接完成为忽略。不能用 Pod 重启或人工清错误字段掩盖永久毒键。
 
 ## 教师端运行变量
 

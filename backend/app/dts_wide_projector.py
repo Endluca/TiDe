@@ -42,6 +42,13 @@ _ABSENT_STATUS = "t_absent"
 _HBT_CODES = frozenset({5, 6, 7, 11, 19, 20, 21, 22, 503})
 _OBT_CODES = frozenset({8, 10, 201})
 _CENTER_DESCRIPTIONS = {0: "HBT", 1: "CBT", 5: "TBT", 6: "HBT"}
+_COURSE_DATE_FIELDS_BY_SUFFIX: dict[str, tuple[str, ...]] = {
+    "complaint": ("course_date",),
+    "qa_task_close_camera_record": ("start_time",),
+    "qa_task_fake_early_leave_record": ("start_time",),
+    "teacher_penalty": ("lesson_start_time",),
+    "user_teacher_grading": ("start_time",),
+}
 
 
 class DtsWideProjectionError(RuntimeError):
@@ -133,6 +140,7 @@ class _ProjectionCounts:
     teacher_deletes: int = 0
     unchanged: int = 0
     retries: int = 0
+    quarantined: int = 0
 
     def add(self, other: _ProjectionCounts) -> None:
         self.lesson_upserts += other.lesson_upserts
@@ -150,6 +158,7 @@ class _ProjectionCounts:
             "teacher_deletes": self.teacher_deletes,
             "unchanged": self.unchanged,
             "retries": self.retries,
+            "quarantined": self.quarantined,
         }
 
 
@@ -320,10 +329,6 @@ class DtsWideProjector:
                         str(dirty["key_part_1"]),
                         str(dirty["key_part_2"]),
                     )
-                    if int(dirty["attempt_count"]) >= self.settings.retry_max_attempts:
-                        raise DtsWideProjectionError(
-                            "DTS_WIDE_PROJECTION_RETRY_EXHAUSTED"
-                        )
                     self._mark_processing(connection, current_key)
                     projected = self._dispatch(connection, dirty)
                     self._mark_completed(connection, current_key)
@@ -332,17 +337,10 @@ class DtsWideProjector:
             except Exception as exc:
                 if current_key is None:
                     raise
-                if (
-                    isinstance(exc, DtsWideProjectionError)
-                    and str(exc) == "DTS_WIDE_PROJECTION_RETRY_EXHAUSTED"
-                ):
-                    raise
                 attempt = self._mark_retry(current_key, exc)
                 result.retries += 1
                 if attempt >= self.settings.retry_max_attempts:
-                    raise DtsWideProjectionError(
-                        "DTS_WIDE_PROJECTION_RETRY_EXHAUSTED"
-                    ) from exc
+                    result.quarantined += 1
         return result.as_dict()
 
     def _lock_next_dirty_key(self, connection: Any) -> Mapping[str, Any] | None:
@@ -431,8 +429,13 @@ class DtsWideProjector:
                 raise DtsWideProjectionError("DTS_DIRTY_KEY_LOST_DURING_RETRY")
             attempt = int(dirty[0]) + 1
             exhausted = attempt >= self.settings.retry_max_attempts
-            next_attempt_at = None
-            if not exhausted:
+            if exhausted:
+                # Keep the failure visible while preventing one poison key
+                # from terminating or hot-looping the whole projector.  A
+                # later real CDC event resets the key to PENDING in the ingest
+                # store, so quarantine does not suppress new source evidence.
+                next_attempt_at = text("'infinity'::timestamptz")
+            else:
                 delay = min(
                     self.settings.retry_max_seconds,
                     self.settings.retry_base_seconds * (2 ** min(attempt - 1, 8)),
@@ -664,6 +667,31 @@ class DtsWideProjector:
             if self._appoint_tombstoned(connection, course_id):
                 deleted = connection.execute(
                     delete(lesson_table).where(lesson_table.c["课程id"] == course_id)
+                ).rowcount
+                if existing is not None:
+                    self._enqueue_teacher(
+                        connection,
+                        _string_id(existing["老师id"]),
+                        dirty,
+                    )
+                if deleted:
+                    result.lesson_deletes += 1
+                else:
+                    result.unchanged += 1
+                return result
+            # The incremental mirror can legitimately see a historical QA or
+            # relation event whose appoint predates the subscription.  Ignore
+            # it only when a whitelisted lesson-time field proves that the
+            # course is before the configured cohort; unknown dates remain a
+            # retryable dependency failure.
+            if self._course_dependency_is_definitively_before_cohort(
+                connection,
+                course_id,
+            ):
+                deleted = connection.execute(
+                    delete(lesson_table).where(
+                        lesson_table.c["课程id"] == course_id
+                    )
                 ).rowcount
                 if existing is not None:
                     self._enqueue_teacher(
@@ -916,6 +944,32 @@ class DtsWideProjector:
             )
             .limit(1)
         ).first() is not None
+
+    def _course_dependency_is_definitively_before_cohort(
+        self,
+        connection: Any,
+        course_id: str,
+    ) -> bool:
+        """Return true only when mirrored lesson-time evidence is pre-cohort."""
+
+        known_dates: list[date] = []
+        rows = self._active_source_rows(
+            connection,
+            suffixes=tuple(_COURSE_DATE_FIELDS_BY_SUFFIX),
+            dependency_name="course_ids",
+            dependency_value=course_id,
+        )
+        for item in rows:
+            _region, _separator, suffix = item.table.partition("_")
+            for field_name in _COURSE_DATE_FIELDS_BY_SUFFIX.get(suffix, ()):
+                lesson_date = _date_value(item.row.get(field_name))
+                if lesson_date is not None:
+                    known_dates.append(lesson_date)
+                    break
+        return bool(known_dates) and all(
+            lesson_date < self.settings.cohort_start
+            for lesson_date in known_dates
+        )
 
     @staticmethod
     def _appoint_in_scope(row: Mapping[str, Any]) -> bool:

@@ -736,6 +736,7 @@ def _run(args: argparse.Namespace) -> int:
                         "teacher_deletes": 0,
                         "unchanged": 0,
                         "retries": 0,
+                        "quarantined": 0,
                     }
                 if _stop_requested:
                     _clear_health_files(
