@@ -1180,6 +1180,8 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "TIT_DTS_INGEST_DB_PASSWORD is required" in dts_run
     assert "TIT_DTS_INGEST_DB_SSLMODE is required" not in dts_run
     assert "--watch --max-messages 100" in dts_run
+    assert "--max-projection-keys 1000" in dts_run
+    assert "--projection-time-budget-seconds 20" in dts_run
     assert (S6_DIR / "dts-ingest" / "timeout-kill").read_text(
         encoding="utf-8"
     ).strip() == "25000"

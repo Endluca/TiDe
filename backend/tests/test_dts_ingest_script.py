@@ -50,6 +50,33 @@ def test_projection_flag_defaults_off_and_accepts_explicit_values(
         _env_flag("TIT_DTS_PROJECTION_ENABLED", False)
 
 
+def test_projection_batch_defaults_favor_backlog_drain_with_fresh_heartbeat() -> None:
+    args = run_dts_ingest.build_parser().parse_args([])
+
+    assert args.max_projection_keys == 1000
+    assert args.projection_time_budget_seconds == 20.0
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        (["--max-projection-keys", "0"], "DTS_MAX_PROJECTION_KEYS_INVALID"),
+        (
+            ["--projection-time-budget-seconds", "0"],
+            "DTS_PROJECTION_TIME_BUDGET_SECONDS_INVALID",
+        ),
+    ],
+)
+def test_projection_batch_limits_fail_before_runtime_initialization(
+    arguments: list[str],
+    error: str,
+) -> None:
+    args = run_dts_ingest.build_parser().parse_args(arguments)
+
+    with pytest.raises(DtsConfigurationError, match=f"^{error}$"):
+        run_dts_ingest._load_runtime_contract(args)
+
+
 def test_transport_defaults_to_python_and_accepts_official_java() -> None:
     assert run_dts_ingest._dts_transport_mode({}) == "kafka_python"
     assert (

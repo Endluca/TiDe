@@ -501,6 +501,12 @@ checkpoint 均存在且 `source_timestamp >= TIT_DTS_ACTIVATION_AT`，要求未�
 `infinity` 停放并计入 heartbeat 的 `projection.quarantined`，但不终止其他投影和接入。该键收到
 新的真实源事件后由接入事务重置为新一轮 `PENDING`；明确带有可信课程日期且早于 cohort 的
 历史关系事件直接完成为忽略。不能用 Pod 重启或人工清错误字段掩盖永久毒键。
+投影器每轮最多尝试 1000 个键，但在 20 秒预算到达后先刷新 heartbeat 并把消费执行权交回主循环；
+课程源当前态在单键事务内一次预取复用，教师评分和投诉按 100 个课程依赖分组读取，未改变课程
+宽表的重算不再重复置脏教师。每轮只 checkout 一条数据库连接，每个键仍保持独立事务和失败隔离，
+避免每键重复执行连接池 checkout 与传输安全复核。heartbeat 的 `projection` 额外记录
+`source_queries/cache_hits/elapsed_ms/budget_exhausted`；排空期间应同时观察完成速率、PENDING
+斜率和数据库负载，不能只靠继续调大键上限掩盖慢 SQL。
 
 ## 教师端运行变量
 

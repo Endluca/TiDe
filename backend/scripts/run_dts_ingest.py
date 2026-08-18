@@ -338,6 +338,15 @@ def _projection_activation_settings(
 def _load_runtime_contract(args: argparse.Namespace) -> _RuntimeContract:
     if not isfinite(args.interval_seconds) or args.interval_seconds < 0:
         raise DtsConfigurationError("DTS_INTERVAL_SECONDS_INVALID")
+    if args.max_projection_keys < 1:
+        raise DtsConfigurationError("DTS_MAX_PROJECTION_KEYS_INVALID")
+    if (
+        not isfinite(args.projection_time_budget_seconds)
+        or args.projection_time_budget_seconds <= 0
+    ):
+        raise DtsConfigurationError(
+            "DTS_PROJECTION_TIME_BUDGET_SECONDS_INVALID"
+        )
     stream_settings = DtsConsumerSettings.from_env()
     database_settings = DtsIngestDatabaseSettings.from_env()
     stream_settings.require_target_transport(
@@ -588,7 +597,12 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--max-messages", type=int, default=100)
-    parser.add_argument("--max-projection-keys", type=int, default=200)
+    parser.add_argument("--max-projection-keys", type=int, default=1_000)
+    parser.add_argument(
+        "--projection-time-budget-seconds",
+        type=float,
+        default=20.0,
+    )
     parser.add_argument("--idle-timeout-ms", type=int, default=10_000)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--interval-seconds", type=float, default=3.0)
@@ -725,7 +739,8 @@ def _run(args: argparse.Namespace) -> int:
                     # acquired the global projector lock before every batch.
                     started.sink.assert_projection_lock_held()
                     projection = started.projector.run_batch(
-                        max_keys=args.max_projection_keys
+                        max_keys=args.max_projection_keys,
+                        max_seconds=args.projection_time_budget_seconds,
                     )
                 else:
                     projection = {
@@ -737,6 +752,10 @@ def _run(args: argparse.Namespace) -> int:
                         "unchanged": 0,
                         "retries": 0,
                         "quarantined": 0,
+                        "source_queries": 0,
+                        "cache_hits": 0,
+                        "elapsed_ms": 0,
+                        "budget_exhausted": 0,
                     }
                 if _stop_requested:
                     _clear_health_files(
