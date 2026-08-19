@@ -346,18 +346,40 @@ class DtsDirectWideProjector:
         teacher_id = _string((row or {}).get("id"))
         if teacher_id is None:
             raise DtsWideProjectionError("DTS_DIRECT_TEACHER_ID_REQUIRED")
+        target = TeacherSourceWideRecord.__table__
+        existing = connection.execute(
+            select(target)
+            .where(target.c.tchr_id == teacher_id)
+            .with_for_update()
+        ).mappings().one_or_none()
+        if event.operation != "INSERT" and existing is None:
+            self._counts.ignored += 1
+            return
         onboard = _date((row or {}).get("status_on_time"))
-        if event.operation == "DELETE" or not self._teacher_in_cohort(onboard):
+        if event.operation == "DELETE":
             lesson = LessonSourceWideRecord.__table__
-            teacher = TeacherSourceWideRecord.__table__
             deleted_lessons = connection.execute(
                 delete(lesson).where(lesson.c["老师id"] == teacher_id)
             ).rowcount or 0
             deleted_teacher = connection.execute(
-                delete(teacher).where(teacher.c.tchr_id == teacher_id)
+                delete(target).where(target.c.tchr_id == teacher_id)
             ).rowcount or 0
             self._counts.lesson_deletes += int(deleted_lessons)
             self._counts.teacher_deletes += int(deleted_teacher)
+            return
+        if not self._teacher_in_cohort(onboard):
+            if event.operation == "UPDATE" and existing is not None:
+                lesson = LessonSourceWideRecord.__table__
+                deleted_lessons = connection.execute(
+                    delete(lesson).where(lesson.c["老师id"] == teacher_id)
+                ).rowcount or 0
+                deleted_teacher = connection.execute(
+                    delete(target).where(target.c.tchr_id == teacher_id)
+                ).rowcount or 0
+                self._counts.lesson_deletes += int(deleted_lessons)
+                self._counts.teacher_deletes += int(deleted_teacher)
+            else:
+                self._counts.ignored += 1
             return
 
         assert row is not None
@@ -382,10 +404,6 @@ class DtsDirectWideProjector:
                 "onboard_30d_end_date": onboard + timedelta(days=29),
             }
         )
-        target = TeacherSourceWideRecord.__table__
-        existing = connection.execute(
-            select(target).where(target.c.tchr_id == teacher_id).with_for_update()
-        ).mappings().one_or_none()
         if existing is not None:
             for name in (
                 "first_open_slot_dt",
@@ -503,6 +521,9 @@ class DtsDirectWideProjector:
         existing = connection.execute(
             select(target).where(target.c["课程id"] == course_id).with_for_update()
         ).mappings().one_or_none()
+        if event.operation != "INSERT" and existing is None:
+            self._counts.ignored += 1
+            return
         in_scope = bool(
             event.operation != "DELETE"
             and row is not None
@@ -511,12 +532,13 @@ class DtsDirectWideProjector:
             and student_subject(row) is not None
         )
         if not in_scope:
-            self._write_lesson_state(
+            if existing is None or not self._write_lesson_state(
                 connection,
                 course_id,
                 values=None,
                 existing=existing,
-            )
+            ):
+                self._counts.ignored += 1
             return
 
         assert row is not None
@@ -530,7 +552,8 @@ class DtsDirectWideProjector:
             select(teacher).where(teacher.c.tchr_id == teacher_id)
         ).mappings().one_or_none()
         if teacher_row is None:
-            raise DtsWideProjectionError("DTS_DIRECT_TEACHER_DEPENDENCY_PENDING")
+            self._counts.ignored += 1
+            return
         expected_area = "ovs" if event.source_region == "ovs" else "dmo"
         if (
             teacher_row["teach_area_type"] != expected_area
@@ -542,12 +565,13 @@ class DtsDirectWideProjector:
                 <= teacher_row["onboard_30d_end_date"]
             )
         ):
-            self._write_lesson_state(
+            if existing is None or not self._write_lesson_state(
                 connection,
                 course_id,
                 values=None,
                 existing=existing,
-            )
+            ):
+                self._counts.ignored += 1
             return
 
         values = {
@@ -599,12 +623,13 @@ class DtsDirectWideProjector:
                 "假早退",
             ):
                 values[name] = existing[name]
-        self._write_lesson_state(
+        if not self._write_lesson_state(
             connection,
             course_id,
             values=values,
             existing=existing,
-        )
+        ):
+            self._counts.ignored += 1
 
     def _apply_teacher_class_schedule(
         self,
@@ -613,6 +638,7 @@ class DtsDirectWideProjector:
     ) -> None:
         row = slot_activation(event)
         if row is None:
+            self._counts.ignored += 1
             return
         teacher_id = _string(row.get("teacher_id"))
         schedule_date = _date(row.get("date"))
@@ -623,7 +649,8 @@ class DtsDirectWideProjector:
             select(target).where(target.c.tchr_id == teacher_id).with_for_update()
         ).mappings().one_or_none()
         if teacher is None:
-            raise DtsWideProjectionError("DTS_DIRECT_TEACHER_DEPENDENCY_PENDING")
+            self._counts.ignored += 1
+            return
         if (
             teacher["onboard_date"] is None
             or teacher["onboard_30d_end_date"] is None
@@ -633,6 +660,7 @@ class DtsDirectWideProjector:
                 <= teacher["onboard_30d_end_date"]
             )
         ):
+            self._counts.ignored += 1
             return
         peak = schedule_slot_is_peak(
             _string(teacher["teach_area_type"]),
@@ -693,8 +721,10 @@ class DtsDirectWideProjector:
                     _int(after.get("certification_status")) == 1
                 )
         if not changes:
+            self._counts.ignored += 1
             return
         target = TeacherSourceWideRecord.__table__
+        changed_any = False
         for teacher_id, completed in sorted(changes.items()):
             changed = connection.execute(
                 update(target)
@@ -702,10 +732,11 @@ class DtsDirectWideProjector:
                 .values(is_cpl_tesol=completed)
             ).rowcount or 0
             if not changed:
-                raise DtsWideProjectionError(
-                    "DTS_DIRECT_TEACHER_DEPENDENCY_PENDING"
-                )
+                continue
+            changed_any = True
             self._counts.teacher_upserts += 1
+        if not changed_any:
+            self._counts.ignored += 1
 
     def _apply_teacher_absent_reason(self, connection: Any, event: DtsChangeEvent) -> None:
         self._apply_course_change(
@@ -779,6 +810,7 @@ class DtsDirectWideProjector:
         }
         if not course_ids:
             raise DtsWideProjectionError("DTS_DIRECT_COURSE_DEPENDENCY_REQUIRED")
+        changed_any = False
         for course_id in sorted(course_ids):
             remove_names: set[str] = set()
             add_names: set[str] = set()
@@ -801,12 +833,14 @@ class DtsDirectWideProjector:
                 after_name = _string(after.get("label_name"))
                 if active and after_name is not None:
                     add_names.add(after_name)
-            self._update_lesson_label_set(
+            changed_any = self._update_lesson_label_set(
                 connection,
                 course_id,
                 remove_names=remove_names,
                 add_names=add_names,
-            )
+            ) or changed_any
+        if not changed_any:
+            self._counts.ignored += 1
 
     def _apply_grading_label(self, connection: Any, event: DtsChangeEvent) -> None:
         before_name = _string((event.before or {}).get("label_name"))
@@ -825,6 +859,7 @@ class DtsDirectWideProjector:
                 target.c["评价详情"],
             ).where(target.c["评价详情"].is_not(None))
         ).mappings()
+        changed_any = False
         for lesson in lessons:
             names = {
                 value.strip()
@@ -841,7 +876,10 @@ class DtsDirectWideProjector:
                 .where(target.c["课程id"] == lesson["课程id"])
                 .values(**{"评价详情": ",".join(sorted(names)) or None})
             )
+            changed_any = True
             self._counts.lesson_upserts += 1
+        if not changed_any:
+            self._counts.ignored += 1
 
     def _apply_teacher_favorite(self, connection: Any, event: DtsChangeEvent) -> None:
         self._apply_relationship(connection, event, column="收藏", blacklist=False)
@@ -859,22 +897,36 @@ class DtsDirectWideProjector:
     ) -> None:
         before = event.before
         after = event.after if event.operation != "DELETE" else None
+        changed_any = False
         if before is not None:
             selected = self._relationship_course(connection, before, blacklist=blacklist)
             if selected is not None:
-                self._update_lesson(connection, selected, {column: False})
-        if after is None:
-            return
-        active = True
-        if blacklist:
-            valid_end = _datetime(after.get("valid_end_time"))
-            active = _truthy(after.get("is_valid_forever")) or bool(
-                valid_end is not None and valid_end.year >= 2999
-            )
-        if active:
-            selected = self._relationship_course(connection, after, blacklist=blacklist)
-            if selected is not None:
-                self._update_lesson(connection, selected, {column: True})
+                changed_any = self._update_lesson(
+                    connection,
+                    selected,
+                    {column: False},
+                ) or changed_any
+        if after is not None:
+            active = True
+            if blacklist:
+                valid_end = _datetime(after.get("valid_end_time"))
+                active = _truthy(after.get("is_valid_forever")) or bool(
+                    valid_end is not None and valid_end.year >= 2999
+                )
+            if active:
+                selected = self._relationship_course(
+                    connection,
+                    after,
+                    blacklist=blacklist,
+                )
+                if selected is not None:
+                    changed_any = self._update_lesson(
+                        connection,
+                        selected,
+                        {column: True},
+                    ) or changed_any
+        if not changed_any:
+            self._counts.ignored += 1
 
     @staticmethod
     def _relationship_course(
@@ -917,7 +969,7 @@ class DtsDirectWideProjector:
         self._counts.ignored += 1
 
     def _apply_complaint_row(self, connection: Any, event: DtsChangeEvent) -> None:
-        def values(row: Mapping[str, Any]) -> Mapping[str, Any]:
+        def values(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
             valid = bool(
                 _int(row.get("complaint_type")) == 13
                 and _int(row.get("complaint_type_grandson")) != 82
@@ -940,6 +992,8 @@ class DtsDirectWideProjector:
                     connection,
                     category_ids,
                 )
+                if names is None:
+                    return None
             return {
                 "投诉一级分类": names[0],
                 "投诉二级分类": names[1],
@@ -1013,7 +1067,7 @@ class DtsDirectWideProjector:
         self,
         connection: Any,
         category_ids: tuple[str | None, str | None, str | None],
-    ) -> tuple[str | None, str | None, str | None]:
+    ) -> tuple[str | None, str | None, str | None] | None:
         required_ids = {
             value
             for value in category_ids
@@ -1043,9 +1097,7 @@ class DtsDirectWideProjector:
             if (category_name := _string(row.get("cate_cn_name"))) is not None
         }
         if required_ids != set(names):
-            raise DtsWideProjectionError(
-                "DTS_DIRECT_COMPLAINT_CATEGORY_DEPENDENCY_PENDING"
-            )
+            return None
         return tuple(
             names.get(value) if value not in {None, "-1", "0"} else None
             for value in category_ids
@@ -1177,8 +1229,15 @@ class DtsDirectWideProjector:
         collect(event.before, False)
         if event.operation != "DELETE":
             collect(event.after, True)
+        changed_any = False
         for course_id, values in sorted(changes.items()):
-            self._update_lesson(connection, course_id, values)
+            changed_any = self._update_lesson(
+                connection,
+                course_id,
+                values,
+            ) or changed_any
+        if not changed_any:
+            self._counts.ignored += 1
 
     def _apply_course_change(
         self,
@@ -1186,21 +1245,50 @@ class DtsDirectWideProjector:
         event: DtsChangeEvent,
         *,
         cleared: Mapping[str, Any],
-        build_after: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+        build_after: Callable[
+            [Mapping[str, Any]],
+            Mapping[str, Any] | None,
+        ],
     ) -> None:
-        changes: dict[str, dict[str, Any]] = {}
-        if event.before is not None:
-            before_course = _string(event.before.get("appoint_id"))
-            if before_course is not None:
-                changes[before_course] = dict(cleared)
-        if event.operation != "DELETE" and event.after is not None:
-            after_course = _string(event.after.get("appoint_id"))
-            if after_course is not None:
-                changes[after_course] = dict(build_after(event.after))
-        if not changes:
+        before_course = _string((event.before or {}).get("appoint_id"))
+        after = event.after if event.operation != "DELETE" else None
+        after_course = _string((after or {}).get("appoint_id"))
+        course_ids = {
+            course_id
+            for course_id in (before_course, after_course)
+            if course_id is not None
+        }
+        if not course_ids:
             raise DtsWideProjectionError("DTS_DIRECT_COURSE_DEPENDENCY_REQUIRED")
+        target = LessonSourceWideRecord.__table__
+        existing_ids = set(
+            connection.execute(
+                select(target.c["课程id"]).where(
+                    target.c["课程id"].in_(sorted(course_ids))
+                )
+            ).scalars()
+        )
+        if not existing_ids:
+            self._counts.ignored += 1
+            return
+        changes: dict[str, dict[str, Any]] = {}
+        if before_course in existing_ids:
+            changes[before_course] = dict(cleared)
+        if after_course in existing_ids and after is not None:
+            after_values = build_after(after)
+            if after_values is None:
+                self._counts.ignored += 1
+                return
+            changes[after_course] = dict(after_values)
+        changed_any = False
         for course_id, values in sorted(changes.items()):
-            self._update_lesson(connection, course_id, values)
+            changed_any = self._update_lesson(
+                connection,
+                course_id,
+                values,
+            ) or changed_any
+        if not changed_any:
+            self._counts.ignored += 1
 
     def _update_lesson_label_set(
         self,
@@ -1209,7 +1297,7 @@ class DtsDirectWideProjector:
         *,
         remove_names: set[str],
         add_names: set[str],
-    ) -> None:
+    ) -> bool:
         target = LessonSourceWideRecord.__table__
         existing = connection.execute(
             select(
@@ -1220,7 +1308,7 @@ class DtsDirectWideProjector:
             .with_for_update()
         ).mappings().one_or_none()
         if existing is None:
-            raise DtsWideProjectionError("DTS_DIRECT_LESSON_DEPENDENCY_PENDING")
+            return False
         names = {
             value.strip()
             for value in str(existing["评价详情"] or "").split(",")
@@ -1234,13 +1322,14 @@ class DtsDirectWideProjector:
             .values(**{"评价详情": ",".join(sorted(names)) or None})
         )
         self._counts.lesson_upserts += 1
+        return True
 
     def _update_lesson(
         self,
         connection: Any,
         course_id: str,
         values: Mapping[str, Any],
-    ) -> None:
+    ) -> bool:
         target = LessonSourceWideRecord.__table__
         existing = connection.execute(
             select(target)
@@ -1248,10 +1337,10 @@ class DtsDirectWideProjector:
             .with_for_update()
         ).mappings().one_or_none()
         if existing is None:
-            raise DtsWideProjectionError("DTS_DIRECT_LESSON_DEPENDENCY_PENDING")
+            return False
         updated = dict(existing)
         updated.update(values)
-        self._write_lesson_state(
+        return self._write_lesson_state(
             connection,
             course_id,
             values=updated,
@@ -1265,9 +1354,11 @@ class DtsDirectWideProjector:
         *,
         values: Mapping[str, Any] | None,
         existing: Mapping[str, Any] | None,
-    ) -> None:
+    ) -> bool:
         old_row = dict(existing) if existing is not None else None
         new_row = dict(values) if values is not None else None
+        if old_row is None and new_row is None:
+            return False
         if new_row is not None:
             new_row["课程id"] = course_id
 
@@ -1279,7 +1370,8 @@ class DtsDirectWideProjector:
             )
             if teacher_id is not None
         }
-        self._lock_teacher_rows(connection, affected_teachers)
+        if not self._lock_teacher_rows(connection, affected_teachers):
+            return False
         affected_pairs = {
             (teacher_id, student_id)
             for teacher_id, student_id in (
@@ -1374,14 +1466,15 @@ class DtsDirectWideProjector:
                 deltas[teacher_id],
                 refresh_dates=refresh_dates,
             )
+        return True
 
     @staticmethod
     def _lock_teacher_rows(
         connection: Any,
         teacher_ids: set[str],
-    ) -> None:
+    ) -> bool:
         if not teacher_ids:
-            return
+            return True
         teacher = TeacherSourceWideRecord.__table__
         locked = set(
             connection.execute(
@@ -1391,8 +1484,7 @@ class DtsDirectWideProjector:
                 .with_for_update()
             ).scalars()
         )
-        if locked != teacher_ids:
-            raise DtsWideProjectionError("DTS_DIRECT_TEACHER_DEPENDENCY_PENDING")
+        return locked == teacher_ids
 
     @staticmethod
     def _lesson_contribution(

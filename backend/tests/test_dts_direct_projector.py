@@ -22,7 +22,6 @@ from app.dts_source_consumer import (
     DtsRecordError,
 )
 from app.dts_ingest_store import DtsIngestStoreError, PostgresDtsEventSink
-from app.dts_wide_projector import DtsWideProjectionError
 from scripts.run_dts_ingest import _projection_mode
 
 
@@ -474,7 +473,7 @@ def test_direct_complaint_uses_persisted_category_events() -> None:
     assert category_30["row_version"] == 2
 
 
-def test_direct_complaint_stops_when_category_event_is_missing() -> None:
+def test_direct_complaint_is_ignored_when_category_event_is_missing() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     teacher_table = TeacherSourceWideRecord.__table__
     lesson_table = LessonSourceWideRecord.__table__
@@ -490,24 +489,208 @@ def test_direct_complaint_stops_when_category_event_is_missing() -> None:
                 **{"课程id": "1", "老师id": "123"}
             )
         )
-        with pytest.raises(
-            DtsWideProjectionError,
-            match="DTS_DIRECT_COMPLAINT_CATEGORY_DEPENDENCY_PENDING",
-        ):
+        projector.apply(
+            connection,
+            _child_event(
+                table_name="dom_complaint",
+                offset=24,
+                after={
+                    "id": 99,
+                    "appoint_id": 1,
+                    "complaint_type": 13,
+                    "approve": "y",
+                    "validity": 1,
+                },
+            ),
+        )
+        lesson = connection.execute(select(lesson_table)).mappings().one()
+
+    assert lesson["投诉一级分类"] is None
+    assert projector.drain_counts()["ignored"] == 1
+
+
+def test_midstream_teacher_update_and_delete_do_not_create_missing_row() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    table = TeacherSourceWideRecord.__table__
+    table.create(engine)
+    projector = _direct_projector()
+    teacher = {
+        "id": 123,
+        "status_on_time": "2026-08-19 00:00:00",
+        "course": "h5_tc",
+    }
+    with engine.begin() as connection:
+        projector.apply(
+            connection,
+            _child_event(
+                table_name="dom_teacher",
+                offset=25,
+                operation="UPDATE",
+                before={**teacher, "status": "off"},
+                after={**teacher, "status": "on"},
+            ),
+        )
+        projector.apply(
+            connection,
+            _child_event(
+                table_name="dom_teacher",
+                offset=26,
+                operation="DELETE",
+                before=teacher,
+            ),
+        )
+        rows = connection.execute(select(table)).mappings().all()
+
+    assert rows == []
+    assert projector.drain_counts()["ignored"] == 2
+
+
+def test_midstream_appoint_update_and_delete_do_not_create_missing_row() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    teacher_table = TeacherSourceWideRecord.__table__
+    lesson_table = LessonSourceWideRecord.__table__
+    teacher_table.create(engine)
+    lesson_table.create(engine)
+    projector = _direct_projector()
+    appoint = {
+        "id": 99,
+        "t_id": 123,
+        "student_token": "dom:v1:" + "b" * 64,
+        "date": "2026-08-19",
+        "time": "18:00:00",
+        "status": "end",
+        "use_point": "buy",
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            insert(teacher_table).values(
+                tchr_id="123",
+                teach_area_type="dmo",
+                onboard_date=date(2026, 8, 19),
+                onboard_30d_end_date=date(2026, 9, 17),
+                total_booked_cnt=0,
+            )
+        )
+        projector.apply(
+            connection,
+            _child_event(
+                table_name="dom_appoint",
+                offset=27,
+                operation="UPDATE",
+                before={**appoint, "status": "wait"},
+                after=appoint,
+            ),
+        )
+        projector.apply(
+            connection,
+            _child_event(
+                table_name="dom_appoint",
+                offset=28,
+                operation="DELETE",
+                before=appoint,
+            ),
+        )
+        lessons = connection.execute(select(lesson_table)).mappings().all()
+        teacher = connection.execute(select(teacher_table)).mappings().one()
+
+    assert lessons == []
+    assert teacher["total_booked_cnt"] == 0
+    assert projector.drain_counts()["ignored"] == 2
+
+
+def test_midstream_teacher_child_events_ignore_missing_teacher() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    table = TeacherSourceWideRecord.__table__
+    table.create(engine)
+    projector = _direct_projector()
+    with engine.begin() as connection:
+        projector.apply(connection, _schedule_event())
+        projector.apply(
+            connection,
+            _child_event(
+                table_name="dom_teacher_certification",
+                offset=29,
+                after={
+                    "id": 1,
+                    "teacher_id": 123,
+                    "certification_type": "tesol",
+                    "certification_status": 1,
+                },
+            ),
+        )
+
+    assert projector.drain_counts()["ignored"] == 2
+
+
+def test_midstream_course_child_events_ignore_missing_lesson() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    TeacherSourceWideRecord.__table__.create(engine)
+    LessonSourceWideRecord.__table__.create(engine)
+    DtsSourceRowRecord.__table__.create(engine)
+    projector = _direct_projector()
+    student_token = "dom:v1:" + "c" * 64
+    events = (
+        ("dom_teacher_absent_reason", {"id": 1, "appoint_id": 999}),
+        ("dom_teacher_penalty", {"id": 2, "appoint_id": 999}),
+        ("dom_user_teacher_grading", {"id": 3, "appoint_id": 999}),
+        (
+            "dom_grading_label_log",
+            {
+                "id": 4,
+                "appoint_id": 999,
+                "label_name": "标签",
+                "type": 1,
+                "status": "normal",
+            },
+        ),
+        ("dom_qa_task_close_camera_record", {"id": 5, "appoint_id": 999}),
+        ("dom_qa_task_fake_early_leave_record", {"id": 6, "appoint_id": 999}),
+        (
+            "dom_qa_ac_classroom_record",
+            {"id": 7, "info": {"cpu": [{"appoint_id": 999}]}},
+        ),
+        (
+            "dom_teacher_favorite",
+            {
+                "id": 8,
+                "tea_id": 123,
+                "student_token": student_token,
+                "add_time": "2026-08-20 00:00:00",
+            },
+        ),
+        (
+            "dom_teacher_blacklist",
+            {
+                "id": 9,
+                "teacher_id": 123,
+                "student_token": student_token,
+                "valid_start_time": "2026-08-20 00:00:00",
+                "is_valid_forever": 1,
+            },
+        ),
+        (
+            "dom_complaint",
+            {
+                "id": 10,
+                "appoint_id": 999,
+                "complaint_type": 13,
+                "approve": "y",
+                "validity": 1,
+            },
+        ),
+    )
+    with engine.begin() as connection:
+        for offset, (table_name, after) in enumerate(events, start=30):
             projector.apply(
                 connection,
                 _child_event(
-                    table_name="dom_complaint",
-                    offset=24,
-                    after={
-                        "id": 99,
-                        "appoint_id": 1,
-                        "complaint_type": 13,
-                        "approve": "y",
-                        "validity": 1,
-                    },
+                    table_name=table_name,
+                    offset=offset,
+                    after=after,
                 ),
             )
+
+    assert projector.drain_counts()["ignored"] == len(events)
 
 
 def test_direct_projection_whitelists_and_reconstructs_sparse_update() -> None:
@@ -685,6 +868,29 @@ def test_direct_checkpoint_replay_does_not_project_again() -> None:
     assert duplicate is True
     assert projector.offsets == []
     assert written_offsets == []
+
+
+def test_direct_ignored_event_still_advances_checkpoint() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    TeacherSourceWideRecord.__table__.create(engine)
+    sink = object.__new__(PostgresDtsEventSink)
+    projector = _direct_projector()
+    written_offsets: list[int] = []
+    sink._direct_projector = projector
+    sink._lock_stream_checkpoint = lambda _connection, _event: None
+    sink._write_checkpoint = (
+        lambda _connection, event: written_offsets.append(event.offset)
+    )
+
+    with engine.begin() as connection:
+        duplicate = sink._apply_direct_transaction(
+            connection,
+            _schedule_event(),
+        )
+
+    assert duplicate is False
+    assert projector.drain_counts()["ignored"] == 1
+    assert written_offsets == [1]
 
 
 def test_direct_batch_rejects_offset_gap_before_advancing_checkpoint() -> None:

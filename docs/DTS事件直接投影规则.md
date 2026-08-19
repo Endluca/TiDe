@@ -2,7 +2,7 @@
 
 > 状态：代码已提供显式 `direct` 模式，默认仍为 `queued`，尚未发布或切换运行环境。
 >
-> 适用前提：国内、海外 DTS 在同一个干净边界重置；两张宽表先按发布方案清理或导入基线；边界之前的事实不要求由增量事件恢复。
+> 适用前提：国内、海外 DTS 在同一个干净边界重置；两张宽表先按发布方案清理或导入基线；边界之前的事实不要求由增量事件恢复。若不导入基线，只有边界后的主记录 INSERT 会创建教师或课程，针对边界前记录的 UPDATE / DELETE 及其子事件全部忽略。
 
 ## 1. 链路
 
@@ -11,6 +11,7 @@ DTS INSERT / UPDATE / DELETE
 → DTS 解析
 → 字段白名单与国内学生 ID HMAC
 → UPDATE 稀疏 before/after 合并为完整白名单镜像
+→ 教师/课程目标不存在时记为 ignored
 → 锁定消息对应的课程行和教师行
 → 计算课程旧行对教师指标的贡献
 → 根据 before 撤销旧课程或旧归属影响
@@ -30,11 +31,15 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
 导入本身必须先完成国内学生 ID HMAC，不能指望启动检查从无地区字段的宽表里识别裸数字属于
 国内还是海外。
 
-任一宽表写入失败时 checkpoint 不前进，Kafka/DTS 记录不会 ACK；重放先用 checkpoint 判重，因此不会重复累加 slot。
+`dts_ingest_checkpoints` 是 PostgreSQL 持久化位点表，按
+`source_region + topic + partition_id` 保存下一条应处理的 `next_offset`。宽表写入和位点更新在
+同一事务：真实写入失败时 checkpoint 不前进且记录不 ACK；目标不存在而被 ignored 时不写宽表，
+但 checkpoint 正常前进并 ACK。重放先用 checkpoint 判重，因此不会重复累加 slot。
 
 ## 2. 总体语义
 
-- 主记录（教师、课程）采用当前事件覆盖当前宽表。
+- 教师、课程只允许 INSERT 创建宽表主行；UPDATE / DELETE 必须先命中宽表已有主行，否则
+  视为边界前历史记录并 ignored。
 - 子记录采用“最后事件生效”：UPDATE 先撤销 `before` 的旧课程/旧归属，再应用
   `after`；DELETE 清空本条事件的影响，不恢复更早的历史记录。
 - 教师课程类计数不扫描整位教师课程；每条消息只对旧课程贡献做减法、对新课程贡献做加法。
@@ -44,12 +49,14 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
   一条一条执行，不存在后置脏键队列或批末教师全量重算。
 - 排课使用本次确认的单向增量语义，不回看或回减历史；TESOL 按 before/after 最后事件生效。
 - 关联事件先定位同一教师、同一学生、事件发生时间以前最近一节 `status='end'` 的课程。
-- 子事件早于课程主事件时失败关闭并保留 checkpoint，不能把“课程尚未到达”静默当作空值。
+- 子事件、排课、证书、收藏、拉黑或投诉无法命中已有教师/课程时 ignored，并推进 checkpoint。
+- 字段缺失、非法主键变化、隐私违规、计数下溢和数据库错误仍然失败关闭，不能归入 ignored。
 
 ## 3. 教师主记录
 
 来源：`dom_teacher`。
 
+- 只有 INSERT 可以创建教师宽表行；未命中的 UPDATE / DELETE ignored。
 - `status_on_time` 必须处于 cohort；否则删除该教师及其课程宽表行。
 - `onboard_date = status_on_time::date`。
 - `onboard_30d_end_date = onboard_date + 29`，课程和排课只接受闭区间 `[D,D+29]`。
@@ -60,6 +67,8 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
 ## 4. 课程主记录
 
 来源：`dom_appoint`、`ovs_appoint`。
+
+只有 INSERT 可以创建课程宽表行；未命中的 UPDATE / DELETE ignored。
 
 进入课程宽表必须同时满足：
 
@@ -127,9 +136,12 @@ INSERT 且 `after.status='on'` 同样计一次；`on→on`、`on→off` 和 DELE
 | `*_qa_task_fake_early_leave_record` | INSERT/UPDATE=true，DELETE=false |
 | `*_qa_ac_classroom_record` | 从 `info.cpu/network_delay[].appoint_id` 定位课程并按操作置 true/false |
 
+上述子事件只能修改已有课程；找不到课程时不补建、不重试，直接 ignored。排课和 TESOL 证书
+同样只能修改已有教师。
+
 投诉事件只有分类 ID，没有中文名称。`dom_complaint_cate` 事件直接维护系统库里现有
-`dts_source_rows` 的小型参考字典；投诉事件按 ID 查询该字典后写入中文名。字典缺项时停在
-当前 checkpoint，不写半条课程记录；补齐字典后同一投诉事件重放。分类改名事件会同时更新
+`dts_source_rows` 的小型参考字典；投诉事件按 ID 查询该字典后写入中文名。字典缺项时该投诉
+事件 ignored 并推进 checkpoint，不写半条课程记录，也不会等待补齐后自动重放。分类改名事件会同时更新
 字典，并把课程宽表中完全相同的旧名称替换成新名称。切换 direct 前必须保留现有分类字典行，
 或先从国内源表导入一次完整分类基线，不能只从 8 月 19 日增量等待长期不变的字典事件。
 
