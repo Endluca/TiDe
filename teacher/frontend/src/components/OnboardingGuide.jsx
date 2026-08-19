@@ -86,14 +86,14 @@ const guideCopy = {
           "messages-tabs": {
             eyebrow: "TWO HISTORIES",
             title: "System updates and your tickets stay separate",
-            body: "System messages contain task and review updates. My submitted tickets keeps conversations that need operations support. An empty list simply means there is nothing new yet.",
+            body: "System messages contain task and review updates. My submitted tickets keeps conversations that need Support. An empty list simply means there is nothing new yet.",
             button: "Remember Help",
             image: "/assets/toki/worktoki.png",
           },
           "help-entry": {
             eyebrow: "HELP",
             title: "Choose the right support when you need it",
-            body: "Use the FAQ assistant for approved knowledge and submit a ticket when operations needs to step in. Next, we’ll take you into your first real task.",
+            body: "Use the FAQ assistant for approved knowledge and submit a ticket when the Support team needs to step in. Next, we’ll take you into your first real task.",
             button: "Start the first-task guide",
             image: "/assets/toki/happy.png",
           },
@@ -215,7 +215,7 @@ const guideCopy = {
           "messages-tabs": {
             eyebrow: "TWO VIEWS",
             title: "System messages and tickets stay separate",
-            body: "System messages contain task and review updates. My submitted tickets keeps conversations that need operations support. You never need sample data to understand these two views.",
+            body: "System messages contain task and review updates. My submitted tickets keeps conversations that need Support. You never need sample data to understand these two views.",
             button: "Finish messages guide",
             image: "/assets/toki/happy.png",
           },
@@ -227,7 +227,7 @@ const guideCopy = {
           "help-route-choices": {
             eyebrow: "CHOOSE A ROUTE",
             title: "Match the support route to the question",
-            body: "Use the FAQ assistant for approved knowledge and submit a ticket when operations needs to step in. Ticket replies appear under Messages.",
+            body: "Use the FAQ assistant for approved knowledge and submit a ticket when the Support team needs to step in. Ticket replies appear under Messages.",
             button: "Finish help guide",
             image: "/assets/toki/happy.png",
           },

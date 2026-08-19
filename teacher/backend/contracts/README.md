@@ -20,7 +20,7 @@ OpenAPI `0.13.0` 已对齐共享 PostgreSQL 架构、教师工单、一期产品
 - 外部和系统消息合并返回；已读与点击均可幂等回写。
 - 登录后行为事件使用 `/api/v1/app-events`；登录前页面与技术异常使用 `/api/v1/app-events/anonymous`。事件必须携带 Schema 版本和标签页会话，任务归属与版本由后端校验／补充。
 - 工单使用 `/api/v1/support-tickets`；运营回复只通过共享表原子追加函数写入，教师端刷新读取，不创建独立系统通知。
-- G01、G05、G06、G07、G08 通过 `/kuozhi-launch` 获取 iframe-only 多课程免登地址，通过 `/kuozhi-progress` 读取或刷新服务端判定；票证只由后端生成，且所有环境只读取当前老师的正式课程。G09 同样只允许阔知执行，但课程映射发布前保持内容待配置。
+- G01、G05、G06、G07、G08、G09 通过 `/kuozhi-launch` 获取 iframe-only 多课程免登地址，通过 `/kuozhi-progress` 读取或刷新服务端判定；票证只由后端生成，且所有环境只读取当前老师的正式课程。G09 使用课程 658，三段视频与三份配套 Quiz 均达到 `percent=100` 后完成。
 - G02 使用标准任务接口保存 `DOCUMENT` 步骤的版本化阅读进度；后端核对当前 `contentVersion / contentHash`，只有 `readPercent=100` 与 `reachedEnd=true` 同时成立才允许自动提交并完成。G02 不调用阔知接口，也不提供测验或手动完成入口。
 
 ## 主要错误码

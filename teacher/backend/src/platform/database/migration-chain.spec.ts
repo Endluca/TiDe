@@ -5,22 +5,22 @@ const databaseFile = (relativePath: string) =>
   readFileSync(resolve(__dirname, '../../../database', relativePath), 'utf8');
 
 describe('teacher database migration chain', () => {
-  it('keeps every local and production entry point on the 0041 head', () => {
+  it('keeps every local and production entry point on the 0042 head', () => {
     const ddl = databaseFile('ddl.sql');
     const production = databaseFile('scripts/apply-production.sh');
 
     expect(ddl).toMatch(
-      /\\ir fixtures\/0004_p_fb_negative_contract\.sql[\s\S]*seed\/0000_mock_shared_catalog\.sql[\s\S]*0033_g01_tesol_only\.up\.sql[\s\S]*seed\/0005_mock_g04_two_part_catalog\.sql[\s\S]*0037_g04_remove_device_check\.up\.sql[\s\S]*0038_personalized_environment_photo\.up\.sql[\s\S]*0039_g02_policy_document\.up\.sql[\s\S]*0040_g02_document_read_status\.up\.sql[\s\S]*0041_crm_sso_hybrid\.up\.sql/,
+      /\\ir fixtures\/0004_p_fb_negative_contract\.sql[\s\S]*seed\/0000_mock_shared_catalog\.sql[\s\S]*0033_g01_tesol_only\.up\.sql[\s\S]*seed\/0005_mock_g04_two_part_catalog\.sql[\s\S]*0037_g04_remove_device_check\.up\.sql[\s\S]*0038_personalized_environment_photo\.up\.sql[\s\S]*0039_g02_policy_document\.up\.sql[\s\S]*0040_g02_document_read_status\.up\.sql[\s\S]*0041_crm_sso_hybrid\.up\.sql[\s\S]*0042_g09_set_kuozhi_course\.up\.sql/,
     );
     expect(ddl.trimEnd()).toMatch(
-      /\\ir migrations\/0041_crm_sso_hybrid\.up\.sql$/,
+      /\\ir migrations\/0042_g09_set_kuozhi_course\.up\.sql$/,
     );
     expect(ddl).toContain('\\ir seed/0005_mock_g04_two_part_catalog.sql');
     expect(production).toContain(
-      'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0041_crm_sso_hybrid}"',
+      'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0042_g09_set_kuozhi_course}"',
     );
     expect(production).toMatch(
-      /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding\s+0033_g01_tesol_only\s+0037_g04_remove_device_check\s+0038_personalized_environment_photo\s+0039_g02_policy_document\s+0040_g02_document_read_status\s+0041_crm_sso_hybrid/,
+      /0025_fixed_task_semantic_alignment\s+0026_kuozhi_course_syncs\s+0027_remove_local_quiz_runtime\s+0028_retire_task_business_change_view\s+0029_remove_unused_tide_objects\s+0030_remove_unused_columns_and_orphan_function\s+0031_g04_independent_sections\s+0032_first_login_onboarding\s+0033_g01_tesol_only\s+0037_g04_remove_device_check\s+0038_personalized_environment_photo\s+0039_g02_policy_document\s+0040_g02_document_read_status\s+0041_crm_sso_hybrid\s+0042_g09_set_kuozhi_course/,
     );
     expect(production).toContain('g02_document_read_status_recorded=false');
     expect(production).toContain(
@@ -173,6 +173,25 @@ describe('teacher database migration chain', () => {
     expect(up).toContain('ALTER COLUMN password_hash DROP NOT NULL');
     expect(up).toContain("created_via IN ('LOCAL', 'CRM_SSO')");
     expect(up).toContain("auth_method IN ('PASSWORD', 'CRM_SSO')");
+  });
+
+  it('publishes G09 course 658 inside an explicit reversible migration', () => {
+    const up = databaseFile(
+      'migrations/0042_g09_set_kuozhi_course.up.sql',
+    ).trim();
+    const down = databaseFile(
+      'migrations/0042_g09_set_kuozhi_course.down.sql',
+    ).trim();
+
+    expect(up.startsWith('BEGIN;')).toBe(true);
+    expect(up.endsWith('COMMIT;')).toBe(true);
+    expect(down.startsWith('BEGIN;')).toBe(true);
+    expect(down.endsWith('COMMIT;')).toBe(true);
+    expect(up).toContain("shared_template_row_id = 'G10:v1'");
+    expect(up).toContain('2026-08-19-set-kuozhi-v1');
+    expect(up).toContain('KUOZHI_G09_COURSE_MAPPING_PENDING');
+    expect(up).not.toContain('INSERT INTO tide.task_step_definitions');
+    expect(up).not.toContain('UPDATE public.task_assignments');
   });
 
   it('keeps both directions of 0031 inside one explicit transaction', () => {

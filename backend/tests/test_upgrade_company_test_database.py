@@ -43,6 +43,14 @@ def test_full_plan_preserves_every_cross_schema_switch_point() -> None:
         ("public", upgrade.PUBLIC_57),
         ("teacher", upgrade.TEACHER_40),
         ("teacher", upgrade.TEACHER_41),
+        ("public", upgrade.PUBLIC_59),
+        ("public", upgrade.PUBLIC_60),
+        ("public", upgrade.PUBLIC_61),
+        ("public", upgrade.PUBLIC_62),
+        ("public", upgrade.PUBLIC_63),
+        ("public", upgrade.PUBLIC_64),
+        ("public", upgrade.PUBLIC_65),
+        ("teacher", upgrade.TEACHER_42),
     ]
     assert plan[-1].expected_state == upgrade.FINAL_STATE
 
@@ -61,6 +69,18 @@ def test_full_plan_preserves_every_cross_schema_switch_point() -> None:
         (
             upgrade.DatabaseState(upgrade.PUBLIC_57, upgrade.TEACHER_39),
             upgrade.TEACHER_40,
+        ),
+        (
+            upgrade.DatabaseState(upgrade.PUBLIC_63, upgrade.TEACHER_41),
+            upgrade.PUBLIC_64,
+        ),
+        (
+            upgrade.DatabaseState(upgrade.PUBLIC_64, upgrade.TEACHER_41),
+            upgrade.PUBLIC_65,
+        ),
+        (
+            upgrade.DatabaseState(upgrade.PUBLIC_65, upgrade.TEACHER_41),
+            upgrade.TEACHER_42,
         ),
     ],
 )
@@ -100,9 +120,9 @@ def test_local_public_and_teacher_chains_are_exactly_validated() -> None:
 
     assert ledger[0][0:3] == (1, "0001_initial", "0001_initial.up.sql")
     assert ledger[-1][0:3] == (
-        36,
-        upgrade.TEACHER_41,
-        f"{upgrade.TEACHER_41}.up.sql",
+        37,
+        upgrade.TEACHER_42,
+        f"{upgrade.TEACHER_42}.up.sql",
     )
     assert all(len(row[3]) == 64 for row in ledger)
 
@@ -130,7 +150,7 @@ def test_default_main_is_read_only_and_prints_the_plan(
     output = capsys.readouterr().out
     assert "只读检查完成" in output
     assert upgrade.PUBLIC_54 in output
-    assert upgrade.TEACHER_41 in output
+    assert upgrade.TEACHER_42 in output
 
 
 def test_apply_requires_backup_and_maintenance_confirmations_before_connecting(
@@ -215,6 +235,7 @@ def test_company_test_teacher_mode_allows_only_reviewed_stage_targets() -> None:
         upgrade.TEACHER_38,
         upgrade.TEACHER_40,
         upgrade.TEACHER_41,
+        upgrade.TEACHER_42,
     )
     assert "approved_company_test_target=false" in source
-    assert "0037、0038、0040、0041 切换点" in source
+    assert "0037、0038、0040、0041、0042 切换点" in source

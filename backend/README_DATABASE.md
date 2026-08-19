@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260819_63_dts_direct_privacy`、teacher `0041_crm_sso_hybrid`，teacher 为精确 36 条 canonical 账本。rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块，rev55 将教师源表收敛为确认的 55 列，release rev56/0038 追加个性化环境拍照，release rev57/0039/0040 发布 G02 原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 汇合 release 内容链与 rev56–58 ACL/DTS 分支，public 60 在其后增加国内学生标识的数据库 fail-closed 边界，public 61 只更新经审核的教师文案，public 62 并发建立匹配 `PENDING` / 到期 `RETRY` 领取顺序的部分索引，public 63 允许受限 DTS 运行角色用事务级地区标签执行不保存通用来源镜像的 direct 课程写入，最终权限以 `docs/数据库角色与权限最终版.md` 为准。业务字段所有权、状态机、不可逆事实和幂等账本继续由 Trigger/约束保护。公司 TEST 库 `tit_growth_test_v2` 上次已验证到 public `20260812_56_lean_roles`、teacher `0037_g04_remove_device_check`（精确 32 条 canonical 账本），不等于已应用 public 63 / teacher 0041；上线前仍须执行剩余迁移并以真实运行角色复验。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这不代表外部日更、业务验收或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；代码 head 为 public `20260819_65_g09_set_course`、teacher `0042_g09_set_kuozhi_course`，teacher 为精确 37 条 canonical 账本。rev51/0033 将 G01 收窄为 TESOL-only，rev54/0037 将 G04 收窄为照片审核与课件准备两模块，rev55 将教师源表收敛为确认的 55 列，release rev56/0038 追加个性化环境拍照，release rev57/0039/0040 发布 G02 原生政策文档与阅读状态，0041 新增 CRM SSO 混合认证结构；public 59 汇合 release 内容链与 rev56–58 ACL/DTS 分支，public 60 在其后增加国内学生标识的数据库 fail-closed 边界，public 61 只更新经审核的教师文案，public 62 并发建立匹配 `PENDING` / 到期 `RETRY` 领取顺序的部分索引，public 63 允许受限 DTS 运行角色用事务级地区标签执行不保存通用来源镜像的 direct 课程写入，public 64 原位发布 G05/G08 课程文案，public 65 与 teacher 0042 发布 G09 课程 658 文案和执行配置，最终权限以 `docs/数据库角色与权限最终版.md` 为准。业务字段所有权、状态机、不可逆事实和幂等账本继续由 Trigger/约束保护。公司 TEST 库 `tit_growth_test_v2` 上次已验证到 public `20260812_56_lean_roles`、teacher `0037_g04_remove_device_check`（精确 32 条 canonical 账本），不等于已应用 public 65 / teacher 0042；上线前仍须执行剩余迁移并以真实运行角色复验。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这不代表外部日更、业务验收或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -59,7 +59,7 @@ export DATABASE_URL='postgresql+psycopg://tit_growth_app@127.0.0.1:5432/tit_grow
 ## 初始化空库
 
 如果该库同时承载 teacher 的 `tide` Schema，首次初始化不能直接把 public 升到 head：必须先按
-`public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041`
+`public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62 → public 63 → public 64 → public 65 → teacher 0042`
 完成跨 Schema 的 release 内容链，再依次合并 ACL/DTS 分支到 public 59、应用隐私边界到 public 60，详见
 [`deploy/combined/README.md`](../deploy/combined/README.md)。只有不初始化 teacher Schema 的
 独立 public 数据库才可直接执行以下 `upgrade head`。
@@ -82,8 +82,8 @@ backend/.venv/bin/python backend/scripts/upgrade_company_test_database.py \
   --apply --backup-confirmed --maintenance-window-confirmed
 ```
 
-总控脚本不会运行 teacher 初始化器、Mock/内容 Seed、发布 Gaea 或重启服务。到达 public 57 /
-teacher 0041 后，仍需使用包含 `tit_teacher_crud` 凭据的另一份 Git 外配置运行
+总控脚本不会运行 teacher 初始化器、Mock/内容 Seed、发布 Gaea 或重启服务。到达 public 65 /
+teacher 0042 后，仍需使用包含 `tit_teacher_crud` 凭据的另一份 Git 外配置运行
 `teacher/backend/database/scripts/apply-company-test.sh`，再进行应用发布与端到端验收。
 
 ```bash
@@ -227,7 +227,9 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
 - `20260813_60_dom_privacy` 在 rev59 之后校验既有 DTS/课程状态，并用数据库 Trigger 拒绝任何国内原始学生 ID 或非法 token 落入海外目标库。
 - `20260814_61_teacher_copy` 仅原位更新 G01、G08、Lesson Memo 和 Attendance 的经审核教师文案，不改 assignment 和状态事实。
 - `20260818_62_dts_claim_idx` 用 `CREATE INDEX CONCURRENTLY` 为 `PENDING` FIFO 和到期 `RETRY` 队列增加部分索引，不改业务事实。
-- `20260819_63_dts_direct_privacy` 是当前 public head；它保留 queued 的来源镜像校验，并允许 `tit_dts_ingest_runtime` 只在 direct 事务显式标记 `dom/ovs` 后写课程宽表。国内学生仍必须是 `dom:v1:<HMAC-SHA256>`，OVS 写入不得携带 `dom:` token。
+- `20260819_63_dts_direct_privacy` 保留 queued 的来源镜像校验，并允许 `tit_dts_ingest_runtime` 只在 direct 事务显式标记 `dom/ovs` 后写课程宽表。国内学生仍必须是 `dom:v1:<HMAC-SHA256>`，OVS 写入不得携带 `dom:` token。
+- `20260819_64_g05_g08_courses` 只原位更新 G05/G08 已发布课程文案和匹配旧副本的 G08 展示文案，保留 assignment 状态、分值和完成事实。
+- `20260819_65_g09_set_course` 是当前 public head；它只原位发布稳定 `G10:v1` / G09 的课程 658 文案，teacher `0042_g09_set_kuozhi_course` 再发布对应执行配置，均保留既有 assignment 与进度。
 - `seed_database.py` 只幂等补齐 14 个当前任务模板，不创建教师或任何运行时业务事实，也不修改投诉规则导入或触发结果。G01–G09 assignment 由教师写入流程初始化；初始化不创建通知、提醒或投递意图。隔离测试中的 Mock fixture 不进入运营运行库。
 - `seed_config_center.py` 只创建本地默认配置版本；空库读取不会由 API 隐式补配置。
 - 两个 Seed 脚本都要求 `APP_ENV` 明确为 `local / dev / development / test`，否则拒绝执行。

@@ -300,6 +300,7 @@ teacher_personalized_photo_migration="${TIDE_TEACHER_REPO_PATH}/backend/database
 teacher_g02_document_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0039_g02_policy_document.up.sql"
 teacher_g02_read_status_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0040_g02_document_read_status.up.sql"
 teacher_crm_sso_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0041_crm_sso_hybrid.up.sql"
+teacher_g09_set_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0042_g09_set_kuozhi_course.up.sql"
 
 [[ -f "${teacher_service}" ]] || fail "缺少教师端任务服务"
 [[ -f "${teacher_catalog}" ]] || fail "缺少教师端任务目录同步器"
@@ -328,10 +329,12 @@ teacher_crm_sso_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations
   || fail "缺少教师端 0040 G02 阅读状态迁移"
 [[ -f "${teacher_crm_sso_migration}" ]] \
   || fail "缺少教师端 0041 CRM SSO 混合认证迁移"
+[[ -f "${teacher_g09_set_migration}" ]] \
+  || fail "缺少教师端 0042 G09 阔知课程 658 迁移"
 [[ -f "${contract_probe}" ]] \
   || fail "缺少联合部署数据库契约探针"
-grep -Fq "20260819_63_dts_direct_privacy" "${contract_probe}" \
-  || fail "数据库契约探针未固定最终 public head 20260819_63_dts_direct_privacy"
+grep -Fq "20260819_65_g09_set_course" "${contract_probe}" \
+  || fail "数据库契约探针未固定最终 public head 20260819_65_g09_set_course"
 grep -q "2026-08-05-g04-three-part" "${teacher_g04_migration}" \
   || fail "教师端 0031 未发布经评审的 G04 三模块版本"
 grep -q "g02-device-2026-08-05-browser-preflight-v1" "${teacher_g04_migration}" \
@@ -452,9 +455,9 @@ if sorted(declared_codes) != sorted(expected) or duplicate_codes or actual != ex
 PY
 
 [[ -f "${teacher_migrator}" ]] || fail "缺少教师端正式生产迁移器"
-grep -Fq "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041" \
+grep -Fq "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64 -> public head 65 -> teacher 0042" \
   "${teacher_migrator}" \
-  || fail "教师端迁移器缺少 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→release-public56→teacher0038→release-public57→teacher0040→teacher0041 分阶段失败关闭门禁"
+  || fail "教师端迁移器缺少 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→release-public56→teacher0038→release-public57→teacher0040→teacher0041→public63→public64→public65→teacher0042 分阶段失败关闭门禁"
 grep -Fq "20260811_56_p_fb_negative_copy" "${teacher_migrator}" \
   || fail "教师端迁移器未固定 release public 56 切换点"
 grep -Fq "20260811_57_g02_document" "${teacher_migrator}" \
@@ -466,7 +469,7 @@ grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
 [[ -f "${TIDE_TEACHER_REPO_PATH}/frontend/Dockerfile" ]] \
   || fail "缺少教师端 Web 生产镜像"
 python3 - "${teacher_migrator}" <<'PY' \
-  || fail "教师端生产迁移器不是以 0041 结尾的 36 条完整有序生产链"
+  || fail "教师端生产迁移器不是以 0042 结尾的 37 条完整有序生产链"
 from __future__ import annotations
 
 import re
@@ -511,6 +514,7 @@ expected = [
     "0039_g02_policy_document",
     "0040_g02_document_read_status",
     "0041_crm_sso_hybrid",
+    "0042_g09_set_kuozhi_course",
 ]
 target_match = re.search(
     r'TARGET_MIGRATION="\$\{TIDE_MIGRATION_TARGET:-([^}]+)\}"',
@@ -542,4 +546,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→release-public56→teacher0038→release-public57→teacher0040→teacher0041→public59→public60→public61→public62→public63 执行，最终必须通过 public 20260819_63_dts_direct_privacy / teacher 0041 契约探针和发布门禁。\n'
+printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→release-public56→teacher0038→release-public57→teacher0040→teacher0041→public59→public60→public61→public62→public63→public64→public65→teacher0042 执行，最终必须通过 public 20260819_65_g09_set_course / teacher 0042 契约探针和发布门禁。\n'

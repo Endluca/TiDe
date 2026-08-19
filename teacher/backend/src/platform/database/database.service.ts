@@ -66,6 +66,7 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0039_g02_policy_document',
   '0040_g02_document_read_status',
   '0041_crm_sso_hybrid',
+  '0042_g09_set_kuozhi_course',
 ] as const;
 
 @Injectable()
@@ -300,10 +301,10 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0041_crm_sso_hybrid'
+        ) = '0042_g09_set_kuozhi_course'
         AND public_migration_state.migration_count = 1
         AND public_migration_state.version_num =
-          '20260819_63_dts_direct_privacy'
+          '20260819_65_g09_set_course'
         AND to_regprocedure(
           'public.dom_student_json_is_safe_v1(jsonb)'
         ) IS NOT NULL

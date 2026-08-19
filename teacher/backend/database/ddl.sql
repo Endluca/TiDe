@@ -43,3 +43,4 @@
 \ir migrations/0039_g02_policy_document.up.sql
 \ir migrations/0040_g02_document_read_status.up.sql
 \ir migrations/0041_crm_sso_hybrid.up.sql
+\ir migrations/0042_g09_set_kuozhi_course.up.sql

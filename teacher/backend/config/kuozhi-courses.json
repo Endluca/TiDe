@@ -1,7 +1,8 @@
 {
-  "version": 6,
+  "version": 8,
   "tasks": {
     "G01": {
+      "mappingVersion": 6,
       "integrationStatus": "ACTIVE",
       "launchEnabled": true,
       "completionEnabled": true,
@@ -24,6 +25,7 @@
       ]
     },
     "G03": {
+      "mappingVersion": 6,
       "integrationStatus": "ACTIVE",
       "launchEnabled": true,
       "completionEnabled": true,
@@ -45,27 +47,36 @@
       ]
     },
     "G05": {
+      "mappingVersion": 7,
       "integrationStatus": "ACTIVE",
       "launchEnabled": true,
       "completionEnabled": true,
       "noHeader": true,
       "courses": [
         {
-          "courseId": "513",
+          "courseId": "657",
           "title": "Teacher Tie-Up Program",
           "tasks": [
             {
-              "courseTaskId": "2759",
-              "title": "Teacher Tie-Up Program video",
+              "courseTaskId": "3794",
+              "title": "TTP",
               "type": "VIDEO",
               "required": true,
               "completionPercent": 100
+            },
+            {
+              "courseTaskId": "3795",
+              "testpaperId": "585",
+              "title": "Quiz",
+              "type": "TESTPAPER",
+              "required": true
             }
           ]
         }
       ]
     },
     "G06": {
+      "mappingVersion": 6,
       "integrationStatus": "ACTIVE",
       "launchEnabled": true,
       "completionEnabled": true,
@@ -110,6 +121,7 @@
       ]
     },
     "G07": {
+      "mappingVersion": 6,
       "integrationStatus": "PARTIAL",
       "launchEnabled": true,
       "completionEnabled": false,
@@ -126,23 +138,44 @@
       ]
     },
     "G08": {
+      "mappingVersion": 7,
       "integrationStatus": "ACTIVE",
       "launchEnabled": true,
       "completionEnabled": true,
       "noHeader": true,
       "courses": [
         {
-          "courseId": "630",
-          "title": "COCOS Training",
+          "courseId": "656",
+          "title": "Global Communicator Sample Lessons",
           "tasks": [
-            { "courseTaskId": "3484", "title": "COCOS video 1", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "3476", "title": "COCOS video 2", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "3478", "title": "COCOS video 3", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "3475", "title": "COCOS video 4", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "3480", "title": "COCOS video 5", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "3479", "title": "COCOS video 6", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "3490", "title": "COCOS video 7", "type": "VIDEO", "required": true, "completionPercent": 100 },
-            { "courseTaskId": "3477", "testpaperId": "562", "title": "COCOS assessment", "type": "TESTPAPER", "required": true }
+            { "courseTaskId": "3788", "title": "Dialogue", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3789", "title": "Word&Sentence", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3791", "title": "Alphabet", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3792", "title": "Phonics", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3793", "title": "Reading", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3790", "title": "Review", "type": "VIDEO", "required": true, "completionPercent": 100 }
+          ]
+        }
+      ]
+    },
+    "G09": {
+      "mappingVersion": 8,
+      "integrationStatus": "ACTIVE",
+      "launchEnabled": true,
+      "completionEnabled": true,
+      "autoCompleteAssignment": true,
+      "noHeader": true,
+      "courses": [
+        {
+          "courseId": "658",
+          "title": "Skills Training for Effective Performance",
+          "tasks": [
+            { "courseTaskId": "3826", "title": "New Teacher Camp - Time Management", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3829", "testpaperId": "589", "title": "Time management quiz", "type": "TESTPAPER", "required": true },
+            { "courseTaskId": "3831", "title": "New Teacher Camp - Engagement", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3832", "testpaperId": "590", "title": "Engagement Quiz", "type": "TESTPAPER", "required": true },
+            { "courseTaskId": "3836", "title": "New Teacher Camp - Lesson Readiness", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3834", "testpaperId": "591", "title": "Lesson Readiness quiz", "type": "TESTPAPER", "required": true }
           ]
         }
       ]

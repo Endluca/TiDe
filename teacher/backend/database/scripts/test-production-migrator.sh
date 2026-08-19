@@ -347,6 +347,36 @@ SQL
   set_public_head "${database_name}" "20260811_57_g02_document"
 }
 
+install_public_g09_contract() {
+  local database_name="$1"
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${database_name}" >/dev/null <<'SQL'
+UPDATE public.task_templates
+SET payload = payload || jsonb_build_object(
+        'template_id', 'G09',
+        'category', 'MANDATORY_GROWTH',
+        'score_type', 'FIXED',
+        'score_value', 5,
+        'content_status', 'READY',
+        'title', 'SET Teaching Fundamentals',
+        'why_template', 'Learn the fundamentals of SET teaching.',
+        'how_summary',
+            'Complete the three SET videos and their three paired quizzes in Kuozhi.',
+        'completion_standard',
+            'All three required videos and all three paired quizzes reach 100% progress in Kuozhi.',
+        'benefit', 'You understand the SET teaching foundation.'
+    ),
+    revision = revision + 1,
+    updated_by = 'production_migrator_public_rev65',
+    updated_at = now()
+WHERE row_id = 'G10:v1'
+  AND template_id = 'G09'
+  AND template_version = 1
+  AND status = 'PUBLISHED';
+SQL
+  set_public_head "${database_name}" "20260819_65_g09_set_course"
+}
+
 create_test_database "${PUBLIC_HEAD_FIRST_DB}"
 advance_public_g04_to_rev54 "${PUBLIC_HEAD_FIRST_DB}"
 set_public_head "${PUBLIC_HEAD_FIRST_DB}" "20260811_56_p_fb_negative_copy"
@@ -609,6 +639,12 @@ TIDE_MIGRATION_TARGET="0041_crm_sso_hybrid" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
 install_public_59_support_guard_and_acl "${FRESH_DB}"
+install_public_g09_contract "${FRESH_DB}"
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+TIDE_MIGRATION_TARGET="0042_g09_set_kuozhi_course" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
 
 fresh_state="$(psql -X --no-password -AtF '|' "postgresql:///${FRESH_DB}" <<'SQL'
 SELECT
@@ -727,10 +763,22 @@ SELECT
     to_regclass('tide.crm_sso_logins') IS NOT NULL,
     NOT EXISTS (SELECT 1 FROM tide.crm_sso_logins),
     (SELECT version_num FROM public.alembic_version) =
-        '20260819_63_dts_direct_privacy',
+        '20260819_65_g09_set_course',
     count(*) FILTER (
         WHERE migration_id = '0041_crm_sso_hybrid'
     ) = 1,
+    count(*) FILTER (
+        WHERE migration_id = '0042_g09_set_kuozhi_course'
+    ) = 1,
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'G10:v1'
+          AND task_code = 'G09'
+          AND execution_contract_version = 'task-contract-v3'
+          AND config =
+              '{"estimatedMinutes":25,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-19-set-kuozhi-v1","pendingReason":null}'::jsonb
+    ),
     count(*) FILTER (
         WHERE migration_id = '0038_personalized_environment_photo'
     ) = 1,
@@ -750,7 +798,7 @@ SELECT
 FROM tide.schema_migrations;
 SQL
 )"
-if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|36" ]]; then
+if [[ "${fresh_state}" != "t|t|t|f|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|37" ]]; then
   echo "生产 fresh 迁移状态异常：${fresh_state}" >&2
   exit 1
 fi
@@ -1029,12 +1077,12 @@ SELECT
         FROM tide.schema_migrations
         ORDER BY migration_order DESC
         LIMIT 1
-    ) = '0041_crm_sso_hybrid',
-    (SELECT count(*) FROM tide.schema_migrations) = 36;
+    ) = '0042_g09_set_kuozhi_course',
+    (SELECT count(*) FROM tide.schema_migrations) = 37;
 SQL
 )"
 if [[ "${post_public_drop_state}" != "t|t|t|t" ]]; then
-  echo "teacher 0041 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
+  echo "teacher 0042 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
   exit 1
 fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
@@ -3016,6 +3064,38 @@ if [[ "${crm_sso_migration_state}" != "t|t|t" ]]; then
   exit 1
 fi
 install_public_59_support_guard_and_acl "${UPGRADE_DB}"
+install_public_g09_contract "${UPGRADE_DB}"
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TARGET="0042_g09_set_kuozhi_course" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+g09_set_migration_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions
+        WHERE shared_template_row_id = 'G10:v1'
+          AND task_code = 'G09'
+          AND execution_contract_version = 'task-contract-v3'
+          AND config =
+              '{"estimatedMinutes":25,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-19-set-kuozhi-v1","pendingReason":null}'::jsonb
+    ),
+    EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0042_g09_set_kuozhi_course'
+          AND migration_order = 37
+    ),
+    (SELECT version_num FROM public.alembic_version) =
+        '20260819_65_g09_set_course';
+SQL
+)"
+if [[ "${g09_set_migration_state}" != "t|t|t" ]]; then
+  echo "0042 G09 SET 课程配置或迁移账本异常：${g09_set_migration_state}" >&2
+  exit 1
+fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" \
   -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql" >/dev/null
@@ -4385,4 +4465,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、teacher canonical 0041 与最终 public 63 账本契约、跨 Schema 顺序门禁、0022–0041、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；真实 rev60 隐私 Trigger、rev61 文案、rev62 索引与 rev63 direct 隐私迁移由根仓库迁移测试验收。"
+echo "生产 migrator fresh/upgrade、teacher canonical 0042 与最终 public 65 账本契约、跨 Schema 顺序门禁、0022–0042、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、G05/G08/G09 阔知课程、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；真实 rev60 隐私 Trigger、rev61 文案、rev62 索引、rev63 direct 隐私以及 rev64/rev65 课程文案迁移由根仓库迁移测试验收。"

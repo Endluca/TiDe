@@ -87,15 +87,16 @@ BEGIN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
 
-    -- Final public 63 must include the reviewed release content through
+    -- Final public 65 must include the reviewed release content through
     -- 20260811_57_g02_document, the public 59 ACL/DTS merge, and the
     -- domestic-student privacy boundary, reviewed teacher-copy update, and
-    -- index-aligned DTS dirty-key claim path and direct-write privacy guard;
+    -- index-aligned DTS dirty-key claim path, direct-write privacy guard, and
+    -- reviewed G05/G08/G09 Kuozhi course mappings;
     -- concrete rows and guards are checked below.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260819_63_dts_direct_privacy' THEN
+    ) IS DISTINCT FROM '20260819_65_g09_set_course' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -138,10 +139,11 @@ BEGIN
             '0038_personalized_environment_photo',
             '0039_g02_policy_document',
             '0040_g02_document_read_status',
-            '0041_crm_sso_hybrid'
+            '0041_crm_sso_hybrid',
+            '0042_g09_set_kuozhi_course'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0041';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0042';
     END IF;
 
     IF NOT EXISTS (
@@ -454,6 +456,36 @@ BEGIN
     ) IS DISTINCT FROM
        ARRAY['G01','G02','G03','G04','G05','G06','G07','G08','G09']::text[] THEN
         RAISE EXCEPTION 'teacher execution catalog is not the current G01-G09 catalog';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        JOIN public.task_templates AS template
+          ON template.row_id = execution.shared_template_row_id
+        WHERE execution.shared_template_row_id = 'G10:v1'
+          AND execution.task_code = 'G09'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":25,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-19-set-kuozhi-v1","pendingReason":null}'::jsonb
+          AND template.template_id = 'G09'
+          AND template.status = 'PUBLISHED'
+          AND template.payload->>'how_summary' =
+              'Complete the three SET videos and their three paired quizzes in Kuozhi.'
+          AND template.payload->>'completion_standard' =
+              'All three required videos and all three paired quizzes reach 100% progress in Kuozhi.'
+          AND NOT EXISTS (
+              SELECT 1 FROM tide.task_step_definitions AS definition
+              WHERE definition.execution_version_id = execution.id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM tide.task_validation_rules AS rule
+              WHERE rule.execution_version_id = execution.id
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'G09 SET course 658 execution is not the reviewed READY shape';
     END IF;
 
     IF (

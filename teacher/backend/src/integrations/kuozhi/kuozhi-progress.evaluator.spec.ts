@@ -35,6 +35,87 @@ const resolved: KuozhiResolvedMapping = {
 };
 
 describe('evaluateKuozhiProgress', () => {
+  it('completes G09 only after its three videos and three paired quizzes finish', () => {
+    const g09: KuozhiResolvedMapping = {
+      mappingVersion: 8,
+      taskCode: 'G09',
+      dataMode: 'REAL',
+      queryTeacherId: 'TEACHER-001',
+      mapping: {
+        integrationStatus: 'ACTIVE',
+        launchEnabled: true,
+        completionEnabled: true,
+        autoCompleteAssignment: true,
+        noHeader: true,
+        courses: [
+          {
+            courseId: '658',
+            tasks: [
+              {
+                courseTaskId: '3826',
+                type: 'VIDEO',
+                required: true,
+                completionPercent: 100,
+              },
+              { courseTaskId: '3829', type: 'TESTPAPER', required: true },
+              {
+                courseTaskId: '3831',
+                type: 'VIDEO',
+                required: true,
+                completionPercent: 100,
+              },
+              { courseTaskId: '3832', type: 'TESTPAPER', required: true },
+              {
+                courseTaskId: '3836',
+                type: 'VIDEO',
+                required: true,
+                completionPercent: 100,
+              },
+              { courseTaskId: '3834', type: 'TESTPAPER', required: true },
+            ],
+          },
+        ],
+      },
+    };
+    const complete = {
+      id: '658',
+      percent: 100,
+      task_list: {
+        '3826': { id: '3826', type: 'video', percent: 100 },
+        '3829': { id: '3829', type: 'testpaper', percent: 100 },
+        '3831': { id: '3831', type: 'video', percent: 100 },
+        '3832': { id: '3832', type: 'testpaper', percent: 100 },
+        '3836': { id: '3836', type: 'video', percent: 100 },
+        '3834': { id: '3834', type: 'testpaper', percent: 100 },
+      },
+    };
+
+    const passed = evaluateKuozhiProgress(
+      g09,
+      [complete],
+      '2026-08-19T00:00:00.000Z',
+    );
+    const incomplete = evaluateKuozhiProgress(
+      g09,
+      [
+        {
+          ...complete,
+          task_list: {
+            ...complete.task_list,
+            '3834': { id: '3834', type: 'testpaper', percent: 99 },
+          },
+        },
+      ],
+      '2026-08-19T00:00:00.000Z',
+    );
+
+    expect(passed.completion).toMatchObject({ completed: true });
+    expect(incomplete.completion).toMatchObject({
+      completed: false,
+      reasonCode: 'REQUIREMENTS_INCOMPLETE',
+    });
+  });
+
   it('completes G03 only after its three videos and three assessments finish', () => {
     const g03: KuozhiResolvedMapping = {
       mappingVersion: 6,

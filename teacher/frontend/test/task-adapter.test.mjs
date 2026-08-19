@@ -613,6 +613,61 @@ test("uses backend task content without replacing it with local presentation cop
   assert.equal(task.contentLanguage, "en");
 });
 
+test("keeps backend G05 course copy without a local publication fallback", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "G05",
+    content: {
+      title: "Database G05 title",
+      why: "Database G05 reason",
+      whatToDo: "Database G05 action",
+      completionStandard: "Database G05 standard",
+      outcome: "Database G05 outcome",
+      language: "en",
+    },
+  }));
+
+  assert.equal(task.name, "Database G05 title");
+  assert.equal(task.reason, "Database G05 reason");
+  assert.equal(task.result, "Database G05 action");
+  assert.equal(task.standard, "Database G05 standard");
+  assert.equal(task.value, "Database G05 outcome");
+});
+
+test("keeps backend G08 course copy without a local publication fallback", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "G08",
+    content: {
+      title: "Database G08 title",
+      why: "Database G08 reason",
+      whatToDo: "Database G08 action",
+      completionStandard: "Database G08 standard",
+      outcome: "Database G08 outcome",
+      language: "en",
+    },
+  }));
+
+  assert.equal(task.name, "Database G08 title");
+  assert.equal(task.shortName, "Database G08 title");
+  assert.equal(task.reason, "Database G08 reason");
+  assert.equal(task.result, "Database G08 action");
+  assert.equal(task.standard, "Database G08 standard");
+  assert.equal(task.value, "Database G08 outcome");
+});
+
+test("formats the Global Communicator course duration for teachers", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "G08",
+    display: {
+      stageKey: "ADVANCE",
+      sequence: 8,
+      points: 5,
+      estimatedMinutes: 155,
+    },
+  }));
+
+  assert.equal(task.duration, "2 hr 35 min");
+});
+
 test("keeps the nine merged-task map checkpoints while locking future stages by camp day", () => {
   const stages = {
     G01: "FOUNDATION",

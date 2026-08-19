@@ -552,7 +552,7 @@ export class FaqService {
   private noMatchMessage(question: string): string {
     return this.isChinese(question)
       ? '当前已生效 FAQ 中没有找到足够依据，因此我暂时不能给出公司口径答案。这个问题已记录，供后续补充 FAQ。'
-      : 'I could not find this question in the current FAQ, so I cannot give a company answer yet. The question has been recorded for FAQ review.';
+      : 'I could not find a reliable answer in the current FAQ. Your question has been recorded for review. Submit a support ticket if you still need help.';
   }
 
   private sourceFallbackMessage(question: string): string {

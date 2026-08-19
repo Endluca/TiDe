@@ -127,6 +127,15 @@ function tesolReviewItem(status, sourceUpdatedAt) {
   };
 }
 
+function formatEstimatedDuration(value) {
+  const minutes = Math.round(Number(value));
+  if (!Number.isFinite(minutes) || minutes <= 0) return "View anytime";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours} hr ${remainder} min` : `${hours} hr`;
+}
+
 export function adaptTaskContext(context, g01Review) {
   const isPersonalized = context.kind === "PERSONALIZED_IMPROVEMENT";
   const catalogRouteId = taskCodeToRouteId[context.taskCode];
@@ -134,6 +143,7 @@ export function adaptTaskContext(context, g01Review) {
     ? context.taskInstanceId
     : catalogRouteId || context.taskInstanceId;
   const catalogTask = routeIdToCatalog.get(catalogRouteId) || {};
+  const content = context.content;
   const status = statusMap[context.status] || "available";
   const minutes = context.display.estimatedMinutes;
   const dueAt = context.dueAt || context.assignment?.dueAt || null;
@@ -176,9 +186,9 @@ export function adaptTaskContext(context, g01Review) {
     backendStatus: context.status,
     backendContext: context,
     localizationId: catalogRouteId || id,
-    name: context.content.title,
-    shortName: context.content.title,
-    contentLanguage: context.content.language,
+    name: content.title,
+    shortName: content.title,
+    contentLanguage: content.language,
     method: inferMethod(context),
     status,
     locked: false,
@@ -186,19 +196,19 @@ export function adaptTaskContext(context, g01Review) {
     stage: isPersonalized
       ? "Personalized"
       : stageMap[context.display.stageKey] || catalogTask.stage || "Day 1-7",
-    duration: minutes ? `${minutes} min` : "View anytime",
+    duration: formatEstimatedDuration(minutes),
     due: formatTaskDueAt(dueAt) || "Available now",
     dueAt,
     priority: context.assignment?.priority || (context.display.points ? `${context.display.points} pts` : "No task points"),
-    reason: context.content.why,
-    value: context.content.outcome,
-    result: context.content.whatToDo,
-    standard: context.content.completionStandard,
+    reason: content.why,
+    value: content.outcome,
+    result: content.whatToDo,
+    standard: content.completionStandard,
     steps: checklistStep
       ? localizedItems(checklistStep).map((item) => item.label)
       : context.steps.length
         ? context.steps.map((step) => step.title)
-        : [context.content.whatToDo],
+        : [content.whatToDo],
     backendSteps: context.steps,
     backendProgressByStep: progressByStep,
     documentContent: documentStep?.config || null,

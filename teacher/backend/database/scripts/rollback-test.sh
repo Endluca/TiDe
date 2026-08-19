@@ -159,6 +159,7 @@ run_sql "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql"
 run_sql "${DB_DIR}/migrations/0039_g02_policy_document.up.sql"
 run_sql "${DB_DIR}/migrations/0040_g02_document_read_status.up.sql"
 run_sql "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql"
+run_sql "${DB_DIR}/migrations/0042_g09_set_kuozhi_course.up.sql"
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
@@ -346,6 +347,39 @@ g04_second_apply_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   exit 1
 }
 
+run_sql "${DB_DIR}/migrations/0042_g09_set_kuozhi_course.down.sql"
+g09_set_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select coalesce(
+    (
+      select config =
+        '{\"estimatedMinutes\":25,\"allowRetry\":true,\"contentStatus\":\"PENDING\",\"contentVersion\":\"2026-08-06\",\"pendingReason\":\"KUOZHI_G09_COURSE_MAPPING_PENDING\"}'::jsonb
+      from tide.task_execution_versions
+      where shared_template_row_id = 'G10:v1'
+    ),
+    true
+  )
+)"
+[[ "${g09_set_down_state}" == "t" ]] || {
+  echo "0042 down 未精确恢复 G09 待发布执行配置" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0042_g09_set_kuozhi_course.up.sql"
+g09_set_up_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+  select coalesce(
+    (
+      select config =
+        '{\"estimatedMinutes\":25,\"allowRetry\":true,\"contentStatus\":\"READY\",\"contentVersion\":\"2026-08-19-set-kuozhi-v1\",\"pendingReason\":null}'::jsonb
+      from tide.task_execution_versions
+      where shared_template_row_id = 'G10:v1'
+    ),
+    true
+  )
+)"
+[[ "${g09_set_up_state}" == "t" ]] || {
+  echo "0042 down-up 未恢复 G09 课程 658 执行配置" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0042_g09_set_kuozhi_course.down.sql"
 run_sql "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql"
 crm_sso_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select

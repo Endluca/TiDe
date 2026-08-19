@@ -25,11 +25,11 @@
 | `G02` | `platform-policies` | Platform Policies 平台规则 | 固定必修 | 评审中 | TIDE 原生文档 | 嘉荷 | [任务 PRD](TASK-platform-policies_平台规则.md) | 版本化双语政策文档，读到底自动完成，2 分 |
 | `G03` | `student-types` | How to handle different types of students 不同类型学员应对 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-student-types_不同类型学员应对.md) | 课程 655；三段视频和三份配套考试均完成后自动完成，2 分 |
 | `G04` | `lesson-preparation` | Lesson Preparation 首课准备 | 固定必修 | 已确认 | 已确认 | 嘉荷 | [任务 PRD](TASK-lesson-preparation_首课准备.md) | 同一任务内两个独立模块：照片 AI 四项检查、课件准备确认；可任意顺序操作，两项全部通过后完成并获得 3 分；不包含设备网络检测 |
-| `G05` | `ttp-orientation` | TTP Orientation TTP 入门培训 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-ttp-orientation_TTP入门培训.md) | 阔知 iframe 视频，3 分 |
+| `G05` | `ttp-orientation` | TTP Orientation TTP 入门培训 | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-ttp-orientation_TTP入门培训.md) | 课程 657；视频＋Quiz，3 分 |
 | `G06` | `me-culture` | ME Culture & PARSNIP | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-me-culture_ME文化与PARSNIP.md) | 阔知 iframe 多课程视频＋考试，4 分 |
 | `G07` | `reliability-training` | Reliability Training | 固定必修 | 评审中 | 阔知部分映射 | 嘉荷 | [任务 PRD](TASK-reliability-training_Reliability培训.md) | 阔知 iframe 视频；考试 ID 待补，3 分 |
-| `G08` | `cocos-training` | Global Communicator Training | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-cocos-training_Cocos课程培训.md) | 阔知 iframe 视频＋考试，5 分 |
-| `G09` | `set-fundamentals` | SET Teaching Fundamentals | 固定必修 | 待配置 | 阔知待发布 | 嘉荷 | [任务 PRD](TASK-set-fundamentals_SET教学基础.md) | 不使用本地 Mock；等待阔知课程／视频／考试任务 ID，5 分 |
+| `G08` | `cocos-training` | Global Communicator Training | 固定必修 | 评审中 | 阔知 | 嘉荷 | [任务 PRD](TASK-cocos-training_Cocos课程培训.md) | 课程 656；六段视频，5 分 |
+| `G09` | `set-fundamentals` | SET Teaching Fundamentals | 固定必修 | 已确认 | 阔知 | 嘉荷 | [任务 PRD](TASK-set-fundamentals_SET教学基础.md) | 课程 658；三段视频与三份配套 Quiz 均达到 100% 后自动完成，5 分 |
 
 ### 历史兼容与候选资料
 

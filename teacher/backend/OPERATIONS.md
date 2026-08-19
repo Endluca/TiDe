@@ -47,11 +47,11 @@ pnpm provision:internal-test
 ```
 
 - 下一次明确授权的升级必须从当前 public 50 / teacher 0032 继续，并保持
-  `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041` 十二阶段顺序；
+  `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → public 56 → teacher 0038 → public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62 → public 63 → public 64 → public 65 → teacher 0042` 顺序；
   public 54 包含 rev51，teacher 0037 包含 0033，public 55 收敛源宽表。仓库根目录的
   `backend/scripts/upgrade_company_test_database.py` 默认只读检查，只有同时给出
   `--apply --backup-confirmed --maintenance-window-confirmed` 才按切换点写入并逐段读回。完成迁移并结束迁移窗口后，再运行
-  `database/scripts/apply-company-test.sh` 只读核对精确 36 条 canonical 账本/结构并初始化 execution
+  `database/scripts/apply-company-test.sh` 只读核对精确 37 条 canonical 账本/结构并初始化 execution
   和受限账号；两者禁止并发，该脚本不再创建或升级 `tide` Schema。本次代码交付未执行数据库升级。
 - `provision:internal-test` 使用 `TIDE_DATABASE_URL` 连接公司测试库，只为库中真实存在的教师创建测试账号，不复制或改写 `public.teachers`，也不生成教师可见的站内通知。
 - 后端与隧道由 `com.aiec.tide-internal-backend`、`com.aiec.tide-internal-tunnel` 两个 LaunchAgent 常驻。
@@ -102,10 +102,11 @@ docker build -t tide-teacher-api:reviewed .
 
 镜像只暴露 `3000`，其内置健康检查请求 `/health/ready`。生产环境中，容器进入
 healthy 不只代表 Node 进程存在：public Alembic 账本必须唯一指向
-`20260819_63_dts_direct_privacy`，教师端迁移账本必须是完整的 36 条 canonical 清单，包含
+`20260819_65_g09_set_course`，教师端迁移账本必须是完整的 37 条 canonical 清单，包含
 `0033_g01_tesol_only`、`0037_g04_remove_device_check`、
 `0038_personalized_environment_photo`、`0039_g02_policy_document`、
-`0040_g02_document_read_status`，且唯一最新版本为 `0041_crm_sso_hybrid`。
+`0040_g02_document_read_status`、`0041_crm_sso_hybrid`，且唯一最新版本为
+`0042_g09_set_kuozhi_course`。
 运营端稳定模板行必须精确对应当前 G01–G09 和 retired G00，九条当前执行配置也必须按
 同一稳定行处于 ACTIVE。后台任务租约、共享工单表、账号引导状态表、CRM SSO 事实及
 固定 owner 函数必须完整，6 张废弃表和 5 个旧分析视图必须不存在，教师身份受限视图和

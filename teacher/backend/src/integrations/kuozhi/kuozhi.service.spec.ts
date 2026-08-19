@@ -26,23 +26,24 @@ describe('KuozhiService', () => {
   it('keeps every confirmed formal course, task, and testpaper id', async () => {
     const service = serviceFor();
     const mappings = await Promise.all(
-      ['G01', 'G03', 'G05', 'G06', 'G07', 'G08'].map(
+      ['G01', 'G03', 'G05', 'G06', 'G07', 'G08', 'G09'].map(
         async (taskCode) =>
           [
             taskCode,
-            (await service.resolveMapping(taskCode, 'TEACHER-001')).mapping,
+            await service.resolveMapping(taskCode, 'TEACHER-001'),
           ] as const,
       ),
     );
     const compact = Object.fromEntries(
-      mappings.map(([taskCode, mapping]) => [
+      mappings.map(([taskCode, resolved]) => [
         taskCode,
         {
-          integrationStatus: mapping.integrationStatus,
-          launchEnabled: mapping.launchEnabled,
-          completionEnabled: mapping.completionEnabled,
-          autoCompleteAssignment: mapping.autoCompleteAssignment,
-          courses: mapping.courses.map((course) => ({
+          mappingVersion: resolved.mappingVersion,
+          integrationStatus: resolved.mapping.integrationStatus,
+          launchEnabled: resolved.mapping.launchEnabled,
+          completionEnabled: resolved.mapping.completionEnabled,
+          autoCompleteAssignment: resolved.mapping.autoCompleteAssignment,
+          courses: resolved.mapping.courses.map((course) => ({
             courseId: course.courseId,
             tasks: course.tasks.map((task) => ({
               courseTaskId: task.courseTaskId,
@@ -56,6 +57,7 @@ describe('KuozhiService', () => {
 
     expect(compact).toEqual({
       G01: {
+        mappingVersion: 6,
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
@@ -68,6 +70,7 @@ describe('KuozhiService', () => {
         ],
       },
       G03: {
+        mappingVersion: 6,
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
@@ -87,18 +90,23 @@ describe('KuozhiService', () => {
         ],
       },
       G05: {
+        mappingVersion: 7,
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
         autoCompleteAssignment: true,
         courses: [
           {
-            courseId: '513',
-            tasks: [{ courseTaskId: '2759', testpaperId: null }],
+            courseId: '657',
+            tasks: [
+              { courseTaskId: '3794', testpaperId: null },
+              { courseTaskId: '3795', testpaperId: '585' },
+            ],
           },
         ],
       },
       G06: {
+        mappingVersion: 6,
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
@@ -129,6 +137,7 @@ describe('KuozhiService', () => {
         ],
       },
       G07: {
+        mappingVersion: 6,
         integrationStatus: 'PARTIAL',
         launchEnabled: true,
         completionEnabled: false,
@@ -144,22 +153,41 @@ describe('KuozhiService', () => {
         ],
       },
       G08: {
+        mappingVersion: 7,
         integrationStatus: 'ACTIVE',
         launchEnabled: true,
         completionEnabled: true,
         autoCompleteAssignment: true,
         courses: [
           {
-            courseId: '630',
+            courseId: '656',
             tasks: [
-              { courseTaskId: '3484', testpaperId: null },
-              { courseTaskId: '3476', testpaperId: null },
-              { courseTaskId: '3478', testpaperId: null },
-              { courseTaskId: '3475', testpaperId: null },
-              { courseTaskId: '3480', testpaperId: null },
-              { courseTaskId: '3479', testpaperId: null },
-              { courseTaskId: '3490', testpaperId: null },
-              { courseTaskId: '3477', testpaperId: '562' },
+              { courseTaskId: '3788', testpaperId: null },
+              { courseTaskId: '3789', testpaperId: null },
+              { courseTaskId: '3791', testpaperId: null },
+              { courseTaskId: '3792', testpaperId: null },
+              { courseTaskId: '3793', testpaperId: null },
+              { courseTaskId: '3790', testpaperId: null },
+            ],
+          },
+        ],
+      },
+      G09: {
+        mappingVersion: 8,
+        integrationStatus: 'ACTIVE',
+        launchEnabled: true,
+        completionEnabled: true,
+        autoCompleteAssignment: true,
+        courses: [
+          {
+            courseId: '658',
+            tasks: [
+              { courseTaskId: '3826', testpaperId: null },
+              { courseTaskId: '3829', testpaperId: '589' },
+              { courseTaskId: '3831', testpaperId: null },
+              { courseTaskId: '3832', testpaperId: '590' },
+              { courseTaskId: '3836', testpaperId: null },
+              { courseTaskId: '3834', testpaperId: '591' },
             ],
           },
         ],
@@ -207,6 +235,16 @@ describe('KuozhiService', () => {
       integrationStatus: 'ACTIVE',
       mappingVersion: 6,
       courses: [{ courseId: '407', embedMode: 'IFRAME' }],
+    });
+  });
+
+  it('opens G09 course 658 as an embedded Kuozhi course', async () => {
+    const response = await serviceFor().createLaunch('G09', 'TEACHER-001');
+
+    expect(response).toMatchObject({
+      integrationStatus: 'ACTIVE',
+      mappingVersion: 8,
+      courses: [{ courseId: '658', embedMode: 'IFRAME' }],
     });
   });
 });

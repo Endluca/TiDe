@@ -44,7 +44,7 @@ const GUIDE_LIBRARY_COPY = Object.freeze({
   },
   HELP_ROUTES: {
     title: { en: "Get the right help", zh: "选择合适的帮助" },
-    description: { en: "Choose between approved AI answers and an operations ticket.", zh: "区分 AI 知识库问答与提交运营工单。" },
+    description: { en: "Choose between approved AI answers and a Support ticket.", zh: "区分 AI 知识库问答与提交运营工单。" },
   },
   PERSONALIZED_TASK_FIRST: {
     title: { en: "Personalized improvement tasks", zh: "个性化改善任务" },

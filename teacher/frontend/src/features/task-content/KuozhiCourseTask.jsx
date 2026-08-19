@@ -49,6 +49,8 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
   const [progressError, setProgressError] = useState('');
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [visitedCourseIds, setVisitedCourseIds] = useState(() => new Set());
+  const taskCompleted =
+    task.backendStatus === 'COMPLETED' || task.status === 'completed';
   const c = useCallback((en, zh) => (language === 'zh' ? zh : en), [language]);
 
   const refreshProgress = useCallback(async (signal, currentProgress = progress) => {
@@ -154,7 +156,7 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
         );
       }
 
-      if (active) {
+      if (active && !taskCompleted) {
         await refreshProgress(controller.signal, latestProgress);
       }
     };
@@ -178,7 +180,7 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
 
   useEffect(() => {
     onProgressStateChange?.({
-      canRefresh: (launch?.courses?.length ?? 0) > 0,
+      canRefresh: !taskCompleted && (launch?.courses?.length ?? 0) > 0,
       launchError,
       loading,
       onRefresh: refreshProgress,
@@ -186,7 +188,7 @@ export default function KuozhiCourseTask({ task, onProgressStateChange }) {
       progressError,
       refreshing,
     });
-  }, [launch, launchError, loading, onProgressStateChange, progress, progressError, refreshProgress, refreshing]);
+  }, [launch, launchError, loading, onProgressStateChange, progress, progressError, refreshProgress, refreshing, taskCompleted]);
 
   useEffect(() => () => {
     onProgressStateChange?.(null);

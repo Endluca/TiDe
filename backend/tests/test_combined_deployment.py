@@ -61,6 +61,7 @@ EXPECTED_TEACHER_MIGRATIONS = (
     "0039_g02_policy_document",
     "0040_g02_document_read_status",
     "0041_crm_sso_hybrid",
+    "0042_g09_set_kuozhi_course",
 )
 EXPECTED_FIXED_TASKS = (
     ("G01", "Profile & Credentials Completion", 3),
@@ -164,13 +165,13 @@ def test_combined_deployment_keeps_runtime_roles_and_origins_separate() -> None:
         == "Dockerfile.migrate"
     )
     assert services["teacher-migrate"]["environment"]["TIDE_MIGRATION_TARGET"] == (
-        "${TIDE_TEACHER_MIGRATION_TARGET:-0041_crm_sso_hybrid}"
+        "${TIDE_TEACHER_MIGRATION_TARGET:-0042_g09_set_kuozhi_course}"
     )
     combined_environment_example = (DEPLOY / ".env.example").read_text(
         encoding="utf-8"
     )
     assert (
-        "TIDE_TEACHER_MIGRATION_TARGET=0041_crm_sso_hybrid"
+        "TIDE_TEACHER_MIGRATION_TARGET=0042_g09_set_kuozhi_course"
         in combined_environment_example
     )
     assert (
@@ -250,7 +251,8 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert (
         "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
-        "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041"
+        "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 "
+        "-> public head 63 -> public head 64 -> public head 65 -> teacher 0042"
     ) in preflight
     assert "product_analytics_recorded" in preflight
     assert "0031_g04_independent_sections" in preflight
@@ -261,6 +263,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "0039_g02_policy_document" in preflight
     assert "0040_g02_document_read_status" in preflight
     assert "0041_crm_sso_hybrid" in preflight
+    assert "0042_g09_set_kuozhi_course" in preflight
     assert "2026-08-11-tesol-only-v1" in preflight
     assert "TESOL 真实状态尚未通过。" in preflight
     assert "0038_personalized_environment_photo" in preflight
@@ -280,8 +283,9 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "CREATE TABLE tide.crm_sso_logins" in preflight
     assert "20260811_56_p_fb_negative_copy" in preflight
     assert "20260811_57_g02_document" in preflight
-    assert "20260819_63_dts_direct_privacy" in preflight
+    assert "20260819_65_g09_set_course" in preflight
     assert "public62→public63" in preflight
+    assert "public63→public64→public65→teacher0042" in preflight
     assert "DELETE FROM tide.task_step_definitions" in preflight
     assert (
         '"requiredStepKeys":\\["g02-environment-photo",'
@@ -304,7 +308,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
     assert "20260811_57_g02_document" in probe
-    assert "20260819_63_dts_direct_privacy" in probe
+    assert "20260819_65_g09_set_course" in probe
     assert "guard_dom_lesson_student_privacy_v1" in probe
     assert "tit.dts_source_region" in probe
     assert "tit_dts_ingest_runtime" in probe
@@ -320,9 +324,9 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
         for line in probe[ledger_start:ledger_end].splitlines()
         if line.strip().startswith("'")
     )
-    assert len(ledger_entries) == 36
+    assert len(ledger_entries) == 37
     assert ledger_entries == EXPECTED_TEACHER_MIGRATIONS
-    assert "chain ending at 0041" in probe
+    assert "chain ending at 0042" in probe
     assert "tide.crm_sso_logins" in probe
     assert "tide.user_accounts" in probe
     assert "tide.auth_sessions" in probe
@@ -787,7 +791,8 @@ def _teacher_migrator_fixture(
     cross_chain_gate = (
         "# public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
-        "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041\n"
+        "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 "
+        "-> public head 63 -> public head 64 -> public head 65 -> teacher 0042\n"
         "required_public_56=20260811_56_p_fb_negative_copy\n"
         "required_public_57=20260811_57_g02_document\n"
         "product_analytics_recorded=true\n"
@@ -900,6 +905,8 @@ def _make_preflight_environment(
             "CREATE TABLE tide.crm_sso_logins (id integer);\n"
             "COMMIT;\n"
         ),
+        "backend/database/migrations/"
+        "0042_g09_set_kuozhi_course.up.sql": "BEGIN;\nCOMMIT;\n",
         "backend/Dockerfile": "FROM scratch\n",
         "backend/Dockerfile.migrate": "FROM scratch\n",
         "frontend/Dockerfile": "FROM scratch\n",
@@ -1020,7 +1027,7 @@ def _run_preflight(environment: dict[str, str]) -> subprocess.CompletedProcess[s
     )
 
 
-def test_combined_preflight_rejects_teacher_chain_ending_before_0041(
+def test_combined_preflight_rejects_teacher_chain_ending_before_0042(
     tmp_path: Path,
 ) -> None:
     environment = _make_preflight_environment(tmp_path)
@@ -1033,7 +1040,7 @@ def test_combined_preflight_rejects_teacher_chain_ending_before_0041(
     result = _run_preflight(environment)
 
     assert result.returncode != 0
-    assert "教师端生产迁移器不是以 0041 结尾的 36 条完整有序生产链" in result.stderr
+    assert "教师端生产迁移器不是以 0042 结尾的 37 条完整有序生产链" in result.stderr
 
 
 def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
@@ -1052,7 +1059,7 @@ def test_combined_preflight_rejects_missing_cross_chain_stage_gate(
     assert (
         "public46→teacher0028→public50→teacher0032→public54→teacher0037"
         "→public55→release-public56→teacher0038→release-public57"
-        "→teacher0040→teacher0041"
+        "→teacher0040→teacher0041→public63→public64→public65→teacher0042"
         in result.stderr
     )
 

@@ -1,5 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import type { AppEventService } from '../app-events/app-event.service';
+import type { KuozhiProgressRepository } from '../integrations/kuozhi/kuozhi-progress.repository';
 import type { KuozhiService } from '../integrations/kuozhi/kuozhi.service';
 import type { TaskRepository } from './task.repository';
 import { TaskService } from './task.service';
@@ -139,6 +140,177 @@ describe('TaskService', () => {
       ),
     ).resolves.toMatchObject({ courseId: '520' });
     expect(createLaunch).toHaveBeenCalledWith('G06', 'TEACHER-001');
+  });
+
+  it('reads Kuozhi progress only from the task current mapping version', async () => {
+    const repository = {
+      findTask: jest.fn().mockResolvedValue({
+        taskInstanceId: 'assignment-005',
+        taskCode: 'G05',
+        status: 'IN_PROGRESS',
+        stateVersion: 4,
+      }),
+      findBinding: jest.fn().mockResolvedValue({
+        bindingId: 'binding-001',
+        teacherId: 'TEACHER-001',
+      }),
+    } as unknown as TaskRepository;
+    const resolveMapping = jest.fn().mockResolvedValue({
+      mappingVersion: 7,
+      taskCode: 'G05',
+      dataMode: 'REAL',
+      queryTeacherId: 'TEACHER-001',
+      mapping: {},
+    });
+    const emptyProgress = jest.fn().mockReturnValue({
+      provider: 'KUOZHI',
+      dataMode: 'REAL',
+      integrationStatus: 'ACTIVE',
+      mappingVersion: 7,
+      syncStatus: 'NOT_SYNCED',
+      refreshedAt: null,
+      courses: [],
+      completion: {
+        enabled: true,
+        completed: false,
+        reasonCode: 'NOT_SYNCED',
+      },
+    });
+    const getLatest = jest.fn().mockResolvedValue(null);
+    const service = new TaskService(
+      repository,
+      undefined,
+      { resolveMapping, emptyProgress } as unknown as KuozhiService,
+      { getLatest } as unknown as KuozhiProgressRepository,
+    );
+
+    await expect(
+      service.getKuozhiProgress(
+        { accountId: 'account-001', sessionId: 'session-001' },
+        'assignment-005',
+      ),
+    ).resolves.toMatchObject({
+      mappingVersion: 7,
+      syncStatus: 'NOT_SYNCED',
+      assignment: {
+        status: 'IN_PROGRESS',
+        stateVersion: 4,
+        stateUpdated: false,
+      },
+    });
+    expect(getLatest).toHaveBeenCalledWith(
+      'account-001',
+      'assignment-005',
+      7,
+      false,
+    );
+  });
+
+  it('preserves historical Kuozhi evidence for an already completed task', async () => {
+    const repository = {
+      findTask: jest.fn().mockResolvedValue({
+        taskInstanceId: 'assignment-005',
+        taskCode: 'G05',
+        status: 'COMPLETED',
+        stateVersion: 8,
+      }),
+      findBinding: jest.fn().mockResolvedValue({
+        bindingId: 'binding-001',
+        teacherId: 'TEACHER-001',
+      }),
+    } as unknown as TaskRepository;
+    const historical = {
+      provider: 'KUOZHI',
+      dataMode: 'REAL',
+      integrationStatus: 'ACTIVE',
+      mappingVersion: 6,
+      syncStatus: 'AVAILABLE',
+      refreshedAt: '2026-08-01T00:00:00.000Z',
+      courses: [{ courseId: '513' }],
+      completion: {
+        enabled: true,
+        completed: true,
+        reasonCode: 'COMPLETED',
+      },
+      assignment: {
+        status: 'COMPLETED',
+        stateVersion: 7,
+        stateUpdated: true,
+      },
+    };
+    const resolveMapping = jest.fn().mockResolvedValue({
+      mappingVersion: 7,
+      taskCode: 'G05',
+      dataMode: 'REAL',
+      queryTeacherId: 'TEACHER-001',
+      mapping: {},
+    });
+    const current = {
+      ...historical,
+      mappingVersion: 7,
+      syncStatus: 'AVAILABLE',
+      courses: [{ courseId: '657' }],
+      completion: {
+        enabled: true,
+        completed: false,
+        reasonCode: 'REQUIREMENTS_INCOMPLETE',
+      },
+    };
+    const fetchProgress = jest.fn().mockResolvedValue(current);
+    const getLatest = jest.fn().mockResolvedValue(historical);
+    const persistRefresh = jest.fn().mockResolvedValue({
+      ...current,
+      assignment: {
+        status: 'COMPLETED',
+        stateVersion: 8,
+        stateUpdated: false,
+      },
+    });
+    const service = new TaskService(
+      repository,
+      undefined,
+      { resolveMapping, fetchProgress } as unknown as KuozhiService,
+      { getLatest, persistRefresh } as unknown as KuozhiProgressRepository,
+    );
+
+    const principal = {
+      accountId: 'account-001',
+      sessionId: 'session-001',
+    };
+    await expect(
+      service.getKuozhiProgress(principal, 'assignment-005'),
+    ).resolves.toMatchObject({
+      mappingVersion: 6,
+      courses: [{ courseId: '513' }],
+      assignment: {
+        status: 'COMPLETED',
+        stateVersion: 8,
+        stateUpdated: false,
+      },
+    });
+    await expect(
+      service.refreshKuozhiProgress(
+        principal,
+        'assignment-005',
+        'refresh-key-001',
+        { commandId: 'refresh-command-001', expectedStateVersion: 8 },
+      ),
+    ).resolves.toMatchObject({ mappingVersion: 7 });
+    expect(getLatest).toHaveBeenCalledWith(
+      'account-001',
+      'assignment-005',
+      7,
+      true,
+    );
+    expect(fetchProgress).toHaveBeenCalled();
+    expect(persistRefresh).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: 'account-001',
+        taskInstanceId: 'assignment-005',
+        expectedStateVersion: 8,
+        progress: current,
+      }),
+    );
   });
 
   it('marks a task viewed only through an explicit idempotent command', async () => {

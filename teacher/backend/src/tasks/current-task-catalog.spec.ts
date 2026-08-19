@@ -134,6 +134,9 @@ describe('current task catalog locale fields', () => {
 
   it('keeps G01 external completion limited to TESOL', () => {
     const g01 = currentTaskCatalog.find((task) => task.code === 'G01');
+    const kuozhiRule = g01?.rules.find(
+      (rule) => rule.type === 'KUOZHI_COURSE_COMPLETE',
+    );
     const externalStatusRule = g01?.rules.find(
       (rule) => rule.type === 'G01_EXTERNAL_STATUS',
     );
@@ -144,6 +147,7 @@ describe('current task catalog locale fields', () => {
       completionStandard:
         'TESOL is complete, the Kuozhi assessment reaches 100% progress, the Essay is complete and the completion proof is submitted.',
     });
+    expect(kuozhiRule?.config).toEqual({ mappingVersion: 6 });
     expect(externalStatusRule).toMatchObject({
       version: '2026-08-11-tesol-only-v1',
       teacherFailureCopy: 'TESOL 真实状态尚未通过。',
@@ -151,14 +155,18 @@ describe('current task catalog locale fields', () => {
     expect(JSON.stringify(g01)).not.toMatch(/Self-intro|self_intro/i);
   });
 
-  it('keeps G09 pending until Kuozhi publishes its course mapping', () => {
+  it('publishes G09 as the mapped Kuozhi SET course', () => {
     const g09 = currentTaskCatalog.find((task) => task.code === 'G09');
 
     expect(g09).toMatchObject({
-      contentStatus: 'PENDING',
-      pendingReason: 'KUOZHI_G09_COURSE_MAPPING_PENDING',
+      contentStatus: 'READY',
+      contentVersion: '2026-08-19-set-kuozhi-v1',
       steps: [],
       rules: [],
+      whatToDo:
+        'Complete the three SET videos and their three paired quizzes in Kuozhi.',
+      completionStandard:
+        'All three required videos and all three paired quizzes reach 100% progress in Kuozhi.',
     });
   });
 
@@ -174,6 +182,25 @@ describe('current task catalog locale fields', () => {
         'Complete the three student-type videos and pass each paired assessment in Kuozhi.',
       completionStandard:
         'All three videos reach 100% progress and all three paired assessments are passed in Kuozhi.',
+    });
+  });
+
+  it('keeps G05 and G08 copy aligned with their current Kuozhi mappings', () => {
+    const g05 = currentTaskCatalog.find((task) => task.code === 'G05');
+    const g08 = currentTaskCatalog.find((task) => task.code === 'G08');
+
+    expect(g05).toMatchObject({
+      estimatedMinutes: 10,
+      whatToDo: 'Complete the TTP video and Quiz in Kuozhi.',
+      completionStandard:
+        'The TTP video reaches 100% progress and the Quiz is completed in Kuozhi.',
+    });
+    expect(g08).toMatchObject({
+      estimatedMinutes: 155,
+      whatToDo:
+        'Complete all six Global Communicator Sample Lessons videos in Kuozhi.',
+      completionStandard:
+        'All six required videos reach 100% progress in Kuozhi.',
     });
   });
 

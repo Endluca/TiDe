@@ -34,7 +34,7 @@ server_version="$("${PSQL[@]}" -Atqc "show server_version")"
 deployment_heads_ready="$("${PSQL[@]}" -Atqc "
   select
     (select version_num from public.alembic_version)
-      = '20260819_63_dts_direct_privacy'
+      = '20260819_65_g09_set_course'
     and (
       select array_agg(migration_id order by migration_order)
       from tide.schema_migrations
@@ -74,7 +74,8 @@ deployment_heads_ready="$("${PSQL[@]}" -Atqc "
       '0038_personalized_environment_photo',
       '0039_g02_policy_document',
       '0040_g02_document_read_status',
-      '0041_crm_sso_hybrid'
+      '0041_crm_sso_hybrid',
+      '0042_g09_set_kuozhi_course'
     ]::text[]
 ")"
 
@@ -712,7 +713,7 @@ final_acl_ready="$("${PSQL[@]}" -Atqc "
         and not tgisinternal
     )
 ")"
-assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 63 + Tide canonical 0041"
+assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 65 + Tide canonical 0042"
 assert_equals "${template_count}" "9" "共享 G01-G09 任务模板数异常"
 assert_equals "${score_total}" "30" "G01-G09 分值合计异常"
 assert_equals "${assignment_count}" "9" "Mock 当前固定任务数异常"
@@ -1307,7 +1308,7 @@ BEGIN
   BEGIN
     UPDATE tide.schema_migrations
     SET filename = filename
-    WHERE migration_id = '0041_crm_sso_hybrid';
+    WHERE migration_id = '0042_g09_set_kuozhi_course';
   EXCEPTION WHEN insufficient_privilege THEN
     failed := true;
   END;
@@ -1431,4 +1432,4 @@ $verify$;
 ROLLBACK;
 SQL
 
-echo "PostgreSQL ${server_version}：public 63、Tide 0041、DTS 脏键领取索引、direct 隐私门禁、教师英文文案、最终表级 ACL、国内学生隐私边界、运行时 Trigger、审计/Outbox 和消息回写验证通过。"
+echo "PostgreSQL ${server_version}：public 65、Tide 0042、DTS 脏键领取索引、direct 隐私门禁、G05/G08/G09 阔知课程映射、教师英文文案、最终表级 ACL、国内学生隐私边界、运行时 Trigger、审计/Outbox 和消息回写验证通过。"

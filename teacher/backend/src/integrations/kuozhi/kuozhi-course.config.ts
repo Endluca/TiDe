@@ -39,6 +39,7 @@ const courseSchema = z
   .strict();
 
 const taskMappingFields = {
+  mappingVersion: z.number().int().positive(),
   integrationStatus: z.enum(['ACTIVE', 'PARTIAL', 'MAPPING_ONLY']),
   launchEnabled: z.boolean(),
   completionEnabled: z.boolean(),
@@ -51,14 +52,18 @@ const taskMappingSchema = z.object(taskMappingFields).strict();
 
 const configurationSchema = z
   .object({
-    version: z.literal(6),
+    version: z.literal(8),
     tasks: z.record(z.string().regex(/^G0[1-9]$/u), taskMappingSchema),
   })
   .strict();
 
 export type KuozhiCourseTask = z.infer<typeof courseTaskSchema>;
 export type KuozhiCourse = z.infer<typeof courseSchema>;
-export type KuozhiCourseMapping = z.infer<typeof taskMappingSchema>;
+type KuozhiConfiguredTaskMapping = z.infer<typeof taskMappingSchema>;
+export type KuozhiCourseMapping = Omit<
+  KuozhiConfiguredTaskMapping,
+  'mappingVersion'
+>;
 export type KuozhiCourseConfiguration = z.infer<typeof configurationSchema>;
 
 export async function loadKuozhiCourseConfiguration(

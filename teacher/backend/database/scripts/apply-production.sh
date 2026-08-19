@@ -9,7 +9,7 @@ else
   DATABASE_URL="${DATABASE_URL:-}"
 fi
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0041_crm_sso_hybrid}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0042_g09_set_kuozhi_course}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 COMPANY_TEST_MIGRATION_MODE="${TIDE_COMPANY_TEST_MIGRATION_MODE:-false}"
 
@@ -29,6 +29,7 @@ APPROVED_COMPANY_TEST_TARGETS=(
   0038_personalized_environment_photo
   0040_g02_document_read_status
   0041_crm_sso_hybrid
+  0042_g09_set_kuozhi_course
 )
 
 if [[ "${MIGRATION_TEST_MODE}" != "true" && "${MIGRATION_TEST_MODE}" != "false" ]]; then
@@ -110,7 +111,7 @@ if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" ]]; then
         || "${COMPANY_TEST_DB_SSLMODE}" != "${APPROVED_COMPANY_TEST_SSLMODE}" \
         || "${EXPECTED_DATABASE}" != "${APPROVED_COMPANY_TEST_DB_NAME}" \
         || "${approved_company_test_target}" != "true" ]]; then
-    echo "公司 TEST 增量迁移只允许已批准的 tit_growth_test_v2 / postgres，以及 0037、0038、0040、0041 切换点。" >&2
+    echo "公司 TEST 增量迁移只允许已批准的 tit_growth_test_v2 / postgres，以及 0037、0038、0040、0041、0042 切换点。" >&2
     exit 1
   fi
   if [[ -z "${PGPASSWORD:-}" ]]; then
@@ -240,6 +241,7 @@ PRODUCTION_MIGRATIONS=(
   0039_g02_policy_document
   0040_g02_document_read_status
   0041_crm_sso_hybrid
+  0042_g09_set_kuozhi_course
 )
 
 target_found=false
@@ -273,8 +275,9 @@ if [[ "${TARGET_MIGRATION}" != "0028_retire_task_business_change_view" \
       && "${TARGET_MIGRATION}" != "0038_personalized_environment_photo" \
       && "${TARGET_MIGRATION}" != "0040_g02_document_read_status" \
       && "${TARGET_MIGRATION}" != "0041_crm_sso_hybrid" \
+      && "${TARGET_MIGRATION}" != "0042_g09_set_kuozhi_course" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037、0038、0040 或最终版本 0041；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
+  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037、0038、0040、0041 或最终版本 0042；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64 -> public head 65 -> teacher 0042。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1
 fi
 
@@ -778,6 +781,38 @@ elif [[ "${TARGET_MIGRATION}" == "0040_g02_document_read_status" \
         && "${current_tide_head}" != "0040_g02_document_read_status" \
         && "${current_tide_head}" != "0041_crm_sso_hybrid" ]]; then
     echo "teacher 0040/0041 只能从 teacher 0038、0039 或 0040 的连续状态继续；必须先完成 public head 56 -> teacher 0038，再执行 public head 57 -> teacher 0040 -> teacher 0041。本次未写入任何 Tide 迁移。" >&2
+    exit 1
+  fi
+elif [[ "${TARGET_MIGRATION}" == "0042_g09_set_kuozhi_course" ]]; then
+  g09_public_ready="$("${PSQL[@]}" -Atqc "
+    select
+      to_regclass('public.alembic_version') is not null
+      and (
+        select count(*) = 1
+          and min(version_num) = '20260819_65_g09_set_course'
+        from public.alembic_version
+      )
+      and (
+        select count(*)
+        from public.task_templates
+        where row_id = 'G10:v1'
+          and template_id = 'G09'
+          and status = 'PUBLISHED'
+          and payload->>'how_summary' =
+            'Complete the three SET videos and their three paired quizzes in Kuozhi.'
+          and payload->>'completion_standard' =
+            'All three required videos and all three paired quizzes reach 100% progress in Kuozhi.'
+          and payload->>'content_status' = 'READY'
+          and (payload->>'score_value')::integer = 5
+      ) = 1
+  ")"
+  if [[ "${current_tide_head}" != "0041_crm_sso_hybrid" \
+        && "${current_tide_head}" != "0042_g09_set_kuozhi_course" ]]; then
+    echo "teacher 0042 只能从 teacher 0041 连续执行；当前 Tide head 为 ${current_tide_head:-空}。本次未写入任何迁移。" >&2
+    exit 1
+  fi
+  if [[ "${g09_public_ready}" != "t" ]]; then
+    echo "teacher 0042 要求 public head 65 已发布稳定 G10:v1 / G09 的课程 658 文案。本次未写入任何 Tide 迁移。" >&2
     exit 1
   fi
 fi

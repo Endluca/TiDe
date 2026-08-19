@@ -38,6 +38,10 @@ interface ReceiptRow extends QueryResultRow {
   responseBody: KuozhiProgressResponse;
 }
 
+interface LatestProgressRow extends QueryResultRow {
+  responseBody: KuozhiProgressResponse;
+}
+
 export interface PersistKuozhiProgressInput {
   accountId: string;
   taskInstanceId: string;
@@ -56,12 +60,10 @@ export class KuozhiProgressRepository {
   async getLatest(
     accountId: string,
     taskInstanceId: string,
+    mappingVersion: number,
+    allowHistoricalMapping = false,
   ): Promise<KuozhiProgressResponse | null> {
-    const result = await this.database.queryTide<
-      {
-        responseBody: KuozhiProgressResponse;
-      } & QueryResultRow
-    >(
+    const result = await this.database.queryTide<LatestProgressRow>(
       `
         SELECT sync.response_body AS "responseBody"
         FROM tide.kuozhi_course_syncs sync
@@ -72,12 +74,33 @@ export class KuozhiProgressRepository {
          AND binding.account_id = $1
          AND binding.status = 'ACTIVE'
         WHERE sync.task_assignment_id = $2
+          AND sync.mapping_version = $3
+        ORDER BY sync.created_at DESC, sync.id DESC
+        LIMIT 1
+      `,
+      [accountId, taskInstanceId, mappingVersion],
+    );
+    const current = result.rows[0]?.responseBody;
+    if (current || !allowHistoricalMapping) return current ?? null;
+
+    const historical = await this.database.queryTide<LatestProgressRow>(
+      `
+        SELECT sync.response_body AS "responseBody"
+        FROM tide.kuozhi_course_syncs sync
+        JOIN public.task_assignments assignment
+          ON assignment.assignment_id = sync.task_assignment_id
+        JOIN tide.teacher_bindings binding
+          ON binding.teacher_id = assignment.teacher_id
+         AND binding.account_id = $1
+         AND binding.status = 'ACTIVE'
+        WHERE sync.task_assignment_id = $2
+          AND sync.completion_decision = true
         ORDER BY sync.created_at DESC, sync.id DESC
         LIMIT 1
       `,
       [accountId, taskInstanceId],
     );
-    return result.rows[0]?.responseBody ?? null;
+    return historical.rows[0]?.responseBody ?? null;
   }
 
   persistRefresh(

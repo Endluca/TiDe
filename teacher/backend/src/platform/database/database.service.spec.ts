@@ -242,6 +242,9 @@ describe('DatabaseService', () => {
       expect.stringContaining('0041_crm_sso_hybrid'),
     );
     expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('0042_g09_set_kuozhi_course'),
+    );
+    expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0032_first_login_onboarding'),
     );
     expect(query).toHaveBeenCalledWith(
@@ -251,7 +254,7 @@ describe('DatabaseService', () => {
       expect.stringContaining('FROM public.alembic_version'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('20260819_63_dts_direct_privacy'),
+      expect.stringContaining('20260819_65_g09_set_course'),
     );
     expect(productionQuery).toContain(
       'public.dom_student_json_is_safe_v1(jsonb)',

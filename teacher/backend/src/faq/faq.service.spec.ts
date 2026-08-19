@@ -112,7 +112,11 @@ describe('FaqService', () => {
         'browser-session-001',
       ),
     ).resolves.toMatchObject({
-      answer: { faqHit: false, reasonCode: 'FAQ_NOT_FOUND' },
+      answer: {
+        body: 'I could not find a reliable answer in the current FAQ. Your question has been recorded for review. Submit a support ticket if you still need help.',
+        faqHit: false,
+        reasonCode: 'FAQ_NOT_FOUND',
+      },
     });
     expect(fixture.execute).toHaveBeenCalledWith(
       expect.objectContaining({ capability: 'FAQ_INTENT_MATCH' }),

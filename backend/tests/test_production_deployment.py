@@ -295,8 +295,9 @@ def test_readme_runs_preflight_before_migration() -> None:
         "--profile migration run --rm migrate"
     )
     assert preflight < migration
-    assert "20260819_63_dts_direct_privacy" in readme
+    assert "20260819_65_g09_set_course" in readme
     assert "0041_crm_sso_hybrid" in readme
+    assert "0042_g09_set_kuozhi_course" in readme
     assert "20260811_51_g01_tesol_only" in readme
     assert "0033_g01_tesol_only" in readme
     assert "20260810_50_g04_sections" in readme
@@ -307,5 +308,7 @@ def test_readme_runs_preflight_before_migration() -> None:
     assert (
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
         "teacher 0037 → public 55 → release public 56 → teacher 0038 → "
-        "release public 57 → teacher 0040 → teacher 0041"
+        "release public 57 → teacher 0040 → teacher 0041 → public 59 → "
+        "public 60 → public 61 → public 62 → public 63 → public 64 → "
+        "public 65 → teacher 0042"
     ) in readme

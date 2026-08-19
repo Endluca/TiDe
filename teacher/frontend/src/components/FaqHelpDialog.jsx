@@ -103,7 +103,7 @@ function TicketEscalation({ language, onEscalate }) {
         <strong>{copy(language, "Need more help?", "需要进一步帮助？")}</strong>
         <p>{copy(
           language,
-          "Submit a ticket and the operations team will follow up.",
+          "Submit a ticket and the Support team will follow up.",
           "你可以提交工单，由运营同事进一步处理。",
         )}</p>
         <button type="button" onClick={onEscalate}>
@@ -329,7 +329,7 @@ export default function FaqHelpDialog({
               {mode === "CHOICE"
                 ? copy(language, "How can we help?", "你需要哪种帮助？")
                 : mode === "TICKET"
-                  ? copy(language, "Contact operations", "联系运营")
+                  ? copy(language, "Contact Support", "联系运营")
                   : copy(language, "TIDE FAQ assistant", "TIDE FAQ 助手")}
             </h2>
           </span>

@@ -50,6 +50,9 @@ test('Kuozhi launch and progress stay behind the authenticated backend', async (
   assert.match(component, /onProgressStateChange/);
   assert.match(component, /launchError,/);
   assert.match(component, /canRefresh:/);
+  assert.match(component, /taskCompleted/);
+  assert.match(component, /active && !taskCompleted/);
+  assert.match(component, /canRefresh: !taskCompleted/);
   assert.match(component, /setLaunch\(launchResponse\)[\s\S]*getKuozhiProgress/);
   assert.match(component, /progressError=\{launchError \|\| progressError\}/);
   assert.match(component, /kuozhi-progress-card--mobile/);
@@ -70,6 +73,8 @@ test('Kuozhi launch and progress stay behind the authenticated backend', async (
   assert.match(app, /raw\.method === "external_course" \? "kuozhi-task-screen"/);
   assert.match(app, /canRefresh=\{kuozhiProgressState\?\.canRefresh\}/);
   assert.match(app, /kuozhiProgressState\?\.launchError \|\| kuozhiProgressState\?\.progressError/);
+  assert.match(app, /m03-global-communicator-training\.png/);
+  assert.equal(app.includes('m03-cocos-course-training.png'), false);
   assert.equal(app.includes('Help Center'), false);
   assert.equal(component.includes('/complete'), false);
 });

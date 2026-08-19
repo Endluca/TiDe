@@ -665,8 +665,127 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                     """
                 )
             )
+        _run_alembic(
+            backend_dir,
+            database_url,
+            "upgrade",
+            "20260819_63_dts_direct_privacy",
+        )
+        with engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    """
+                    SELECT version_num
+                    FROM public.alembic_version
+                    """
+                )
+            ).scalar_one() == "20260819_63_dts_direct_privacy"
+            assert connection.execute(
+                text(
+                    """
+                    SELECT
+                        row_id,
+                        payload->>'ops_name_zh',
+                        payload->>'title',
+                        payload->>'why_template',
+                        payload->>'how_summary',
+                        payload->>'completion_standard',
+                        payload->>'benefit'
+                    FROM public.task_templates
+                    WHERE row_id IN ('G06:v1', 'G09:v1', 'G10:v1')
+                    ORDER BY row_id
+                    """
+                )
+            ).all() == [
+                (
+                    "G06:v1",
+                    "TTP 入门",
+                    "TTP Orientation",
+                    "Understand TTP and its key business scenarios.",
+                    "Watch the in-platform TTP video and confirm every item "
+                    "in the learning checklist.",
+                    "The TTP video is watched in full and every published "
+                    "checklist item is confirmed.",
+                    "You understand the key TTP workflow and commitments.",
+                ),
+                (
+                    "G09:v1",
+                    "Global Communicator 培训",
+                    "Global Communicator Training",
+                    "Learn the core Global Communicator teaching flow.",
+                    "Complete the configured in-platform videos and quiz.",
+                    "All configured videos and quiz requirements pass.",
+                    "You can now confidently prepare for a Global "
+                    "Communicator lesson.",
+                ),
+                (
+                    "G10:v1",
+                    "SET 教学基础",
+                    "SET Teaching Fundamentals",
+                    "Learn the fundamentals of SET teaching.",
+                    "Watch the in-platform Mock video slot and complete the "
+                    "five-question Mock check.",
+                    "The Mock video is watched in full and the five-question "
+                    "check reaches 80%.",
+                    "You understand the SET teaching foundation.",
+                ),
+            ]
+
         _run_alembic(backend_dir, database_url, "upgrade", "head")
         with engine.begin() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM public.alembic_version")
+            ).scalar_one() == "20260819_65_g09_set_course"
+            assert connection.execute(
+                text(
+                    """
+                    SELECT
+                        row_id,
+                        payload->>'ops_name_zh',
+                        payload->>'title',
+                        payload->>'why_template',
+                        payload->>'how_summary',
+                        payload->>'completion_standard',
+                        payload->>'benefit'
+                    FROM public.task_templates
+                    WHERE row_id IN ('G06:v1', 'G09:v1', 'G10:v1')
+                    ORDER BY row_id
+                    """
+                )
+            ).all() == [
+                (
+                    "G06:v1",
+                    "TTP 入门",
+                    "TTP Orientation",
+                    "Understand TTP and its key business scenarios.",
+                    "Complete the TTP video and Quiz in Kuozhi.",
+                    "The TTP video reaches 100% progress and the Quiz is "
+                    "completed in Kuozhi.",
+                    "You understand the key TTP workflow and commitments.",
+                ),
+                (
+                    "G09:v1",
+                    "Global Communicator 培训",
+                    "Global Communicator Training",
+                    "Learn the core Global Communicator teaching flow.",
+                    "Complete all six Global Communicator Sample Lessons "
+                    "videos in Kuozhi.",
+                    "All six required videos reach 100% progress in Kuozhi.",
+                    "You can now confidently prepare for a Global "
+                    "Communicator lesson.",
+                ),
+                (
+                    "G10:v1",
+                    "SET 教学基础",
+                    "SET Teaching Fundamentals",
+                    "Learn the fundamentals of SET teaching.",
+                    "Complete the three SET videos and their three paired "
+                    "quizzes in Kuozhi.",
+                    "All three required videos and all three paired quizzes "
+                    "reach 100% progress in Kuozhi.",
+                    "You understand the SET teaching foundation.",
+                ),
+            ]
             assert connection.execute(
                 text(
                     """

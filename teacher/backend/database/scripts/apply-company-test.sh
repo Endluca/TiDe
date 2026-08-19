@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260819_63_dts_direct_privacy"
+EXPECTED_PUBLIC_HEAD="20260819_65_g09_set_course"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -201,10 +201,11 @@ CANONICAL_TIDE_MIGRATIONS=(
   0039_g02_policy_document
   0040_g02_document_read_status
   0041_crm_sso_hybrid
+  0042_g09_set_kuozhi_course
 )
 
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('tide.schema_migrations') is not null")" != "t" ]]; then
-  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
+  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64 -> public head 65 -> teacher 0042 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
   exit 1
 fi
 
@@ -216,10 +217,10 @@ actual_tide_migration_ids="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 tide_ledger_shape_ready="$("${ADMIN_PSQL[@]}" -Atqc "
   select
-    count(*) = 36
+    count(*) = 37
     and min(migration_order) = 1
-    and max(migration_order) = 36
-    and count(distinct migration_order) = 36
+    and max(migration_order) = 37
+    and count(distinct migration_order) = 37
     and bool_and(filename = migration_id || '.up.sql')
   from tide.schema_migrations
 ")"
@@ -231,7 +232,7 @@ if [[ "${actual_tide_migration_ids}" != "${expected_tide_migration_ids}" \
       '未记账'
     )
   ")"
-  echo "公司测试库 Tide 账本不是精确 canonical 0041（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
+  echo "公司测试库 Tide 账本不是精确 canonical 0042（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
   exit 1
 fi
 
@@ -448,6 +449,32 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atq <<'SQL'
           'Your teaching environment and courseware are ready for your first lesson.'
         and template.payload->>'content_status' = 'READY'
         and (template.payload->>'score_value')::integer = 3
+    )
+    and exists (
+      select 1
+      from tide.task_execution_versions execution
+      join public.task_templates template
+        on template.row_id = execution.shared_template_row_id
+      where execution.shared_template_row_id = 'G10:v1'
+        and execution.task_code = 'G09'
+        and execution.status = 'ACTIVE'
+        and execution.execution_contract_version = 'task-contract-v3'
+        and execution.config =
+          '{"estimatedMinutes":25,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-19-set-kuozhi-v1","pendingReason":null}'::jsonb
+        and template.template_id = 'G09'
+        and template.status = 'PUBLISHED'
+        and template.payload->>'how_summary' =
+          'Complete the three SET videos and their three paired quizzes in Kuozhi.'
+        and template.payload->>'completion_standard' =
+          'All three required videos and all three paired quizzes reach 100% progress in Kuozhi.'
+        and not exists (
+          select 1 from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+        )
+        and not exists (
+          select 1 from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+        )
     )
     and exists (
       select 1
@@ -683,7 +710,7 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atq <<'SQL'
 SQL
 )"
 if [[ "${canonical_schema_ready}" != "t" ]]; then
-  echo "公司测试库虽已记账到 canonical 0041，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
+  echo "公司测试库虽已记账到 canonical 0042，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
   exit 1
 fi
 
@@ -1214,4 +1241,4 @@ if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|
   exit 1
 fi
 
-echo "公司测试库初始化完成：public 63 与 canonical Tide 0041 账本/checksum/实存结构只读门禁、DTS 脏键领取索引、direct 隐私门禁、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、教师英文文案、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、国内学生隐私边界与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public 65 与 canonical Tide 0042 账本/checksum/实存结构只读门禁、DTS 脏键领取索引、direct 隐私门禁、G05/G08/G09 阔知课程映射、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、教师英文文案、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、国内学生隐私边界与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"

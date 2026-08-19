@@ -323,7 +323,7 @@ const stageMapVisuals = [
     unlocked: publicAsset("/assets/growth-maps/module-03-capability-advance.png"),
     locked: publicAsset("/assets/growth-maps/module-03-capability-advance-locked.png"),
     checkpoints: [
-      { id: "cocos-training", image: publicAsset("/assets/checkpoints/m03-cocos-course-training.png"), x: 35, y: 31 },
+      { id: "cocos-training", image: publicAsset("/assets/checkpoints/m03-global-communicator-training.png"), x: 35, y: 31 },
       { id: "set-fundamentals", image: publicAsset("/assets/checkpoints/m03-set-teaching-fundamentals.png"), x: 72, y: 31 },
     ],
   },

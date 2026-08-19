@@ -78,6 +78,13 @@ PUBLIC_54 = "20260811_54_g04_remove_device_check"
 PUBLIC_55 = "20260811_55_source_wide_v12"
 PUBLIC_56 = "20260811_56_p_fb_negative_copy"
 PUBLIC_57 = "20260811_57_g02_document"
+PUBLIC_59 = "20260812_59_simple_acl"
+PUBLIC_60 = "20260813_60_dom_privacy"
+PUBLIC_61 = "20260814_61_teacher_copy"
+PUBLIC_62 = "20260818_62_dts_claim_idx"
+PUBLIC_63 = "20260819_63_dts_direct_privacy"
+PUBLIC_64 = "20260819_64_g05_g08_courses"
+PUBLIC_65 = "20260819_65_g09_set_course"
 TEACHER_32 = "0032_first_login_onboarding"
 TEACHER_33 = "0033_g01_tesol_only"
 TEACHER_37 = "0037_g04_remove_device_check"
@@ -85,6 +92,7 @@ TEACHER_38 = "0038_personalized_environment_photo"
 TEACHER_39 = "0039_g02_policy_document"
 TEACHER_40 = "0040_g02_document_read_status"
 TEACHER_41 = "0041_crm_sso_hybrid"
+TEACHER_42 = "0042_g09_set_kuozhi_course"
 
 PUBLIC_REVISION_CHAIN = (
     (
@@ -97,6 +105,12 @@ PUBLIC_REVISION_CHAIN = (
     ("20260811_55_source_wide_contract_v12.py", PUBLIC_55, PUBLIC_54),
     ("20260811_56_p_fb_negative_copy.py", PUBLIC_56, PUBLIC_55),
     ("20260811_57_g02_policy_document.py", PUBLIC_57, PUBLIC_56),
+    ("20260813_60_dom_student_privacy.py", PUBLIC_60, PUBLIC_59),
+    ("20260814_61_teacher_copy.py", PUBLIC_61, PUBLIC_60),
+    ("20260818_62_dts_claim_idx.py", PUBLIC_62, PUBLIC_61),
+    ("20260819_63_dts_direct_privacy.py", PUBLIC_63, PUBLIC_62),
+    ("20260819_64_g05_g08_courses.py", PUBLIC_64, PUBLIC_63),
+    ("20260819_65_g09_set_course.py", PUBLIC_65, PUBLIC_64),
 )
 
 
@@ -113,7 +127,7 @@ class UpgradeAction:
     expected_state: DatabaseState
 
 
-FINAL_STATE = DatabaseState(PUBLIC_57, TEACHER_41)
+FINAL_STATE = DatabaseState(PUBLIC_65, TEACHER_42)
 TRANSITIONS: Mapping[DatabaseState, UpgradeAction] = {
     DatabaseState(PUBLIC_50, TEACHER_32): UpgradeAction(
         "public", PUBLIC_54, DatabaseState(PUBLIC_54, TEACHER_32)
@@ -146,7 +160,31 @@ TRANSITIONS: Mapping[DatabaseState, UpgradeAction] = {
         "teacher", TEACHER_40, DatabaseState(PUBLIC_57, TEACHER_40)
     ),
     DatabaseState(PUBLIC_57, TEACHER_40): UpgradeAction(
-        "teacher", TEACHER_41, FINAL_STATE
+        "teacher", TEACHER_41, DatabaseState(PUBLIC_57, TEACHER_41)
+    ),
+    DatabaseState(PUBLIC_57, TEACHER_41): UpgradeAction(
+        "public", PUBLIC_59, DatabaseState(PUBLIC_59, TEACHER_41)
+    ),
+    DatabaseState(PUBLIC_59, TEACHER_41): UpgradeAction(
+        "public", PUBLIC_60, DatabaseState(PUBLIC_60, TEACHER_41)
+    ),
+    DatabaseState(PUBLIC_60, TEACHER_41): UpgradeAction(
+        "public", PUBLIC_61, DatabaseState(PUBLIC_61, TEACHER_41)
+    ),
+    DatabaseState(PUBLIC_61, TEACHER_41): UpgradeAction(
+        "public", PUBLIC_62, DatabaseState(PUBLIC_62, TEACHER_41)
+    ),
+    DatabaseState(PUBLIC_62, TEACHER_41): UpgradeAction(
+        "public", PUBLIC_63, DatabaseState(PUBLIC_63, TEACHER_41)
+    ),
+    DatabaseState(PUBLIC_63, TEACHER_41): UpgradeAction(
+        "public", PUBLIC_64, DatabaseState(PUBLIC_64, TEACHER_41)
+    ),
+    DatabaseState(PUBLIC_64, TEACHER_41): UpgradeAction(
+        "public", PUBLIC_65, DatabaseState(PUBLIC_65, TEACHER_41)
+    ),
+    DatabaseState(PUBLIC_65, TEACHER_41): UpgradeAction(
+        "teacher", TEACHER_42, FINAL_STATE
     ),
 }
 
@@ -263,8 +301,8 @@ def _canonical_teacher_ledger() -> tuple[tuple[int, str, str, str], ...]:
         for line in match.group("body").splitlines()
         if re.fullmatch(r"[0-9]{4}_[a-z0-9_]+", line.strip())
     )
-    if not migration_ids or migration_ids[-1] != TEACHER_41:
-        raise _fail("canonical teacher 迁移清单未精确结束于 0041。")
+    if not migration_ids or migration_ids[-1] != TEACHER_42:
+        raise _fail("canonical teacher 迁移清单未精确结束于 0042。")
 
     ledger: list[tuple[int, str, str, str]] = []
     for order, migration_id in enumerate(migration_ids, start=1):
@@ -608,7 +646,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"阶段读回通过：{_format_state(observed)}")
 
     print(
-        "公司 TEST 分阶段迁移完成并读回到 public 57 / teacher 0041。"
+        "公司 TEST 分阶段迁移完成并读回到 public 65 / teacher 0042。"
         "尚未执行 apply-company-test.sh 初始化，也未发布或重启应用。"
     )
     return 0

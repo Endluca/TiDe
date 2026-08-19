@@ -33,16 +33,17 @@ export class KuozhiService {
     teacherId: string,
   ): Promise<KuozhiResolvedMapping> {
     const configuration = await this.configuration();
-    const mapping = configuration.tasks[taskCode];
-    if (!mapping) {
+    const configuredMapping = configuration.tasks[taskCode];
+    if (!configuredMapping) {
       throw new NotFoundException({
         code: 'KUOZHI_COURSE_NOT_CONFIGURED',
         message: '当前任务尚未配置阔知课程',
         retryable: false,
       });
     }
+    const { mappingVersion, ...mapping } = configuredMapping;
     return {
-      mappingVersion: configuration.version,
+      mappingVersion,
       taskCode,
       dataMode: 'REAL',
       queryTeacherId: teacherId,

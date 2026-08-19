@@ -137,7 +137,12 @@ export class TaskService {
       taskInstanceId,
     );
     const latest = this.kuozhiProgress
-      ? await this.kuozhiProgress.getLatest(principal.accountId, taskInstanceId)
+      ? await this.kuozhiProgress.getLatest(
+          principal.accountId,
+          taskInstanceId,
+          resolved.mappingVersion,
+          task.status === 'COMPLETED',
+        )
       : null;
     return {
       ...(latest ?? this.kuozhi!.emptyProgress(resolved)),
