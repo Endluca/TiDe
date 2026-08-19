@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine, insert, select
+from sqlalchemy import create_engine, event as sqlalchemy_event, insert, select
 
 from app.db_models import (
     DtsSourceRowRecord,
@@ -833,6 +833,105 @@ def test_direct_batch_applies_one_teacher_delta_per_message() -> None:
     assert teacher["feedback_negative_cnt"] == 1
     assert teacher["feedback_praise_cnt"] == 1
     assert projector.drain_counts()["teacher_delta_updates"] == 2
+
+
+def test_direct_batch_prefilters_missing_course_targets_with_one_query() -> None:
+    sequential_engine = create_engine("sqlite+pysqlite:///:memory:")
+    batch_engine = create_engine("sqlite+pysqlite:///:memory:")
+    LessonSourceWideRecord.__table__.create(sequential_engine)
+    LessonSourceWideRecord.__table__.create(batch_engine)
+    events = tuple(
+        _child_event(
+            table_name="dom_qa_task_close_camera_record",
+            offset=offset,
+            after={"id": offset, "appoint_id": 999},
+        )
+        for offset in range(100, 200)
+    )
+
+    sequential_statements: list[str] = []
+    batch_statements: list[str] = []
+    sqlalchemy_event.listen(
+        sequential_engine,
+        "before_cursor_execute",
+        lambda _conn, _cursor, statement, *_args: sequential_statements.append(
+            statement
+        ),
+    )
+    sqlalchemy_event.listen(
+        batch_engine,
+        "before_cursor_execute",
+        lambda _conn, _cursor, statement, *_args: batch_statements.append(
+            statement
+        ),
+    )
+
+    sequential = _direct_projector()
+    with sequential_engine.begin() as connection:
+        for event in events:
+            sequential.apply(connection, event)
+    batched = _direct_projector()
+    with batch_engine.begin() as connection:
+        batched.apply_batch(connection, events)
+
+    assert len(sequential_statements) == 100
+    assert len(batch_statements) == 1
+    counts = batched.drain_counts()
+    assert counts["events"] == 100
+    assert counts["ignored"] == 100
+    assert counts["batch_prefiltered"] == 100
+    assert counts["batch_target_queries"] == 1
+
+
+def test_direct_batch_keeps_same_batch_teacher_course_dependency_order() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    teacher_table = TeacherSourceWideRecord.__table__
+    lesson_table = LessonSourceWideRecord.__table__
+    teacher_table.create(engine)
+    lesson_table.create(engine)
+    projector = _direct_projector()
+    teacher = {
+        "id": 123,
+        "status_on_time": "2026-08-19 00:00:00",
+        "course": "h5_tc",
+    }
+    appoint = {
+        "id": 99,
+        "t_id": 123,
+        "student_token": "dom:v1:" + "d" * 64,
+        "date": "2026-08-19",
+        "time": "18:00:00",
+        "status": "end",
+        "use_point": "buy",
+    }
+
+    with engine.begin() as connection:
+        projector.apply_batch(
+            connection,
+            (
+                _child_event(
+                    table_name="dom_teacher",
+                    offset=200,
+                    after=teacher,
+                ),
+                _child_event(
+                    table_name="dom_appoint",
+                    offset=201,
+                    after=appoint,
+                ),
+                _child_event(
+                    table_name="dom_qa_task_close_camera_record",
+                    offset=202,
+                    after={"id": 1, "appoint_id": 99},
+                ),
+            ),
+        )
+        lesson = connection.execute(select(lesson_table)).mappings().one()
+        stored_teacher = connection.execute(select(teacher_table)).mappings().one()
+
+    assert lesson["未开摄像头"] is True
+    assert stored_teacher["total_booked_cnt"] == 1
+    assert projector.drain_counts()["batch_prefiltered"] == 0
 
 
 class _RecordingProjector:

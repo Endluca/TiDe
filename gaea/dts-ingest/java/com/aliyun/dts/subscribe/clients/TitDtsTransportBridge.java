@@ -42,7 +42,7 @@ public final class TitDtsTransportBridge {
     private static final String ACTION_ADVANCE = "ADVANCE";
     private static final String ACTION_REPLAY = "REPLAY";
     private static final int MAX_COMMAND_BYTES = 1024 * 1024;
-    private static final int MAX_BATCH_MESSAGES = 128;
+    private static final int MAX_BATCH_MESSAGES = 512;
     private static final int MAX_BATCH_PAYLOAD_BYTES = 8 * 1024 * 1024;
     private static final long BATCH_LINGER_MS = 50L;
     private static final int AVRO_SINGLE_OBJECT_HEADER_BYTES = 10;

@@ -622,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
             "queued or direct mode."
         )
     )
-    parser.add_argument("--max-messages", type=int, default=100)
+    parser.add_argument("--max-messages", type=int, default=500)
     parser.add_argument("--max-projection-keys", type=int, default=1_000)
     parser.add_argument(
         "--projection-time-budget-seconds",

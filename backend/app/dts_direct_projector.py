@@ -77,6 +77,26 @@ _DISTINCT_STUDENT_FIELDS = (
     "feedback_favorite_cnt",
     "feedback_block_cnt",
 )
+_COURSE_TARGET_SUFFIXES = frozenset(
+    {
+        "complaint",
+        "grading_label_log",
+        "qa_task_close_camera_record",
+        "qa_task_fake_early_leave_record",
+        "teacher_absent_reason",
+        "teacher_penalty",
+        "user_teacher_grading",
+    }
+)
+_TEACHER_TARGET_SUFFIXES = frozenset(
+    {
+        "teacher_certification",
+        "teacher_class_schedule",
+        "teacher_favorite",
+        "teacher_blacklist",
+    }
+)
+_TARGET_PREFETCH_CHUNK_SIZE = 1_000
 
 
 @dataclass
@@ -89,6 +109,8 @@ class _DirectCounts:
     teacher_deletes: int = 0
     teacher_delta_updates: int = 0
     slot_activations: int = 0
+    batch_prefiltered: int = 0
+    batch_target_queries: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -100,7 +122,15 @@ class _DirectCounts:
             "teacher_deletes": self.teacher_deletes,
             "teacher_delta_updates": self.teacher_delta_updates,
             "slot_activations": self.slot_activations,
+            "batch_prefiltered": self.batch_prefiltered,
+            "batch_target_queries": self.batch_target_queries,
         }
+
+
+@dataclass
+class _DirectBatchTargets:
+    teacher_ids: set[str]
+    lesson_teachers: dict[str, str | None]
 
 
 def _string(value: Any) -> str | None:
@@ -302,6 +332,7 @@ class DtsDirectWideProjector:
     ) -> None:
         self.settings = settings or DtsWideProjectionSettings.from_env(environ)
         self._counts = _DirectCounts()
+        self._active_batch_targets: _DirectBatchTargets | None = None
 
     def drain_counts(self) -> dict[str, int]:
         result = self._counts.as_dict()
@@ -310,6 +341,9 @@ class DtsDirectWideProjector:
 
     def apply(self, connection: Any, event: DtsChangeEvent) -> None:
         event = direct_projection_event(event)
+        self._apply_normalized(connection, event)
+
+    def _apply_normalized(self, connection: Any, event: DtsChangeEvent) -> None:
         self._counts.events += 1
         suffix = source_table_suffix(event)
         if suffix is None:
@@ -319,17 +353,277 @@ class DtsDirectWideProjector:
         if handler is None:
             self._counts.ignored += 1
             return
+        targets = self._active_batch_targets
+        if targets is not None and self._missing_batch_target(
+            event,
+            suffix=suffix,
+            targets=targets,
+        ):
+            self._counts.ignored += 1
+            self._counts.batch_prefiltered += 1
+            return
+        before_teacher_upserts = self._counts.teacher_upserts
+        before_teacher_deletes = self._counts.teacher_deletes
+        before_lesson_upserts = self._counts.lesson_upserts
+        before_lesson_deletes = self._counts.lesson_deletes
         handler(connection, event)
+        if targets is not None:
+            self._refresh_batch_targets(
+                event,
+                suffix=suffix,
+                targets=targets,
+                teacher_upserted=(
+                    self._counts.teacher_upserts > before_teacher_upserts
+                ),
+                teacher_deleted=(
+                    self._counts.teacher_deletes > before_teacher_deletes
+                ),
+                lesson_upserted=(
+                    self._counts.lesson_upserts > before_lesson_upserts
+                ),
+                lesson_deleted=(
+                    self._counts.lesson_deletes > before_lesson_deletes
+                ),
+            )
 
     def apply_batch(
         self,
         connection: Any,
         events: Sequence[DtsChangeEvent],
     ) -> None:
-        """Apply each event directly while sharing the checkpoint transaction."""
+        """Apply an ordered batch after one bounded target-dependency lookup.
 
+        Most events seen after a mid-stream reset are updates/deletes whose
+        teacher or lesson target does not exist. Looking up those targets one
+        event at a time amplifies a no-op batch into hundreds of SQL round
+        trips. The snapshot below is only a skip index: events that can create
+        rows still run in offset order, and successful creates/deletes update
+        the index before the next event is evaluated.
+        """
+
+        normalized = tuple(direct_projection_event(event) for event in events)
+        targets = self._load_batch_targets(connection, normalized)
+        if self._active_batch_targets is not None:
+            raise RuntimeError("DTS_DIRECT_BATCH_REENTRY_NOT_ALLOWED")
+        self._active_batch_targets = targets
+        try:
+            for event in normalized:
+                self._apply_normalized(connection, event)
+        finally:
+            self._active_batch_targets = None
+
+    def _load_batch_targets(
+        self,
+        connection: Any,
+        events: Sequence[DtsChangeEvent],
+    ) -> _DirectBatchTargets:
+        teacher_ids: set[str] = set()
+        course_ids: set[str] = set()
         for event in events:
-            self.apply(connection, event)
+            suffix = source_table_suffix(event)
+            if suffix is None:
+                continue
+            teacher_ids.update(self._teacher_dependencies(event, suffix))
+            course_ids.update(self._course_dependencies(event, suffix))
+
+        existing_teachers: set[str] = set()
+        teacher_target = TeacherSourceWideRecord.__table__
+        for chunk in self._chunks(teacher_ids):
+            existing_teachers.update(
+                str(value)
+                for value in connection.execute(
+                    select(teacher_target.c.tchr_id).where(
+                        teacher_target.c.tchr_id.in_(chunk)
+                    )
+                ).scalars()
+            )
+            self._counts.batch_target_queries += 1
+
+        lesson_teachers: dict[str, str | None] = {}
+        lesson_target = LessonSourceWideRecord.__table__
+        for chunk in self._chunks(course_ids):
+            rows = connection.execute(
+                select(
+                    lesson_target.c["课程id"],
+                    lesson_target.c["老师id"],
+                ).where(lesson_target.c["课程id"].in_(chunk))
+            ).mappings()
+            lesson_teachers.update(
+                {
+                    str(row["课程id"]): _string(row["老师id"])
+                    for row in rows
+                }
+            )
+            self._counts.batch_target_queries += 1
+        return _DirectBatchTargets(
+            teacher_ids=existing_teachers,
+            lesson_teachers=lesson_teachers,
+        )
+
+    @staticmethod
+    def _chunks(values: set[str]) -> tuple[tuple[str, ...], ...]:
+        ordered = sorted(values)
+        return tuple(
+            tuple(ordered[start : start + _TARGET_PREFETCH_CHUNK_SIZE])
+            for start in range(0, len(ordered), _TARGET_PREFETCH_CHUNK_SIZE)
+        )
+
+    @staticmethod
+    def _event_rows(event: DtsChangeEvent) -> tuple[Mapping[str, Any], ...]:
+        return tuple(
+            row
+            for row in (event.before, event.after)
+            if row is not None
+        )
+
+    @classmethod
+    def _teacher_dependencies(
+        cls,
+        event: DtsChangeEvent,
+        suffix: str,
+    ) -> set[str]:
+        rows = cls._event_rows(event)
+        field: str | None = None
+        if suffix == "teacher":
+            field = "id"
+        elif suffix == "appoint":
+            field = "t_id"
+        elif suffix in {"teacher_certification", "teacher_class_schedule"}:
+            field = "teacher_id"
+        elif suffix == "teacher_favorite":
+            field = "tea_id"
+        elif suffix == "teacher_blacklist":
+            field = "teacher_id"
+        if field is None:
+            return set()
+        return {
+            value
+            for row in rows
+            if (value := _string(row.get(field))) is not None
+        }
+
+    @classmethod
+    def _course_dependencies(
+        cls,
+        event: DtsChangeEvent,
+        suffix: str,
+    ) -> set[str]:
+        if suffix == "appoint":
+            field = "id"
+        elif suffix in _COURSE_TARGET_SUFFIXES:
+            field = "appoint_id"
+        else:
+            field = None
+        values = {
+            value
+            for row in cls._event_rows(event)
+            if field is not None
+            if (value := _string(row.get(field))) is not None
+        }
+        if suffix == "qa_ac_classroom_record":
+            for row in cls._event_rows(event):
+                info = row.get("info")
+                if isinstance(info, str):
+                    try:
+                        info = json.loads(info)
+                    except json.JSONDecodeError:
+                        continue
+                if not isinstance(info, Mapping):
+                    continue
+                for key in ("cpu", "network_delay"):
+                    records = info.get(key, ())
+                    if not isinstance(records, Sequence) or isinstance(
+                        records,
+                        (str, bytes, bytearray),
+                    ):
+                        continue
+                    values.update(
+                        course_id
+                        for record in records
+                        if isinstance(record, Mapping)
+                        if (
+                            course_id := _string(record.get("appoint_id"))
+                        )
+                        is not None
+                    )
+        return values
+
+    def _missing_batch_target(
+        self,
+        event: DtsChangeEvent,
+        *,
+        suffix: str,
+        targets: _DirectBatchTargets,
+    ) -> bool:
+        teacher_ids = self._teacher_dependencies(event, suffix)
+        course_ids = self._course_dependencies(event, suffix)
+        if suffix == "teacher":
+            return bool(
+                event.operation != "INSERT"
+                and teacher_ids
+                and teacher_ids.isdisjoint(targets.teacher_ids)
+            )
+        if suffix == "appoint":
+            if (
+                event.operation != "INSERT"
+                and course_ids
+                and course_ids.isdisjoint(targets.lesson_teachers)
+            ):
+                return True
+            row = event.after if event.operation != "DELETE" else event.before
+            return bool(
+                self._appoint_in_scope(event, row)
+                and teacher_ids
+                and teacher_ids.isdisjoint(targets.teacher_ids)
+            )
+        if suffix in _COURSE_TARGET_SUFFIXES or suffix == "qa_ac_classroom_record":
+            return bool(
+                course_ids
+                and course_ids.isdisjoint(targets.lesson_teachers)
+            )
+        if suffix in _TEACHER_TARGET_SUFFIXES:
+            return bool(
+                teacher_ids
+                and teacher_ids.isdisjoint(targets.teacher_ids)
+            )
+        return False
+
+    def _refresh_batch_targets(
+        self,
+        event: DtsChangeEvent,
+        *,
+        suffix: str,
+        targets: _DirectBatchTargets,
+        teacher_upserted: bool,
+        teacher_deleted: bool,
+        lesson_upserted: bool,
+        lesson_deleted: bool,
+    ) -> None:
+        if suffix == "teacher":
+            row = event.after if event.operation != "DELETE" else event.before
+            teacher_id = _string((row or {}).get("id"))
+            if teacher_id is None:
+                return
+            if teacher_deleted:
+                targets.teacher_ids.discard(teacher_id)
+                targets.lesson_teachers = {
+                    course_id: owner
+                    for course_id, owner in targets.lesson_teachers.items()
+                    if owner != teacher_id
+                }
+            elif teacher_upserted:
+                targets.teacher_ids.add(teacher_id)
+            return
+        if suffix != "appoint":
+            return
+        row = event.after if event.operation != "DELETE" else event.before
+        course_id = _string((row or {}).get("id"))
+        if course_id is None:
+            return
+        if lesson_deleted:
+            targets.lesson_teachers.pop(course_id, None)
+        if lesson_upserted:
+            targets.lesson_teachers[course_id] = _string((row or {}).get("t_id"))
 
     def _teacher_in_cohort(self, onboard: date | None) -> bool:
         return bool(
@@ -524,13 +818,7 @@ class DtsDirectWideProjector:
         if event.operation != "INSERT" and existing is None:
             self._counts.ignored += 1
             return
-        in_scope = bool(
-            event.operation != "DELETE"
-            and row is not None
-            and str(row.get("use_point") or "") == "buy"
-            and str(row.get("status") or "") not in {"cancel", "on"}
-            and student_subject(row) is not None
-        )
+        in_scope = self._appoint_in_scope(event, row)
         if not in_scope:
             if existing is None or not self._write_lesson_state(
                 connection,
@@ -631,6 +919,19 @@ class DtsDirectWideProjector:
         ):
             self._counts.ignored += 1
 
+    @staticmethod
+    def _appoint_in_scope(
+        event: DtsChangeEvent,
+        row: Mapping[str, Any] | None,
+    ) -> bool:
+        return bool(
+            event.operation != "DELETE"
+            and row is not None
+            and str(row.get("use_point") or "") == "buy"
+            and str(row.get("status") or "") not in {"cancel", "on"}
+            and student_subject(row) is not None
+        )
+
     def _apply_teacher_class_schedule(
         self,
         connection: Any,
@@ -726,6 +1027,9 @@ class DtsDirectWideProjector:
         target = TeacherSourceWideRecord.__table__
         changed_any = False
         for teacher_id, completed in sorted(changes.items()):
+            targets = self._active_batch_targets
+            if targets is not None and teacher_id not in targets.teacher_ids:
+                continue
             changed = connection.execute(
                 update(target)
                 .where(target.c.tchr_id == teacher_id)
@@ -812,6 +1116,9 @@ class DtsDirectWideProjector:
             raise DtsWideProjectionError("DTS_DIRECT_COURSE_DEPENDENCY_REQUIRED")
         changed_any = False
         for course_id in sorted(course_ids):
+            targets = self._active_batch_targets
+            if targets is not None and course_id not in targets.lesson_teachers:
+                continue
             remove_names: set[str] = set()
             add_names: set[str] = set()
             if (
@@ -1231,6 +1538,9 @@ class DtsDirectWideProjector:
             collect(event.after, True)
         changed_any = False
         for course_id, values in sorted(changes.items()):
+            targets = self._active_batch_targets
+            if targets is not None and course_id not in targets.lesson_teachers:
+                continue
             changed_any = self._update_lesson(
                 connection,
                 course_id,
@@ -1261,13 +1571,17 @@ class DtsDirectWideProjector:
         if not course_ids:
             raise DtsWideProjectionError("DTS_DIRECT_COURSE_DEPENDENCY_REQUIRED")
         target = LessonSourceWideRecord.__table__
-        existing_ids = set(
-            connection.execute(
-                select(target.c["课程id"]).where(
-                    target.c["课程id"].in_(sorted(course_ids))
-                )
-            ).scalars()
-        )
+        targets = self._active_batch_targets
+        if targets is None:
+            existing_ids = set(
+                connection.execute(
+                    select(target.c["课程id"]).where(
+                        target.c["课程id"].in_(sorted(course_ids))
+                    )
+                ).scalars()
+            )
+        else:
+            existing_ids = course_ids.intersection(targets.lesson_teachers)
         if not existing_ids:
             self._counts.ignored += 1
             return
