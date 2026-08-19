@@ -26,7 +26,7 @@
 10. 课程实现国内/海外 Peak 差异（海外含 `00:00–05:30` 与 `18:00–23:30`）、最新评价、评价标签、投诉最新记录、收藏/拉黑最近课程归因、摄像头/CPU/网络/假早退和处罚时间差规则；教师实现入职 30 天窗口内课程、可靠性、反馈、档期、比例、TESOL 与 `is_self_introduce=NULL`。
 11. 稀疏 UPDATE 先合并已持久化当前态、before 与 after，再重算反向依赖；归属键变化时旧键、新键都重新投影。
 12. `TIT_DTS_PROJECTION_ENABLED` 默认关闭。国内、海外先只写账本/镜像/脏键并追平到同一激活时刻，之后只允许海外项目开启全局投影；国内项目固定为 `false`，避免回放未完成时产生暂态 `0/false`、双项目配置漂移或让国内跨境链路持有投影 owner 权限。
-    2026-08-19 源码另提供显式 `TIT_DTS_PROJECTION_MODE=direct`，但默认仍为 `queued` 且尚未发布。direct 只适用于两条 DTS 同边界重置和宽表清理/基线后的新规则：事件、宽表和 checkpoint 同事务，不写业务账本/源镜像/脏键；DOM/OVS 各投影本地区事件。详细语义和不可回溯边界见 `DTS事件直接投影规则.md`。
+    2026-08-19 源码另提供显式 `TIT_DTS_PROJECTION_MODE=direct`，但默认仍为 `queued` 且尚未发布。direct 只适用于两条 DTS 同边界重置和宽表清理/基线后的新规则：事件、宽表和 checkpoint 同事务，不写业务账本、通用源镜像或脏键，只保留投诉分类参考字典和国内 HMAC 指纹契约；DOM/OVS 各投影本地区事件。详细语义和不可回溯边界见 `DTS事件直接投影规则.md`。
 13. `TIT_DTS_PROJECTION_MAX_ATTEMPTS` 默认 `8`（允许 `1–100`）。按 `10/20/40/80/160/300/300` 秒累计提供约 15 分钟跨 Topic 暂态依赖窗口；达到阈值后该脏键保留 `RETRY`、错误码和尝试次数，并以 PostgreSQL `infinity` 停放，不再被当前投影循环选择，也不终止其他键和接入进程。heartbeat 的投影计数增加 `quarantined` 以暴露本轮新隔离数；对应真实源事件到达时，接入事务会把该键重新置为 `PENDING`、清零尝试次数并恢复处理。明确带有可信课程日期且早于 cohort 的历史关系事件直接完成为忽略，不进入隔离。投影热路径按单课程一次预取复用源当前态，教师评分/投诉按最多 100 个课程依赖一组批量查询，课程宽表无变化时不再重复置脏教师；每轮只 checkout 一条数据库连接并保持每键独立事务，避免为每个键重复连接池与传输门禁。每轮最多处理 1000 键且受 20 秒预算限制，避免追平批量放大导致 heartbeat 失鲜。heartbeat 同时记录 `source_queries/cache_hits/elapsed_ms/budget_exhausted`，用于判断瓶颈是否仍在投影 SQL。
 14. 每个持久化进程绑定唯一 `source_region` 与运行区域：`ovs/sg`、`dom/cn`；订阅区域、运行区域或入库事件区域不一致时失败关闭。国内消息完成 Avro 解码后、构造任何海外 PostgreSQL SQL 参数前，必须删除 `s_id/student_id/stu_id/user_id` 原值，并使用只存在于国内容器的 `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` 生成 `dom:v1:<HMAC-SHA256>`。变量名中的 `PASSWORD` 用于触发 Gaea 敏感值掩码，不能改回会在配置页明文展示的旧名称。可能由人工录入的 `cancel_reason/reason_desc` 也不得原样出境：只保留精确业务值 `Unfilled Lesson Memo`，其他非空内容降为 `Domestic reason redacted`。海外项目与海外目标库不得持有该密钥或原始国内学生 ID。两条 PostgreSQL 连接分别使用 `tit-dts-ingest-ovs`、`tit-dts-ingest-dom` 标识，健康状态也带安全的订阅摘要。
 15. 启动时通过 PostgreSQL Catalog 精确校验教师 55 列、课程 23 列的顺序、类型、长度和可空性，以及四张 DTS 状态表的 57 列、15 个关键约束、4 个必要索引和 4 个 guard Trigger。两个 SourceWide Outbox Trigger 还会校验事件类型、绑定函数、参数、WHEN 和启用状态；任一漂移都在连接 broker 之前失败关闭。
@@ -108,17 +108,16 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 ## 当前未完成的是实联与上线
 
 23/55 字段投影和国内/海外双运行配置已经进入持久化进程，不再停留在候选字段或影子输出。
-截至 2026-08-14，`tide_system_test` 已实证为 public `20260814_61_teacher_copy`、teacher 精确
-36 条且 head `0041_crm_sso_hybrid`，并已通过当前 release 的完整只读联合契约探针。rev61
-只更新 4 条稳定任务模板文案，不改变 DTS 状态表、Trigger 或隐私函数；该历史 rev61 发布
-门禁不能替代 rev62 的迁移与性能复验，当前数据库发布门禁重新打开。两个 DTS 仍须以
+截至 2026-08-19，系统库已由现场读回确认为 public `20260818_62_dts_claim_idx`；本轮不再
+需要 public Alembic 迁移。数据库到 head 不能替代应用发布、direct 模式切换与性能复验。
+两个 DTS 仍须以
 `projection=false` 完成真实 Kafka 连通性、readiness/heartbeat、
 双流 checkpoint 和事件账本验收，不能把数据库契约通过写成全链路完成。
 代码 rev62 将投影领取拆成 `PENDING` 与到期 `RETRY` 两个索引候选，再按候选时间选择并锁定
 一行；两个部分索引以 `CREATE INDEX CONCURRENTLY` 建立。它针对 2026-08-18 实测的
 `Parallel Seq Scan → top-N heapsort → Gather Merge` 热路径（约 286 万脏键、单次领取
-413 ms），不改变事件幂等、重试上限或脏键业务身份。上线收益必须在目标库应用 rev62 并发布
-新投影代码后，以 `EXPLAIN (ANALYZE, BUFFERS)` 和同窗吞吐采样重新验证。
+413 ms），不改变事件幂等、重试上限或脏键业务身份。索引已落库，但上线收益仍须在发布
+对应投影代码后，以 `EXPLAIN (ANALYZE, BUFFERS)` 和同窗吞吐采样重新验证。
 国内订阅已明确使用“AI 效率中心”团队的独立 Gaea 项目
 `tida-camp-dts-dom` 并选择中国大陆集群；仍须从新 Pod 读回平台地域和运行配置。国内跨境写入还要求目标 PostgreSQL
 默认和正式环境提供可由 `verify-full` 验证的 TLS；当前 PRE 仅在固定专线范围允许明文试跑，

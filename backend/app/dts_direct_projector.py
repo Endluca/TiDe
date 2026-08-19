@@ -1,8 +1,9 @@
 """Direct DTS-event projection into the two source-wide tables.
 
-This mode intentionally does not persist a source-row mirror, event ledger or
-dirty-key queue.  The database checkpoint, the DTS before/after image and the
-current two source-wide rows are the complete projection state.
+This mode intentionally does not persist a general source-row mirror, event
+ledger or dirty-key queue.  The only reference rows retained in
+``dts_source_rows`` are the small shared complaint-category dictionary and the
+domestic HMAC fingerprint contract.
 
 The direct mode is deliberately simpler than :mod:`dts_wide_projector`:
 
@@ -20,7 +21,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -29,7 +29,11 @@ from typing import Any
 from sqlalchemy import case, delete, exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db_models import LessonSourceWideRecord, TeacherSourceWideRecord
+from .db_models import (
+    DtsSourceRowRecord,
+    LessonSourceWideRecord,
+    TeacherSourceWideRecord,
+)
 from .dts_source_consumer import (
     SOURCE_FIELD_WHITELIST,
     DtsChangeEvent,
@@ -232,33 +236,6 @@ def schedule_slot_is_peak(
     return 37 <= time_slot <= 44 or (weekend and 19 <= time_slot <= 24)
 
 
-def _complaint_mapping(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    values = os.environ if environ is None else environ
-    raw = values.get("TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON", "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise DtsWideProjectionError(
-            "TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON_INVALID"
-        ) from exc
-    if not isinstance(parsed, Mapping):
-        raise DtsWideProjectionError(
-            "TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON_INVALID"
-        )
-    result = {
-        str(key).strip(): str(value).strip()
-        for key, value in parsed.items()
-        if str(key).strip() and str(value).strip()
-    }
-    if len(result) != len(parsed):
-        raise DtsWideProjectionError(
-            "TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON_INVALID"
-        )
-    return result
-
-
 def direct_projection_event(event: DtsChangeEvent) -> DtsChangeEvent:
     """Return the minimum whitelisted before/after images used by direct mode.
 
@@ -324,11 +301,6 @@ class DtsDirectWideProjector:
         environ: Mapping[str, str] | None = None,
     ) -> None:
         self.settings = settings or DtsWideProjectionSettings.from_env(environ)
-        self._category_names = _complaint_mapping(environ)
-        if not self._category_names:
-            raise DtsWideProjectionError(
-                "TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON_REQUIRED"
-            )
         self._counts = _DirectCounts()
 
     def drain_counts(self) -> dict[str, int]:
@@ -964,21 +936,9 @@ class DtsDirectWideProjector:
                     _string(row.get("complaint_type_child")),
                     _string(row.get("complaint_type_grandson")),
                 )
-                missing = [
-                    value
-                    for value in category_ids
-                    if value not in {None, "-1", "0"}
-                    and value not in self._category_names
-                ]
-                if missing:
-                    raise DtsWideProjectionError(
-                        "DTS_DIRECT_COMPLAINT_CATEGORY_MAP_MISSING"
-                    )
-                names = tuple(
-                    self._category_names.get(value)
-                    if value not in {None, "-1", "0"}
-                    else None
-                    for value in category_ids
+                names = self._complaint_category_names(
+                    connection,
+                    category_ids,
                 )
             return {
                 "投诉一级分类": names[0],
@@ -997,26 +957,24 @@ class DtsDirectWideProjector:
             build_after=values,
         )
 
-    def _apply_complaint_cate(self, connection: Any, event: DtsChangeEvent) -> None:
-        # Category IDs are not stored in the 23-column target, so direct mode
-        # uses the versioned deployment mapping.  If the source Chinese label
-        # changes, stop at this checkpoint until the mapping is updated rather
-        # than silently producing mixed historical names.
+    def _apply_complaint_cate(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+    ) -> None:
         row = event.after if event.operation != "DELETE" else event.before
         category_id = _string((row or {}).get("id"))
         if category_id is None:
-            raise DtsWideProjectionError("DTS_DIRECT_COMPLAINT_CATEGORY_ID_REQUIRED")
-        configured = self._category_names.get(category_id)
+            raise DtsWideProjectionError(
+                "DTS_DIRECT_COMPLAINT_CATEGORY_ID_REQUIRED"
+            )
+        self._upsert_complaint_category_reference(connection, event, category_id)
         before_name = _string((event.before or {}).get("cate_cn_name"))
         after_name = (
             _string((event.after or {}).get("cate_cn_name"))
             if event.operation != "DELETE"
             else None
         )
-        if configured != after_name:
-            raise DtsWideProjectionError(
-                "DTS_DIRECT_COMPLAINT_CATEGORY_CONFIG_STALE"
-            )
         if before_name is None or before_name == after_name:
             self._counts.ignored += 1
             return
@@ -1042,7 +1000,122 @@ class DtsDirectWideProjector:
                     {name: after_name},
                 )
 
-    def _apply_qa_task_close_camera_record(self, connection: Any, event: DtsChangeEvent) -> None:
+    @staticmethod
+    def _complaint_category_source_key(category_id: str) -> str:
+        return json.dumps(
+            {"id": category_id},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _complaint_category_names(
+        self,
+        connection: Any,
+        category_ids: tuple[str | None, str | None, str | None],
+    ) -> tuple[str | None, str | None, str | None]:
+        required_ids = {
+            value
+            for value in category_ids
+            if value not in {None, "-1", "0"}
+        }
+        if not required_ids:
+            return (None, None, None)
+        target = DtsSourceRowRecord.__table__
+        rows = connection.execute(
+            select(target.c.source_row).where(
+                target.c.source_region == "dom",
+                target.c.source_table == "dom_complaint_cate",
+                target.c.source_key.in_(
+                    sorted(
+                        self._complaint_category_source_key(value)
+                        for value in required_ids
+                    )
+                ),
+                target.c.is_deleted.is_(False),
+            )
+        ).scalars()
+        names = {
+            category_id: category_name
+            for row in rows
+            if isinstance(row, Mapping)
+            if (category_id := _string(row.get("id"))) is not None
+            if (category_name := _string(row.get("cate_cn_name"))) is not None
+        }
+        if required_ids != set(names):
+            raise DtsWideProjectionError(
+                "DTS_DIRECT_COMPLAINT_CATEGORY_DEPENDENCY_PENDING"
+            )
+        return tuple(
+            names.get(value) if value not in {None, "-1", "0"} else None
+            for value in category_ids
+        )
+
+    def _upsert_complaint_category_reference(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+        category_id: str,
+    ) -> None:
+        row = event.before if event.operation == "DELETE" else event.after
+        if row is None:
+            raise DtsWideProjectionError(
+                "DTS_DIRECT_COMPLAINT_CATEGORY_IMAGE_REQUIRED"
+            )
+        parent_id = _string(row.get("cate_parent"))
+        category_ids = sorted(
+            value
+            for value in {category_id, parent_id}
+            if value not in {None, "-1", "0"}
+        )
+        target = DtsSourceRowRecord.__table__
+        values = {
+            "source_region": "dom",
+            "source_table": "dom_complaint_cate",
+            "source_key": self._complaint_category_source_key(category_id),
+            "source_key_data": {"id": category_id},
+            "dependency_keys": {"category_ids": category_ids},
+            "source_row": dict(row),
+            "is_deleted": event.operation == "DELETE",
+            "source_timestamp": event.source_timestamp,
+            "last_record_id": event.record_id,
+            "source_position": event.source_position,
+            "last_topic": event.topic,
+            "last_partition": event.partition,
+            "last_offset": event.offset,
+            "row_version": 1,
+        }
+        statement = insert(target).values(values)
+        excluded = statement.excluded
+        connection.execute(
+            statement.on_conflict_do_update(
+                index_elements=[
+                    target.c.source_region,
+                    target.c.source_table,
+                    target.c.source_key,
+                ],
+                set_={
+                    "source_key_data": excluded.source_key_data,
+                    "dependency_keys": excluded.dependency_keys,
+                    "source_row": excluded.source_row,
+                    "is_deleted": excluded.is_deleted,
+                    "source_timestamp": excluded.source_timestamp,
+                    "last_record_id": excluded.last_record_id,
+                    "source_position": excluded.source_position,
+                    "last_topic": excluded.last_topic,
+                    "last_partition": excluded.last_partition,
+                    "last_offset": excluded.last_offset,
+                    "row_version": target.c.row_version + 1,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+
+    def _apply_qa_task_close_camera_record(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+    ) -> None:
         self._apply_course_boolean(connection, event, column="未开摄像头")
 
     def _apply_qa_task_fake_early_leave_record(
@@ -1066,7 +1139,11 @@ class DtsDirectWideProjector:
             build_after=lambda _row: {column: True},
         )
 
-    def _apply_qa_ac_classroom_record(self, connection: Any, event: DtsChangeEvent) -> None:
+    def _apply_qa_ac_classroom_record(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+    ) -> None:
         changes: dict[str, dict[str, Any]] = {}
 
         def collect(row: Mapping[str, Any] | None, value: bool) -> None:

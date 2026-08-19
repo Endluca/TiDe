@@ -5,7 +5,11 @@ from datetime import date
 import pytest
 from sqlalchemy import create_engine, insert, select
 
-from app.db_models import LessonSourceWideRecord, TeacherSourceWideRecord
+from app.db_models import (
+    DtsSourceRowRecord,
+    LessonSourceWideRecord,
+    TeacherSourceWideRecord,
+)
 from app.dts_direct_projector import (
     DtsDirectWideProjector,
     direct_projection_event,
@@ -72,7 +76,6 @@ def _direct_projector() -> DtsDirectWideProjector:
     return DtsDirectWideProjector(
         environ={
             "TIT_DTS_COHORT_START": "2026-08-19",
-            "TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON": '{"13":"投诉"}',
         }
     )
 
@@ -372,20 +375,139 @@ def test_direct_mode_requires_projection_enabled() -> None:
         )
 
 
-def test_direct_complaint_mapping_is_validated_at_startup() -> None:
-    with pytest.raises(
-        DtsWideProjectionError,
-        match="TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON_REQUIRED",
-    ):
-        DtsDirectWideProjector(environ={})
-
-    with pytest.raises(
-        DtsWideProjectionError,
-        match="TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON_INVALID",
-    ):
-        DtsDirectWideProjector(
-            environ={"TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON": "[]"}
+def test_direct_complaint_uses_persisted_category_events() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    teacher_table = TeacherSourceWideRecord.__table__
+    lesson_table = LessonSourceWideRecord.__table__
+    category_table = DtsSourceRowRecord.__table__
+    teacher_table.create(engine)
+    lesson_table.create(engine)
+    category_table.create(engine)
+    projector = _direct_projector()
+    with engine.begin() as connection:
+        connection.execute(
+            insert(teacher_table).values(
+                tchr_id="123",
+                total_booked_cnt=1,
+                total_completed_cnt=1,
+                first_completed_student_cnt=1,
+            )
         )
+        connection.execute(
+            insert(lesson_table).values(
+                **{
+                    "课程id": "1",
+                    "老师id": "123",
+                    "学员id": "student-a",
+                    "课程状态": "end",
+                }
+            )
+        )
+        for offset, category_id, parent_id, name in (
+            (20, 13, None, "投诉"),
+            (21, 20, 13, "教学问题"),
+            (22, 30, 20, "课堂处理"),
+        ):
+            projector.apply(
+                connection,
+                _child_event(
+                    table_name="dom_complaint_cate",
+                    offset=offset,
+                    after={
+                        "id": category_id,
+                        "cate_parent": parent_id,
+                        "cate_cn_name": name,
+                    },
+                ),
+            )
+        projector.apply(
+            connection,
+            _child_event(
+                table_name="dom_complaint",
+                offset=23,
+                after={
+                    "id": 99,
+                    "appoint_id": 1,
+                    "complaint_type": 13,
+                    "complaint_type_child": 20,
+                    "complaint_type_grandson": 30,
+                    "approve": "y",
+                    "validity": 1,
+                },
+            ),
+        )
+        projector.apply(
+            connection,
+            _child_event(
+                table_name="dom_complaint_cate",
+                offset=24,
+                operation="UPDATE",
+                before={
+                    "id": 30,
+                    "cate_parent": 20,
+                    "cate_cn_name": "课堂处理",
+                },
+                after={
+                    "id": 30,
+                    "cate_parent": 20,
+                    "cate_cn_name": "课堂处理-新",
+                },
+            ),
+        )
+        lesson = connection.execute(select(lesson_table)).mappings().one()
+        teacher = connection.execute(select(teacher_table)).mappings().one()
+        categories = connection.execute(
+            select(category_table).order_by(category_table.c.source_key)
+        ).mappings().all()
+
+    assert lesson["投诉一级分类"] == "投诉"
+    assert lesson["投诉二级分类"] == "教学问题"
+    assert lesson["投诉三级分类"] == "课堂处理-新"
+    assert teacher["feedback_complaint_cnt"] == 1
+    assert teacher["feedback_valid_complaint_cnt"] == 1
+    assert len(categories) == 3
+    assert all(row["source_table"] == "dom_complaint_cate" for row in categories)
+    category_30 = next(
+        row for row in categories if row["source_key_data"] == {"id": "30"}
+    )
+    assert category_30["source_row"]["cate_cn_name"] == "课堂处理-新"
+    assert category_30["row_version"] == 2
+
+
+def test_direct_complaint_stops_when_category_event_is_missing() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    teacher_table = TeacherSourceWideRecord.__table__
+    lesson_table = LessonSourceWideRecord.__table__
+    category_table = DtsSourceRowRecord.__table__
+    teacher_table.create(engine)
+    lesson_table.create(engine)
+    category_table.create(engine)
+    projector = _direct_projector()
+    with engine.begin() as connection:
+        connection.execute(insert(teacher_table).values(tchr_id="123"))
+        connection.execute(
+            insert(lesson_table).values(
+                **{"课程id": "1", "老师id": "123"}
+            )
+        )
+        with pytest.raises(
+            DtsWideProjectionError,
+            match="DTS_DIRECT_COMPLAINT_CATEGORY_DEPENDENCY_PENDING",
+        ):
+            projector.apply(
+                connection,
+                _child_event(
+                    table_name="dom_complaint",
+                    offset=24,
+                    after={
+                        "id": 99,
+                        "appoint_id": 1,
+                        "complaint_type": 13,
+                        "approve": "y",
+                        "validity": 1,
+                    },
+                ),
+            )
 
 
 def test_direct_projection_whitelists_and_reconstructs_sparse_update() -> None:

@@ -200,7 +200,7 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
   `tit_growth_app`，将 DTS 源事实写入限定为 `tit_dts_ingest_runtime`，并撤销旧
   SourceWide group-role 对相关表的授权；教师端继续独立使用 `tit_teacher_crud`。
 - `20260812_57_dts_state` 新增 DTS 事件账本、字段白名单当前态、反向依赖 GIN 索引、脏键和数据库位点；`run_dts_ingest.py` 在接入事务后调用投影器重算两张源宽表。
-- `TIT_DTS_PROJECTION_MODE=direct` 是 2026-08-19 新增的显式、未发布替代路径：只保留 checkpoint 幂等，在同一事务内由 before/after 直接写两张宽表；默认 `queued` 不变。direct 的 slot 为首次 `非 on→on` 单向累加，关闭/删除不回减，完整规则和切换前提见 `docs/DTS事件直接投影规则.md`。
+- `TIT_DTS_PROJECTION_MODE=direct` 是 2026-08-19 新增的显式、未发布替代路径：保留 checkpoint 幂等、投诉分类参考字典和国内 HMAC 指纹契约，在同一事务内由 before/after 直接写两张宽表；默认 `queued` 不变。direct 的 slot 为首次 `非 on→on` 单向累加，关闭/删除不回减，完整规则和切换前提见 `docs/DTS事件直接投影规则.md`。
 - 海外 DTS 进程必须运行在新加坡，国内 DTS 进程必须运行在中国大陆；运行区域声明与来源区域
   不匹配时失败关闭。国内进程在构造任何发往海外 PostgreSQL 的 SQL 参数前，将原始学生 ID
   替换为 `dom:v1:<HMAC-SHA256>`，密钥由 CSPRNG 生成 32 bytes、精确编码为 64 位小写 hex

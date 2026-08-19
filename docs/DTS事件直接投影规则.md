@@ -21,7 +21,9 @@ DTS INSERT / UPDATE / DELETE
 → 事务提交后 ACK
 ```
 
-直接模式不写业务事件账本、`dts_source_rows` 业务镜像或 `dts_dirty_keys`。国内 HMAC 指纹仍使用原有技术契约行，它不包含学生标识，也不参与业务投影。
+直接模式不写业务事件账本、通用 `dts_source_rows` 业务镜像或 `dts_dirty_keys`。现有
+`dts_source_rows` 只保留 `dom_complaint_cate` 小型参考字典和国内 HMAC 指纹契约；它们都不保存
+教师、课程或学生业务事实。
 
 由于 direct 不再保存每节课的来源镜像，启动检查也不再用 `dts_source_rows` 反推课程
 provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中格式错误的 `dom:` token。基线
@@ -125,10 +127,11 @@ INSERT 且 `after.status='on'` 同样计一次；`on→on`、`on→off` 和 DELE
 | `*_qa_task_fake_early_leave_record` | INSERT/UPDATE=true，DELETE=false |
 | `*_qa_ac_classroom_record` | 从 `info.cpu/network_delay[].appoint_id` 定位课程并按操作置 true/false |
 
-投诉事件只有分类 ID，没有中文名称。直接模式不建字典状态表，因此启动前必须把经确认的
-ID→中文名完整映射以非敏感配置 `TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON` 注入；配置为空时
-直接模式拒绝启动，遇到缺失映射或 `complaint_cate` 名称与配置不一致时停在当前 checkpoint，
-不写错误分类。更新配置并重启后，同一事件会重放，并把宽表中的旧分类名称替换为新名称。
+投诉事件只有分类 ID，没有中文名称。`dom_complaint_cate` 事件直接维护系统库里现有
+`dts_source_rows` 的小型参考字典；投诉事件按 ID 查询该字典后写入中文名。字典缺项时停在
+当前 checkpoint，不写半条课程记录；补齐字典后同一投诉事件重放。分类改名事件会同时更新
+字典，并把课程宽表中完全相同的旧名称替换成新名称。切换 direct 前必须保留现有分类字典行，
+或先从国内源表导入一次完整分类基线，不能只从 8 月 19 日增量等待长期不变的字典事件。
 
 ## 7. 教师字段差值
 
@@ -164,7 +167,6 @@ TIT_DTS_PROJECTION_ENABLED=true
 TIT_DTS_PROJECTION_MODE=direct
 TIT_DTS_COHORT_START=2026-08-19
 TIT_DTS_START_AT=2026-08-19T00:00:00+08:00
-TIT_DTS_COMPLAINT_CATEGORY_MAP_JSON={...}
 ```
 
 直接模式允许 DOM、OVS 各自投影本地区事件，不取得旧版全局脏键投影锁。为避免海外课程先于国内教师，发布顺序必须是：先启动 DOM 并确认 checkpoint 前进，再启动 OVS。代码完成不等于已迁移、已清库、已重置 DTS 或已发布。
