@@ -351,18 +351,24 @@ application 项目也不配置任何 DTS 变量。
 Gaea 镜像固定 `TIT_DTS_TRANSPORT=official_java`。该模式运行已在国内 PRE 成功消费的官方
 DTS SDK 1.4.0 主流程：`ConsumerContext(ASSIGN) → DefaultDTSConsumer → KafkaRecordFetcher →
 UserRecordGenerator → EtlRecordProcessor → RecordListener`，其内置 Kafka Java Client 1.0.0；
-Python 保留现有 `fastavro → 国内 HMAC → PostgreSQL` 处理链。官方 listener 的旧单条
-in-flight 路径已替换为有界批协议：`EVENT × N → BATCH_COMPLETE → Python DB 整批 durable
+官方 SDK 只做一次 Avro 解码；Java 将生成的 `Record` 直接归一化为结构化 JSON，精确业务表按
+Python 下发的来源字段白名单裁剪，运行热路径不再重编码 Avro、Base64 或让 Python `fastavro`
+二次解码。Python 保留结构验证、国内 HMAC 和 PostgreSQL 处理链。官方 listener 的旧单条
+in-flight 路径已替换为协议 v2 有界批：`EVENT × N → BATCH_COMPLETE → Python DB 整批 durable
 → DURABLE_ACK_BATCH → DefaultUserRecord.commit(最后一条 ADVANCE) → SDK_CHECKPOINTS_ACCEPTED`。
-REPLAY 不调用 commit；Java 完整校验后仅对最后一条 ADVANCE 请求 SDK checkpoint。批次默认 100 条、硬上限 128 条，并同时受 Java 侧 8 MiB payload 上限
-保护。任一解码、隐私或数据库错误都不发送 ACK。
+REPLAY 不调用 commit；Java 完整校验后仅对最后一条 ADVANCE 请求 SDK checkpoint。生产批次请求
+500 条、Java 硬上限 512 条，并同时受 Java 侧 8 MiB 结构化 payload 上限保护。任一协议、归一化、
+结构、隐私或数据库错误都不发送 ACK。镜像构建仍运行固定 Avro 联合类型 round-trip fixture，
+但该重编码只用于构建期 SDK 兼容自测。
 最后一步只表示 SDK 接受 checkpoint 请求；后续 Kafka checkpoint 是
 SDK 异步动作且没有同步成功回执。DB 已有 checkpoint 时，用其 `source_timestamp` 让官方 ASSIGN
 路径恢复，并以 `next_offset` 校验 replay：小于它的事件必须已存在于账本且不再次请求 SDK commit，
 等于它才推进，大于它立即按 offset 缺口失败关闭；DB 无 checkpoint 时才按 `TIT_DTS_START_AT`
 定位。PostgreSQL `next_offset + source_timestamp` 始终是恢复权威，ACK 丢失只会造成幂等重放。
-每批 heartbeat 的 `batch_bytes`、`db_elapsed_ms`、`sdk_ack_elapsed_ms`、`batch_elapsed_ms` 与 `durable_next_offset` 用于区分 SDK 拉取、
-跨区数据库事务和 checkpoint 推进瓶颈；日志不得包含 Avro payload 或业务字段值。
+每批 heartbeat 的 `batch_bytes`、`transport_prefiltered`、`transport_normalize_elapsed_ms`、
+`event_normalize_elapsed_ms`、`db_elapsed_ms`、`sdk_ack_elapsed_ms`、`batch_elapsed_ms` 与
+`durable_next_offset` 用于区分 SDK 拉取、Java 路由/结构化、Python 验证/HMAC、跨区数据库事务和
+checkpoint 推进瓶颈；日志不得包含 Avro payload、结构化 record 或业务字段值。
 
 首次追平阶段两个项目都必须关闭投影；激活后只允许海外项目启用全局宽表投影，国内项目固定
 `TIT_DTS_PROJECTION_ENABLED=false` 并只做 ingest。海外项目必须先通过数据库激活门禁，并持有

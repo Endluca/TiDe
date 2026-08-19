@@ -17,14 +17,17 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import org.apache.avro.SchemaNormalization;
 import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.AuthorizationException;
@@ -48,6 +51,8 @@ public final class TitDtsTransportBridge {
     private static final int AVRO_SINGLE_OBJECT_HEADER_BYTES = 10;
     private static final long DEFAULT_IDLE_TIMEOUT_MS = 10000L;
     private static final long SDK_START_TIMEOUT_MS = 305000L;
+    private static final int PROTOCOL_VERSION = 2;
+    private static final int MAX_NORMALIZATION_DEPTH = 32;
 
     private final BufferedReader input = new BufferedReader(
             new InputStreamReader(System.in, StandardCharsets.UTF_8));
@@ -64,6 +69,11 @@ public final class TitDtsTransportBridge {
     private RecordEnvelope firstRecord;
     private RecordEnvelope deferredRecord;
     private List<RecordEnvelope> inFlightBatch;
+    private Set<String> supportedTableNames;
+    private Set<String> dataOperations;
+    private Set<String> controlOperations;
+    private Map<String, Set<String>> sourceFieldWhitelist;
+    private boolean lightweightPrefilterEnabled;
     private long idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
     private boolean started;
 
@@ -136,6 +146,19 @@ public final class TitDtsTransportBridge {
                 command, "start_timestamp_seconds");
         Long requestedIdleTimeoutMs = optionalPositiveLong(
                 command, "idle_timeout_ms");
+        List<String> requestedSupportedTableNames = requiredStringArray(
+                command, "supported_table_names");
+        List<String> requestedDataOperations = requiredStringArray(
+                command, "data_operations");
+        List<String> requestedControlOperations = requiredStringArray(
+                command, "control_operations");
+        lightweightPrefilterEnabled = requiredBoolean(
+                command, "lightweight_prefilter_enabled");
+        if (requiredNonNegativeInt(command, "protocol_version")
+                != PROTOCOL_VERSION) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_PROTOCOL_VERSION_MISMATCH");
+        }
         if (partition != 0) {
             throw new ProtocolException(
                     "DTS_OFFICIAL_JAVA_PARTITION_UNSUPPORTED");
@@ -151,6 +174,16 @@ public final class TitDtsTransportBridge {
         if (requestedIdleTimeoutMs != null) {
             idleTimeoutMs = requestedIdleTimeoutMs.longValue();
         }
+        supportedTableNames = new HashSet<String>();
+        for (String tableName : requestedSupportedTableNames) {
+            supportedTableNames.add(tableName.toLowerCase(Locale.ROOT));
+        }
+        sourceFieldWhitelist = requiredStringSetMap(
+                command,
+                "source_field_whitelist",
+                supportedTableNames);
+        dataOperations = normalizedUppercaseSet(requestedDataOperations);
+        controlOperations = normalizedUppercaseSet(requestedControlOperations);
 
         final boolean resumeCheckpointPresent = resumeOffset != null;
         final long checkpointTimestampSeconds = resumeCheckpointPresent
@@ -203,10 +236,10 @@ public final class TitDtsTransportBridge {
 
         firstRecord = awaitRecord(SDK_START_TIMEOUT_MS);
         DefaultUserRecord record = firstRecord.record;
-        // Materialize the first official SDK record before READY so an
-        // encoder/schema incompatibility is a startup failure, not a false
+        // Materialize the first official SDK record before READY so a
+        // normalization incompatibility is a startup failure, not a false
         // healthy transition followed by a deterministic POLL failure.
-        firstRecord.encodedPayload();
+        firstRecord.structuredRecordJson();
         TopicPartition topicPartition = requiredTopicPartition(record);
         if (!topic.equals(topicPartition.topic())
                 || partition != topicPartition.partition()) {
@@ -219,6 +252,7 @@ public final class TitDtsTransportBridge {
         JSONObject ready = message("READY");
         ready.put("transport", "official_dts_sdk");
         ready.put("subscribe_mode", "ASSIGN");
+        ready.put("protocol_version", PROTOCOL_VERSION);
         ready.put("partition", topicPartition.partition());
         ready.put("first_record_offset", firstOffset);
         ready.put("first_record_source_timestamp", firstSourceTimestamp);
@@ -257,8 +291,29 @@ public final class TitDtsTransportBridge {
                     "DTS_OFFICIAL_JAVA_RECORD_INVALID");
             return;
         }
-        RecordEnvelope envelope = new RecordEnvelope(record);
         try {
+            Record avroRecord = record.getAvroRecord();
+            if (avroRecord == null) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID");
+            }
+            String tableName = recordTableName(avroRecord);
+            boolean lightweight = lightweightPrefilterEnabled
+                    && isLightweightRecord(
+                            avroRecord,
+                            supportedTableNames,
+                            dataOperations,
+                            controlOperations);
+            Set<String> allowedFields = null;
+            if (!lightweight && lightweightPrefilterEnabled
+                    && tableName != null) {
+                allowedFields = sourceFieldWhitelist.get(
+                        tableName.toLowerCase(Locale.ROOT));
+            }
+            RecordEnvelope envelope = new RecordEnvelope(
+                    record,
+                    lightweight,
+                    allowedFields);
             while (!closed && !records.offer(envelope, 200L, TimeUnit.MILLISECONDS)) {
                 // Bound retained official records while allowing one database
                 // transaction to durably acknowledge a complete protocol batch.
@@ -298,7 +353,7 @@ public final class TitDtsTransportBridge {
             if (envelope == null) {
                 break;
             }
-            int payloadBytes = envelope.encodedPayload().length;
+            int payloadBytes = envelope.protocolPayloadBytes();
             if (payloadBytes > MAX_BATCH_PAYLOAD_BYTES) {
                 throw new ProtocolException(
                         "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_TOO_LARGE");
@@ -322,6 +377,13 @@ public final class TitDtsTransportBridge {
         JSONObject complete = message("BATCH_COMPLETE");
         complete.put("seen", batch.size());
         complete.put("batch_bytes", batchBytes);
+        long normalizationElapsedNanos = 0L;
+        for (RecordEnvelope envelope : batch) {
+            normalizationElapsedNanos += envelope.normalizationElapsedNanos();
+        }
+        complete.put(
+                "transport_normalize_elapsed_ms",
+                TimeUnit.NANOSECONDS.toMillis(normalizationElapsedNanos));
         emit(complete);
         if (batch.isEmpty()) {
             inFlightBatch = null;
@@ -420,15 +482,302 @@ public final class TitDtsTransportBridge {
         DefaultUserRecord userRecord = envelope.record;
         TopicPartition topicPartition = requiredTopicPartition(userRecord);
         long offset = requiredRecordOffset(userRecord);
-        byte[] payload = envelope.encodedPayload();
 
         JSONObject event = message("EVENT");
         event.put("topic", topicPartition.topic());
         event.put("partition", topicPartition.partition());
         event.put("offset", offset);
         event.put("source_timestamp", requiredSourceTimestamp(userRecord));
-        event.put("payload_base64", Base64.getEncoder().encodeToString(payload));
-        emit(event);
+        if (envelope.lightweight) {
+            event.put("lightweight", true);
+            emit(event);
+        } else {
+            String eventWithoutRecord = event.toJSONString();
+            String recordJson = envelope.structuredRecordJson();
+            String line = eventWithoutRecord.substring(
+                    0, eventWithoutRecord.length() - 1)
+                    + ",\"record_bytes\":"
+                    + envelope.protocolPayloadBytes()
+                    + ",\"record\":"
+                    + recordJson
+                    + "}";
+            emitLine(line);
+        }
+    }
+
+    static boolean isLightweightRecord(
+            Record sourceRecord,
+            Set<String> supportedTables,
+            Set<String> dataOperationNames,
+            Set<String> controlOperationNames) {
+        String operation = String.valueOf(sourceRecord.getOperation())
+                .trim().toUpperCase(Locale.ROOT);
+        if (controlOperationNames.contains(operation)) {
+            return true;
+        }
+        if (!dataOperationNames.contains(operation)) {
+            return false;
+        }
+        String tableName = recordTableName(sourceRecord);
+        return tableName != null
+                && !supportedTables.contains(tableName.toLowerCase(Locale.ROOT));
+    }
+
+    private static String recordTableName(Record sourceRecord) {
+        Object rawTags = sourceRecord.getTags();
+        if (rawTags instanceof Map<?, ?>) {
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawTags).entrySet()) {
+                String key = String.valueOf(entry.getKey()).trim();
+                if ("tablename".equalsIgnoreCase(key)
+                        || "table".equalsIgnoreCase(key)) {
+                    String tagged = stripIdentifier(
+                            String.valueOf(entry.getValue()));
+                    if (!tagged.isEmpty()) {
+                        return tagged;
+                    }
+                }
+            }
+        }
+        Object rawObjectName = sourceRecord.getObjectName();
+        if (rawObjectName == null) {
+            return null;
+        }
+        String objectName = String.valueOf(rawObjectName).trim();
+        if (objectName.isEmpty()) {
+            return null;
+        }
+        String[] parts = objectName.replace('/', '.').split("\\.");
+        for (int index = parts.length - 1; index >= 0; index -= 1) {
+            String part = stripIdentifier(parts[index]);
+            if (!part.isEmpty()) {
+                return part;
+            }
+        }
+        return null;
+    }
+
+    static String stripIdentifier(String value) {
+        String result = value == null ? "" : value.trim();
+        int start = 0;
+        int end = result.length();
+        while (start < end && isIdentifierWrapper(result.charAt(start))) {
+            start += 1;
+        }
+        while (end > start && isIdentifierWrapper(result.charAt(end - 1))) {
+            end -= 1;
+        }
+        return result.substring(start, end);
+    }
+
+    private static boolean isIdentifierWrapper(char value) {
+        return value == '`'
+                || value == '"'
+                || value == '['
+                || value == ']';
+    }
+
+    private static Set<String> normalizedUppercaseSet(List<String> values) {
+        Set<String> result = new HashSet<String>();
+        for (String value : values) {
+            result.add(value.toUpperCase(Locale.ROOT));
+        }
+        return result;
+    }
+
+    /**
+     * Convert the already-decoded official SDK Record into the only structure
+     * Python needs for validation, privacy protection and durable projection.
+     * No Avro encoding is performed on the runtime path.
+     */
+    static JSONObject normalizeOfficialRecord(
+            Record sourceRecord, Set<String> allowedFields) {
+        JSONObject result = new JSONObject(true);
+        result.put("id", normalizeAvroValue(sourceRecord.getId(), 0));
+        result.put(
+                "sourceTimestamp",
+                normalizeAvroValue(sourceRecord.getSourceTimestamp(), 0));
+        result.put(
+                "sourcePosition",
+                normalizeAvroValue(sourceRecord.getSourcePosition(), 0));
+        result.put(
+                "safeSourcePosition",
+                normalizeAvroValue(sourceRecord.getSafeSourcePosition(), 0));
+        result.put(
+                "sourceTxid",
+                normalizeAvroValue(sourceRecord.getSourceTxid(), 0));
+        result.put(
+                "operation",
+                normalizeAvroValue(sourceRecord.getOperation(), 0));
+        result.put(
+                "objectName",
+                normalizeAvroValue(sourceRecord.getObjectName(), 0));
+        result.put("tags", normalizeAvroValue(sourceRecord.getTags(), 0));
+
+        Object rawFields = sourceRecord.getFields();
+        Object rawBeforeImages = sourceRecord.getBeforeImages();
+        Object rawAfterImages = sourceRecord.getAfterImages();
+        JSONArray fieldNames = normalizedFieldNames(rawFields);
+        if (allowedFields != null
+                && fieldNames != null
+                && imagesMatchFields(rawBeforeImages, fieldNames.size())
+                && imagesMatchFields(rawAfterImages, fieldNames.size())) {
+            JSONArray selectedFields = new JSONArray();
+            List<Integer> selectedIndexes = new ArrayList<Integer>();
+            for (int index = 0; index < fieldNames.size(); index += 1) {
+                String fieldName = fieldNames.getString(index);
+                if (allowedFields.contains(fieldName)) {
+                    selectedFields.add(fieldName);
+                    selectedIndexes.add(Integer.valueOf(index));
+                }
+            }
+            result.put("fields", selectedFields);
+            result.put(
+                    "beforeImages",
+                    normalizeSelectedImages(rawBeforeImages, selectedIndexes));
+            result.put(
+                    "afterImages",
+                    normalizeSelectedImages(rawAfterImages, selectedIndexes));
+        } else {
+            result.put(
+                    "fields",
+                    fieldNames == null
+                            ? normalizeAvroValue(rawFields, 0)
+                            : fieldNames);
+            result.put(
+                    "beforeImages",
+                    normalizeAvroValue(rawBeforeImages, 0));
+            result.put(
+                    "afterImages",
+                    normalizeAvroValue(rawAfterImages, 0));
+        }
+        return result;
+    }
+
+    private static JSONArray normalizedFieldNames(Object rawFields) {
+        if (!(rawFields instanceof List<?>)) {
+            return null;
+        }
+        JSONArray names = new JSONArray();
+        for (Object rawField : (List<?>) rawFields) {
+            String fieldName = fieldName(rawField);
+            if (fieldName == null || fieldName.isEmpty()) {
+                return null;
+            }
+            names.add(fieldName);
+        }
+        return names;
+    }
+
+    private static String fieldName(Object rawField) {
+        final Object value;
+        if (rawField instanceof GenericRecord) {
+            value = ((GenericRecord) rawField).get("name");
+        } else if (rawField instanceof Map<?, ?>) {
+            value = ((Map<?, ?>) rawField).get("name");
+        } else if (rawField instanceof CharSequence) {
+            value = rawField;
+        } else {
+            return null;
+        }
+        return value == null ? null : value.toString().trim();
+    }
+
+    private static boolean imagesMatchFields(Object images, int fieldCount) {
+        return images == null
+                || (images instanceof List<?>
+                        && ((List<?>) images).size() == fieldCount);
+    }
+
+    private static Object normalizeSelectedImages(
+            Object rawImages, List<Integer> selectedIndexes) {
+        if (rawImages == null) {
+            return null;
+        }
+        List<?> images = (List<?>) rawImages;
+        JSONArray selected = new JSONArray();
+        for (Integer selectedIndex : selectedIndexes) {
+            selected.add(normalizeAvroValue(
+                    images.get(selectedIndex.intValue()), 0));
+        }
+        return selected;
+    }
+
+    private static Object normalizeAvroValue(Object value, int depth) {
+        if (depth > MAX_NORMALIZATION_DEPTH) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_EVENT_NORMALIZATION_FAILED");
+        }
+        if (value == null || value instanceof Boolean
+                || value instanceof java.lang.Integer
+                || value instanceof Long
+                || value instanceof Short
+                || value instanceof Byte) {
+            return value;
+        }
+        if (value instanceof Float) {
+            float floatValue = ((Float) value).floatValue();
+            if (Float.isNaN(floatValue) || Float.isInfinite(floatValue)) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_EVENT_NORMALIZATION_FAILED");
+            }
+            return value;
+        }
+        if (value instanceof Double) {
+            double doubleValue = ((Double) value).doubleValue();
+            if (Double.isNaN(doubleValue) || Double.isInfinite(doubleValue)) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_EVENT_NORMALIZATION_FAILED");
+            }
+            return value;
+        }
+        if (value instanceof Number || value instanceof CharSequence
+                || value instanceof Enum<?>
+                || value instanceof GenericData.EnumSymbol) {
+            return value instanceof CharSequence
+                    || value instanceof Enum<?>
+                    || value instanceof GenericData.EnumSymbol
+                            ? value.toString()
+                            : value;
+        }
+        if (value instanceof ByteBuffer) {
+            ByteBuffer bytes = ((ByteBuffer) value).duplicate();
+            byte[] copy = new byte[bytes.remaining()];
+            bytes.get(copy);
+            return new String(copy, StandardCharsets.UTF_8);
+        }
+        if (value instanceof byte[]) {
+            return new String((byte[]) value, StandardCharsets.UTF_8);
+        }
+        if (value instanceof GenericRecord) {
+            GenericRecord record = (GenericRecord) value;
+            JSONObject normalized = new JSONObject(true);
+            for (org.apache.avro.Schema.Field field
+                    : record.getSchema().getFields()) {
+                normalized.put(
+                        field.name(),
+                        normalizeAvroValue(
+                                record.get(field.pos()), depth + 1));
+            }
+            return normalized;
+        }
+        if (value instanceof Map<?, ?>) {
+            JSONObject normalized = new JSONObject(true);
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                normalized.put(
+                        String.valueOf(entry.getKey()),
+                        normalizeAvroValue(entry.getValue(), depth + 1));
+            }
+            return normalized;
+        }
+        if (value instanceof Iterable<?>) {
+            JSONArray normalized = new JSONArray();
+            for (Object item : (Iterable<?>) value) {
+                normalized.add(normalizeAvroValue(item, depth + 1));
+            }
+            return normalized;
+        }
+        throw new ProtocolException(
+                "DTS_OFFICIAL_JAVA_EVENT_NORMALIZATION_FAILED");
     }
 
     /**
@@ -775,6 +1124,45 @@ public final class TitDtsTransportBridge {
         return result;
     }
 
+    private static Map<String, Set<String>> requiredStringSetMap(
+            JSONObject object,
+            String field,
+            Set<String> expectedKeys) {
+        JSONObject values = object.getJSONObject(field);
+        if (values == null || values.isEmpty()) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
+        }
+        Map<String, Set<String>> result =
+                new HashMap<String, Set<String>>();
+        for (String rawKey : values.keySet()) {
+            String key = rawKey.toLowerCase(Locale.ROOT);
+            JSONArray rawItems = values.getJSONArray(rawKey);
+            if (!expectedKeys.contains(key)
+                    || rawItems == null
+                    || rawItems.isEmpty()
+                    || result.containsKey(key)) {
+                throw new ProtocolException(
+                        "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
+            }
+            Set<String> items = new HashSet<String>();
+            for (Object rawItem : rawItems) {
+                if (!(rawItem instanceof String)
+                        || ((String) rawItem).isEmpty()) {
+                    throw new ProtocolException(
+                            "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
+                }
+                items.add((String) rawItem);
+            }
+            result.put(key, items);
+        }
+        if (!result.keySet().equals(expectedKeys)) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
+        }
+        return result;
+    }
+
     private static String requiredString(JSONObject object, String field) {
         Object value = object.get(field);
         if (!(value instanceof String) || ((String) value).isEmpty()) {
@@ -782,6 +1170,15 @@ public final class TitDtsTransportBridge {
                     "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
         }
         return (String) value;
+    }
+
+    private static boolean requiredBoolean(JSONObject object, String field) {
+        Object value = object.get(field);
+        if (!(value instanceof Boolean)) {
+            throw new ProtocolException(
+                    "DTS_OFFICIAL_JAVA_COMMAND_INVALID");
+        }
+        return ((Boolean) value).booleanValue();
     }
 
     private static int requiredNonNegativeInt(
@@ -854,7 +1251,11 @@ public final class TitDtsTransportBridge {
     }
 
     private void emit(JSONObject message) {
-        output.println(message.toJSONString());
+        emitLine(message.toJSONString());
+    }
+
+    private void emitLine(String line) {
+        output.println(line);
         if (output.checkError()) {
             throw new ProtocolException(
                     "DTS_OFFICIAL_JAVA_PROTOCOL_WRITE_FAILED");
@@ -890,23 +1291,59 @@ public final class TitDtsTransportBridge {
 
     private static final class RecordEnvelope {
         private final DefaultUserRecord record;
-        private byte[] payload;
+        private final boolean lightweight;
+        private final Set<String> allowedFields;
+        private String structuredRecordJson;
+        private int structuredRecordBytes;
+        private long normalizationElapsedNanos;
 
-        RecordEnvelope(DefaultUserRecord record) {
+        RecordEnvelope(
+                DefaultUserRecord record,
+                boolean lightweight,
+                Set<String> allowedFields) {
             this.record = record;
+            this.lightweight = lightweight;
+            this.allowedFields = allowedFields;
         }
 
-        byte[] encodedPayload() {
-            if (payload == null) {
+        int protocolPayloadBytes() {
+            if (lightweight) {
+                return 0;
+            }
+            structuredRecordJson();
+            return structuredRecordBytes;
+        }
+
+        long normalizationElapsedNanos() {
+            return normalizationElapsedNanos;
+        }
+
+        String structuredRecordJson() {
+            if (structuredRecordJson == null) {
                 DefaultUserRecord userRecord = record;
                 Record avroRecord = userRecord.getAvroRecord();
                 if (avroRecord == null) {
                     throw new ProtocolException(
                             "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID");
                 }
-                payload = encodeOfficialRecord(avroRecord);
+                long startedNanos = System.nanoTime();
+                try {
+                    structuredRecordJson = normalizeOfficialRecord(
+                            avroRecord, allowedFields).toJSONString();
+                    structuredRecordBytes = structuredRecordJson.getBytes(
+                            StandardCharsets.UTF_8).length;
+                } catch (RuntimeException error) {
+                    safeLog(
+                            "DTS_OFFICIAL_JAVA_EVENT_NORMALIZATION_FAILED",
+                            error);
+                    throw new ProtocolException(
+                            "DTS_OFFICIAL_JAVA_EVENT_NORMALIZATION_FAILED");
+                } finally {
+                    normalizationElapsedNanos = Math.max(
+                            0L, System.nanoTime() - startedNanos);
+                }
             }
-            return payload;
+            return structuredRecordJson;
         }
     }
 

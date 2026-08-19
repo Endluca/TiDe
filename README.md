@@ -152,8 +152,13 @@ Tide_teachers_camp/
 一个 Pod 中管理运营 API、教师 API、教师 Nginx、积分结算 Worker 与 SourceWide Worker 五个
 进程；`dts-ingest` 不构建两个前端、教师 NestJS 或 Nginx，它由 Python 进程持有数据库、国内
 HMAC、账本和投影事务，并拉起使用阿里云官方诊断包内 Kafka Java Client 1.0.0 的受控子进程
-负责 Kafka 传输。Java 以受消息数和 8 MiB 双重限制的批次交付原始 Avro 消息；Python 先完成
-整批解码、国内 HMAC 和 PostgreSQL 原子事务，成功后才返回一个 `DURABLE_ACK_BATCH`，Java
+负责 Kafka 传输。direct 模式下，Java 以 Python 下发的精确地区表白名单做无业务字段的前置路由：已知控制事件和
+能够确定不在白名单内的表只传 offset 与源时间；表身份含糊或属于白名单时，把官方 SDK 已解码的
+`Record` 直接归一化为结构化 JSON。精确命中业务表时还按 Python 下发的同一份来源字段白名单裁剪
+`fields/beforeImages/afterImages`，不在 Java 复制业务映射。queued 模式保持完整事件账本语义，
+不启用前置过滤和字段裁剪，但同样使用结构化协议。运行热路径不再执行 Avro 重编码、Base64 或
+Python `fastavro` 二次解码。Python 对结构化事件完成验证、国内 HMAC 和 PostgreSQL 原子事务，轻量事件也进入同一事务推进
+数据库 checkpoint。成功后才返回一个 `DURABLE_ACK_BATCH`，Java
 随后仅对最后一条连续 ADVANCE 请求 SDK checkpoint。任一数据库错误都不会产生 ACK。`dts-diagnose` 固定封装阿里云
 排错文档链接的 Java 8 官方诊断 JAR，仅在
 国内 PRE 原项目中临时替换 `dts-ingest` 做协议 A/B，不是第四个常驻项目。根
@@ -183,15 +188,18 @@ Pod 设置为 `2` 个或更多副本；海外、国内 DTS 分别使用独立 Ga
 明确错误后立即停止并切回 `dts-ingest`。完整步骤、JAR 来源与 SHA-256 见
 [`gaea/README.md`](gaea/README.md) 和 [`gaea/dts-diagnose/SOURCE.md`](gaea/dts-diagnose/SOURCE.md)。
 每个 DTS 进程启动时先只读校验目标库，再启动官方 SDK 主流程；首条官方 `UserRecord` 到达受控
-listener 后才证明 Kafka 消费与 DTS 解码路径已建立。Java 按记录数和 8 MiB payload 双重限界逐条
-发送 EVENT 帧；Python 在任何 SQL 前完成整批解码与国内 HMAC，再以一个 PostgreSQL 事务持久化
+listener 后才证明 Kafka 消费与 DTS 解码路径已建立。Java/Python 使用版本化协议；首条官方记录
+必须在 READY 前完成结构化归一化。Java 按记录数和 8 MiB 结构化 payload 双重限界逐条发送 EVENT
+帧；明确无关事件只发位点，含糊事件发送完整结构，精确业务表只发送允许字段。构建阶段仍用固定
+Avro 联合类型 fixture 做官方 SDK 解码/编码 round-trip 自测，但该编码不进入运行热路径。
+Python 在任何 SQL 前完成结构验证与国内 HMAC，再以一个 PostgreSQL 事务持久化
 连续批次。只有该事务提交后才返回一次批量 durable ACK，Java 才对最后一条连续 ADVANCE 调用官方
 `DefaultUserRecord.commit()`；REPLAY 不调用。国内进程
 在该启动门禁成功后、readiness 之前幂等登记一条只含契约版本和 HMAC
 密钥 fingerprint 的受限状态行；该行不含密钥或学生标识。TCP 失败输出 `DTS_BROKER_TCP_*`
 稳定错误码仍由保留的 `kafka_python` 回退模式提供；正式 Gaea 默认的 Java transport 会把官方
 Kafka 网络时间线写到 stderr，stdout 只用于 Java/Python NDJSON 协议。Java 启动或运行错误只向
-Python 返回稳定错误码，不把密码或原始 Avro 写入协议日志。
+Python 返回稳定错误码，不把密码、原始 Avro 或结构化业务字段写入协议日志。
 
 仅当显式设置 `TIT_DTS_TRANSPORT=kafka_python` 做回退诊断时，旧 Kafka 启动日志先输出脱敏的客户端契约摘要（客户端版本、
 API 自动协商模式、SASL 协议、partition 和有界超时），再依次输出 `consumer_open`、`bootstrap_auth`、

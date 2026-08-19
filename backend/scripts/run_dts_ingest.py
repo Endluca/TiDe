@@ -462,6 +462,9 @@ def _start_ingest_once(
                 processor,
                 resume_offset=checkpoint,
                 resume_source_timestamp=resume_source_timestamp,
+                lightweight_prefilter_enabled=(
+                    getattr(contract, "projection_mode", "queued") == "direct"
+                ),
                 idle_timeout_ms=args.idle_timeout_ms,
                 stop_requested=lambda: _stop_requested,
             )

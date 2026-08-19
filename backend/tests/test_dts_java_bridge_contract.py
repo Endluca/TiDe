@@ -109,7 +109,7 @@ def test_official_java_bridge_only_normalizes_empty_image_enums() -> None:
     assert ".setAfterImages(" not in normalization
 
 
-def test_first_official_record_is_encoded_before_ready_and_reused() -> None:
+def test_first_official_record_is_normalized_before_ready_and_reused() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
     startup = source[
         source.index("firstRecord = awaitRecord(") : source.index(
@@ -122,10 +122,52 @@ def test_first_official_record_is_encoded_before_ready_and_reused() -> None:
         )
     ]
 
-    assert startup.index("firstRecord.encodedPayload();") < startup.index(
+    assert startup.index("firstRecord.structuredRecordJson();") < startup.index(
         "emit(ready);"
     )
-    assert "byte[] payload = envelope.encodedPayload();" in emit_event
+    assert "String recordJson = envelope.structuredRecordJson();" in emit_event
+    assert '\",\\\"record\\\":"' in emit_event
+    assert "payload_base64" not in emit_event
+
+
+def test_bridge_prefilters_only_confidently_identified_unsupported_records() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+    classifier = source[
+        source.index("static boolean isLightweightRecord(") : source.index(
+            "/**\n     * Encode with the model bundled"
+        )
+    ]
+    poll = source[
+        source.index("private void handlePoll(") : source.index(
+            "private RecordEnvelope nextRecord("
+        )
+    ]
+
+    assert 'requiredStringArray(\n                command, "supported_table_names")' in source
+    assert 'requiredStringArray(\n                command, "data_operations")' in source
+    assert 'requiredStringArray(\n                command, "control_operations")' in source
+    assert 'requiredBoolean(\n                command, "lightweight_prefilter_enabled")' in source
+    assert '"source_field_whitelist"' in source
+    assert "sourceFieldWhitelist.get(" in source
+    assert "boolean lightweight = lightweightPrefilterEnabled" in source
+    assert "&& isLightweightRecord(" in source
+    assert "controlOperationNames.contains(operation)" in classifier
+    assert "!dataOperationNames.contains(operation)" in classifier
+    assert "return false;" in classifier
+    assert "sourceRecord.getTags()" in classifier
+    assert "sourceRecord.getObjectName()" in classifier
+    assert "tableName != null" in classifier
+    assert "protocolPayloadBytes()" in poll
+    assert 'event.put("lightweight", true);' in source
+
+
+def test_build_time_fixture_proves_supported_and_unsupported_classification() -> None:
+    source = AVRO_SELF_TEST.read_text(encoding="utf-8")
+
+    assert 'supportedTables.add("synthetic")' in source
+    assert 'supportedTables.add("dom_teacher")' in source
+    assert "supported table was prefiltered" in source
+    assert "unsupported table was not prefiltered" in source
 
 
 def test_build_time_avro_fixture_covers_every_image_union_branch() -> None:
@@ -177,10 +219,33 @@ def test_official_java_bridge_encoding_diagnostics_do_not_render_data() -> None:
     assert "System.err.println(code + \" error_type=\" + errorType)" in source
 
 
+def test_runtime_protocol_never_reencodes_or_base64_wraps_records() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+    runtime = source[
+        source.index("private void consumeOfficialRecord(") : source.index(
+            "/**\n     * Encode with the model bundled"
+        )
+    ]
+    envelope = source[
+        source.index("private static final class RecordEnvelope") : source.index(
+            "private static final class AcknowledgementDecision"
+        )
+    ]
+
+    assert "normalizeOfficialRecord(" in runtime
+    assert "structuredRecordJson()" in runtime
+    assert "payload_base64" not in runtime
+    assert "Base64" not in runtime
+    assert ".toByteBuffer()" not in runtime
+    assert "encodeOfficialRecord(" not in envelope
+    assert "structuredRecordJson" in envelope
+
+
 def test_official_java_bridge_preserves_database_before_sdk_checkpoint() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
 
-    assert '"payload_base64"' in source
+    assert '\\"record_bytes\\"' in source
+    assert '\",\\\"record\\\":"' in source
     assert '"DURABLE_ACK_BATCH"' in source
     assert 'message("SDK_CHECKPOINTS_ACCEPTED")' in source
     batch_ack = source[

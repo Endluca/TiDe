@@ -1037,8 +1037,14 @@ def test_permanent_or_unknown_startup_errors_are_not_retried(
     )
 
 
+@pytest.mark.parametrize(
+    ("projection_mode", "expected_prefilter"),
+    [("queued", False), ("direct", True)],
+)
 def test_official_java_startup_receives_database_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
+    projection_mode: str,
+    expected_prefilter: bool,
 ) -> None:
     events: list[object] = []
     stream_settings = SimpleNamespace(
@@ -1067,6 +1073,9 @@ def test_official_java_startup_receives_database_checkpoint(
             self, **kwargs: object
         ) -> None:
             events.append(("privacy_contract", kwargs))
+
+        def enable_direct_projection(self, projector: object) -> None:
+            events.append(("direct_projection", projector))
 
         def close(self) -> None:
             events.append("sink_closed")
@@ -1118,6 +1127,11 @@ def test_official_java_startup_receives_database_checkpoint(
     )
     monkeypatch.setattr(
         run_dts_ingest,
+        "DtsDirectWideProjector",
+        lambda *_args, **_kwargs: Projector(),
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
         "OfficialJavaDtsTransport",
         JavaTransport,
     )
@@ -1134,6 +1148,7 @@ def test_official_java_startup_receives_database_checkpoint(
         database_settings=database_settings,
         transport_mode="official_java",
         activation_settings=None,
+        projection_mode=projection_mode,
     )
     args = run_dts_ingest.build_parser().parse_args(
         ["--idle-timeout-ms", "4321"]
@@ -1151,6 +1166,9 @@ def test_official_java_startup_receives_database_checkpoint(
     assert init[1] is stream_settings
     assert init[3]["resume_offset"] == 42
     assert init[3]["resume_source_timestamp"] == 1786523300
+    assert (
+        init[3]["lightweight_prefilter_enabled"] is expected_prefilter
+    )
     assert init[3]["idle_timeout_ms"] == 4321
     assert callable(init[3]["stop_requested"])
     assert events.index("privacy_state") < events.index("java_probe")

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import io
 import json
 import queue
 from dataclasses import replace
@@ -9,11 +7,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastavro import schemaless_writer
 
 from app import dts_java_transport, dts_source_consumer
 from app.dts_java_transport import (
     DtsJavaTransportError,
+    JAVA_TRANSPORT_PROTOCOL_VERSION,
     OfficialJavaDtsTransport,
     java_child_environment,
     java_transport_command,
@@ -22,6 +20,39 @@ from app.dts_source_consumer import (
     DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256,
     DtsConsumerSettings,
 )
+
+
+def _event_record(
+    *,
+    offset: int = 42,
+    source_timestamp: int | None = None,
+) -> dict[str, Any]:
+    timestamp = (
+        1786550400 + offset
+        if source_timestamp is None
+        else source_timestamp
+    )
+    return {
+        "id": offset,
+        "sourceTimestamp": timestamp,
+        "sourcePosition": f"lsn:{offset}",
+        "safeSourcePosition": f"lsn:{offset}",
+        "sourceTxid": f"tx-{offset}",
+        "operation": "INSERT",
+        "objectName": "public.ovs_appoint",
+        "tags": {},
+        "fields": ["id"],
+        "beforeImages": None,
+        "afterImages": [str(offset)],
+    }
+
+
+def _record_bytes(record: dict[str, Any]) -> int:
+    return len(
+        json.dumps(record, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+    )
 
 
 class _FakeStdout:
@@ -60,12 +91,13 @@ class _FakeProcess:
     def __init__(
         self,
         *,
-        event_payload: bytes = b"avro",
+        event_record: dict[str, Any] | None = None,
         first_record_offset: int = 42,
         first_record_source_timestamp: int = 1786550400,
         avro_writer_schema_fingerprint: str | None = (
             DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256
         ),
+        ready_protocol_version: int = JAVA_TRANSPORT_PROTOCOL_VERSION,
         poll_error_code: str | None = None,
     ) -> None:
         self.lines: queue.Queue[str | None] = queue.Queue()
@@ -73,12 +105,16 @@ class _FakeProcess:
         self.stdin = _FakeStdin(self)
         self.returncode: int | None = None
         self.commands: list[dict[str, Any]] = []
-        self.event_payload = event_payload
+        self.event_record = event_record or _event_record(
+            offset=first_record_offset,
+            source_timestamp=first_record_source_timestamp,
+        )
         self.first_record_offset = first_record_offset
         self.first_record_source_timestamp = first_record_source_timestamp
         self.avro_writer_schema_fingerprint = (
             avro_writer_schema_fingerprint
         )
+        self.ready_protocol_version = ready_protocol_version
         self.poll_error_code = poll_error_code
         self.terminated = False
         self.spawn_kwargs: dict[str, object] = {}
@@ -104,6 +140,7 @@ class _FakeProcess:
                 "checkpoint_timestamp_seconds": checkpoint_timestamp,
                 "transport": "official_dts_sdk",
                 "subscribe_mode": "ASSIGN",
+                "protocol_version": self.ready_protocol_version,
             }
             if self.avro_writer_schema_fingerprint is not None:
                 ready["avro_writer_schema_fingerprint_sha256"] = (
@@ -126,12 +163,19 @@ class _FakeProcess:
                     "topic": "ovs-topic",
                     "partition": 0,
                     "offset": self.first_record_offset,
-                    "payload_base64": base64.b64encode(
-                        self.event_payload
-                    ).decode("ascii"),
+                    "source_timestamp": self.first_record_source_timestamp,
+                    "record_bytes": _record_bytes(self.event_record),
+                    "record": self.event_record,
                 }
             )
-            self.emit({"type": "BATCH_COMPLETE", "seen": 1})
+            self.emit(
+                {
+                    "type": "BATCH_COMPLETE",
+                    "seen": 1,
+                    "batch_bytes": _record_bytes(self.event_record),
+                    "transport_normalize_elapsed_ms": 0,
+                }
+            )
         elif message_type == "DURABLE_ACK_BATCH":
             acknowledgements = message["acks"]
             self.emit(
@@ -196,19 +240,54 @@ class _FakeBatchProcess(_FakeProcess):
             return
         self.commands.append(message)
         for offset in self.offsets:
+            record = _event_record(offset=offset)
             self.emit(
                 {
                     "type": "EVENT",
                     "topic": "ovs-topic",
                     "partition": 0,
                     "offset": offset,
-                    "payload_base64": base64.b64encode(b"avro").decode(
-                        "ascii"
-                    ),
+                    "source_timestamp": record["sourceTimestamp"],
+                    "record_bytes": _record_bytes(record),
+                    "record": record,
                 }
             )
         self.emit(
-            {"type": "BATCH_COMPLETE", "seen": self.completed_seen}
+            {
+                "type": "BATCH_COMPLETE",
+                "seen": self.completed_seen,
+                "batch_bytes": sum(
+                    _record_bytes(_event_record(offset=offset))
+                    for offset in self.offsets
+                ),
+                "transport_normalize_elapsed_ms": 0,
+            }
+        )
+
+
+class _FakeLightweightProcess(_FakeProcess):
+    def accept(self, message: dict[str, Any]) -> None:
+        if message["type"] != "POLL":
+            super().accept(message)
+            return
+        self.commands.append(message)
+        self.emit(
+            {
+                "type": "EVENT",
+                "topic": "ovs-topic",
+                "partition": 0,
+                "offset": self.first_record_offset,
+                "source_timestamp": self.first_record_source_timestamp,
+                "lightweight": True,
+            }
+        )
+        self.emit(
+            {
+                "type": "BATCH_COMPLETE",
+                "seen": 1,
+                "batch_bytes": 0,
+                "transport_normalize_elapsed_ms": 0,
+            }
         )
 
 
@@ -241,11 +320,6 @@ def _patch_batch_event_decoding(
 ) -> None:
     monkeypatch.setattr(
         dts_java_transport,
-        "decode_dts_sdk_1_4_avro",
-        lambda _: {},
-    )
-    monkeypatch.setattr(
-        dts_java_transport,
         "build_change_event",
         lambda *_args, **kwargs: SimpleNamespace(
             source_timestamp=1786550400 + int(kwargs["offset"]),
@@ -270,6 +344,7 @@ def _assert_batch_result(
     sdk_checkpoint_accepted: int,
     batch_bytes: int,
     durable_next_offset: int,
+    transport_prefiltered: int = 0,
 ) -> None:
     assert result["db_elapsed_ms"] >= 0
     assert result["sdk_ack_elapsed_ms"] >= 0
@@ -281,8 +356,13 @@ def _assert_batch_result(
         "ignored": ignored,
         "duplicates": duplicates,
         "committed": 0,
+        "transport_prefiltered": transport_prefiltered,
         "sdk_checkpoint_accepted": sdk_checkpoint_accepted,
         "batch_bytes": batch_bytes,
+        "transport_normalize_elapsed_ms": (
+            result["transport_normalize_elapsed_ms"]
+        ),
+        "event_normalize_elapsed_ms": result["event_normalize_elapsed_ms"],
         "db_elapsed_ms": result["db_elapsed_ms"],
         "sdk_ack_elapsed_ms": result["sdk_ack_elapsed_ms"],
         "batch_elapsed_ms": result["batch_elapsed_ms"],
@@ -349,15 +429,10 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     change_event = SimpleNamespace(source_timestamp=1786550400)
     monkeypatch.setattr(
         dts_java_transport,
-        "decode_dts_sdk_1_4_avro",
-        lambda payload: {"payload": payload},
-    )
-    monkeypatch.setattr(
-        dts_java_transport,
         "build_change_event",
         lambda record, **kwargs: (
             change_event
-            if record == {"payload": b"avro"}
+            if record == process.event_record
             and kwargs
             == {
                 "source_region": "ovs",
@@ -406,7 +481,7 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
         ignored=0,
         duplicates=0,
         sdk_checkpoint_accepted=1,
-        batch_bytes=4,
+        batch_bytes=_record_bytes(process.event_record),
         durable_next_offset=43,
     )
     assert observed_commands_at_process == [["START", "POLL"]]
@@ -419,6 +494,31 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     assert process.commands[0]["resume_offset"] == 42
     assert process.commands[0]["resume_source_timestamp"] == 1786550300
     assert process.commands[0]["password"] == "runtime-secret"
+    assert process.commands[0]["supported_table_names"] == sorted(
+        f"ovs_{suffix}"
+        for suffix in dts_source_consumer.SUPPORTED_TABLE_SUFFIXES_BY_REGION[
+            "ovs"
+        ]
+    )
+    assert process.commands[0]["data_operations"] == sorted(
+        dts_source_consumer.DATA_OPERATIONS
+    )
+    assert process.commands[0]["control_operations"] == sorted(
+        dts_source_consumer.CONTROL_OPERATIONS
+    )
+    assert process.commands[0]["lightweight_prefilter_enabled"] is False
+    assert (
+        process.commands[0]["protocol_version"]
+        == JAVA_TRANSPORT_PROTOCOL_VERSION
+    )
+    assert process.commands[0]["source_field_whitelist"] == {
+        f"ovs_{suffix}": sorted(
+            dts_source_consumer.SOURCE_FIELD_WHITELIST[suffix]
+        )
+        for suffix in dts_source_consumer.SUPPORTED_TABLE_SUFFIXES_BY_REGION[
+            "ovs"
+        ]
+    }
     child_env = process.spawn_kwargs["env"]
     assert isinstance(child_env, dict)
     assert not any(name.startswith("TIT_") for name in child_env)
@@ -435,6 +535,187 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     }
 
 
+def test_lightweight_event_skips_avro_and_still_durably_checkpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeLightweightProcess()
+    observed: list[object] = []
+
+    class Processor:
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            assert len(events) == 1
+            event = events[0]
+            observed.append(event)
+            assert isinstance(event, dts_source_consumer.DtsChangeEvent)
+            assert event.operation == "NOOP"
+            assert event.table_name is None
+            assert event.offset == 42
+            assert event.source_timestamp == 1786550400
+            return (SimpleNamespace(status="IGNORED"),)
+
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        lightweight_prefilter_enabled=True,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+
+    transport.startup_probe()
+    result = transport.run(max_messages=1, commit_offsets=True)
+    transport.close()
+
+    assert len(observed) == 1
+    _assert_batch_result(
+        result,
+        requested_max_messages=1,
+        seen=1,
+        processed=0,
+        ignored=1,
+        duplicates=0,
+        sdk_checkpoint_accepted=1,
+        batch_bytes=0,
+        durable_next_offset=43,
+        transport_prefiltered=1,
+    )
+    assert process.commands[2] == {
+        "type": "DURABLE_ACK_BATCH",
+        "acks": [
+            {
+                "offset": 42,
+                "next_offset": 43,
+                "source_timestamp": 1786550400,
+                "checkpoint_action": "ADVANCE",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("message", "error_code"),
+    [
+        (
+            {
+                "topic": "ovs-topic",
+                "partition": 0,
+                "offset": 42,
+                "source_timestamp": 1786550400,
+                "lightweight": True,
+                "payload_base64": "YXY=",
+            },
+            "DTS_OFFICIAL_JAVA_EVENT_RECORD_INVALID",
+        ),
+        (
+            {
+                "topic": "ovs-topic",
+                "partition": 0,
+                "offset": 42,
+                "lightweight": True,
+            },
+            "DTS_OFFICIAL_JAVA_TRANSPORT_PROTOCOL_INVALID",
+        ),
+    ],
+    ids=["payload-present", "timestamp-missing"],
+)
+def test_malformed_lightweight_event_is_rejected(
+    message: dict[str, Any],
+    error_code: str,
+) -> None:
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        SimpleNamespace(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(_FakeProcess()),
+    )
+
+    with pytest.raises(DtsJavaTransportError, match=f"^{error_code}$"):
+        transport._parse_event(message)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {
+            "topic": "ovs-topic",
+            "partition": 0,
+            "offset": 42,
+            "source_timestamp": 1786550400,
+            "record_bytes": 4,
+            "payload_base64": "YXY=",
+        },
+        {
+            "topic": "ovs-topic",
+            "partition": 0,
+            "offset": 42,
+            "source_timestamp": 1786550400,
+            "record_bytes": 0,
+            "record": {},
+        },
+        {
+            "topic": "ovs-topic",
+            "partition": 0,
+            "offset": 42,
+            "record_bytes": 2,
+            "record": {},
+        },
+    ],
+    ids=["legacy-base64", "zero-bytes", "timestamp-missing"],
+)
+def test_malformed_structured_event_is_rejected(
+    message: dict[str, Any],
+) -> None:
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        SimpleNamespace(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(_FakeProcess()),
+    )
+
+    with pytest.raises(
+        DtsJavaTransportError,
+        match="^DTS_OFFICIAL_JAVA_EVENT_RECORD_INVALID$|"
+        "^DTS_OFFICIAL_JAVA_TRANSPORT_PROTOCOL_INVALID$",
+    ):
+        transport._parse_event(message)
+
+
+def test_structured_record_timestamp_mismatch_never_reaches_database_or_ack(
+) -> None:
+    process = _FakeProcess(
+        event_record=_event_record(source_timestamp=1786550399)
+    )
+
+    class Processor:
+        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
+            del events
+            raise AssertionError("timestamp mismatch must precede DB write")
+
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        Processor(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+    transport.startup_probe()
+
+    with pytest.raises(
+        DtsJavaTransportError,
+        match="^DTS_OFFICIAL_JAVA_EVENT_TIMESTAMP_MISMATCH$",
+    ):
+        transport.run(max_messages=1, commit_offsets=True)
+    transport.close(force=True)
+
+    assert [item["type"] for item in process.commands] == ["START", "POLL"]
+
+
 def test_failed_database_transaction_never_acknowledges_java(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -446,11 +727,6 @@ def test_failed_database_transaction_never_acknowledges_java(
             raise RuntimeError("database transaction failed")
 
     change_event = SimpleNamespace(source_timestamp=1786550400)
-    monkeypatch.setattr(
-        dts_java_transport,
-        "decode_dts_sdk_1_4_avro",
-        lambda _: {},
-    )
     monkeypatch.setattr(
         dts_java_transport,
         "build_change_event",
@@ -520,7 +796,10 @@ def test_three_events_use_one_database_batch_before_one_durable_ack(
         ignored=1,
         duplicates=0,
         sdk_checkpoint_accepted=3,
-        batch_bytes=12,
+        batch_bytes=sum(
+            _record_bytes(_event_record(offset=offset))
+            for offset in (42, 43, 44)
+        ),
         durable_next_offset=45,
     )
     assert [item["type"] for item in process.commands] == [
@@ -608,7 +887,10 @@ def test_batch_replay_and_advances_preserve_checkpoint_order_and_counts(
         ignored=1,
         duplicates=1,
         sdk_checkpoint_accepted=2,
-        batch_bytes=12,
+        batch_bytes=sum(
+            _record_bytes(_event_record(offset=offset))
+            for offset in (41, 42, 43)
+        ),
         durable_next_offset=44,
     )
     assert process.commands[2] == {
@@ -669,37 +951,22 @@ def test_batch_count_mismatch_fails_before_database_and_ack(
 
 def test_official_generated_union_payload_reaches_durable_ack() -> None:
     raw = {
-        "version": 1,
         "id": 8202,
         "sourceTimestamp": 1786550400,
         "sourcePosition": "lsn:3",
         "safeSourcePosition": "lsn:3",
         "sourceTxid": "tx-3",
-        "source": {"sourceType": "PostgreSQL", "version": "14"},
         "operation": "INSERT",
         "objectName": "public.ovs_appoint",
-        "processTimestamps": None,
         "tags": {},
-        "fields": [
-            {"name": "id", "dataTypeNumber": 20},
-            {"name": "nullable_value", "dataTypeNumber": 12},
-        ],
+        "fields": ["id", "nullable_value"],
         "beforeImages": None,
         "afterImages": [
-            (
-                "com.alibaba.dts.formats.avro.Integer",
-                {"precision": 20, "value": "8"},
-            ),
-            ("com.alibaba.dts.formats.avro.EmptyObject", "NONE"),
+            {"precision": 20, "value": "8"},
+            "NONE",
         ],
     }
-    payload = io.BytesIO()
-    schemaless_writer(
-        payload,
-        dts_source_consumer._parsed_dts_sdk_1_4_avro_writer_schema(),
-        raw,
-    )
-    process = _FakeProcess(event_payload=payload.getvalue())
+    process = _FakeProcess(event_record=raw)
     observed_commands_at_process: list[list[str]] = []
 
     class Processor:
@@ -738,15 +1005,17 @@ def test_official_generated_union_payload_reaches_durable_ack() -> None:
     ]
 
 
-def test_official_java_encoding_failure_never_reaches_database_or_ack() -> None:
+def test_official_java_normalization_failure_never_reaches_database_or_ack() -> None:
     process = _FakeProcess(
-        poll_error_code="DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED"
+        poll_error_code="DTS_OFFICIAL_JAVA_EVENT_NORMALIZATION_FAILED"
     )
 
     class Processor:
         def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
             del events
-            raise AssertionError("encoding failure must precede database write")
+            raise AssertionError(
+                "normalization failure must precede database write"
+            )
 
     transport = OfficialJavaDtsTransport(
         _settings(),
@@ -760,39 +1029,7 @@ def test_official_java_encoding_failure_never_reaches_database_or_ack() -> None:
 
     with pytest.raises(
         DtsJavaTransportError,
-        match="^DTS_OFFICIAL_JAVA_EVENT_ENCODING_FAILED$",
-    ):
-        transport.run(max_messages=1, commit_offsets=True)
-    transport.close(force=True)
-
-    assert [item["type"] for item in process.commands] == ["START", "POLL"]
-
-
-def test_single_object_header_leak_never_reaches_database_or_ack() -> None:
-    # The Java bridge must strip Avro's C3 01 + fingerprint envelope before
-    # sending the schemaless datum expected by the Python reader.
-    process = _FakeProcess(
-        event_payload=b"\xc3\x01" + (b"\x00" * 8) + b"not-a-datum"
-    )
-
-    class Processor:
-        def process_batch(self, events: tuple[object, ...]) -> tuple[object, ...]:
-            del events
-            raise AssertionError("invalid envelope must fail before DB write")
-
-    transport = OfficialJavaDtsTransport(
-        _settings(),
-        Processor(),  # type: ignore[arg-type]
-        resume_offset=42,
-        resume_source_timestamp=1786550300,
-        command=("java", "bridge"),
-        process_factory=_factory(process),
-    )
-    transport.startup_probe()
-
-    with pytest.raises(
-        dts_source_consumer.DtsRecordError,
-        match="^DTS_AVRO_DECODE_FAILED$",
+        match="^DTS_OFFICIAL_JAVA_EVENT_NORMALIZATION_FAILED$",
     ):
         transport.run(max_messages=1, commit_offsets=True)
     transport.close(force=True)
@@ -850,6 +1087,27 @@ def test_official_writer_schema_mismatch_is_rejected_before_poll(
     assert [item["type"] for item in process.commands] == ["START"]
 
 
+def test_protocol_version_mismatch_is_rejected_before_poll() -> None:
+    process = _FakeProcess(ready_protocol_version=1)
+    transport = OfficialJavaDtsTransport(
+        _settings(),
+        SimpleNamespace(),  # type: ignore[arg-type]
+        resume_offset=42,
+        resume_source_timestamp=1786550300,
+        command=("java", "bridge"),
+        process_factory=_factory(process),
+    )
+
+    with pytest.raises(
+        DtsJavaTransportError,
+        match="^DTS_OFFICIAL_JAVA_READY_IDENTITY_MISMATCH$",
+    ):
+        transport.startup_probe()
+
+    assert process.terminated is True
+    assert [item["type"] for item in process.commands] == ["START"]
+
+
 def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -861,11 +1119,6 @@ def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
             return (SimpleNamespace(status="DUPLICATE"),)
 
     change_event = SimpleNamespace(source_timestamp=1786550400)
-    monkeypatch.setattr(
-        dts_java_transport,
-        "decode_dts_sdk_1_4_avro",
-        lambda _: {},
-    )
     monkeypatch.setattr(
         dts_java_transport,
         "build_change_event",
@@ -897,7 +1150,7 @@ def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
         ignored=0,
         duplicates=1,
         sdk_checkpoint_accepted=0,
-        batch_bytes=4,
+        batch_bytes=_record_bytes(process.event_record),
         durable_next_offset=42,
     )
     assert process.commands[2] == {

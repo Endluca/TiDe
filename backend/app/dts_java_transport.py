@@ -10,8 +10,6 @@ synchronous Kafka broker commit.
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import os
 import queue
@@ -25,12 +23,16 @@ from dataclasses import dataclass
 from typing import Any, IO
 
 from .dts_source_consumer import (
+    CONTROL_OPERATIONS,
+    DATA_OPERATIONS,
     DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256,
+    SOURCE_FIELD_WHITELIST,
+    SUPPORTED_TABLE_SUFFIXES_BY_REGION,
     DtsConfigurationError,
     DtsConsumerSettings,
+    DtsChangeEvent,
     DtsEventProcessor,
     build_change_event,
-    decode_dts_sdk_1_4_avro,
     protect_domestic_student_ids,
 )
 
@@ -45,6 +47,7 @@ DEFAULT_JAVA_TRANSPORT_COMMAND = (
 )
 JAVA_TRANSPORT_START_TIMEOUT_SECONDS = 305.0
 JAVA_TRANSPORT_CLOSE_TIMEOUT_SECONDS = 15.0
+JAVA_TRANSPORT_PROTOCOL_VERSION = 2
 _ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,127}$")
 _EOF = object()
 _JAVA_CHILD_ENV_ALLOWLIST = frozenset(
@@ -74,10 +77,13 @@ class DtsJavaTransportError(DtsConfigurationError):
 
 @dataclass(frozen=True)
 class _JavaEvent:
-    payload: bytes
+    record: Mapping[str, Any] | None
+    record_bytes: int
     topic: str
     partition: int
     offset: int
+    source_timestamp: int | None = None
+    lightweight: bool = False
 
 
 def java_transport_command(
@@ -125,6 +131,7 @@ class OfficialJavaDtsTransport:
         *,
         resume_offset: int | None,
         resume_source_timestamp: int | None,
+        lightweight_prefilter_enabled: bool = False,
         idle_timeout_ms: int = 10_000,
         command: Sequence[str] | None = None,
         process_factory: Callable[..., Any] = subprocess.Popen,
@@ -147,6 +154,10 @@ class OfficialJavaDtsTransport:
             )
         if (resume_offset is None) != (resume_source_timestamp is None):
             raise DtsJavaTransportError("DTS_DATABASE_CHECKPOINT_INCOMPLETE")
+        if not isinstance(lightweight_prefilter_enabled, bool):
+            raise DtsJavaTransportError(
+                "DTS_OFFICIAL_JAVA_PREFILTER_CONFIGURATION_INVALID"
+            )
         if (
             resume_offset is None
             and settings.start_timestamp_seconds is None
@@ -164,6 +175,7 @@ class OfficialJavaDtsTransport:
         self.processor = processor
         self.resume_offset = resume_offset
         self.resume_source_timestamp = resume_source_timestamp
+        self.lightweight_prefilter_enabled = lightweight_prefilter_enabled
         self.idle_timeout_ms = idle_timeout_ms
         self._command = tuple(command or java_transport_command())
         self._process_factory = process_factory
@@ -213,6 +225,26 @@ class OfficialJavaDtsTransport:
                         self.settings.start_timestamp_seconds
                     ),
                     "idle_timeout_ms": self.idle_timeout_ms,
+                    "protocol_version": JAVA_TRANSPORT_PROTOCOL_VERSION,
+                    "supported_table_names": sorted(
+                        f"{self.settings.source_region}_{suffix}"
+                        for suffix in SUPPORTED_TABLE_SUFFIXES_BY_REGION[
+                            self.settings.source_region
+                        ]
+                    ),
+                    "source_field_whitelist": {
+                        f"{self.settings.source_region}_{suffix}": sorted(
+                            SOURCE_FIELD_WHITELIST[suffix]
+                        )
+                        for suffix in SUPPORTED_TABLE_SUFFIXES_BY_REGION[
+                            self.settings.source_region
+                        ]
+                    },
+                    "data_operations": sorted(DATA_OPERATIONS),
+                    "control_operations": sorted(CONTROL_OPERATIONS),
+                    "lightweight_prefilter_enabled": (
+                        self.lightweight_prefilter_enabled
+                    ),
                 }
             )
             ready = self._receive(
@@ -238,6 +270,8 @@ class OfficialJavaDtsTransport:
             if (
                 ready.get("transport") != "official_dts_sdk"
                 or ready.get("subscribe_mode") != "ASSIGN"
+                or ready.get("protocol_version")
+                != JAVA_TRANSPORT_PROTOCOL_VERSION
             ):
                 raise DtsJavaTransportError(
                     "DTS_OFFICIAL_JAVA_READY_IDENTITY_MISMATCH"
@@ -310,10 +344,11 @@ class OfficialJavaDtsTransport:
         """Process one bounded batch and ACK only after its DB commit.
 
         Java streams individual EVENT frames to keep the line protocol
-        bounded, then closes the batch with BATCH_COMPLETE.  Python decodes
-        and protects every domestic identifier before issuing any SQL.  The
-        sink commits the ordered batch atomically; only then is one batched
-        acknowledgement sent back to the official SDK bridge.
+        bounded, then closes the batch with BATCH_COMPLETE.  The official SDK
+        decodes Avro once; Java emits only the normalized structured record.
+        Python validates it and protects every domestic identifier before SQL.
+        The sink commits the ordered batch atomically; only then is one
+        batched acknowledgement sent back to the official SDK bridge.
         """
 
         if not self._started or self._closed:
@@ -333,8 +368,11 @@ class OfficialJavaDtsTransport:
             "ignored": 0,
             "duplicates": 0,
             "committed": 0,
+            "transport_prefiltered": 0,
             "sdk_checkpoint_accepted": 0,
             "batch_bytes": 0,
+            "transport_normalize_elapsed_ms": 0,
+            "event_normalize_elapsed_ms": 0,
             "db_elapsed_ms": 0,
             "sdk_ack_elapsed_ms": 0,
             "batch_elapsed_ms": 0,
@@ -352,6 +390,7 @@ class OfficialJavaDtsTransport:
         changes = []
         acknowledgements: list[dict[str, int | str]] = []
         working_expected_offset = self._expected_offset
+        event_normalize_elapsed_seconds = 0.0
         while True:
             message = self._receive(
                 expected={"EVENT", "BATCH_COMPLETE"},
@@ -372,6 +411,12 @@ class OfficialJavaDtsTransport:
                     raise DtsJavaTransportError(
                         "DTS_OFFICIAL_JAVA_BATCH_BYTES_MISMATCH"
                     )
+                counters["transport_normalize_elapsed_ms"] = (
+                    self._required_non_negative_int(
+                        message,
+                        "transport_normalize_elapsed_ms",
+                    )
+                )
                 break
 
             event = self._parse_event(message)
@@ -385,23 +430,57 @@ class OfficialJavaDtsTransport:
                     "DTS_OFFICIAL_JAVA_EVENT_OFFSET_NOT_CONTIGUOUS"
                 )
             replay = event.offset < expected_offset
-            record = decode_dts_sdk_1_4_avro(event.payload)
-            change_event = build_change_event(
-                record,
-                source_region=self.settings.source_region,
-                topic=event.topic,
-                partition=event.partition,
-                offset=event.offset,
-            )
-            change_event = protect_domestic_student_ids(
-                change_event,
-                self.settings,
-            )
+            if event.lightweight:
+                if event.source_timestamp is None:  # pragma: no cover - parser guard
+                    raise DtsJavaTransportError(
+                        "DTS_OFFICIAL_JAVA_EVENT_TIMESTAMP_INVALID"
+                    )
+                change_event = DtsChangeEvent(
+                    source_region=self.settings.source_region,
+                    topic=event.topic,
+                    partition=event.partition,
+                    offset=event.offset,
+                    record_id=event.offset,
+                    source_timestamp=event.source_timestamp,
+                    source_txid="",
+                    source_position=str(event.offset),
+                    operation="NOOP",
+                    database_name=None,
+                    schema_name=None,
+                    table_name=None,
+                    before=None,
+                    after=None,
+                )
+                counters["transport_prefiltered"] += 1
+            else:
+                if event.record is None:  # pragma: no cover - parser guard
+                    raise DtsJavaTransportError(
+                        "DTS_OFFICIAL_JAVA_EVENT_RECORD_INVALID"
+                    )
+                normalize_started = self._monotonic()
+                change_event = build_change_event(
+                    event.record,
+                    source_region=self.settings.source_region,
+                    topic=event.topic,
+                    partition=event.partition,
+                    offset=event.offset,
+                )
+                change_event = protect_domestic_student_ids(
+                    change_event,
+                    self.settings,
+                )
+                if change_event.source_timestamp != event.source_timestamp:
+                    raise DtsJavaTransportError(
+                        "DTS_OFFICIAL_JAVA_EVENT_TIMESTAMP_MISMATCH"
+                    )
+                event_normalize_elapsed_seconds += (
+                    self._monotonic() - normalize_started
+                )
             checkpoint_action = "REPLAY" if replay else "ADVANCE"
             next_offset = expected_offset if replay else event.offset + 1
             events.append(event)
             changes.append(change_event)
-            counters["batch_bytes"] += len(event.payload)
+            counters["batch_bytes"] += event.record_bytes
             acknowledgements.append(
                 {
                     "offset": event.offset,
@@ -412,6 +491,11 @@ class OfficialJavaDtsTransport:
             )
             if not replay:
                 working_expected_offset = next_offset
+
+        counters["event_normalize_elapsed_ms"] = max(
+            0,
+            int(event_normalize_elapsed_seconds * 1000),
+        )
 
         if not events:
             counters["batch_elapsed_ms"] = max(
@@ -663,26 +747,59 @@ class OfficialJavaDtsTransport:
                 "DTS_OFFICIAL_JAVA_EVENT_PARTITION_MISMATCH"
             )
         offset = self._required_non_negative_int(message, "offset")
-        payload_base64 = message.get("payload_base64")
-        if not isinstance(payload_base64, str) or not payload_base64:
+        lightweight = message.get("lightweight", False)
+        if not isinstance(lightweight, bool):
             raise DtsJavaTransportError(
-                "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID"
+                "DTS_OFFICIAL_JAVA_TRANSPORT_PROTOCOL_INVALID"
             )
-        try:
-            payload = base64.b64decode(payload_base64, validate=True)
-        except (binascii.Error, ValueError) as exc:
+        if lightweight:
+            if (
+                message.get("record") is not None
+                or message.get("record_bytes") is not None
+                or message.get("payload_base64") is not None
+            ):
+                raise DtsJavaTransportError(
+                    "DTS_OFFICIAL_JAVA_EVENT_RECORD_INVALID"
+                )
+            return _JavaEvent(
+                record=None,
+                record_bytes=0,
+                topic=topic,
+                partition=partition,
+                offset=offset,
+                source_timestamp=self._required_non_negative_int(
+                    message,
+                    "source_timestamp",
+                ),
+                lightweight=True,
+            )
+        if message.get("payload_base64") is not None:
             raise DtsJavaTransportError(
-                "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID"
-            ) from exc
-        if not payload:
+                "DTS_OFFICIAL_JAVA_EVENT_RECORD_INVALID"
+            )
+        record = message.get("record")
+        if not isinstance(record, Mapping):
             raise DtsJavaTransportError(
-                "DTS_OFFICIAL_JAVA_EVENT_PAYLOAD_INVALID"
+                "DTS_OFFICIAL_JAVA_EVENT_RECORD_INVALID"
+            )
+        record_bytes = self._required_non_negative_int(
+            message,
+            "record_bytes",
+        )
+        if record_bytes < 2:
+            raise DtsJavaTransportError(
+                "DTS_OFFICIAL_JAVA_EVENT_RECORD_INVALID"
             )
         return _JavaEvent(
-            payload=payload,
+            record=record,
+            record_bytes=record_bytes,
             topic=topic,
             partition=partition,
             offset=offset,
+            source_timestamp=self._required_non_negative_int(
+                message,
+                "source_timestamp",
+            ),
         )
 
     @staticmethod
@@ -700,6 +817,7 @@ class OfficialJavaDtsTransport:
 
 __all__ = [
     "DEFAULT_JAVA_TRANSPORT_COMMAND",
+    "JAVA_TRANSPORT_PROTOCOL_VERSION",
     "DtsJavaTransportError",
     "OfficialJavaDtsTransport",
     "java_child_environment",
