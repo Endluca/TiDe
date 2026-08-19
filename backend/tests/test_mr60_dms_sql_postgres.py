@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
 
+import psycopg
 import pytest
 from sqlalchemy import create_engine, text
 
@@ -17,6 +19,88 @@ POSTGRES_BINARIES = ("initdb", "pg_ctl", "postgres", "psql")
 
 def _postgres_tools_available() -> bool:
     return all(shutil.which(binary) for binary in POSTGRES_BINARIES)
+
+
+def _split_dms_onequery_statements(sql_source: str) -> list[str]:
+    """Approximate DMS onequery splitting, which recognizes only bare $$ blocks."""
+    statements: list[str] = []
+    statement_start = 0
+    index = 0
+    state = "normal"
+
+    while index < len(sql_source):
+        pair = sql_source[index : index + 2]
+        character = sql_source[index]
+
+        if state == "normal":
+            if pair == "--":
+                state = "line_comment"
+                index += 2
+                continue
+            if pair == "/*":
+                state = "block_comment"
+                index += 2
+                continue
+            if pair == "$$":
+                state = "dollar_quote"
+                index += 2
+                continue
+            if character == "'":
+                state = "single_quote"
+            elif character == '"':
+                state = "double_quote"
+            elif character == ";":
+                statement = sql_source[statement_start : index + 1].strip()
+                if statement:
+                    statements.append(statement)
+                statement_start = index + 1
+            index += 1
+            continue
+
+        if state == "line_comment":
+            if character == "\n":
+                state = "normal"
+            index += 1
+            continue
+
+        if state == "block_comment":
+            if pair == "*/":
+                state = "normal"
+                index += 2
+            else:
+                index += 1
+            continue
+
+        if state == "dollar_quote":
+            if pair == "$$":
+                state = "normal"
+                index += 2
+            else:
+                index += 1
+            continue
+
+        if state == "single_quote":
+            if pair == "''":
+                index += 2
+            else:
+                if character == "'":
+                    state = "normal"
+                index += 1
+            continue
+
+        if state == "double_quote":
+            if pair == '""':
+                index += 2
+            else:
+                if character == '"':
+                    state = "normal"
+                index += 1
+
+    assert state in {"normal", "line_comment"}, f"unterminated SQL state: {state}"
+    trailing = sql_source[statement_start:].strip()
+    if trailing:
+        statements.append(trailing)
+    return statements
 
 
 @pytest.mark.skipif(
@@ -40,6 +124,9 @@ def test_mr60_dms_sql_advances_exact_public63_teacher0041_state(
     assert dms_sha256 in dms_readme
     assert sql_source.count("\nBEGIN;") == 1
     assert sql_source.count("\nCOMMIT;") == 1
+    assert not re.search(r"\$[A-Za-z_][A-Za-z0-9_]*\$", sql_source)
+    dms_statements = _split_dms_onequery_statements(sql_source)
+    assert sum(statement.startswith("DO $$") for statement in dms_statements) == 7
 
     catalog_names = {
         item[0]: (item[1], item[2])
@@ -270,24 +357,10 @@ def test_mr60_dms_sql_advances_exact_public63_teacher0041_state(
                     """
             )
 
-        result = subprocess.run(
-            [
-                shutil.which("psql") or "psql",
-                "-X",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-d",
-                database_url,
-                "-f",
-                str(dms_sql),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, (
-            f"DMS SQL failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
+        with psycopg.connect(database_url, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                for statement in dms_statements:
+                    cursor.execute(statement)
 
         with engine.connect() as connection:
             assert connection.execute(

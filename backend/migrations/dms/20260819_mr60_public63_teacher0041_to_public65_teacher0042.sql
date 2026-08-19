@@ -12,7 +12,7 @@ SELECT pg_advisory_xact_lock(
     hashtextextended('tit:mr60:public65:teacher0042', 0)
 );
 
-DO $preflight$
+DO $$
 DECLARE
     public_head text;
     teacher_head text;
@@ -179,7 +179,7 @@ BEGIN
         RAISE EXCEPTION 'MR60 migration found unreviewed G08 assignment copy drift';
     END IF;
 END
-$preflight$;
+$$;
 
 LOCK TABLE public.task_templates IN SHARE ROW EXCLUSIVE MODE;
 LOCK TABLE public.task_assignments IN SHARE ROW EXCLUSIVE MODE;
@@ -188,7 +188,7 @@ LOCK TABLE tide.task_execution_versions IN SHARE ROW EXCLUSIVE MODE;
 LOCK TABLE tide.task_step_definitions IN SHARE MODE;
 LOCK TABLE tide.task_validation_rules IN SHARE MODE;
 
-DO $public64$
+DO $$
 DECLARE
     changed integer;
 BEGIN
@@ -238,7 +238,7 @@ BEGIN
         RAISE EXCEPTION 'MR60 public64 did not update exactly one G08 row';
     END IF;
 END
-$public64$;
+$$;
 
 DROP TRIGGER trg_task_assignment_write ON public.task_assignments;
 
@@ -267,7 +267,7 @@ CREATE TRIGGER trg_task_assignment_write
 BEFORE INSERT OR UPDATE ON public.task_assignments
 FOR EACH ROW EXECUTE FUNCTION public.enforce_task_assignment_write();
 
-DO $public64_head$
+DO $$
 DECLARE
     changed integer;
 BEGIN
@@ -279,9 +279,9 @@ BEGIN
         RAISE EXCEPTION 'MR60 failed to advance the public ledger to revision 64';
     END IF;
 END
-$public64_head$;
+$$;
 
-DO $public65$
+DO $$
 DECLARE
     changed integer;
 BEGIN
@@ -316,9 +316,9 @@ BEGIN
         RAISE EXCEPTION 'MR60 failed to advance the public ledger to revision 65';
     END IF;
 END
-$public65$;
+$$;
 
-DO $teacher42_preflight$
+DO $$
 DECLARE
     execution_id uuid;
 BEGIN
@@ -404,7 +404,7 @@ BEGIN
             'G09 contains unreviewed local steps or rules; teacher 0042 will not replace them';
     END IF;
 END
-$teacher42_preflight$;
+$$;
 
 UPDATE tide.task_execution_versions
 SET execution_contract_version = 'task-contract-v3',
@@ -413,7 +413,7 @@ SET execution_contract_version = 'task-contract-v3',
 WHERE shared_template_row_id = 'G10:v1'
   AND config = '{"estimatedMinutes":25,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-06","pendingReason":"KUOZHI_G09_COURSE_MAPPING_PENDING"}'::jsonb;
 
-DO $teacher42_postflight$
+DO $$
 BEGIN
     IF EXISTS (
         SELECT 1
@@ -429,7 +429,7 @@ BEGIN
         RAISE EXCEPTION 'G09 SET course execution publication verification failed';
     END IF;
 END
-$teacher42_postflight$;
+$$;
 
 INSERT INTO tide.schema_migrations (
     migration_id,
@@ -444,7 +444,7 @@ VALUES (
     '59c6f757ec6ca9ee60ad4e51f594bc62c678112139e8d1f70ab6905b1a8b663a'
 );
 
-DO $postflight$
+DO $$
 BEGIN
     IF (
         SELECT count(*) = 1
@@ -527,7 +527,7 @@ BEGIN
         RAISE EXCEPTION 'MR60 left retired Cocos assignment copy behind';
     END IF;
 END
-$postflight$;
+$$;
 
 COMMIT;
 
