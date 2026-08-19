@@ -140,6 +140,7 @@ Tide_teachers_camp/
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
 - 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；除真实消费组 ID（sid）必须在部署时从对应订阅的“数据消费”页注入外，其余已确认的非敏感参数已固化。截至 2026-08-14，海外 `tide_system_test` 已实证为 public `20260814_61_teacher_copy`、teacher 精确 36 条且 head `0041_crm_sso_hybrid`，并通过当时 release 的完整只读联合契约探针。rev61 只原位更新 4 条稳定任务模板文案，不改 DTS 表、Trigger 或隐私函数；2026-08-18 新增的 rev62 与索引化领取代码尚待目标库迁移、应用发布及执行计划/吞吐复验，因此当前数据库发布门禁重新打开，不能把历史 rev61 验证写成 rev62 或 `pre-tida-camp` 全流程可用。部署边界现已收紧为：海外消费者运行在新加坡，国内消费者通过“AI 效率中心”团队的独立 Gaea 项目 `tida-camp-dts-dom` 运行在中国大陆集群；平台项目选择和 `TIT_DTS_EXECUTION_REGION=cn` 都必须在新 Pod 上读回，不能只凭变量声明推断地理放置。国内消费者在构造任何发往海外 PostgreSQL 的 SQL 参数前，使用仅注入国内项目的密钥把原始学生 ID 转为 `dom:v1:<HMAC-SHA256>`，海外项目和海外数据库均不得持有该密钥或原始国内学生 ID；稳定 token 仍按伪名数据受限管理。默认及正式环境仍固定 `sslmode=verify-full`。当前 `tide_system_test` PRE 固定专线端点允许用既有 `sslmode=disable` 受控例外；专线只限制网络路径，并不加密 PostgreSQL 流量。该例外不得扩展到其他端点、库或正式环境，数据库启用 TLS 后必须恢复 `verify-full`。全局 23/55 宽表投影只允许由海外消费者持有，国内消费者固定 `projection=false`。当前仍无国内新 Pod 的成功 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账，不能视为链路联调完成。增量人群从北京时间 `2026-08-13` 起按国内 `status_on_time` 识别新入职教师；外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
+- 2026-08-19 源码新增未发布的 `TIT_DTS_PROJECTION_MODE=direct` 显式模式：事件在 checkpoint 事务内直接更新 23/55 宽表，不写业务事件账本、源当前态镜像或脏键；默认仍是 `queued`，现有运行配置和“仅海外投影 owner”边界不自动改变。只有完成双 DTS 同边界重置、宽表清理/基线、投诉分类配置和新规则对账后，才允许国内、海外同时显式启用 direct。规则见 [`docs/DTS事件直接投影规则.md`](docs/DTS事件直接投影规则.md)。
 
 ## Gaea 部署骨架（常驻双入口、临时诊断模块、三项目）
 

@@ -1347,6 +1347,27 @@ def test_domestic_privacy_state_gate_is_count_only_and_fail_closed(
         assert connection.statements == []
 
 
+def test_direct_privacy_gate_does_not_require_legacy_course_provenance() -> None:
+    connection = _ContextConnection([_Result(first=None)])
+    sink = object.__new__(PostgresDtsEventSink)
+    sink.source_region = "dom"
+    sink.engine = _ActivationEngine(connection)
+    sink._direct_projector = object()
+
+    sink.validate_domestic_student_privacy_state()
+
+    assert len(connection.statements) == 1
+    sql = str(connection.statements[0])
+    assert "LESSON_PROVENANCE" not in sql
+    assert "provenance.dom_sources" not in sql
+    assert "lessons.\"学员id\" LIKE 'dom:%'" in sql
+    assert "student_subjects" in sql
+    assert connection.parameters[0] == {
+        "raw_fields": ["s_id", "stu_id", "student_id", "user_id"],
+        "token_pattern": r"^dom:v1:[0-9a-f]{64}$",
+    }
+
+
 @pytest.mark.parametrize(
     ("stored_contract", "expected_error"),
     [
