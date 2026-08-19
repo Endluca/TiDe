@@ -429,8 +429,9 @@ SDK 异步动作且没有同步成功回执。DB 已有 checkpoint 时，用其 
 修改数据库身份契约、迁移和 ACL 并重新验收，不能只改 SSL 变量。revision
 `20260813_60_dom_privacy` 必须在 `20260812_59_simple_acl` 之后由
 `tide_sys_admin` 应用；运行账号没有建表权限，接入状态的删除/回退由 Trigger 拒绝。
-随后应用 `20260814_61_teacher_copy` 更新经审核的教师文案，最终应用
-`20260818_62_dts_claim_idx`，以并发部分索引消除 DTS 脏键领取的全表扫描。
+随后应用 `20260814_61_teacher_copy` 更新经审核的教师文案、
+`20260818_62_dts_claim_idx` 以并发部分索引消除 DTS 脏键领取的全表扫描，最终应用
+`20260819_63_dts_direct_privacy` 兼容不保存通用来源镜像的 direct 课程写入。
 
 DTS heartbeat/readiness 位于每个项目 Pod 自己的 `/tmp/tit-dts-ingest-*`。进程启动时先删除
 上一进程留下的两个文件；目标数据库连接/身份/Schema/ACL 与所选 transport 的启动门禁全部
@@ -628,8 +629,8 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62`，
-   先完成 release 内容链到 public 57 / teacher 0041，再应用 ACL/DTS 分支并合并到 public 59，然后依次应用 public 60 国内学生隐私边界、public 61 教师文案和 public 62 DTS 脏键领取索引；
+1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62 → public 63`，
+   先完成 release 内容链到 public 57 / teacher 0041，再应用 ACL/DTS 分支并合并到 public 59，然后依次应用 public 60 国内学生隐私边界、public 61 教师文案、public 62 DTS 脏键领取索引和 public 63 direct 隐私门禁；
    已批准公司 TEST 库从 public 50 / teacher 0032 继续时，先在仓库根目录用
    `backend/.venv/bin/python backend/scripts/upgrade_company_test_database.py /Git工作区外/company-test-migration.env`
    只读预检；确认备份和维护窗口后才追加
@@ -638,7 +639,7 @@ docker stop tide-camp-gaea-test
    的 G01 TESOL-only 收窄，再包含 public `20260811_54_g04_remove_device_check` / teacher
    `0037_g04_remove_device_check` 的 G04 两模块收敛，并先执行 public
    `20260811_55_source_wide_v12` 再执行 public `20260811_56_p_fb_negative_copy`；当前 G04 不得恢复设备检测步骤。
-   确认 public head 为 `20260818_62_dts_claim_idx`、teacher 账本 head 为
+   确认 public head 为 `20260819_63_dts_direct_privacy`、teacher 账本 head 为
    `0041_crm_sso_hybrid`（包含前序 `0038_personalized_environment_photo`）；其中
    G01 TESOL-only、G04 两模块、G02 原生政策文档与阅读状态、CRM SSO 都必须完成。
    随后执行只读契约探针，并核对个性化任务零分文案、环境拍照步骤与

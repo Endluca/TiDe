@@ -374,7 +374,7 @@ EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS = (
         False,
         False,
         ("search_path=pg_catalog, public",),
-        "cae4238b02a320b77ef43ab7764ee52881822a68c9d05406db56d57e116895ee",
+        "520256c57eec153b215bf6baf288e55eab5a025549b2a9bbc956115d4ff13310",
     ),
 )
 
@@ -1102,6 +1102,19 @@ class PostgresDtsEventSink:
         self._validated = False
         self._projection_lock_connection: Any | None = None
         self._projection_lock_backend_pid: int | None = None
+        self._direct_projector: Any | None = None
+
+    def enable_direct_projection(self, projector: Any) -> None:
+        """Route future events straight to source-wide rows.
+
+        The projector is intentionally injected after the sink is created so
+        it can share this sink's already-validated engine without introducing
+        an import cycle between the persistence and projection modules.
+        """
+
+        if projector is None or not callable(getattr(projector, "apply", None)):
+            raise DtsIngestStoreError("DTS_DIRECT_PROJECTOR_INVALID")
+        self._direct_projector = projector
 
     def close(self) -> None:
         lock_connection = getattr(self, "_projection_lock_connection", None)
@@ -1474,7 +1487,10 @@ class PostgresDtsEventSink:
                 )
                 for row in state_indexes
             )
-            if actual_state_indexes != EXPECTED_DTS_STATE_INDEXES:
+            if (
+                getattr(self, "_direct_projector", None) is None
+                and actual_state_indexes != EXPECTED_DTS_STATE_INDEXES
+            ):
                 raise DtsIngestStoreError("DTS_TARGET_STATE_INDEX_MISMATCH")
 
             state_trigger_rows = connection.execute(
@@ -1772,6 +1788,75 @@ class PostgresDtsEventSink:
 
         if self.source_region != "dom":
             return
+        if getattr(self, "_direct_projector", None) is not None:
+            # Direct mode has no per-course source mirror, so provenance
+            # cannot be reconstructed from dts_source_rows.  Still reject raw
+            # IDs left in legacy runtime state and malformed tagged tokens in
+            # the target wide table.  The clean baseline remains responsible
+            # for HMAC-transforming domestic students before import.
+            with self.engine.connect() as connection:
+                violation = connection.execute(
+                    text(
+                        """
+                        WITH source_violation AS (
+                            SELECT 'SOURCE_ROW' AS violation
+                            FROM public.dts_source_rows rows
+                            WHERE rows.source_region = 'dom'
+                              AND (
+                                  rows.source_row ?| CAST(:raw_fields AS text[])
+                                  OR rows.dependency_keys ? 'student_ids'
+                                  OR EXISTS (
+                                      SELECT 1
+                                      FROM jsonb_array_elements_text(
+                                          COALESCE(
+                                              rows.dependency_keys
+                                                  -> 'student_subjects',
+                                              '[]'::jsonb
+                                          )
+                                      ) subjects(value)
+                                      WHERE subjects.value !~ :token_pattern
+                                  )
+                                  OR (
+                                      rows.source_row ? 'student_token'
+                                      AND rows.source_row ->> 'student_token'
+                                          !~ :token_pattern
+                                  )
+                              )
+                            LIMIT 1
+                        ), dirty_violation AS (
+                            SELECT 'DIRTY_KEY' AS violation
+                            FROM public.dts_dirty_keys dirty
+                            WHERE dirty.last_source_region = 'dom'
+                              AND dirty.key_type = 'TEACHER_STUDENT'
+                              AND dirty.key_part_2 !~ :token_pattern
+                            LIMIT 1
+                        ), lesson_violation AS (
+                            SELECT 'LESSON_WIDE' AS violation
+                            FROM public.lesson_source_wide lessons
+                            WHERE lessons."学员id" LIKE 'dom:%'
+                              AND lessons."学员id" !~ :token_pattern
+                            LIMIT 1
+                        )
+                        SELECT violation FROM source_violation
+                        UNION ALL
+                        SELECT violation FROM dirty_violation
+                        UNION ALL
+                        SELECT violation FROM lesson_violation
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "raw_fields": sorted(
+                            {"s_id", "student_id", "stu_id", "user_id"}
+                        ),
+                        "token_pattern": DOMESTIC_STUDENT_TOKEN_SQL_PATTERN,
+                    },
+                ).first()
+            if violation is not None:
+                raise DtsIngestStoreError(
+                    "DTS_DOM_STUDENT_PRIVACY_STATE_VIOLATION"
+                )
+            return
         with self.engine.connect() as connection:
             violation = connection.execute(
                 text(
@@ -1969,10 +2054,12 @@ class PostgresDtsEventSink:
         dirty_keys: DirtyKeySet,
         appoint_candidate: AppointProjectionCandidate | None,
     ) -> bool:
-        del appoint_candidate  # Projection starts from the durable dirty queue.
+        del appoint_candidate
         self._require_source_region(event.source_region)
         self._validate_runtime()
         with self.engine.begin() as connection:
+            if getattr(self, "_direct_projector", None) is not None:
+                return self._apply_direct_transaction(connection, event)
             return self._apply_transaction(connection, event, dirty_keys)
 
     def apply_batch(
@@ -2021,7 +2108,102 @@ class PostgresDtsEventSink:
             previous_offset = event.offset
         self._validate_runtime()
         with self.engine.begin() as connection:
+            if getattr(self, "_direct_projector", None) is not None:
+                return self._apply_direct_batch_transaction(
+                    connection,
+                    tuple(event for event, _dirty_keys in prepared),
+                )
             return self._apply_batch_transaction(connection, prepared)
+
+    def _apply_direct_transaction(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+    ) -> bool:
+        assert_domestic_event_protected(event)
+        current_next_offset = self._lock_stream_checkpoint(connection, event)
+        if current_next_offset is not None:
+            if event.offset < current_next_offset:
+                return True
+            if event.offset > current_next_offset:
+                raise DtsIngestStoreError("DTS_DATABASE_OFFSET_NOT_CONTIGUOUS")
+        self._set_direct_source_region(connection, event.source_region)
+        self._direct_projector.apply(connection, event)
+        self._write_checkpoint(connection, event)
+        return False
+
+    def _apply_direct_batch_transaction(
+        self,
+        connection: Any,
+        events: Sequence[DtsChangeEvent],
+    ) -> tuple[bool, ...]:
+        first_event = events[0]
+        current_next_offset = self._lock_stream_checkpoint(
+            connection,
+            first_event,
+        )
+        expected_next_offset = current_next_offset
+        duplicate_flags: list[bool] = []
+        new_events: list[DtsChangeEvent] = []
+        for event in events:
+            if (
+                expected_next_offset is not None
+                and event.offset < expected_next_offset
+            ):
+                duplicate_flags.append(True)
+                continue
+            if (
+                expected_next_offset is not None
+                and event.offset != expected_next_offset
+            ):
+                raise DtsIngestStoreError("DTS_DATABASE_OFFSET_NOT_CONTIGUOUS")
+            duplicate_flags.append(False)
+            expected_next_offset = event.offset + 1
+            new_events.append(event)
+        if new_events:
+            self._set_direct_source_region(
+                connection,
+                first_event.source_region,
+            )
+            apply_batch = getattr(self._direct_projector, "apply_batch", None)
+            if callable(apply_batch):
+                apply_batch(connection, tuple(new_events))
+            else:
+                for event in new_events:
+                    self._direct_projector.apply(connection, event)
+            self._write_checkpoint(connection, new_events[-1])
+        return tuple(duplicate_flags)
+
+    @staticmethod
+    def _set_direct_source_region(
+        connection: Any,
+        source_region: str,
+    ) -> None:
+        """Label direct writes for the PostgreSQL student-privacy guard.
+
+        Queued mode persists appoint provenance before touching the course
+        wide table.  Direct mode deliberately does not keep that mirror, so
+        the transaction-local region is the database guard's authoritative
+        input.  It is set only after offset replay checks and never survives
+        the current transaction.
+        """
+
+        dialect_name = getattr(
+            getattr(connection, "dialect", None),
+            "name",
+            None,
+        )
+        if dialect_name != "postgresql":
+            return
+        if source_region not in {"dom", "ovs"}:
+            raise DtsIngestStoreError("DTS_SOURCE_REGION_MISMATCH")
+        connection.execute(
+            text(
+                "SELECT pg_catalog.set_config("
+                "'tit.dts_source_region', :source_region, true)"
+            ),
+            {"source_region": source_region},
+        )
 
     def _require_source_region(self, source_region: str) -> None:
         if self.source_region is not None and source_region != self.source_region:

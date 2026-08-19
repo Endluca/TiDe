@@ -1,10 +1,10 @@
 # 教师端与运营端同机部署
 
 状态：**部署骨架与技术加固已建立，联合门禁已固定到 public
-`20260818_62_dts_claim_idx`、教师端 `0041_crm_sso_hybrid` 和唯一当前
+`20260819_63_dts_direct_privacy`、教师端 `0041_crm_sso_hybrid` 和唯一当前
 `G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0028 → public 50 →
 teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 →
-release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62 执行；
+release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62 → public 63 执行；
 完整链和数据库契约探针未通过前禁止上线。**
 
 ## 结论
@@ -292,8 +292,8 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    原位切换到版本化文档并增加阅读状态约束，0041 新增 CRM SSO。最后一步才将 ACL/DTS
    分支与 release 内容分支合并到 `20260812_59_simple_acl`，再应用
    `20260813_60_dom_privacy`、`20260814_61_teacher_copy`，最后应用
-   `20260818_62_dts_claim_idx`。不得在 teacher 0037 之前执行 public 55；最终契约探针只接受
-   public 62 / teacher 0041。
+   `20260818_62_dts_claim_idx`，启用 direct 前再应用 `20260819_63_dts_direct_privacy`。不得在 teacher 0037 之前执行 public 55；最终契约探针只接受
+   public 63 / teacher 0041。
 
 10. 确认 teacher 账本精确为 36 条且 head 为 0041，再以只读共享目录模式核对执行内容：
    0033 G01 TESOL-only、0037 G04 两模块且无当前设备步骤、0038 个性化环境拍照、

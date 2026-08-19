@@ -26,6 +26,7 @@ from app.dts_ingest_store import (  # noqa: E402
     DtsProjectionActivationSettings,
     PostgresDtsEventSink,
 )
+from app.dts_direct_projector import DtsDirectWideProjector  # noqa: E402
 from app.dts_java_transport import (  # noqa: E402
     DtsJavaTransportError,
     OfficialJavaDtsTransport,
@@ -84,6 +85,7 @@ class _RuntimeContract:
     stream_settings: DtsConsumerSettings
     database_settings: DtsIngestDatabaseSettings
     projection_enabled: bool
+    projection_mode: str
     activation_settings: DtsProjectionActivationSettings | None
     startup_retry_seconds: float
     transport_mode: str
@@ -93,7 +95,7 @@ class _RuntimeContract:
 class _StartedIngest:
     sink: PostgresDtsEventSink
     consumer: Any
-    projector: DtsWideProjector
+    projector: DtsWideProjector | DtsDirectWideProjector
     checkpoint: int | None
     broker_probe: dict[str, object]
 
@@ -335,6 +337,20 @@ def _projection_activation_settings(
     return DtsProjectionActivationSettings.from_env(environ)
 
 
+def _projection_mode(
+    *,
+    enabled: bool,
+    environ: dict[str, str] | None = None,
+) -> str:
+    values = os.environ if environ is None else environ
+    mode = values.get("TIT_DTS_PROJECTION_MODE", "queued").strip().lower()
+    if mode not in {"queued", "direct"}:
+        raise DtsConfigurationError("TIT_DTS_PROJECTION_MODE_INVALID")
+    if mode == "direct" and not enabled:
+        raise DtsConfigurationError("DTS_DIRECT_PROJECTION_REQUIRES_ENABLED")
+    return mode
+
+
 def _load_runtime_contract(args: argparse.Namespace) -> _RuntimeContract:
     if not isfinite(args.interval_seconds) or args.interval_seconds < 0:
         raise DtsConfigurationError("DTS_INTERVAL_SECONDS_INVALID")
@@ -356,10 +372,15 @@ def _load_runtime_contract(args: argparse.Namespace) -> _RuntimeContract:
         expected_port=APPROVED_INSECURE_PRE_PORT,
     )
     projection_enabled = _env_flag("TIT_DTS_PROJECTION_ENABLED", False)
-    if stream_settings.source_region == "dom" and projection_enabled:
+    projection_mode = _projection_mode(enabled=projection_enabled)
+    if (
+        stream_settings.source_region == "dom"
+        and projection_enabled
+        and projection_mode != "direct"
+    ):
         raise DtsConfigurationError("DTS_DOM_PROJECTION_FORBIDDEN")
     activation_settings = _projection_activation_settings(
-        enabled=projection_enabled,
+        enabled=projection_enabled and projection_mode == "queued",
     )
     if activation_settings is not None:
         activation_settings.require_current_stream(
@@ -370,6 +391,7 @@ def _load_runtime_contract(args: argparse.Namespace) -> _RuntimeContract:
         stream_settings=stream_settings,
         database_settings=database_settings,
         projection_enabled=projection_enabled,
+        projection_mode=projection_mode,
         activation_settings=activation_settings,
         startup_retry_seconds=_startup_retry_seconds(args),
         transport_mode=_dts_transport_mode(),
@@ -393,13 +415,17 @@ def _start_ingest_once(
     consumer: Any | None = None
     try:
         processor = DtsEventProcessor(sink)
-        projector = DtsWideProjector(
-            sink.engine,
-            worker_id=(
-                f"{stream_settings.source_region}:"
-                f"{socket.gethostname()}:{os.getpid()}"
-            ),
-        )
+        if getattr(contract, "projection_mode", "queued") == "direct":
+            projector = DtsDirectWideProjector()
+            sink.enable_direct_projection(projector)
+        else:
+            projector = DtsWideProjector(
+                sink.engine,
+                worker_id=(
+                    f"{stream_settings.source_region}:"
+                    f"{socket.gethostname()}:{os.getpid()}"
+                ),
+            )
         projector.settings.require_subscription_boundary(
             stream_settings.start_timestamp_seconds
         )
@@ -592,8 +618,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Persist one Aliyun DTS subscription into the restricted target "
-            "ledger and source mirror, then project dirty keys into both "
-            "source-wide tables."
+            "and project it into both source-wide tables using the selected "
+            "queued or direct mode."
         )
     )
     parser.add_argument("--max-messages", type=int, default=100)
@@ -679,6 +705,7 @@ def _run(args: argparse.Namespace) -> int:
         stream_settings = contract.stream_settings
         database_settings = contract.database_settings
         projection_enabled = contract.projection_enabled
+        projection_mode = getattr(contract, "projection_mode", "queued")
         retry_diagnostic: dict[str, bool | str] | None = None
         try:
             started_at = datetime.now(timezone.utc).isoformat()
@@ -735,13 +762,16 @@ def _run(args: argparse.Namespace) -> int:
                     )
                     return 0
                 if projection_enabled:
-                    # Prove the checked-out session is still the one that
-                    # acquired the global projector lock before every batch.
-                    started.sink.assert_projection_lock_held()
-                    projection = started.projector.run_batch(
-                        max_keys=args.max_projection_keys,
-                        max_seconds=args.projection_time_budget_seconds,
-                    )
+                    if projection_mode == "direct":
+                        projection = started.projector.drain_counts()
+                    else:
+                        # Prove the checked-out session is still the one that
+                        # acquired the global projector lock before every batch.
+                        started.sink.assert_projection_lock_held()
+                        projection = started.projector.run_batch(
+                            max_keys=args.max_projection_keys,
+                            max_seconds=args.projection_time_budget_seconds,
+                        )
                 else:
                     projection = {
                         "dirty_keys": 0,
@@ -771,6 +801,7 @@ def _run(args: argparse.Namespace) -> int:
                     "ingest": result,
                     "projection": projection,
                     "projection_enabled": projection_enabled,
+                    "projection_mode": projection_mode,
                 }
                 _write_health(args.heartbeat_path, heartbeat)
                 attempt = 0

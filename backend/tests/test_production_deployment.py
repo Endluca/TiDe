@@ -295,7 +295,7 @@ def test_readme_runs_preflight_before_migration() -> None:
         "--profile migration run --rm migrate"
     )
     assert preflight < migration
-    assert "20260818_62_dts_claim_idx" in readme
+    assert "20260819_63_dts_direct_privacy" in readme
     assert "0041_crm_sso_hybrid" in readme
     assert "20260811_51_g01_tesol_only" in readme
     assert "0033_g01_tesol_only" in readme
