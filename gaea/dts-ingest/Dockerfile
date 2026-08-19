@@ -95,4 +95,4 @@ HEALTHCHECK --interval=30s --timeout=20s --start-period=360s --retries=3 \
   CMD ["/opt/venv/bin/python", "/app/operations/scripts/run_dts_ingest.py", "--healthcheck", "--heartbeat-path", "/tmp/tit-dts-ingest-heartbeat", "--readiness-path", "/tmp/tit-dts-ingest-readiness", "--max-heartbeat-age-seconds", "90"]
 
 STOPSIGNAL SIGTERM
-CMD ["/opt/venv/bin/python", "/app/operations/scripts/run_dts_ingest.py", "--watch", "--max-messages", "100", "--max-projection-keys", "1000", "--projection-time-budget-seconds", "20", "--idle-timeout-ms", "10000", "--interval-seconds", "3", "--heartbeat-path", "/tmp/tit-dts-ingest-heartbeat", "--readiness-path", "/tmp/tit-dts-ingest-readiness"]
+CMD ["/opt/venv/bin/python", "/app/operations/scripts/run_dts_ingest.py", "--watch", "--max-messages", "500", "--max-projection-keys", "1000", "--projection-time-budget-seconds", "20", "--idle-timeout-ms", "10000", "--interval-seconds", "3", "--heartbeat-path", "/tmp/tit-dts-ingest-heartbeat", "--readiness-path", "/tmp/tit-dts-ingest-readiness"]

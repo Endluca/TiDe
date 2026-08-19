@@ -262,6 +262,7 @@ def _patch_batch_event_decoding(
 def _assert_batch_result(
     result: dict[str, int],
     *,
+    requested_max_messages: int,
     seen: int,
     processed: int,
     ignored: int,
@@ -274,6 +275,7 @@ def _assert_batch_result(
     assert result["sdk_ack_elapsed_ms"] >= 0
     assert result["batch_elapsed_ms"] >= result["db_elapsed_ms"]
     assert result == {
+        "requested_max_messages": requested_max_messages,
         "seen": seen,
         "processed": processed,
         "ignored": ignored,
@@ -398,6 +400,7 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     }
     _assert_batch_result(
         result,
+        requested_max_messages=1,
         seen=1,
         processed=1,
         ignored=0,
@@ -511,6 +514,7 @@ def test_three_events_use_one_database_batch_before_one_durable_ack(
     assert observed_offsets == [(42, 43, 44)]
     _assert_batch_result(
         result,
+        requested_max_messages=3,
         seen=3,
         processed=2,
         ignored=1,
@@ -598,6 +602,7 @@ def test_batch_replay_and_advances_preserve_checkpoint_order_and_counts(
 
     _assert_batch_result(
         result,
+        requested_max_messages=3,
         seen=3,
         processed=1,
         ignored=1,
@@ -886,6 +891,7 @@ def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
 
     _assert_batch_result(
         result,
+        requested_max_messages=1,
         seen=1,
         processed=0,
         ignored=0,

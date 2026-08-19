@@ -2584,7 +2584,14 @@ class DtsKafkaConsumer:
             self.settings.topic,
             self.settings.partition,
         )
-        counters = {"seen": 0, "processed": 0, "ignored": 0, "duplicates": 0, "committed": 0}
+        counters = {
+            "requested_max_messages": max_messages,
+            "seen": 0,
+            "processed": 0,
+            "ignored": 0,
+            "duplicates": 0,
+            "committed": 0,
+        }
         try:
             initial_offset = self._resolve_initial_offset(
                 consumer,

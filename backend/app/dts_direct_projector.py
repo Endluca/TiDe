@@ -22,11 +22,11 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import case, delete, exists, func, select, update
+from sqlalchemy import case, delete, exists, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 
 from .db_models import (
@@ -111,8 +111,13 @@ class _DirectCounts:
     slot_activations: int = 0
     batch_prefiltered: int = 0
     batch_target_queries: int = 0
+    relationship_cache_hits: int = 0
+    relationship_cache_misses: int = 0
+    relationship_fallback_queries: int = 0
+    events_by_suffix: dict[str, int] = field(default_factory=dict)
+    ignored_by_suffix: dict[str, int] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, Any]:
         return {
             "events": self.events,
             "ignored": self.ignored,
@@ -124,13 +129,28 @@ class _DirectCounts:
             "slot_activations": self.slot_activations,
             "batch_prefiltered": self.batch_prefiltered,
             "batch_target_queries": self.batch_target_queries,
+            "relationship_cache_hits": self.relationship_cache_hits,
+            "relationship_cache_misses": self.relationship_cache_misses,
+            "relationship_fallback_queries": self.relationship_fallback_queries,
+            "events_by_suffix": dict(sorted(self.events_by_suffix.items())),
+            "ignored_by_suffix": dict(sorted(self.ignored_by_suffix.items())),
         }
+
+
+@dataclass(frozen=True)
+class _RelationshipDependency:
+    teacher_id: str
+    student_id: str
+    added: datetime
 
 
 @dataclass
 class _DirectBatchTargets:
     teacher_ids: set[str]
     lesson_teachers: dict[str, str | None]
+    relationship_courses: dict[_RelationshipDependency, str | None]
+    volatile_relationship_pairs: set[tuple[str, str]]
+    volatile_relationship_teachers: set[str]
 
 
 def _string(value: Any) -> str | None:
@@ -334,7 +354,7 @@ class DtsDirectWideProjector:
         self._counts = _DirectCounts()
         self._active_batch_targets: _DirectBatchTargets | None = None
 
-    def drain_counts(self) -> dict[str, int]:
+    def drain_counts(self) -> dict[str, Any]:
         result = self._counts.as_dict()
         self._counts = _DirectCounts()
         return result
@@ -346,12 +366,16 @@ class DtsDirectWideProjector:
     def _apply_normalized(self, connection: Any, event: DtsChangeEvent) -> None:
         self._counts.events += 1
         suffix = source_table_suffix(event)
+        suffix_name = suffix or "<unmapped>"
+        self._increment_suffix(self._counts.events_by_suffix, suffix_name)
         if suffix is None:
             self._counts.ignored += 1
+            self._increment_suffix(self._counts.ignored_by_suffix, suffix_name)
             return
         handler = getattr(self, f"_apply_{suffix}", None)
         if handler is None:
             self._counts.ignored += 1
+            self._increment_suffix(self._counts.ignored_by_suffix, suffix_name)
             return
         targets = self._active_batch_targets
         if targets is not None and self._missing_batch_target(
@@ -361,12 +385,21 @@ class DtsDirectWideProjector:
         ):
             self._counts.ignored += 1
             self._counts.batch_prefiltered += 1
+            self._increment_suffix(self._counts.ignored_by_suffix, suffix_name)
             return
         before_teacher_upserts = self._counts.teacher_upserts
         before_teacher_deletes = self._counts.teacher_deletes
         before_lesson_upserts = self._counts.lesson_upserts
         before_lesson_deletes = self._counts.lesson_deletes
+        before_ignored = self._counts.ignored
         handler(connection, event)
+        ignored_delta = self._counts.ignored - before_ignored
+        if ignored_delta:
+            self._increment_suffix(
+                self._counts.ignored_by_suffix,
+                suffix_name,
+                ignored_delta,
+            )
         if targets is not None:
             self._refresh_batch_targets(
                 event,
@@ -385,6 +418,14 @@ class DtsDirectWideProjector:
                     self._counts.lesson_deletes > before_lesson_deletes
                 ),
             )
+
+    @staticmethod
+    def _increment_suffix(
+        counts: dict[str, int],
+        suffix: str,
+        increment: int = 1,
+    ) -> None:
+        counts[suffix] = counts.get(suffix, 0) + increment
 
     def apply_batch(
         self,
@@ -419,12 +460,28 @@ class DtsDirectWideProjector:
     ) -> _DirectBatchTargets:
         teacher_ids: set[str] = set()
         course_ids: set[str] = set()
+        relationship_dependencies: set[_RelationshipDependency] = set()
+        volatile_relationship_pairs: set[tuple[str, str]] = set()
+        volatile_relationship_teachers: set[str] = set()
         for event in events:
             suffix = source_table_suffix(event)
             if suffix is None:
                 continue
             teacher_ids.update(self._teacher_dependencies(event, suffix))
             course_ids.update(self._course_dependencies(event, suffix))
+            relationship_dependencies.update(
+                self._relationship_dependencies(event, suffix)
+            )
+            if suffix == "teacher":
+                volatile_relationship_teachers.update(
+                    self._teacher_dependencies(event, suffix)
+                )
+            elif suffix == "appoint":
+                volatile_relationship_pairs.update(
+                    pair
+                    for row in self._event_rows(event)
+                    if (pair := self._appoint_relationship_pair(row)) is not None
+                )
 
         existing_teachers: set[str] = set()
         teacher_target = TeacherSourceWideRecord.__table__
@@ -455,13 +512,98 @@ class DtsDirectWideProjector:
                 }
             )
             self._counts.batch_target_queries += 1
+
+        # Relationship events need the latest completed lesson at their own
+        # event time. Load stable teacher-student histories once per batch.
+        # Any teacher/course mutation in the same batch is deliberately marked
+        # volatile and keeps the original sequential query path below.
+        relationship_courses = {
+            dependency: None for dependency in relationship_dependencies
+        }
+        stable_dependencies = {
+            dependency
+            for dependency in relationship_dependencies
+            if self._relationship_dependency_is_stable(
+                dependency,
+                volatile_relationship_pairs=volatile_relationship_pairs,
+                volatile_relationship_teachers=volatile_relationship_teachers,
+            )
+        }
+        candidate_rows: dict[
+            tuple[str, str],
+            list[tuple[datetime, str]],
+        ] = {}
+        relationship_pairs = {
+            (dependency.teacher_id, dependency.student_id)
+            for dependency in stable_dependencies
+        }
+        for chunk in self._pair_chunks(relationship_pairs):
+            rows = connection.execute(
+                select(
+                    lesson_target.c["课程id"],
+                    lesson_target.c["老师id"],
+                    lesson_target.c["学员id"],
+                    lesson_target.c["上课日期"],
+                    lesson_target.c["上课时间"],
+                ).where(
+                    tuple_(
+                        lesson_target.c["老师id"],
+                        lesson_target.c["学员id"],
+                    ).in_(chunk),
+                    lesson_target.c["课程状态"] == _COMPLETED_STATUS,
+                    lesson_target.c["上课日期"].is_not(None),
+                    lesson_target.c["上课时间"].is_not(None),
+                )
+            ).mappings()
+            for row in rows:
+                lesson_date = row["上课日期"]
+                lesson_time = row["上课时间"]
+                if not isinstance(lesson_date, date) or not isinstance(
+                    lesson_time,
+                    time,
+                ):
+                    continue
+                pair = (str(row["老师id"]), str(row["学员id"]))
+                candidate_rows.setdefault(pair, []).append(
+                    (
+                        datetime.combine(lesson_date, lesson_time),
+                        str(row["课程id"]),
+                    )
+                )
+            self._counts.batch_target_queries += 1
+        for dependency in stable_dependencies:
+            eligible = (
+                candidate
+                for candidate in candidate_rows.get(
+                    (dependency.teacher_id, dependency.student_id),
+                    (),
+                )
+                if candidate[0] <= dependency.added
+            )
+            selected = max(eligible, default=None)
+            relationship_courses[dependency] = (
+                selected[1] if selected is not None else None
+            )
         return _DirectBatchTargets(
             teacher_ids=existing_teachers,
             lesson_teachers=lesson_teachers,
+            relationship_courses=relationship_courses,
+            volatile_relationship_pairs=volatile_relationship_pairs,
+            volatile_relationship_teachers=volatile_relationship_teachers,
         )
 
     @staticmethod
     def _chunks(values: set[str]) -> tuple[tuple[str, ...], ...]:
+        ordered = sorted(values)
+        return tuple(
+            tuple(ordered[start : start + _TARGET_PREFETCH_CHUNK_SIZE])
+            for start in range(0, len(ordered), _TARGET_PREFETCH_CHUNK_SIZE)
+        )
+
+    @staticmethod
+    def _pair_chunks(
+        values: set[tuple[str, str]],
+    ) -> tuple[tuple[tuple[str, str], ...], ...]:
         ordered = sorted(values)
         return tuple(
             tuple(ordered[start : start + _TARGET_PREFETCH_CHUNK_SIZE])
@@ -548,6 +690,85 @@ class DtsDirectWideProjector:
                     )
         return values
 
+    @staticmethod
+    def _blacklist_active(row: Mapping[str, Any]) -> bool:
+        valid_end = _datetime(row.get("valid_end_time"))
+        return _truthy(row.get("is_valid_forever")) or bool(
+            valid_end is not None and valid_end.year >= 2999
+        )
+
+    @staticmethod
+    def _relationship_dependency(
+        row: Mapping[str, Any],
+        *,
+        blacklist: bool,
+    ) -> _RelationshipDependency | None:
+        teacher_id = _string(row.get("teacher_id" if blacklist else "tea_id"))
+        student_id = student_subject(row)
+        added = _datetime(row.get("add_time") or row.get("valid_start_time"))
+        if teacher_id is None or student_id is None or added is None:
+            return None
+        return _RelationshipDependency(
+            teacher_id=teacher_id,
+            student_id=student_id,
+            added=added,
+        )
+
+    @classmethod
+    def _relationship_dependencies(
+        cls,
+        event: DtsChangeEvent,
+        suffix: str,
+    ) -> set[_RelationshipDependency]:
+        if suffix not in {"teacher_favorite", "teacher_blacklist"}:
+            return set()
+        blacklist = suffix == "teacher_blacklist"
+        dependencies: set[_RelationshipDependency] = set()
+        if event.before is not None:
+            dependency = cls._relationship_dependency(
+                event.before,
+                blacklist=blacklist,
+            )
+            if dependency is not None:
+                dependencies.add(dependency)
+        after = event.after if event.operation != "DELETE" else None
+        if after is not None and (
+            not blacklist or cls._blacklist_active(after)
+        ):
+            dependency = cls._relationship_dependency(
+                after,
+                blacklist=blacklist,
+            )
+            if dependency is not None:
+                dependencies.add(dependency)
+        return dependencies
+
+    @staticmethod
+    def _appoint_relationship_pair(
+        row: Mapping[str, Any],
+    ) -> tuple[str, str] | None:
+        teacher_id = _string(row.get("t_id"))
+        student_id = student_subject(row)
+        if teacher_id is None or student_id is None:
+            return None
+        return teacher_id, student_id
+
+    @staticmethod
+    def _relationship_dependency_is_stable(
+        dependency: _RelationshipDependency,
+        *,
+        volatile_relationship_pairs: set[tuple[str, str]],
+        volatile_relationship_teachers: set[str],
+    ) -> bool:
+        return bool(
+            dependency.teacher_id not in volatile_relationship_teachers
+            and (
+                dependency.teacher_id,
+                dependency.student_id,
+            )
+            not in volatile_relationship_pairs
+        )
+
     def _missing_batch_target(
         self,
         event: DtsChangeEvent,
@@ -582,10 +803,32 @@ class DtsDirectWideProjector:
                 and course_ids.isdisjoint(targets.lesson_teachers)
             )
         if suffix in _TEACHER_TARGET_SUFFIXES:
-            return bool(
+            if (
                 teacher_ids
                 and teacher_ids.isdisjoint(targets.teacher_ids)
-            )
+            ):
+                return True
+            if suffix not in {"teacher_favorite", "teacher_blacklist"}:
+                return False
+            dependencies = self._relationship_dependencies(event, suffix)
+            if not dependencies:
+                return False
+            for dependency in dependencies:
+                if not self._relationship_dependency_is_stable(
+                    dependency,
+                    volatile_relationship_pairs=(
+                        targets.volatile_relationship_pairs
+                    ),
+                    volatile_relationship_teachers=(
+                        targets.volatile_relationship_teachers
+                    ),
+                ):
+                    return False
+                if dependency not in targets.relationship_courses:
+                    return False
+                if targets.relationship_courses[dependency] is not None:
+                    return False
+            return True
         return False
 
     def _refresh_batch_targets(
@@ -1214,12 +1457,7 @@ class DtsDirectWideProjector:
                     {column: False},
                 ) or changed_any
         if after is not None:
-            active = True
-            if blacklist:
-                valid_end = _datetime(after.get("valid_end_time"))
-                active = _truthy(after.get("is_valid_forever")) or bool(
-                    valid_end is not None and valid_end.year >= 2999
-                )
+            active = not blacklist or self._blacklist_active(after)
             if active:
                 selected = self._relationship_course(
                     connection,
@@ -1235,27 +1473,39 @@ class DtsDirectWideProjector:
         if not changed_any:
             self._counts.ignored += 1
 
-    @staticmethod
     def _relationship_course(
+        self,
         connection: Any,
         row: Mapping[str, Any],
         *,
         blacklist: bool,
     ) -> str | None:
-        teacher_id = _string(row.get("teacher_id" if blacklist else "tea_id"))
-        student_id = student_subject(row)
-        added = _datetime(row.get("add_time") or row.get("valid_start_time"))
-        if teacher_id is None or student_id is None or added is None:
+        dependency = self._relationship_dependency(row, blacklist=blacklist)
+        if dependency is None:
             return None
+        targets = self._active_batch_targets
+        if targets is not None and self._relationship_dependency_is_stable(
+            dependency,
+            volatile_relationship_pairs=targets.volatile_relationship_pairs,
+            volatile_relationship_teachers=targets.volatile_relationship_teachers,
+        ):
+            if dependency in targets.relationship_courses:
+                selected = targets.relationship_courses[dependency]
+                if selected is None:
+                    self._counts.relationship_cache_misses += 1
+                else:
+                    self._counts.relationship_cache_hits += 1
+                return selected
+        self._counts.relationship_fallback_queries += 1
         target = LessonSourceWideRecord.__table__
         lesson_at = target.c["上课日期"] + target.c["上课时间"]
         return connection.execute(
             select(target.c["课程id"])
             .where(
-                target.c["老师id"] == teacher_id,
-                target.c["学员id"] == student_id,
+                target.c["老师id"] == dependency.teacher_id,
+                target.c["学员id"] == dependency.student_id,
                 target.c["课程状态"] == _COMPLETED_STATUS,
-                lesson_at <= added,
+                lesson_at <= dependency.added,
             )
             .order_by(
                 target.c["上课日期"].desc(),

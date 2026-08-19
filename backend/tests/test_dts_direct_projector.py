@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 
 import pytest
 from sqlalchemy import create_engine, event as sqlalchemy_event, insert, select
@@ -881,6 +881,168 @@ def test_direct_batch_prefilters_missing_course_targets_with_one_query() -> None
     assert counts["ignored"] == 100
     assert counts["batch_prefiltered"] == 100
     assert counts["batch_target_queries"] == 1
+
+
+def test_direct_batch_prefilters_relationships_without_matching_lesson() -> None:
+    sequential_engine = create_engine("sqlite+pysqlite:///:memory:")
+    batch_engine = create_engine("sqlite+pysqlite:///:memory:")
+    for engine in (sequential_engine, batch_engine):
+        TeacherSourceWideRecord.__table__.create(engine)
+        LessonSourceWideRecord.__table__.create(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                insert(TeacherSourceWideRecord.__table__).values(tchr_id="123")
+            )
+    student_token = "dom:v1:" + "e" * 64
+    events = tuple(
+        _child_event(
+            table_name="dom_teacher_favorite",
+            offset=offset,
+            after={
+                "id": offset,
+                "tea_id": 123,
+                "student_token": student_token,
+                "add_time": "2026-08-20 00:00:00",
+            },
+        )
+        for offset in range(300, 400)
+    )
+    sequential_statements: list[str] = []
+    batch_statements: list[str] = []
+    sqlalchemy_event.listen(
+        sequential_engine,
+        "before_cursor_execute",
+        lambda _conn, _cursor, statement, *_args: sequential_statements.append(
+            statement
+        ),
+    )
+    sqlalchemy_event.listen(
+        batch_engine,
+        "before_cursor_execute",
+        lambda _conn, _cursor, statement, *_args: batch_statements.append(
+            statement
+        ),
+    )
+
+    sequential = _direct_projector()
+    with sequential_engine.begin() as connection:
+        for event in events:
+            sequential.apply(connection, event)
+    batched = _direct_projector()
+    with batch_engine.begin() as connection:
+        batched.apply_batch(connection, events)
+
+    assert len(sequential_statements) == 100
+    assert len(batch_statements) == 2
+    counts = batched.drain_counts()
+    assert counts["events"] == 100
+    assert counts["ignored"] == 100
+    assert counts["batch_prefiltered"] == 100
+    assert counts["batch_target_queries"] == 2
+    assert counts["ignored_by_suffix"] == {"teacher_favorite": 100}
+
+
+def test_direct_batch_uses_cached_relationship_course() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    teacher_table = TeacherSourceWideRecord.__table__
+    lesson_table = LessonSourceWideRecord.__table__
+    teacher_table.create(engine)
+    lesson_table.create(engine)
+    student_token = "dom:v1:" + "f" * 64
+    projector = _direct_projector()
+
+    with engine.begin() as connection:
+        connection.execute(insert(teacher_table).values(tchr_id="123"))
+        connection.execute(
+            insert(lesson_table).values(
+                **{
+                    "课程id": "99",
+                    "老师id": "123",
+                    "学员id": student_token,
+                    "上课日期": date(2026, 8, 19),
+                    "上课时间": time(18, 0),
+                    "课程状态": "end",
+                    "收藏": False,
+                    "是否拉黑": False,
+                }
+            )
+        )
+        projector.apply_batch(
+            connection,
+            (
+                _child_event(
+                    table_name="dom_teacher_favorite",
+                    offset=400,
+                    after={
+                        "id": 1,
+                        "tea_id": 123,
+                        "student_token": student_token,
+                        "add_time": "2026-08-20 00:00:00",
+                    },
+                ),
+            ),
+        )
+        lesson = connection.execute(select(lesson_table)).mappings().one()
+
+    assert lesson["收藏"] is True
+    counts = projector.drain_counts()
+    assert counts["relationship_cache_hits"] == 1
+    assert counts["relationship_fallback_queries"] == 0
+    assert counts["batch_target_queries"] == 2
+
+
+def test_direct_batch_falls_back_after_same_batch_lesson_insert() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    teacher_table = TeacherSourceWideRecord.__table__
+    lesson_table = LessonSourceWideRecord.__table__
+    teacher_table.create(engine)
+    lesson_table.create(engine)
+    student_token = "dom:v1:" + "a" * 64
+    projector = _direct_projector()
+
+    with engine.begin() as connection:
+        connection.execute(
+            insert(teacher_table).values(
+                tchr_id="123",
+                teach_area_type="dmo",
+                onboard_date=date(2026, 8, 19),
+                onboard_30d_end_date=date(2026, 9, 17),
+            )
+        )
+        projector.apply_batch(
+            connection,
+            (
+                _child_event(
+                    table_name="dom_appoint",
+                    offset=410,
+                    after={
+                        "id": 99,
+                        "t_id": 123,
+                        "student_token": student_token,
+                        "date": "2026-08-19",
+                        "time": "18:00:00",
+                        "status": "end",
+                        "use_point": "buy",
+                    },
+                ),
+                _child_event(
+                    table_name="dom_teacher_favorite",
+                    offset=411,
+                    after={
+                        "id": 1,
+                        "tea_id": 123,
+                        "student_token": student_token,
+                        "add_time": "2026-08-20 00:00:00",
+                    },
+                ),
+            ),
+        )
+        lesson = connection.execute(select(lesson_table)).mappings().one()
+
+    assert lesson["收藏"] is True
+    counts = projector.drain_counts()
+    assert counts["relationship_cache_hits"] == 0
+    assert counts["relationship_fallback_queries"] == 1
 
 
 def test_direct_batch_keeps_same_batch_teacher_course_dependency_order() -> None:

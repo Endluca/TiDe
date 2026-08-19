@@ -271,6 +271,7 @@ def test_gaea_dts_module_uses_internal_sources_and_non_root_runtime() -> None:
     assert 'ENTRYPOINT ["/init"]' not in dockerfile
     assert "HEALTHCHECK --interval=30s --timeout=20s" in dockerfile
     assert 'CMD ["/opt/venv/bin/python"' in dockerfile
+    assert '"--max-messages", "500"' in dockerfile
     assert "STOPSIGNAL SIGTERM" in dockerfile
     for excluded in (
         "repo.bjtest.51talk.biz/repository/npm/",

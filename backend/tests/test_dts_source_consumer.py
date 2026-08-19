@@ -1783,6 +1783,7 @@ def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(
 
     fake = holder["consumer"]
     assert result == {
+        "requested_max_messages": 1,
         "seen": 1,
         "processed": 0,
         "ignored": 1,
@@ -1929,6 +1930,7 @@ def test_kafka_commit_timeout_fails_after_sink_and_restart_uses_database_checkpo
     assert fake_consumers[0].closed is True
 
     assert consumer.run(max_messages=1, commit_offsets=True) == {
+        "requested_max_messages": 1,
         "seen": 0,
         "processed": 0,
         "ignored": 0,

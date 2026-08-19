@@ -327,6 +327,7 @@ class OfficialJavaDtsTransport:
                 "DTS_OFFICIAL_JAVA_DURABLE_ACK_REQUIRED"
             )
         counters = {
+            "requested_max_messages": max_messages,
             "seen": 0,
             "processed": 0,
             "ignored": 0,
