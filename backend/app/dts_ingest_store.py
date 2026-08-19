@@ -374,7 +374,7 @@ EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS = (
         False,
         False,
         ("search_path=pg_catalog, public",),
-        "cae4238b02a320b77ef43ab7764ee52881822a68c9d05406db56d57e116895ee",
+        "520256c57eec153b215bf6baf288e55eab5a025549b2a9bbc956115d4ff13310",
     ),
 )
 
@@ -2127,6 +2127,7 @@ class PostgresDtsEventSink:
                 return True
             if event.offset > current_next_offset:
                 raise DtsIngestStoreError("DTS_DATABASE_OFFSET_NOT_CONTIGUOUS")
+        self._set_direct_source_region(connection, event.source_region)
         self._direct_projector.apply(connection, event)
         self._write_checkpoint(connection, event)
         return False
@@ -2160,6 +2161,10 @@ class PostgresDtsEventSink:
             expected_next_offset = event.offset + 1
             new_events.append(event)
         if new_events:
+            self._set_direct_source_region(
+                connection,
+                first_event.source_region,
+            )
             apply_batch = getattr(self._direct_projector, "apply_batch", None)
             if callable(apply_batch):
                 apply_batch(connection, tuple(new_events))
@@ -2168,6 +2173,37 @@ class PostgresDtsEventSink:
                     self._direct_projector.apply(connection, event)
             self._write_checkpoint(connection, new_events[-1])
         return tuple(duplicate_flags)
+
+    @staticmethod
+    def _set_direct_source_region(
+        connection: Any,
+        source_region: str,
+    ) -> None:
+        """Label direct writes for the PostgreSQL student-privacy guard.
+
+        Queued mode persists appoint provenance before touching the course
+        wide table.  Direct mode deliberately does not keep that mirror, so
+        the transaction-local region is the database guard's authoritative
+        input.  It is set only after offset replay checks and never survives
+        the current transaction.
+        """
+
+        dialect_name = getattr(
+            getattr(connection, "dialect", None),
+            "name",
+            None,
+        )
+        if dialect_name != "postgresql":
+            return
+        if source_region not in {"dom", "ovs"}:
+            raise DtsIngestStoreError("DTS_SOURCE_REGION_MISMATCH")
+        connection.execute(
+            text(
+                "SELECT pg_catalog.set_config("
+                "'tit.dts_source_region', :source_region, true)"
+            ),
+            {"source_region": source_region},
+        )
 
     def _require_source_region(self, source_region: str) -> None:
         if self.source_region is not None and source_region != self.source_region:

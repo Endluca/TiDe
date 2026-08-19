@@ -87,15 +87,15 @@ BEGIN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
 
-    -- Final public 62 must include the reviewed release content through
+    -- Final public 63 must include the reviewed release content through
     -- 20260811_57_g02_document, the public 59 ACL/DTS merge, and the
     -- domestic-student privacy boundary, reviewed teacher-copy update, and
-    -- index-aligned DTS dirty-key claim path;
+    -- index-aligned DTS dirty-key claim path and direct-write privacy guard;
     -- concrete rows and guards are checked below.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260818_62_dts_claim_idx' THEN
+    ) IS DISTINCT FROM '20260819_63_dts_direct_privacy' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -1266,6 +1266,21 @@ BEGIN
           AND tgenabled IN ('O', 'A')
           AND tgtype = 23
           AND NOT tgisinternal
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc AS privacy_function
+        JOIN pg_namespace AS privacy_namespace
+          ON privacy_namespace.oid = privacy_function.pronamespace
+        WHERE privacy_namespace.nspname = 'public'
+          AND privacy_function.proname =
+              'guard_dom_lesson_student_privacy_v1'
+          AND pg_get_function_identity_arguments(privacy_function.oid) = ''
+          AND position(
+              'tit.dts_source_region' IN privacy_function.prosrc
+          ) > 0
+          AND position(
+              'tit_dts_ingest_runtime' IN privacy_function.prosrc
+          ) > 0
     ) OR to_regprocedure(
         'public.dom_student_json_is_safe_v1(jsonb)'
     ) IS NULL OR NOT EXISTS (

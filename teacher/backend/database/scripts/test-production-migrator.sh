@@ -291,9 +291,9 @@ ON public.teacher_support_tickets
 TO tit_growth_app, tit_teacher_crud, tide_support_ticket_owner;
 SQL
   # 这套教师 migrator fixture 只镜像教师依赖的 public 结构；最终账本仍须
-  # 前进到 public 62；真实 rev60 隐私 Trigger、rev61 文案和 rev62 索引迁移
+  # 前进到 public 63；真实 rev60 隐私 Trigger、rev61 文案、rev62 索引和 rev63 direct 隐私迁移
   # 由根仓库迁移测试覆盖。
-  set_public_head "${database_name}" "20260818_62_dts_claim_idx"
+  set_public_head "${database_name}" "20260819_63_dts_direct_privacy"
 }
 
 install_public_personalized_contract() {
@@ -727,7 +727,7 @@ SELECT
     to_regclass('tide.crm_sso_logins') IS NOT NULL,
     NOT EXISTS (SELECT 1 FROM tide.crm_sso_logins),
     (SELECT version_num FROM public.alembic_version) =
-        '20260818_62_dts_claim_idx',
+        '20260819_63_dts_direct_privacy',
     count(*) FILTER (
         WHERE migration_id = '0041_crm_sso_hybrid'
     ) = 1,
@@ -1128,7 +1128,7 @@ final_acl_probe_state="$(psql -X --no-password -Atqc "
     and (select not rolinherit from pg_roles where rolname = 'tit_teacher_crud')
 " "postgresql:///${FRESH_DB}")"
 if [[ "${final_acl_probe_state}" != "t" ]]; then
-  echo "public 62 最终教师/Owner 表级 ACL 验收失败。" >&2
+  echo "public 63 最终教师/Owner 表级 ACL 验收失败。" >&2
   exit 1
 fi
 legacy_acl_probe_state="$(psql -X --no-password -AtF '|' \
@@ -4385,4 +4385,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、teacher canonical 0041 与最终 public 62 账本契约、跨 Schema 顺序门禁、0022–0041、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；真实 rev60 隐私 Trigger、rev61 文案与 rev62 索引迁移由根仓库迁移测试验收。"
+echo "生产 migrator fresh/upgrade、teacher canonical 0041 与最终 public 63 账本契约、跨 Schema 顺序门禁、0022–0041、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；真实 rev60 隐私 Trigger、rev61 文案、rev62 索引与 rev63 direct 隐私迁移由根仓库迁移测试验收。"

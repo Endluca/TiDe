@@ -870,6 +870,27 @@ def test_direct_checkpoint_replay_does_not_project_again() -> None:
     assert written_offsets == []
 
 
+def test_direct_postgres_write_sets_transaction_local_source_region() -> None:
+    class _Connection:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, str]]] = []
+
+        def execute(self, statement, parameters):
+            self.calls.append((str(statement), dict(parameters)))
+
+    connection = _Connection()
+
+    PostgresDtsEventSink._set_direct_source_region(connection, "dom")
+
+    assert len(connection.calls) == 1
+    statement, parameters = connection.calls[0]
+    assert "pg_catalog.set_config" in statement
+    assert "tit.dts_source_region" in statement
+    assert parameters == {"source_region": "dom"}
+
+
 def test_direct_ignored_event_still_advances_checkpoint() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     TeacherSourceWideRecord.__table__.create(engine)

@@ -109,7 +109,7 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码迁移 head 为 public `20260818_62_dts_claim_idx` 与 teacher
+- 当前代码迁移 head 为 public `20260819_63_dts_direct_privacy` 与 teacher
   `0041_crm_sso_hybrid`，最终 teacher canonical 账本为 36 条，其中
   `20260811_51_g01_tesol_only` / `0033_g01_tesol_only`
   将 G01 收窄为 TESOL-only，`20260811_54_g04_remove_device_check` /
@@ -139,8 +139,8 @@ Tide_teachers_camp/
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
-- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；除真实消费组 ID（sid）必须在部署时从对应订阅的“数据消费”页注入外，其余已确认的非敏感参数已固化。截至 2026-08-19，系统库已由现场读回确认为 public `20260818_62_dts_claim_idx`；本轮不再需要 public Alembic 迁移，但应用发布、direct 模式切换及执行计划/吞吐复验仍是独立门禁，不能把数据库到 head 写成 `pre-tida-camp` 全流程可用。部署边界现已收紧为：海外消费者运行在新加坡，国内消费者通过“AI 效率中心”团队的独立 Gaea 项目 `tida-camp-dts-dom` 运行在中国大陆集群；平台项目选择和 `TIT_DTS_EXECUTION_REGION=cn` 都必须在新 Pod 上读回，不能只凭变量声明推断地理放置。国内消费者在构造任何发往海外 PostgreSQL 的 SQL 参数前，使用仅注入国内项目的密钥把原始学生 ID 转为 `dom:v1:<HMAC-SHA256>`，海外项目和海外数据库均不得持有该密钥或原始国内学生 ID；稳定 token 仍按伪名数据受限管理。默认及正式环境仍固定 `sslmode=verify-full`。当前 `tide_system_test` PRE 固定专线端点允许用既有 `sslmode=disable` 受控例外；专线只限制网络路径，并不加密 PostgreSQL 流量。该例外不得扩展到其他端点、库或正式环境，数据库启用 TLS 后必须恢复 `verify-full`。当前仍无 direct 新版本在国内/海外 Pod 的成功 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账，不能视为链路联调完成；外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
-- 2026-08-19 源码新增未发布的 `TIT_DTS_PROJECTION_MODE=direct` 显式模式：事件在 checkpoint 事务内直接更新 23/55 宽表，不写业务事件账本、通用源当前态镜像或脏键；只在现有 `dts_source_rows` 保留小型 `dom_complaint_cate` 参考字典和国内 HMAC 指纹契约。direct 允许从中途边界只接增量：只有教师/课程 INSERT 创建主行，无法命中宽表的历史 UPDATE、DELETE 和子事件记为 ignored 并推进 checkpoint；结构、隐私、计数及数据库错误仍失败关闭。默认仍是 `queued`，现有运行配置和“仅海外投影 owner”边界不自动改变。只有完成双 DTS 同边界重置、宽表清理/基线、投诉分类字典基线和新规则对账后，才允许国内、海外同时显式启用 direct。规则见 [`docs/DTS事件直接投影规则.md`](docs/DTS事件直接投影规则.md)。
+- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、白名单当前态、脏键、数据库位点和 23/55 字段宽表投影代码已实现；除真实消费组 ID（sid）必须在部署时从对应订阅的“数据消费”页注入外，其余已确认的非敏感参数已固化。截至 2026-08-19，系统库现场读回仍是 public `20260818_62_dts_claim_idx`；发布 direct 前必须先迁移到代码 head `20260819_63_dts_direct_privacy`，使课程隐私 Trigger 在没有通用来源镜像时只接受带事务级地区标签的受限 DTS 写入。数据库到 head 仍不能替代应用发布、direct 模式切换及执行计划/吞吐复验。部署边界现已收紧为：海外消费者运行在新加坡，国内消费者通过“AI 效率中心”团队的独立 Gaea 项目 `tida-camp-dts-dom` 运行在中国大陆集群；平台项目选择和 `TIT_DTS_EXECUTION_REGION=cn` 都必须在新 Pod 上读回，不能只凭变量声明推断地理放置。国内消费者在构造任何发往海外 PostgreSQL 的 SQL 参数前，使用仅注入国内项目的密钥把原始学生 ID 转为 `dom:v1:<HMAC-SHA256>`，海外项目和海外数据库均不得持有该密钥或原始国内学生 ID；稳定 token 仍按伪名数据受限管理。默认及正式环境仍固定 `sslmode=verify-full`。当前 `tide_system_test` PRE 固定专线端点允许用既有 `sslmode=disable` 受控例外；专线只限制网络路径，并不加密 PostgreSQL 流量。该例外不得扩展到其他端点、库或正式环境，数据库启用 TLS 后必须恢复 `verify-full`。当前仍无 direct 新版本在国内/海外 Pod 的成功 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账，不能视为链路联调完成；外部生产接入、真实通知回执、监控、备份和回滚仍待完成。
+- 2026-08-19 源码新增未发布的 `TIT_DTS_PROJECTION_MODE=direct` 显式模式：事件在 checkpoint 事务内直接更新 23/55 宽表，不写业务事件账本、通用源当前态镜像或脏键；`dts_source_rows` 只会重新积累新流里实际出现的 `dom_complaint_cate` 参考字典和国内 HMAC 指纹契约。direct 允许从中途边界只接增量：只有教师/课程 INSERT 创建主行，无法命中宽表的历史 UPDATE、DELETE、子事件和缺字典投诉记为 ignored 并推进 checkpoint；结构、隐私、计数及数据库错误仍失败关闭。默认仍是 `queued`，现有运行配置和“仅海外投影 owner”边界不自动改变。本轮全新重跑明确采用“DTS 有什么就消费什么”的可得数据口径，不导历史基线，也不把缺失关联事件当作阻塞。DTS 事件只保留最近七天，过期后 direct 没有业务事件账本可以补回；只有完成双 DTS 同边界重置、数据面清理和新规则抽样对账后，才允许国内、海外同时显式启用 direct。规则及完整清理/启动 SQL 见 [`docs/DTS事件直接投影规则.md`](docs/DTS事件直接投影规则.md)。
 
 ## Gaea 部署骨架（常驻双入口、临时诊断模块、三项目）
 
@@ -313,8 +313,8 @@ docker compose -f docker-compose.production.yml up -d api score-settlement sourc
 [联合部署说明](deploy/combined/README.md) 和
 [联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
 独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
-联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62` 完成跨 Schema 迁移、隐私加固、文案更新与 DTS 领取索引升级，最终到达
-public `20260818_62_dts_claim_idx` 和教师端 `0041_crm_sso_hybrid`，并同时通过
+联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62 → public 63` 完成跨 Schema 迁移、隐私加固、文案更新、DTS 领取索引与 direct 隐私门禁升级，最终到达
+public `20260819_63_dts_direct_privacy` 和教师端 `0041_crm_sso_hybrid`，并同时通过
 固定提交源码中的精确 `G01–G09` 标题/分值预检和目标数据库契约探针。
 其中 public 54 阶段包含 rev51 G01 TESOL-only，teacher 37 阶段包含 0033 G01 规则迁移，
 public 55 收敛教师源字段，release public 56 / teacher 0038 追加个性化拍照，

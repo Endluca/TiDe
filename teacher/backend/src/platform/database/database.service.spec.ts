@@ -251,12 +251,14 @@ describe('DatabaseService', () => {
       expect.stringContaining('FROM public.alembic_version'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('20260818_62_dts_claim_idx'),
+      expect.stringContaining('20260819_63_dts_direct_privacy'),
     );
     expect(productionQuery).toContain(
       'public.dom_student_json_is_safe_v1(jsonb)',
     );
     expect(productionQuery).toContain('guard_dom_lesson_student_privacy_v1');
+    expect(productionQuery).toContain('tit.dts_source_region');
+    expect(productionQuery).toContain('tit_dts_ingest_runtime');
     expect(productionQuery).toContain("tgenabled IN ('O', 'A')");
     expect(productionQuery).toContain('tgtype = 23');
     expect(productionQuery).toContain('AS read_relation(relation_name)');

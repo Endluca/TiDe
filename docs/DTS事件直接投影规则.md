@@ -3,6 +3,8 @@
 > 状态：代码已提供显式 `direct` 模式，默认仍为 `queued`，尚未发布或切换运行环境。
 >
 > 适用前提：国内、海外 DTS 在同一个干净边界重置；两张宽表先按发布方案清理或导入基线；边界之前的事实不要求由增量事件恢复。若不导入基线，只有边界后的主记录 INSERT 会创建教师或课程，针对边界前记录的 UPDATE / DELETE 及其子事件全部忽略。
+>
+> 本轮固定采用“DTS 当前有什么就消费什么”：不补历史基线、不等待缺失关联事件、不要求从七天保留窗口恢复完整现状。能命中已有宽表主行的事件直接修改；不能命中的事件 ignored 并推进 checkpoint。DTS 事件只保留最近七天，因此 `TIT_DTS_START_AT` 只是期望起点，不是历史归档；若该时刻已经早于 DTS 最早可用位点，启动门禁必须失败，不能悄悄假装从原边界完整重放。
 
 ## 1. 链路
 
@@ -38,6 +40,7 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
 
 ## 2. 总体语义
 
+- 消费订阅在保留窗口内实际提供的所有白名单事件；事件是否“完整”不作为 ACK 前提。
 - 教师、课程只允许 INSERT 创建宽表主行；UPDATE / DELETE 必须先命中宽表已有主行，否则
   视为边界前历史记录并 ignored。
 - 子记录采用“最后事件生效”：UPDATE 先撤销 `before` 的旧课程/旧归属，再应用
@@ -142,8 +145,9 @@ INSERT 且 `after.status='on'` 同样计一次；`on→on`、`on→off` 和 DELE
 投诉事件只有分类 ID，没有中文名称。`dom_complaint_cate` 事件直接维护系统库里现有
 `dts_source_rows` 的小型参考字典；投诉事件按 ID 查询该字典后写入中文名。字典缺项时该投诉
 事件 ignored 并推进 checkpoint，不写半条课程记录，也不会等待补齐后自动重放。分类改名事件会同时更新
-字典，并把课程宽表中完全相同的旧名称替换成新名称。切换 direct 前必须保留现有分类字典行，
-或先从国内源表导入一次完整分类基线，不能只从 8 月 19 日增量等待长期不变的字典事件。
+字典，并把课程宽表中完全相同的旧名称替换成新名称。若验收要求投诉分类完整，切换 direct 前应保留
+字典或导入一次基线；本轮“DTS 有什么就消费什么”的全新重跑明确接受字典事件未出现时对应投诉被
+ignored，因此允许从空字典启动，不把历史字典作为发布门禁。
 
 ## 7. 教师字段差值
 
@@ -164,7 +168,7 @@ INSERT 且 `after.status='on'` 同样计一次；`on→on`、`on→off` 和 DELE
 应用计数后，仅使用教师当前标量重新计算比例字段。排课按第 5 节直接累加；TESOL 证书
 `after` 有效时置 true，无效或 DELETE 时根据 `before` 置 false，不保存证书成员状态。
 
-## 8. 开关与切换边界
+## 8. 开关与全新重跑边界
 
 默认模式保持现行队列实现：
 
@@ -172,13 +176,147 @@ INSERT 且 `after.status='on'` 同样计一次；`on→on`、`on→off` 和 DELE
 TIT_DTS_PROJECTION_MODE=queued
 ```
 
-清理历史并重置两条 DTS 后，国内和海外分别显式配置：
+### 8.1 发布前门禁
+
+1. 系统库必须先从 public `20260818_62_dts_claim_idx` 迁移到
+   `20260819_63_dts_direct_privacy`。rev63 让数据库隐私 Trigger 接受受限 DTS 角色提供的事务级
+   DOM / OVS 标签；没有该迁移时，direct 的第一条有效课程写入会被数据库拒绝。
+2. 在两个 Gaea DTS 应用的“环境变量”中配置 direct；不要修改普通 TIT 应用，也不要把国内 HMAC
+   密钥放入 OVS 项目。
+3. DOM、OVS 必须各创建一个全新的 DTS 消费组，并使用同一北京时间起点。旧消费组和旧数据库
+   checkpoint 不能复用。
+4. 清理动作必须在两个旧 DTS 消费者和 SourceWide Worker 都停止后执行。由于 DTS 只保留七天，
+   不要提前清库；应在新消费组、镜像、变量和迁移都已准备好后进入维护窗口，清理后立即启动 DOM。
+
+清理前先以数据库 owner / 管理员执行只读门禁：
+
+```sql
+SELECT pid, application_name, client_addr, state, xact_start
+FROM pg_stat_activity
+WHERE usename = 'tit_dts_ingest_runtime'
+  AND pid <> pg_backend_pid();
+
+SELECT
+  (SELECT count(*) FROM public.teachers
+   WHERE source_snapshot_label = 'SOURCE_WIDE_CURRENT') AS projected_teachers,
+  (SELECT count(*) FROM public.lesson_score_results) AS lesson_results,
+  (SELECT count(*) FROM public.personalized_trigger_matches) AS trigger_matches;
+```
+
+第一条查询必须为零行。第二条查询三个数字必须全为 `0`；只要有一个非零，就说明历史宽表已经产生
+产品侧教师、分数、任务或资格事实，不能把它们混进普通 DTS 数据面清理，需要另开产品数据重置
+维护窗口。尤其不可直接删除不可逆资格事实。
+
+确认已有备份后，以 owner / 管理员在同一个事务中执行：
+
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
+LOCK TABLE
+  public.dts_ingest_checkpoints,
+  public.dts_ingest_events,
+  public.dts_source_rows,
+  public.dts_dirty_keys,
+  public.lesson_source_wide,
+  public.teacher_source_wide,
+  public.lesson_score_results,
+  public.personalized_trigger_matches,
+  public.outbox_events
+IN ACCESS EXCLUSIVE MODE;
+
+DO $reset_guard$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_stat_activity
+    WHERE usename = 'tit_dts_ingest_runtime'
+      AND pid <> pg_backend_pid()
+  ) THEN
+    RAISE EXCEPTION 'DTS runtime is still connected';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.teachers
+             WHERE source_snapshot_label = 'SOURCE_WIDE_CURRENT')
+     OR EXISTS (SELECT 1 FROM public.lesson_score_results)
+     OR EXISTS (SELECT 1 FROM public.personalized_trigger_matches) THEN
+    RAISE EXCEPTION 'downstream source-wide facts require a separate product reset';
+  END IF;
+END
+$reset_guard$;
+
+UPDATE public.outbox_events
+SET status = 'CANCELLED',
+    available_at = clock_timestamp(),
+    published_at = clock_timestamp(),
+    last_error = 'DTS_DIRECT_FULL_RESET_20260819'
+WHERE event_type = 'source_wide.changed.v1'
+  AND status <> 'PUBLISHED';
+
+TRUNCATE TABLE
+  public.lesson_score_results,
+  public.personalized_trigger_matches,
+  public.lesson_source_wide,
+  public.teacher_source_wide,
+  public.dts_ingest_events,
+  public.dts_source_rows,
+  public.dts_dirty_keys,
+  public.dts_ingest_checkpoints;
+
+COMMIT;
+```
+
+`outbox_events` 是不可删除审计事实，不能随宽表一起 `TRUNCATE`；旧的未发布
+`source_wide.changed.v1` 只终止为 `CANCELLED`。清理不使用 `CASCADE`，防止误删未列明业务表。
+
+### 8.2 两个 DTS 应用的变量
+
+清理历史并重置两条 DTS 后，国内和海外都在各自 Gaea DTS 应用的“环境变量”中显式配置：
 
 ```env
 TIT_DTS_PROJECTION_ENABLED=true
 TIT_DTS_PROJECTION_MODE=direct
 TIT_DTS_COHORT_START=2026-08-19
+TIT_DTS_COHORT_END_EXCLUSIVE=
 TIT_DTS_START_AT=2026-08-19T00:00:00+08:00
 ```
 
-直接模式允许 DOM、OVS 各自投影本地区事件，不取得旧版全局脏键投影锁。为避免海外课程先于国内教师，发布顺序必须是：先启动 DOM 并确认 checkpoint 前进，再启动 OVS。代码完成不等于已迁移、已清库、已重置 DTS 或已发布。
+两个项目还必须分别保持 `TIT_DTS_SOURCE_REGION=dom/ovs`、
+`TIT_DTS_EXECUTION_REGION=cn/sg`，并填入各自新消费组的 `TIT_DTS_GROUP_ID`。DOM 项目必须继续注入
+原有 `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD`；OVS 项目不得配置这个密钥。若实际发布日晚于本例，应把
+cohort 和两条 `START_AT` 一起前移到仍在七天保留窗口内的同一新边界，不能继续照抄
+`2026-08-19`。
+
+直接模式允许 DOM、OVS 各自投影本地区事件，不取得旧版全局脏键投影锁。为尽量避免海外课程先于
+国内教师，发布顺序必须是：先启动 DOM，确认它已追到接近实时，再启动 OVS；仅看到 checkpoint
+出现一行不等于 DOM 已追平。代码完成不等于已迁移、已清库、已重置 DTS 或已发布。
+
+### 8.3 启动后验收
+
+```sql
+SELECT
+  source_region,
+  topic,
+  partition_id,
+  next_offset,
+  to_timestamp(source_timestamp) AT TIME ZONE 'Asia/Shanghai'
+    AS latest_source_event_time,
+  clock_timestamp() - to_timestamp(source_timestamp) AS source_lag,
+  updated_at
+FROM public.dts_ingest_checkpoints
+ORDER BY source_region, topic, partition_id;
+
+SELECT
+  (SELECT count(*) FROM public.teacher_source_wide) AS teachers,
+  (SELECT count(*) FROM public.lesson_source_wide) AS lessons,
+  (SELECT count(*) FROM public.dts_ingest_events) AS queued_event_receipts,
+  (SELECT count(*) FROM public.dts_dirty_keys) AS queued_dirty_keys;
+
+SELECT count(*) AS bad_dom_student_tokens
+FROM public.lesson_source_wide
+WHERE "学员id" LIKE 'dom:%'
+  AND "学员id" !~ '^dom:v1:[0-9a-f]{64}$';
+```
+
+DOM 和 OVS 都必须出现且 `source_lag` 持续缩短。direct 下
+`queued_event_receipts=0`、`queued_dirty_keys=0`、`bad_dom_student_tokens=0`；两张宽表数量允许小于
+DTS 事件数量，因为本轮明确允许无法命中的事件 ignored。抽样对账通过后才恢复 SourceWide Worker；
+不可逆资格开关在单独业务验收前继续关闭。
