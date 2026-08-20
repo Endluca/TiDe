@@ -779,21 +779,28 @@ class DtsDirectWideProjector:
         teacher_ids = self._teacher_dependencies(event, suffix)
         course_ids = self._course_dependencies(event, suffix)
         if suffix == "teacher":
-            return bool(
-                event.operation != "INSERT"
-                and teacher_ids
+            target_missing = bool(
+                teacher_ids
                 and teacher_ids.isdisjoint(targets.teacher_ids)
             )
-        if suffix == "appoint":
-            if (
-                event.operation != "INSERT"
-                and course_ids
-                and course_ids.isdisjoint(targets.lesson_teachers)
-            ):
+            if not target_missing:
+                return False
+            if event.operation == "DELETE":
                 return True
+            return not self._teacher_in_cohort(
+                _date((event.after or {}).get("status_on_time"))
+            )
+        if suffix == "appoint":
+            course_missing = bool(
+                course_ids
+                and course_ids.isdisjoint(targets.lesson_teachers)
+            )
             row = event.after if event.operation != "DELETE" else event.before
+            in_scope = self._appoint_in_scope(event, row)
+            if course_missing and (event.operation == "DELETE" or not in_scope):
+                return True
             return bool(
-                self._appoint_in_scope(event, row)
+                in_scope
                 and teacher_ids
                 and teacher_ids.isdisjoint(targets.teacher_ids)
             )
@@ -889,7 +896,7 @@ class DtsDirectWideProjector:
             .where(target.c.tchr_id == teacher_id)
             .with_for_update()
         ).mappings().one_or_none()
-        if event.operation != "INSERT" and existing is None:
+        if event.operation == "DELETE" and existing is None:
             self._counts.ignored += 1
             return
         onboard = _date((row or {}).get("status_on_time"))
@@ -1058,7 +1065,7 @@ class DtsDirectWideProjector:
         existing = connection.execute(
             select(target).where(target.c["课程id"] == course_id).with_for_update()
         ).mappings().one_or_none()
-        if event.operation != "INSERT" and existing is None:
+        if event.operation == "DELETE" and existing is None:
             self._counts.ignored += 1
             return
         in_scope = self._appoint_in_scope(event, row)

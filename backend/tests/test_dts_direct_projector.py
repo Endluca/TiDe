@@ -509,10 +509,11 @@ def test_direct_complaint_is_ignored_when_category_event_is_missing() -> None:
     assert projector.drain_counts()["ignored"] == 1
 
 
-def test_midstream_teacher_update_and_delete_do_not_create_missing_row() -> None:
+def test_midstream_teacher_update_creates_then_delete_removes_row() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     table = TeacherSourceWideRecord.__table__
     table.create(engine)
+    LessonSourceWideRecord.__table__.create(engine)
     projector = _direct_projector()
     teacher = {
         "id": 123,
@@ -530,6 +531,7 @@ def test_midstream_teacher_update_and_delete_do_not_create_missing_row() -> None
                 after={**teacher, "status": "on"},
             ),
         )
+        created = connection.execute(select(table)).mappings().one()
         projector.apply(
             connection,
             _child_event(
@@ -541,11 +543,16 @@ def test_midstream_teacher_update_and_delete_do_not_create_missing_row() -> None
         )
         rows = connection.execute(select(table)).mappings().all()
 
+    assert created["tchr_id"] == "123"
+    assert created["status"] == "on"
     assert rows == []
-    assert projector.drain_counts()["ignored"] == 2
+    counts = projector.drain_counts()
+    assert counts["teacher_upserts"] == 1
+    assert counts["teacher_deletes"] == 1
+    assert counts["ignored"] == 0
 
 
-def test_midstream_appoint_update_and_delete_do_not_create_missing_row() -> None:
+def test_midstream_appoint_update_creates_then_delete_removes_row() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     teacher_table = TeacherSourceWideRecord.__table__
     lesson_table = LessonSourceWideRecord.__table__
@@ -581,6 +588,10 @@ def test_midstream_appoint_update_and_delete_do_not_create_missing_row() -> None
                 after=appoint,
             ),
         )
+        created = connection.execute(select(lesson_table)).mappings().one()
+        teacher_after_create = connection.execute(
+            select(teacher_table)
+        ).mappings().one()
         projector.apply(
             connection,
             _child_event(
@@ -593,9 +604,65 @@ def test_midstream_appoint_update_and_delete_do_not_create_missing_row() -> None
         lessons = connection.execute(select(lesson_table)).mappings().all()
         teacher = connection.execute(select(teacher_table)).mappings().one()
 
+    assert created["课程id"] == "99"
+    assert created["课程状态"] == "end"
+    assert teacher_after_create["total_booked_cnt"] == 1
     assert lessons == []
     assert teacher["total_booked_cnt"] == 0
-    assert projector.drain_counts()["ignored"] == 2
+    counts = projector.drain_counts()
+    assert counts["lesson_upserts"] == 1
+    assert counts["lesson_deletes"] == 1
+    assert counts["ignored"] == 0
+
+
+def test_midstream_out_of_scope_updates_stay_ignored() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    teacher_table = TeacherSourceWideRecord.__table__
+    lesson_table = LessonSourceWideRecord.__table__
+    teacher_table.create(engine)
+    lesson_table.create(engine)
+    projector = _direct_projector()
+    with engine.begin() as connection:
+        projector.apply_batch(
+            connection,
+            (
+                _child_event(
+                    table_name="dom_teacher",
+                    offset=281,
+                    operation="UPDATE",
+                    before={"id": 123, "status": "off"},
+                    after={
+                        "id": 123,
+                        "status": "on",
+                        "status_on_time": "2026-08-18 23:59:59",
+                        "course": "h5_tc",
+                    },
+                ),
+                _child_event(
+                    table_name="dom_appoint",
+                    offset=282,
+                    operation="UPDATE",
+                    before={"id": 99, "status": "on"},
+                    after={
+                        "id": 99,
+                        "t_id": 123,
+                        "student_token": "dom:v1:" + "e" * 64,
+                        "date": "2026-08-19",
+                        "time": "18:00:00",
+                        "status": "on",
+                        "use_point": "buy",
+                    },
+                ),
+            ),
+        )
+        teachers = connection.execute(select(teacher_table)).mappings().all()
+        lessons = connection.execute(select(lesson_table)).mappings().all()
+
+    assert teachers == []
+    assert lessons == []
+    counts = projector.drain_counts()
+    assert counts["ignored"] == 2
+    assert counts["batch_prefiltered"] == 2
 
 
 def test_midstream_teacher_child_events_ignore_missing_teacher() -> None:
@@ -1074,11 +1141,15 @@ def test_direct_batch_keeps_same_batch_teacher_course_dependency_order() -> None
                 _child_event(
                     table_name="dom_teacher",
                     offset=200,
+                    operation="UPDATE",
+                    before={"id": 123, "status": "off"},
                     after=teacher,
                 ),
                 _child_event(
                     table_name="dom_appoint",
                     offset=201,
+                    operation="UPDATE",
+                    before={"id": 99, "status": "on"},
                     after=appoint,
                 ),
                 _child_event(

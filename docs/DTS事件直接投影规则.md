@@ -2,9 +2,9 @@
 
 > 状态：代码已提供显式 `direct` 模式，默认仍为 `queued`，尚未发布或切换运行环境。
 >
-> 适用前提：国内、海外 DTS 在同一个干净边界重置；两张宽表先按发布方案清理或导入基线；边界之前的事实不要求由增量事件恢复。若不导入基线，只有边界后的主记录 INSERT 会创建教师或课程，针对边界前记录的 UPDATE / DELETE 及其子事件全部忽略。
+> 适用前提：国内、海外 DTS 在同一个干净边界重置；两张宽表先按发布方案清理或导入基线；边界之前的事实不要求由增量事件恢复。若不导入基线，边界后的教师/课程主记录 INSERT，或当前完整镜像已经满足范围的 UPDATE，可以首次创建宽表主行；缺失主行的 DELETE、范围外 UPDATE 及子事件忽略。
 >
-> 本轮固定采用“DTS 当前有什么就消费什么”：不补历史基线、不等待缺失关联事件、不要求从七天保留窗口恢复完整现状。能命中已有宽表主行的事件直接修改；不能命中的事件 ignored 并推进 checkpoint。DTS 事件只保留最近七天，因此 `TIT_DTS_START_AT` 只是期望起点，不是历史归档；若该时刻已经早于 DTS 最早可用位点，启动门禁必须失败，不能悄悄假装从原边界完整重放。
+> 本轮固定采用“DTS 当前有什么就消费什么”：不补历史基线、不等待缺失关联事件、不要求从七天保留窗口恢复完整现状。能命中已有宽表主行的事件直接修改；目标缺失时，仅满足范围的教师/课程主事件创建主行，其余事件 ignored 并推进 checkpoint。DTS 事件只保留最近七天，因此 `TIT_DTS_START_AT` 只是期望起点，不是历史归档；若该时刻已经早于 DTS 最早可用位点，启动门禁必须失败，不能悄悄假装从原边界完整重放。
 
 ## 1. 链路
 
@@ -13,7 +13,7 @@ DTS INSERT / UPDATE / DELETE
 → DTS 解析
 → 字段白名单与国内学生 ID HMAC
 → UPDATE 稀疏 before/after 合并为完整白名单镜像
-→ 教师/课程目标不存在时记为 ignored
+→ 教师/课程主事件当前镜像满足范围时创建或更新，否则 ignored
 → 锁定消息对应的课程行和教师行
 → 计算课程旧行对教师指标的贡献
 → 根据 before 撤销旧课程或旧归属影响
@@ -41,8 +41,8 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
 ## 2. 总体语义
 
 - 消费订阅在保留窗口内实际提供的所有白名单事件；事件是否“完整”不作为 ACK 前提。
-- 教师、课程只允许 INSERT 创建宽表主行；UPDATE / DELETE 必须先命中宽表已有主行，否则
-  视为边界前历史记录并 ignored。
+- 教师、课程的 INSERT 和当前完整镜像满足 cohort/课程范围的 UPDATE 都可创建宽表主行；
+  缺失主行的 DELETE、范围外 UPDATE 和子事件 ignored。
 - 子记录采用“最后事件生效”：UPDATE 先撤销 `before` 的旧课程/旧归属，再应用
   `after`；DELETE 清空本条事件的影响，不恢复更早的历史记录。
 - 教师课程类计数不扫描整位教师课程；每条消息只对旧课程贡献做减法、对新课程贡献做加法。
@@ -50,10 +50,10 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
   `EXISTS` 前后比较；最早约课/完课日期只在日期、状态或归属变化时执行该教师的 `MIN`。
 - 官方 Java 传输每批最多拉取 500 条消息并放在一个 checkpoint 事务中；投影动作仍严格按
   offset 一条一条执行，不存在后置脏键队列或批末教师全量重算。
-- 每批先用教师、课程两类分块查询读取该批涉及的目标 ID。目标不存在的 UPDATE、DELETE
-  和子事件直接 ignored，避免逐事件空查；批内前序 INSERT/DELETE 会同步更新该索引，因此不改变
-  “先创建、后修改”的顺序语义。心跳中的 `batch_prefiltered` 和 `batch_target_queries` 用于验证
-  该优化是否命中。
+- 每批先用教师、课程两类分块查询读取该批涉及的目标 ID。缺失主行的 DELETE、范围外 UPDATE
+  和子事件直接 ignored，避免逐事件空查；满足范围的主记录 UPDATE 与 INSERT 都进入投影，批内
+  前序创建/删除会同步更新该索引，因此仍保持 offset 顺序语义。心跳中的 `batch_prefiltered` 和
+  `batch_target_queries` 用于验证该优化是否命中。
 - 排课使用本次确认的单向增量语义，不回看或回减历史；TESOL 按 before/after 最后事件生效。
 - 关联事件先定位同一教师、同一学生、事件发生时间以前最近一节 `status='end'` 的课程。
 - 子事件、排课、证书、收藏、拉黑或投诉无法命中已有教师/课程时 ignored，并推进 checkpoint。
@@ -63,7 +63,8 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
 
 来源：`dom_teacher`。
 
-- 只有 INSERT 可以创建教师宽表行；未命中的 UPDATE / DELETE ignored。
+- INSERT，或 `after.status_on_time` 位于 cohort 的 UPDATE，可以创建教师宽表行；缺失教师的
+  DELETE 及范围外 UPDATE ignored。
 - `status_on_time` 必须处于 cohort；否则删除该教师及其课程宽表行。
 - `onboard_date = status_on_time::date`。
 - `onboard_30d_end_date = onboard_date + 29`，课程和排课只接受闭区间 `[D,D+29]`。
@@ -75,7 +76,8 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
 
 来源：`dom_appoint`、`ovs_appoint`。
 
-只有 INSERT 可以创建课程宽表行；未命中的 UPDATE / DELETE ignored。
+INSERT，或当前 `after` 同时满足下列范围条件的 UPDATE，可以创建课程宽表行；缺失课程的
+DELETE 及范围外 UPDATE ignored。
 
 进入课程宽表必须同时满足：
 
@@ -187,10 +189,11 @@ TIT_DTS_PROJECTION_MODE=queued
    DOM / OVS 标签；没有该迁移时，direct 的第一条有效课程写入会被数据库拒绝。
 2. 在两个 Gaea DTS 应用的“环境变量”中配置 direct；不要修改普通 TIT 应用，也不要把国内 HMAC
    密钥放入 OVS 项目。
-3. DOM、OVS 必须各创建一个全新的 DTS 消费组，并使用同一北京时间起点。旧消费组和旧数据库
-   checkpoint 不能复用。
+3. DOM、OVS 必须使用同一北京时间起点。消费组可以复用，但两个消费者必须先完全停止，并删除
+   对应数据库 checkpoint；权威数据库没有 checkpoint 时，消费者会按 `TIT_DTS_START_AT` 重新
+   定位，即使该消费组此前已经提交到更靠后的位点。新建消费组只用于额外隔离，不是重放前提。
 4. 清理动作必须在两个旧 DTS 消费者和 SourceWide Worker 都停止后执行。由于 DTS 只保留七天，
-   不要提前清库；应在新消费组、镜像、变量和迁移都已准备好后进入维护窗口，清理后立即启动 DOM。
+   不要提前清库；应在镜像、变量和迁移都已准备好后进入维护窗口，清理后立即启动 DOM。
 
 清理前先以数据库 owner / 管理员执行只读门禁：
 
@@ -251,7 +254,7 @@ UPDATE public.outbox_events
 SET status = 'CANCELLED',
     available_at = clock_timestamp(),
     published_at = clock_timestamp(),
-    last_error = 'DTS_DIRECT_FULL_RESET_20260819'
+    last_error = 'DTS_DIRECT_FULL_RESET_20260820'
 WHERE event_type = 'source_wide.changed.v1'
   AND status <> 'PUBLISHED';
 
@@ -278,16 +281,15 @@ COMMIT;
 ```env
 TIT_DTS_PROJECTION_ENABLED=true
 TIT_DTS_PROJECTION_MODE=direct
-TIT_DTS_COHORT_START=2026-08-19
-TIT_DTS_COHORT_END_EXCLUSIVE=
-TIT_DTS_START_AT=2026-08-19T00:00:00+08:00
+TIT_DTS_COHORT_START=2026-08-20
+TIT_DTS_START_AT=2026-08-20T00:00:00+08:00
 ```
 
 两个项目还必须分别保持 `TIT_DTS_SOURCE_REGION=dom/ovs`、
-`TIT_DTS_EXECUTION_REGION=cn/sg`，并填入各自新消费组的 `TIT_DTS_GROUP_ID`。DOM 项目必须继续注入
+`TIT_DTS_EXECUTION_REGION=cn/sg`，并填入各自消费组的 `TIT_DTS_GROUP_ID`。DOM 项目必须继续注入
 原有 `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD`；OVS 项目不得配置这个密钥。若实际发布日晚于本例，应把
 cohort 和两条 `START_AT` 一起前移到仍在七天保留窗口内的同一新边界，不能继续照抄
-`2026-08-19`。
+`2026-08-20`。
 
 直接模式允许 DOM、OVS 各自投影本地区事件，不取得旧版全局脏键投影锁。为尽量避免海外课程先于
 国内教师，发布顺序必须是：先启动 DOM，确认它已追到接近实时，再启动 OVS；仅看到 checkpoint
