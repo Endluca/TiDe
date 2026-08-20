@@ -110,13 +110,32 @@ export class TideService {
   async getSummary(principal: AuthPrincipal): Promise<TideSummaryResponse> {
     const binding = await this.requireBinding(principal.accountId);
     try {
-      const [scorecard, fixedTasks] = await Promise.all([
-        this.teacherReader.findScorecard(binding.teacherId),
-        this.repository.listFixedGrowthTasks(binding.teacherId),
-      ]);
-      if (!scorecard || scorecard.teacherId !== binding.teacherId) {
+      const scorecard = await this.teacherReader.findScorecard(
+        binding.teacherId,
+      );
+      if (!scorecard) {
+        await this.repository.recordSourceRead(
+          binding.bindingId,
+          'METRICS',
+          true,
+        );
+        return {
+          available: false,
+          reason: 'NO_GROWTH_DATA',
+          freshness: {
+            source: 'LIVE',
+            sourceUpdatedAt: null,
+            fetchedAt: new Date().toISOString(),
+            stale: false,
+          },
+        };
+      }
+      if (scorecard.teacherId !== binding.teacherId) {
         throw new Error('INVALID_SOURCE_DATA');
       }
+      const fixedTasks = await this.repository.listFixedGrowthTasks(
+        binding.teacherId,
+      );
       const taskDimension = scorecard.dimensions.find(
         (dimension) => dimension.code === 'NEW_TEACHER_TASK',
       );

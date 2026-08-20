@@ -152,6 +152,7 @@ import {
 import { I18nProvider, localizeStage, localizeTask } from "./i18n";
 import { describeDataError } from "./data-error";
 import { loadTaskContexts } from "./task-context-loader";
+import { isTideSummaryEmpty } from "./tide-summary-state";
 import {
   dimensionCatalog,
   fixedTaskCatalog,
@@ -563,6 +564,49 @@ function SourceUnavailableCard({ language, title, message, compact = false }) {
       <button type="button" onClick={() => window.location.reload()}>
         {copy(language, "Try again", "重新加载")}
       </button>
+    </section>
+  );
+}
+
+function GrowthDataEmptyCard({ language }) {
+  return (
+    <section className="growth-empty-state" role="status" aria-labelledby="growth-empty-title">
+      <div className="growth-empty-copy">
+        <span className="growth-empty-kicker">
+          <ChartLineUp size={18} weight="duotone" />
+          {copy(language, "Growth overview", "成长概览")}
+        </span>
+        <h2 id="growth-empty-title">
+          {copy(language, "No growth data to show", "暂无成长数据")}
+        </h2>
+        <p>{copy(
+          language,
+          "There are currently no verified score or class records available to display for this account. Any assigned tasks are still available in Tasks.",
+          "当前账号暂无可展示的已确认积分或课程记录。已分配的任务仍可在任务页查看和完成。",
+        )}</p>
+        <div className="growth-empty-assurance">
+          <SealCheck size={18} weight="fill" />
+          <span>{copy(
+            language,
+            "Only verified records appear here. Missing records are not shown as zero.",
+            "这里只展示已确认记录；缺失记录不会显示为 0 分。",
+          )}</span>
+        </div>
+        <Link className="growth-empty-action" to="/path">
+          {copy(language, "Go to Tasks", "前往任务")}
+          <ArrowRight size={17} weight="bold" />
+        </Link>
+      </div>
+      <div className="growth-empty-visual" aria-hidden="true">
+        <span className="growth-empty-axis growth-empty-axis-x" />
+        <span className="growth-empty-axis growth-empty-axis-y" />
+        <span className="growth-empty-marker growth-empty-marker-one" />
+        <span className="growth-empty-marker growth-empty-marker-two" />
+        <span className="growth-empty-marker growth-empty-marker-three" />
+        <span className="growth-empty-visual-icon">
+          <ChartLineUp size={44} weight="duotone" />
+        </span>
+      </div>
     </section>
   );
 }
@@ -4093,6 +4137,31 @@ function MyTitPage({
       </main>
     );
   }
+  if (isTideSummaryEmpty(tideSummary)) {
+    return (
+      <main className="ref-page tit-screen tit-merged-screen">
+        <div className="tit-heading">
+          <div>
+            <h1>{copy(language, "My TIDE", "我的成长")}</h1>
+            <p>{copy(
+              language,
+              "Your verified scores and class records appear here.",
+              "这里展示已确认的积分和课程记录。",
+            )}</p>
+          </div>
+        </div>
+        <section className="tit-source-state-layout">
+          <GrowthDataEmptyCard language={language} />
+          <TokiGrowthTipCard
+            tip={growthTip}
+            language={language}
+            onOpenTask={(task) => navigate(`/task/${task.id}`)}
+          />
+        </section>
+        <MobileNav language={language} unreadCount={unreadCount} onMessagesOpen={onMessagesOpen} />
+      </main>
+    );
+  }
   return (
     <main className="ref-page tit-screen tit-merged-screen">
       <div className="tit-heading">
@@ -5123,12 +5192,20 @@ function AppShell() {
     [tasks],
   );
   const onboardingAvailability = useMemo(() => ({
-    [ONBOARDING_GUIDE_CODES.firstLogin]: true,
+    [ONBOARDING_GUIDE_CODES.firstLogin]: Boolean(
+      profile
+      && tideSummary?.available === true
+      && !sourceErrors.profile
+      && !sourceErrors.summary,
+    ),
     [ONBOARDING_GUIDE_CODES.myTideOverview]: Boolean(
-      profile && tideSummary && !sourceErrors.profile && !sourceErrors.summary,
+      profile
+      && tideSummary?.available === true
+      && !sourceErrors.profile
+      && !sourceErrors.summary,
     ),
     [ONBOARDING_GUIDE_CODES.scoreDetails]: Boolean(
-      tideSummary && !sourceErrors.summary,
+      tideSummary?.available === true && !sourceErrors.summary,
     ),
     [ONBOARDING_GUIDE_CODES.taskPath]: tasks.some((task) => task.taskCategory !== "personalized"),
     [ONBOARDING_GUIDE_CODES.taskResult]: Boolean(firstCompletedRequiredTask),
@@ -5901,9 +5978,9 @@ function buildOnboardingPreviewTasks(language) {
   });
 }
 
-function OnboardingAcceptancePreview() {
+function OnboardingAcceptancePreview({ emptyGrowthPreview = false }) {
   const [language, setLanguage] = useState("zh");
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(!emptyGrowthPreview);
   const [previewGuideMode, setPreviewGuideMode] = useState("automatic");
   const [activeGuideCode, setActiveGuideCode] = useState(ONBOARDING_GUIDE_CODE);
   const [guideLibraryOpen, setGuideLibraryOpen] = useState(false);
@@ -5918,7 +5995,17 @@ function OnboardingAcceptancePreview() {
     [language],
   );
   const calculatedAt = "2026-08-07T09:00:00+08:00";
-  const tideSummary = useMemo(() => ({
+  const tideSummary = useMemo(() => emptyGrowthPreview ? ({
+    available: false,
+    reason: "NO_GROWTH_DATA",
+    freshness: {
+      source: "LIVE",
+      sourceUpdatedAt: null,
+      fetchedAt: calculatedAt,
+      stale: false,
+    },
+  }) : ({
+    available: true,
     publicTotalScore: 18,
     graduationThreshold: 100,
     goldThreshold: 200,
@@ -5935,7 +6022,7 @@ function OnboardingAcceptancePreview() {
       { code: "CAPACITY", score: 5, components: [], calculatedAt },
       { code: "NEW_TEACHER_TASK", score: 0, components: [], calculatedAt },
     ],
-  }), [language]);
+  }), [emptyGrowthPreview, language]);
   const teacher = useMemo(() => ({
     name: copy(language, "Teacher Mia", "Mia 老师"),
     email: "preview.teacher@example.invalid",
@@ -5943,17 +6030,17 @@ function OnboardingAcceptancePreview() {
     totalDays: 30,
     graduationStatus: copy(language, "Growing", "成长中"),
     growthScore: {
-      current: tideSummary.publicTotalScore,
-      total: tideSummary.goldThreshold,
-      graduationMilestone: tideSummary.graduationThreshold,
-      goldMilestone: tideSummary.goldThreshold,
+      current: tideSummary.publicTotalScore ?? null,
+      total: tideSummary.goldThreshold ?? scoreMilestones.total,
+      graduationMilestone: tideSummary.graduationThreshold ?? scoreMilestones.graduation,
+      goldMilestone: tideSummary.goldThreshold ?? scoreMilestones.gold,
       graduationQualified: false,
       goldQualified: false,
-      available: tideSummary.availableScore.score,
+      available: tideSummary.availableScore?.score ?? null,
       availableItems: [],
-      rules: tideSummary.dimensions,
+      rules: tideSummary.dimensions || [],
       updatedAt: copy(language, "Preview data", "预览数据"),
-      resultVersion: tideSummary.scoreRuleVersion,
+      resultVersion: tideSummary.scoreRuleVersion || "UNAVAILABLE",
     },
     g01Review: null,
   }), [language, tideSummary]);
@@ -6200,6 +6287,11 @@ function OnboardingAcceptancePreview() {
   );
 }
 
-export default function App({ onboardingPreview = false }) {
-  return onboardingPreview ? <OnboardingAcceptancePreview /> : <AppShell />;
+export default function App({
+  onboardingPreview = false,
+  emptyGrowthPreview = false,
+}) {
+  return onboardingPreview
+    ? <OnboardingAcceptancePreview emptyGrowthPreview={emptyGrowthPreview} />
+    : <AppShell />;
 }

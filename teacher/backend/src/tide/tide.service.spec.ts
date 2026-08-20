@@ -318,6 +318,27 @@ describe('TideService', () => {
     expect(result).not.toHaveProperty('pending');
   });
 
+  it('returns an empty state when the teacher has no growth data', async () => {
+    const fixture = createFixture();
+    fixture.findScorecard.mockResolvedValue(null);
+
+    await expect(fixture.service.getSummary(principal)).resolves.toMatchObject({
+      available: false,
+      reason: 'NO_GROWTH_DATA',
+      freshness: {
+        source: 'LIVE',
+        sourceUpdatedAt: null,
+        stale: false,
+      },
+    });
+    expect(fixture.listFixedGrowthTasks).not.toHaveBeenCalled();
+    expect(fixture.recordSourceRead).toHaveBeenCalledWith(
+      'binding-001',
+      'METRICS',
+      true,
+    );
+  });
+
   it('hides the available-score block when every G task is terminal', async () => {
     const fixture = createFixture();
     fixture.listFixedGrowthTasks.mockResolvedValue([

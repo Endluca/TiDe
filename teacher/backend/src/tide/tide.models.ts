@@ -25,7 +25,7 @@ export interface G01ReviewResponse {
   freshness: SourceFreshness;
 }
 
-export interface TideSummaryResponse {
+export interface TideSummaryAvailableResponse {
   available: true;
   rawTotalScore: number;
   publicTotalScore: number;
@@ -42,6 +42,15 @@ export interface TideSummaryResponse {
   availableScore: AvailableScoreResponse | null;
   freshness: SourceFreshness;
 }
+
+export interface TideSummaryEmptyResponse {
+  available: false;
+  reason: 'NO_GROWTH_DATA';
+  freshness: SourceFreshness;
+}
+
+export type TideSummaryResponse =
+  TideSummaryAvailableResponse | TideSummaryEmptyResponse;
 
 export interface AvailableScoreItemResponse {
   taskCode: string;

@@ -427,6 +427,22 @@ test("keeps the surrounding page visible behind the spotlight", async () => {
   assert.doesNotMatch(styles, /\.onboarding-spotlight-mask\s*\{[\s\S]*?rgba\(7, 25, 46, 0\.72\)/);
 });
 
+test("does not show a busy cursor for a merely unavailable guide action", async () => {
+  const styles = await readFile(
+    new URL("../src/components/onboarding-guide.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    styles,
+    /\.onboarding-primary:disabled,[\s\S]*?\.onboarding-skip:disabled\s*\{[\s\S]*?cursor: not-allowed;/,
+  );
+  assert.match(
+    styles,
+    /\.onboarding-coachmark\[aria-busy="true"\][\s\S]*?cursor: wait;/,
+  );
+});
+
 test("places the coachmark below when it fits and above near the viewport bottom", () => {
   assert.deepEqual(calculateCoachmarkPosition({
     top: 40,

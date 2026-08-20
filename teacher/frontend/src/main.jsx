@@ -13,7 +13,11 @@ import { startAnalyticsRuntime } from "./analytics/product-analytics";
 
 const previewRoute = window.location.hash.replace(/^#/, "").split("?")[0];
 const isOnboardingPreview = import.meta.env.DEV
-  && ["/preview/onboarding", "/preview/g02"].includes(previewRoute);
+  && [
+    "/preview/onboarding",
+    "/preview/g02",
+    "/preview/empty-growth",
+  ].includes(previewRoute);
 const previewInitialEntry = previewRoute === "/preview/g02"
   ? "/task/platform-policies"
   : "/";
@@ -31,6 +35,7 @@ createRoot(document.getElementById("root")).render(
       <MemoryRouter initialEntries={[previewInitialEntry]}>
         <App
           onboardingPreview
+          emptyGrowthPreview={previewRoute === "/preview/empty-growth"}
           onboardingGuideInitiallyOpen={previewRoute !== "/preview/g02"}
         />
       </MemoryRouter>

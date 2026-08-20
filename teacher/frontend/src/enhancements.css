@@ -5799,6 +5799,163 @@ button.matrix-score-value:hover {
   font-weight: 800;
 }
 
+.growth-empty-state {
+  position: relative;
+  display: grid;
+  min-height: 350px;
+  overflow: hidden;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  align-items: center;
+  padding: 46px;
+  gap: 36px;
+  border: 1px solid #d6e5ef;
+  border-radius: 24px;
+  color: #243b52;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(39, 142, 224, .12), transparent 180px),
+    linear-gradient(135deg, #fff 0%, #fbfdff 60%, #f1f8fc 100%);
+  box-shadow: 0 18px 46px rgba(34, 67, 96, .09);
+}
+
+.growth-empty-copy {
+  position: relative;
+  z-index: 2;
+  max-width: 560px;
+}
+
+.growth-empty-kicker,
+.growth-empty-assurance,
+.growth-empty-action {
+  display: inline-flex;
+  align-items: center;
+}
+
+.growth-empty-kicker {
+  margin-bottom: 16px;
+  gap: 8px;
+  color: var(--brand-blue);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.growth-empty-state h2 {
+  max-width: 520px;
+  margin: 0;
+  color: #17324d;
+  font-size: clamp(28px, 3vw, 38px);
+  line-height: 1.12;
+  letter-spacing: -.035em;
+}
+
+.growth-empty-state p {
+  max-width: 560px;
+  margin: 16px 0 0;
+  color: #607286;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.growth-empty-assurance {
+  max-width: 540px;
+  margin-top: 18px;
+  padding: 10px 13px;
+  gap: 9px;
+  border: 1px solid #cde7dc;
+  border-radius: 12px;
+  color: #29624f;
+  background: rgba(238, 249, 244, .86);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.growth-empty-assurance svg { flex: 0 0 auto; }
+
+.growth-empty-action {
+  min-height: 44px;
+  margin-top: 24px;
+  padding: 0 18px;
+  gap: 8px;
+  border-radius: 11px;
+  color: #fff;
+  background: var(--brand-blue);
+  box-shadow: 0 8px 18px rgba(0, 99, 242, .18);
+  font-size: 13px;
+  font-weight: 850;
+  text-decoration: none;
+}
+
+.growth-empty-action:hover { background: #0056d8; }
+
+.growth-empty-action:focus-visible {
+  outline: 3px solid rgba(0, 99, 242, .24);
+  outline-offset: 3px;
+}
+
+.growth-empty-visual {
+  position: relative;
+  width: 210px;
+  height: 210px;
+  justify-self: end;
+  border: 1px solid rgba(112, 157, 190, .24);
+  border-radius: 50%;
+  background:
+    linear-gradient(rgba(110, 157, 192, .12) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(110, 157, 192, .12) 1px, transparent 1px),
+    rgba(255, 255, 255, .7);
+  background-size: 26px 26px;
+  box-shadow: inset 0 0 0 15px rgba(233, 244, 251, .72);
+}
+
+.growth-empty-axis {
+  position: absolute;
+  border-radius: 999px;
+  background: #82a9c4;
+}
+
+.growth-empty-axis-x {
+  right: 42px;
+  bottom: 54px;
+  left: 46px;
+  height: 2px;
+}
+
+.growth-empty-axis-y {
+  top: 45px;
+  bottom: 54px;
+  left: 46px;
+  width: 2px;
+}
+
+.growth-empty-marker {
+  position: absolute;
+  bottom: 56px;
+  width: 17px;
+  border-radius: 5px 5px 1px 1px;
+  background: #c7dce9;
+}
+
+.growth-empty-marker-one { left: 65px; height: 30px; }
+.growth-empty-marker-two { left: 94px; height: 48px; }
+.growth-empty-marker-three { left: 123px; height: 70px; }
+
+.growth-empty-visual-icon {
+  position: absolute;
+  top: 42px;
+  right: 35px;
+  display: grid;
+  width: 70px;
+  height: 70px;
+  place-items: center;
+  border: 1px solid #bcd7e9;
+  border-radius: 20px;
+  color: var(--brand-blue);
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 12px 28px rgba(44, 94, 132, .16);
+}
+
 .tit-score-footer.is-live-summary {
   justify-content: flex-end;
 }
@@ -5843,6 +6000,28 @@ button.matrix-score-value:hover {
   .source-unavailable-card button {
     grid-column: 1 / -1;
   }
+
+  .growth-empty-state {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 28px 22px;
+    gap: 24px;
+  }
+
+  .growth-empty-state h2 { font-size: 29px; }
+
+  .growth-empty-state p { font-size: 13px; }
+
+  .growth-empty-visual {
+    position: absolute;
+    right: -45px;
+    bottom: -62px;
+    width: 170px;
+    height: 170px;
+    opacity: .52;
+  }
+
+  .growth-empty-copy { max-width: calc(100% - 18px); }
 }
 
 @media (max-width: 720px) {
