@@ -18,7 +18,7 @@ fi
 cd /app/operations
 exec s6-setuidgid gaea \
   /opt/venv/bin/python /app/operations/scripts/run_dts_ingest.py \
-  --watch --max-messages 500 --max-projection-keys 1000 \
+  --watch --max-messages 2000 --max-projection-keys 1000 \
   --projection-time-budget-seconds 20 \
   --idle-timeout-ms 10000 --interval-seconds 3 \
   --heartbeat-path /tmp/tit-dts-ingest-heartbeat \

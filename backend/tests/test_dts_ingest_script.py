@@ -53,7 +53,7 @@ def test_projection_flag_defaults_off_and_accepts_explicit_values(
 def test_projection_batch_defaults_favor_backlog_drain_with_fresh_heartbeat() -> None:
     args = run_dts_ingest.build_parser().parse_args([])
 
-    assert args.max_messages == 500
+    assert args.max_messages == 2000
     assert args.max_projection_keys == 1000
     assert args.projection_time_budget_seconds == 20.0
 
@@ -1116,7 +1116,11 @@ def test_official_java_startup_receives_database_checkpoint(
         lambda settings, **kwargs: (
             sink
             if settings is database_settings
-            and kwargs == {"source_region": "dom"}
+            and kwargs
+            == {
+                "source_region": "dom",
+                "pool_pre_ping": projection_mode != "direct",
+            }
             else (_ for _ in ()).throw(AssertionError("sink contract"))
         ),
     )

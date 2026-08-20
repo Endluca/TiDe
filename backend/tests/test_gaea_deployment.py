@@ -271,7 +271,7 @@ def test_gaea_dts_module_uses_internal_sources_and_non_root_runtime() -> None:
     assert 'ENTRYPOINT ["/init"]' not in dockerfile
     assert "HEALTHCHECK --interval=30s --timeout=20s" in dockerfile
     assert 'CMD ["/opt/venv/bin/python"' in dockerfile
-    assert '"--max-messages", "500"' in dockerfile
+    assert '"--max-messages", "2000"' in dockerfile
     assert "STOPSIGNAL SIGTERM" in dockerfile
     for excluded in (
         "repo.bjtest.51talk.biz/repository/npm/",
@@ -1182,7 +1182,7 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "TIT_DTS_PASSWORD is required" in dts_run
     assert "TIT_DTS_INGEST_DB_PASSWORD is required" in dts_run
     assert "TIT_DTS_INGEST_DB_SSLMODE is required" not in dts_run
-    assert "--watch --max-messages 500" in dts_run
+    assert "--watch --max-messages 2000" in dts_run
     assert "--max-projection-keys 1000" in dts_run
     assert "--projection-time-budget-seconds 20" in dts_run
     assert (S6_DIR / "dts-ingest" / "timeout-kill").read_text(

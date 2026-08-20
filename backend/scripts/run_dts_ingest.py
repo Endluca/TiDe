@@ -410,6 +410,12 @@ def _start_ingest_once(
     sink = PostgresDtsEventSink(
         contract.database_settings,
         source_region=stream_settings.source_region,
+        # The long-lived direct loop treats a stale connection as a retriable
+        # startup failure and resumes from the authoritative DB checkpoint.
+        # Avoid an otherwise redundant SELECT 1 before every bounded batch.
+        pool_pre_ping=(
+            getattr(contract, "projection_mode", "queued") != "direct"
+        ),
     )
     handoff = False
     consumer: Any | None = None
@@ -625,7 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
             "queued or direct mode."
         )
     )
-    parser.add_argument("--max-messages", type=int, default=500)
+    parser.add_argument("--max-messages", type=int, default=2_000)
     parser.add_argument("--max-projection-keys", type=int, default=1_000)
     parser.add_argument(
         "--projection-time-budget-seconds",

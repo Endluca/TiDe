@@ -357,7 +357,7 @@ Python 下发的来源字段白名单裁剪，运行热路径不再重编码 Avr
 in-flight 路径已替换为协议 v2 有界批：`EVENT × N → BATCH_COMPLETE → Python DB 整批 durable
 → DURABLE_ACK_BATCH → DefaultUserRecord.commit(最后一条 ADVANCE) → SDK_CHECKPOINTS_ACCEPTED`。
 REPLAY 不调用 commit；Java 完整校验后仅对最后一条 ADVANCE 请求 SDK checkpoint。生产批次请求
-500 条、Java 硬上限 512 条，并同时受 Java 侧 8 MiB 结构化 payload 上限保护。任一协议、归一化、
+2000 条、Java 硬上限 2048 条，并同时受 Java 侧 8 MiB 结构化 payload 上限保护。任一协议、归一化、
 结构、隐私或数据库错误都不发送 ACK。镜像构建仍运行固定 Avro 联合类型 round-trip fixture，
 但该重编码只用于构建期 SDK 兼容自测。
 最后一步只表示 SDK 接受 checkpoint 请求；后续 Kafka checkpoint 是

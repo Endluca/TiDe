@@ -22,6 +22,7 @@ from app.dts_source_consumer import (
     DtsEventProcessor,
     DtsKafkaShadowConsumer,
     DtsRecordError,
+    DirtyKeySet,
     InMemoryShadowSink,
     _KafkaConnectionTrace,
     _KafkaMetadataRequestTrace,
@@ -1690,6 +1691,48 @@ def test_processor_is_idempotent_within_shadow_run() -> None:
     assert processor.process(event).status == "IGNORED"
     assert processor.process(event).status == "DUPLICATE"
     assert len(sink.processed) == 1
+
+
+def test_processor_uses_direct_metadata_without_legacy_dependency_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import dts_source_consumer as consumer_module
+
+    event = event_from_record(
+        record(
+            operation="INSERT",
+            object_name="tide_source_ovs.public.ovs_teacher",
+            fields=["id"],
+            after=[123],
+        )
+    )
+
+    class DirectSink:
+        def prepare_direct_event(self, _event):
+            return DirtyKeySet(), None
+
+        def apply_batch(self, items):
+            assert items == ((event, DirtyKeySet(), None),)
+            return (False,)
+
+    monkeypatch.setattr(
+        consumer_module,
+        "route_dirty_keys",
+        lambda _event: (_ for _ in ()).throw(
+            AssertionError("legacy dirty-key routing must be skipped")
+        ),
+    )
+    monkeypatch.setattr(
+        consumer_module,
+        "project_appoint_candidate",
+        lambda _event: (_ for _ in ()).throw(
+            AssertionError("legacy appoint projection must be skipped")
+        ),
+    )
+
+    result = DtsEventProcessor(DirectSink()).process_batch((event,))
+
+    assert result[0].status == "PROCESSED"
 
 
 def test_kafka_shadow_consumer_seeks_new_group_and_commits_exact_next_offset(

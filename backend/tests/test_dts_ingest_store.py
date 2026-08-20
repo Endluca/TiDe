@@ -254,8 +254,37 @@ def test_dts_engine_reserves_a_second_connection_for_projection_lock(
     assert captured["url"].query == {"sslmode": "verify-full"}
     assert captured["pool_size"] == 2
     assert captured["max_overflow"] == 0
+    assert captured["pool_pre_ping"] is True
     assert captured["event_targets"] == {"connect": fake_engine}
     assert set(captured["event_callbacks"]) == {"connect"}
+
+
+def test_dts_engine_can_skip_redundant_pre_ping_for_direct_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    fake_engine = object()
+
+    def fake_create_engine(_url: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return fake_engine
+
+    monkeypatch.setattr("app.dts_ingest_store.create_engine", fake_create_engine)
+    monkeypatch.setattr(
+        "app.dts_ingest_store.sqlalchemy_event.listen",
+        lambda *_args, **_kwargs: None,
+    )
+
+    build_dts_ingest_engine(
+        DtsIngestDatabaseSettings(
+            host="db.internal",
+            password="runtime-only",
+        ),
+        source_region="dom",
+        pool_pre_ping=False,
+    )
+
+    assert captured["pool_pre_ping"] is False
 
 
 class _TransportCursor:

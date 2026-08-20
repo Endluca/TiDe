@@ -286,7 +286,7 @@ def test_official_java_bridge_uses_one_bounded_durable_ack_per_batch() -> None:
     ]
 
     assert "new ArrayBlockingQueue<RecordEnvelope>(MAX_BATCH_MESSAGES)" in source
-    assert "MAX_BATCH_MESSAGES = 512" in source
+    assert "MAX_BATCH_MESSAGES = 2048" in source
     assert "MAX_BATCH_PAYLOAD_BYTES = 8 * 1024 * 1024" in source
     assert "BATCH_LINGER_MS = 50L" in source
     assert "envelope.awaitDecision()" not in listener

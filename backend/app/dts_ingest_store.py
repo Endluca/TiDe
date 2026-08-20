@@ -668,6 +668,7 @@ def build_dts_ingest_engine(
     settings: DtsIngestDatabaseSettings,
     *,
     source_region: str | None = None,
+    pool_pre_ping: bool = True,
 ) -> Engine:
     if source_region is not None and source_region not in {"dom", "ovs"}:
         raise DtsConfigurationError("TIT_DTS_SOURCE_REGION_UNSUPPORTED")
@@ -679,7 +680,7 @@ def build_dts_ingest_engine(
     engine = create_engine(
         settings.sqlalchemy_url(),
         future=True,
-        pool_pre_ping=True,
+        pool_pre_ping=pool_pre_ping,
         # One connection remains checked out for the projector's session-level
         # advisory lock; ingestion and projection share the second connection.
         pool_size=2,
@@ -1089,6 +1090,7 @@ class PostgresDtsEventSink:
         settings: DtsIngestDatabaseSettings,
         *,
         source_region: str | None = None,
+        pool_pre_ping: bool = True,
         engine: Engine | None = None,
     ) -> None:
         if source_region is not None and source_region not in {"dom", "ovs"}:
@@ -1098,6 +1100,7 @@ class PostgresDtsEventSink:
         self.engine = engine or build_dts_ingest_engine(
             settings,
             source_region=source_region,
+            pool_pre_ping=pool_pre_ping,
         )
         self._validated = False
         self._projection_lock_connection: Any | None = None
@@ -1115,6 +1118,28 @@ class PostgresDtsEventSink:
         if projector is None or not callable(getattr(projector, "apply", None)):
             raise DtsIngestStoreError("DTS_DIRECT_PROJECTOR_INVALID")
         self._direct_projector = projector
+
+    def prepare_direct_event(
+        self,
+        event: DtsChangeEvent,
+    ) -> tuple[DirtyKeySet, None] | None:
+        """Return the minimal processor metadata needed by direct mode.
+
+        Queued mode needs full dependency routing and the appoint projection
+        candidate before persistence.  Direct mode deliberately ignores both:
+        the projector consumes the original event and computes only its own
+        field mutation.  Avoid walking every row twice while retaining the
+        public PROCESSED/IGNORED classification used by heartbeat counters.
+        """
+
+        if getattr(self, "_direct_projector", None) is None:
+            return None
+        ignored_reason: str | None = None
+        if event.operation not in DATA_OPERATIONS:
+            ignored_reason = "CONTROL_RECORD"
+        elif source_table_suffix(event) is None:
+            ignored_reason = "TABLE_NOT_IN_DIRECT_PROFILE"
+        return DirtyKeySet(ignored_reason=ignored_reason), None
 
     def close(self) -> None:
         lock_connection = getattr(self, "_projection_lock_connection", None)
@@ -2121,13 +2146,15 @@ class PostgresDtsEventSink:
         event: DtsChangeEvent,
     ) -> bool:
         assert_domestic_event_protected(event)
-        current_next_offset = self._lock_stream_checkpoint(connection, event)
+        current_next_offset = self._lock_direct_stream_checkpoint(
+            connection,
+            event,
+        )
         if current_next_offset is not None:
             if event.offset < current_next_offset:
                 return True
             if event.offset > current_next_offset:
                 raise DtsIngestStoreError("DTS_DATABASE_OFFSET_NOT_CONTIGUOUS")
-        self._set_direct_source_region(connection, event.source_region)
         self._direct_projector.apply(connection, event)
         self._write_checkpoint(connection, event)
         return False
@@ -2138,7 +2165,7 @@ class PostgresDtsEventSink:
         events: Sequence[DtsChangeEvent],
     ) -> tuple[bool, ...]:
         first_event = events[0]
-        current_next_offset = self._lock_stream_checkpoint(
+        current_next_offset = self._lock_direct_stream_checkpoint(
             connection,
             first_event,
         )
@@ -2161,10 +2188,6 @@ class PostgresDtsEventSink:
             expected_next_offset = event.offset + 1
             new_events.append(event)
         if new_events:
-            self._set_direct_source_region(
-                connection,
-                first_event.source_region,
-            )
             apply_batch = getattr(self._direct_projector, "apply_batch", None)
             if callable(apply_batch):
                 apply_batch(connection, tuple(new_events))
@@ -2204,6 +2227,66 @@ class PostgresDtsEventSink:
             ),
             {"source_region": source_region},
         )
+
+    def _lock_direct_stream_checkpoint(
+        self,
+        connection: Any,
+        event: DtsChangeEvent,
+    ) -> int | None:
+        """Lock one direct stream, label the transaction and read checkpoint.
+
+        Direct ingestion always needs these three operations before projection.
+        Keeping them in one PostgreSQL statement removes two cross-region
+        round trips without weakening stream serialization, replay checks or
+        the transaction-local privacy provenance used by database triggers.
+        Non-PostgreSQL test engines retain the established portable fallback.
+        """
+
+        dialect_name = getattr(
+            getattr(connection, "dialect", None),
+            "name",
+            None,
+        )
+        if dialect_name != "postgresql":
+            checkpoint = self._lock_stream_checkpoint(connection, event)
+            self._set_direct_source_region(connection, event.source_region)
+            return checkpoint
+        if event.source_region not in {"dom", "ovs"}:
+            raise DtsIngestStoreError("DTS_SOURCE_REGION_MISMATCH")
+        return connection.execute(
+            text(
+                """
+                WITH stream_lock AS MATERIALIZED (
+                    SELECT pg_catalog.pg_advisory_xact_lock(
+                        pg_catalog.hashtextextended(:stream_identity, 0)
+                    ) AS acquired
+                ),
+                source_region AS MATERIALIZED (
+                    SELECT pg_catalog.set_config(
+                        'tit.dts_source_region',
+                        :source_region,
+                        true
+                    ) AS configured
+                    FROM stream_lock
+                )
+                SELECT (
+                    SELECT checkpoints.next_offset
+                    FROM public.dts_ingest_checkpoints AS checkpoints
+                    WHERE checkpoints.source_region = :source_region
+                      AND checkpoints.topic = :topic
+                      AND checkpoints.partition_id = :partition_id
+                    FOR UPDATE
+                ) AS next_offset
+                FROM source_region
+                """
+            ),
+            {
+                "stream_identity": self._stream_identity(event),
+                "source_region": event.source_region,
+                "topic": event.topic,
+                "partition_id": event.partition,
+            },
+        ).scalar_one_or_none()
 
     def _require_source_region(self, source_region: str) -> None:
         if self.source_region is not None and source_region != self.source_region:

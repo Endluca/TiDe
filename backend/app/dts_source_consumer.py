@@ -2379,14 +2379,25 @@ class DtsEventProcessor:
         retain their single-event behaviour through the explicit fallback.
         """
 
-        prepared = tuple(
-            (
-                event,
-                route_dirty_keys(event),
-                project_appoint_candidate(event),
+        direct_prepare = getattr(self._sink, "prepare_direct_event", None)
+        prepared_items: list[
+            tuple[
+                DtsChangeEvent,
+                DirtyKeySet,
+                AppointProjectionCandidate | None,
+            ]
+        ] = []
+        for event in events:
+            direct_metadata = (
+                direct_prepare(event) if callable(direct_prepare) else None
             )
-            for event in events
-        )
+            if direct_metadata is None:
+                dirty_keys = route_dirty_keys(event)
+                candidate = project_appoint_candidate(event)
+            else:
+                dirty_keys, candidate = direct_metadata
+            prepared_items.append((event, dirty_keys, candidate))
+        prepared = tuple(prepared_items)
         if not prepared:
             return ()
         batch_apply = getattr(self._sink, "apply_batch", None)

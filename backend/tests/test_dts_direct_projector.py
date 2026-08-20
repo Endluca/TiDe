@@ -1183,7 +1183,9 @@ def _direct_sink_for_checkpoint_test(
     projector = _RecordingProjector()
     written_offsets: list[int] = []
     sink._direct_projector = projector
-    sink._lock_stream_checkpoint = lambda _connection, _event: next_offset
+    sink._lock_direct_stream_checkpoint = (
+        lambda _connection, _event: next_offset
+    )
     sink._write_checkpoint = (
         lambda _connection, event: written_offsets.append(event.offset)
     )
@@ -1223,6 +1225,41 @@ def test_direct_postgres_write_sets_transaction_local_source_region() -> None:
     assert parameters == {"source_region": "dom"}
 
 
+def test_direct_postgres_lock_checkpoint_and_source_region_share_one_query() -> None:
+    class _Result:
+        def scalar_one_or_none(self) -> int:
+            return 42
+
+    class _Connection:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def execute(self, statement, parameters):
+            self.calls.append((str(statement), dict(parameters)))
+            return _Result()
+
+    event = _schedule_event()
+    sink = object.__new__(PostgresDtsEventSink)
+    connection = _Connection()
+
+    checkpoint = sink._lock_direct_stream_checkpoint(connection, event)
+
+    assert checkpoint == 42
+    assert len(connection.calls) == 1
+    statement, parameters = connection.calls[0]
+    assert "pg_advisory_xact_lock" in statement
+    assert "pg_catalog.set_config" in statement
+    assert "FOR UPDATE" in statement
+    assert parameters == {
+        "stream_identity": '["dom","dom-topic",0]',
+        "source_region": "dom",
+        "topic": "dom-topic",
+        "partition_id": 0,
+    }
+
+
 def test_direct_ignored_event_still_advances_checkpoint() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     TeacherSourceWideRecord.__table__.create(engine)
@@ -1230,7 +1267,7 @@ def test_direct_ignored_event_still_advances_checkpoint() -> None:
     projector = _direct_projector()
     written_offsets: list[int] = []
     sink._direct_projector = projector
-    sink._lock_stream_checkpoint = lambda _connection, _event: None
+    sink._lock_direct_stream_checkpoint = lambda _connection, _event: None
     sink._write_checkpoint = (
         lambda _connection, event: written_offsets.append(event.offset)
     )

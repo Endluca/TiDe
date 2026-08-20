@@ -48,6 +48,7 @@ DEFAULT_JAVA_TRANSPORT_COMMAND = (
 JAVA_TRANSPORT_START_TIMEOUT_SECONDS = 305.0
 JAVA_TRANSPORT_CLOSE_TIMEOUT_SECONDS = 15.0
 JAVA_TRANSPORT_PROTOCOL_VERSION = 2
+JAVA_TRANSPORT_MAX_BATCH_MESSAGES = 2_048
 _ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,127}$")
 _EOF = object()
 _JAVA_CHILD_ENV_ALLOWLIST = frozenset(
@@ -355,8 +356,11 @@ class OfficialJavaDtsTransport:
             raise DtsJavaTransportError(
                 "DTS_OFFICIAL_JAVA_TRANSPORT_NOT_READY"
             )
-        if max_messages < 1:
-            raise ValueError("max_messages must be positive")
+        if max_messages < 1 or max_messages > JAVA_TRANSPORT_MAX_BATCH_MESSAGES:
+            raise ValueError(
+                "max_messages must be between 1 and "
+                f"{JAVA_TRANSPORT_MAX_BATCH_MESSAGES}"
+            )
         if not commit_offsets:
             raise DtsJavaTransportError(
                 "DTS_OFFICIAL_JAVA_DURABLE_ACK_REQUIRED"
@@ -818,6 +822,7 @@ class OfficialJavaDtsTransport:
 __all__ = [
     "DEFAULT_JAVA_TRANSPORT_COMMAND",
     "JAVA_TRANSPORT_PROTOCOL_VERSION",
+    "JAVA_TRANSPORT_MAX_BATCH_MESSAGES",
     "DtsJavaTransportError",
     "OfficialJavaDtsTransport",
     "java_child_environment",
