@@ -87,6 +87,7 @@ PUBLIC_64 = "20260819_64_g05_g08_courses"
 PUBLIC_65 = "20260819_65_g09_set_course"
 PUBLIC_99 = "20260822_99_blacklist_three_state"
 PUBLIC_100 = "20260823_100_scope_snapshot_diff"
+PUBLIC_101 = "20260824_101_dts_single_pipeline_reset"
 TEACHER_32 = "0032_first_login_onboarding"
 TEACHER_33 = "0033_g01_tesol_only"
 TEACHER_37 = "0037_g04_remove_device_check"
@@ -304,6 +305,11 @@ PUBLIC_REVISION_CHAIN = (
         PUBLIC_100,
         PUBLIC_99,
     ),
+    (
+        "20260824_101_dts_single_pipeline_reset.py",
+        PUBLIC_101,
+        PUBLIC_100,
+    ),
 )
 
 PUBLIC_POST_65_REVISION_CHAIN = tuple(
@@ -326,7 +332,7 @@ class UpgradeAction:
     expected_state: DatabaseState
 
 
-FINAL_STATE = DatabaseState(PUBLIC_100, TEACHER_43)
+FINAL_STATE = DatabaseState(PUBLIC_101, TEACHER_43)
 TRANSITIONS: dict[DatabaseState, UpgradeAction] = {
     DatabaseState(PUBLIC_50, TEACHER_32): UpgradeAction(
         "public", PUBLIC_54, DatabaseState(PUBLIC_54, TEACHER_32)
@@ -406,6 +412,11 @@ TRANSITIONS[DatabaseState(PUBLIC_99, TEACHER_42)] = UpgradeAction(
 TRANSITIONS[DatabaseState(PUBLIC_99, TEACHER_43)] = UpgradeAction(
     "public",
     PUBLIC_100,
+    DatabaseState(PUBLIC_100, TEACHER_43),
+)
+TRANSITIONS[DatabaseState(PUBLIC_100, TEACHER_43)] = UpgradeAction(
+    "public",
+    PUBLIC_101,
     FINAL_STATE,
 )
 
@@ -867,7 +878,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"阶段读回通过：{_format_state(observed)}")
 
     print(
-        "公司 TEST 分阶段迁移完成并读回到 public 100 / teacher 0043。"
+        "公司 TEST 分阶段迁移完成并读回到 public 101 / teacher 0043。"
         "尚未执行 apply-company-test.sh 初始化，也未发布或重启应用。"
     )
     return 0

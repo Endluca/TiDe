@@ -78,10 +78,9 @@ def _profile_artifact(
         separators=(",", ":"),
     ).encode("utf-8")
     profile_path.write_bytes(raw)
-    profile_hash = hashlib.sha256(raw).hexdigest()
-    profile = load_dts_source_profile_registry(profile_path).profile_for(
-        "dom_teacher"
-    )
+    registry = load_dts_source_profile_registry(profile_path)
+    profile_hash = registry.manifest_sha256
+    profile = registry.profile_for("dom_teacher")
     assert profile is not None
     return profile_path, profile_hash, profile.profile_id
 

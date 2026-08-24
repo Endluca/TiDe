@@ -160,6 +160,58 @@ def test_switch_and_readiness_validate_database_response_shape() -> None:
     assert readiness.ready is True
     assert readiness.active_projection == "V2"
     assert readiness.projection_generation == 2
+    assert readiness.fresh_start_run_id is None
+
+
+def test_fresh_start_requires_event_only_v2_response() -> None:
+    connection = _Connection(
+        [
+            {
+                "status": "APPLIED",
+                "run_id": "fresh-1",
+                "target_mode": "V2_PRIMARY",
+                "active_projection": "V2",
+                "event_scope": "POST_H0_ONLY",
+                "history_policy": "NO_BACKFILL",
+                "qualification_grants_enabled": False,
+            },
+            {
+                "ready": True,
+                "code": "READY_V2_PRIMARY_FRESH",
+                "mode": "V2_PRIMARY",
+                "active_projection": "V2",
+                "projection_generation": 1,
+                "control_row_version": 2,
+                "route_row_version": 2,
+                "time_catchup_status": "COMPLETE",
+                "reconciliation_run_id": None,
+                "fresh_start_run_id": "fresh-1",
+            },
+        ]
+    )
+    store = PostgresDtsV2ProjectionCutoverStore()
+
+    result = store.bootstrap_fresh_start(
+        connection,  # type: ignore[arg-type]
+        run_id="fresh-1",
+        consumer_group="fresh-v2",
+        routes=(
+            {
+                "source_region": "dom",
+                "topic": "dom-topic",
+                "partition_id": 0,
+            },
+        ),
+        expected_vector_hash="a" * 64,
+        source_profile_manifest_sha256="b" * 64,
+    )
+    readiness = store.read_readiness(connection)  # type: ignore[arg-type]
+
+    assert result["status"] == "APPLIED"
+    assert "bootstrap_dts_v2_primary_fresh_v1" in connection.calls[0][0]
+    assert readiness.code == "READY_V2_PRIMARY_FRESH"
+    assert readiness.reconciliation_run_id is None
+    assert readiness.fresh_start_run_id == "fresh-1"
 
 
 def test_naive_evaluation_time_and_unknown_switch_status_fail_closed() -> None:

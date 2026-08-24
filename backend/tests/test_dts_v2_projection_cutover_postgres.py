@@ -162,6 +162,12 @@ def projection_cutover_postgres(
         # exists, then install it again on the same physical database.
         _run_alembic(backend_dir, admin_url, "downgrade", REVISION_94)
         _run_alembic(backend_dir, admin_url, "upgrade", REVISION_95)
+        _run_alembic(
+            backend_dir,
+            admin_url,
+            "upgrade",
+            "20260823_100_scope_snapshot_diff",
+        )
 
         cutover = create_engine(
             database_url("tit_dts_projection_cutover_runtime")
@@ -269,6 +275,98 @@ def _bootstrap_h0_and_approve_profiles(connection) -> str:
         {"manifest_sha": manifest_sha, "vector": vector_json},
     )
     return str(manifest_sha)
+
+
+def _seed_fresh_h0_and_profile(
+    connection,
+) -> tuple[list[dict[str, object]], str, str]:
+    connection.execute(
+        text(
+            """
+            INSERT INTO public.dts_ingest_checkpoints(
+              source_region,topic,partition_id,next_offset,source_timestamp,
+              source_position,updated_at
+            ) VALUES
+              ('dom','fresh-dom',0,41,0,'fresh-dom',transaction_timestamp()),
+              ('ovs','fresh-ovs',0,73,0,'fresh-ovs',transaction_timestamp())
+            """
+        )
+    )
+    routes: list[dict[str, object]] = []
+    for region, topic, offset in (
+        ("dom", "fresh-dom", 41),
+        ("ovs", "fresh-ovs", 73),
+    ):
+        epoch_id = connection.execute(
+            text(
+                "SELECT public.dts_broker_epoch_id_v2("
+                ":region,:topic,0,'generation-1','opening-1')"
+            ),
+            {"region": region, "topic": topic},
+        ).scalar_one()
+        routes.append(
+            {
+                "source_region": region,
+                "topic": topic,
+                "partition_id": 0,
+                "current_next_offset": offset,
+                "consumer_group": f"fresh-{region}-consumer",
+                "stream_generation_id": "generation-1",
+                "epoch_opening_id": "opening-1",
+                "source_partition_epoch_id": epoch_id,
+            }
+        )
+    routes_json = _canonical(routes)
+    vector_hash = str(
+        connection.execute(
+            text(
+                "SELECT public.dts_initial_broker_epoch_vector_hash_v2("
+                "CAST(:routes AS jsonb))"
+            ),
+            {"routes": routes_json},
+        ).scalar_one()
+    )
+
+    profile_vector = [
+        {
+            "source_region": region,
+            "source_table": table,
+            "source_schema_profile_id": "dts-source-schema:v2:"
+            + hashlib.sha256(f"{region}:{table}".encode()).hexdigest(),
+        }
+        for region, table in SOURCE_PROFILES
+    ]
+    profile_json = _canonical(profile_vector)
+    manifest_sha = str(
+        connection.execute(
+            text(
+                "SELECT public.dts_canonical_json_sha256_v1("
+                "CAST(:profile AS jsonb))"
+            ),
+            {"profile": profile_json},
+        ).scalar_one()
+    )
+    connection.execute(
+        text(
+            "SELECT set_config("
+            "'tit.dts_source_profile_approval_migration','on',true)"
+        )
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO public.dts_source_profile_approvals_v2(
+              manifest_sha256,manifest_version,profile_vector,
+              profile_vector_hash,status,approved_by_change_id,approved_by
+            ) VALUES (
+              :manifest_sha,1,CAST(:profile AS jsonb),:manifest_sha,
+              'APPROVED','fresh-test-profile','postgres-test-fixture'
+            )
+            """
+        ),
+        {"manifest_sha": manifest_sha, "profile": profile_json},
+    )
+    return routes, vector_hash, manifest_sha
 
 
 def _seed_complete_scope_and_lesson(connection) -> None:
@@ -464,7 +562,8 @@ def _install_reconciliation_providers(connection, manifest_sha: str) -> None:
     connection.execute(
         text(
             """
-            CREATE FUNCTION public.dts_v1_compat_dirty_not_complete_count_v1()
+            CREATE OR REPLACE FUNCTION
+              public.dts_v1_compat_dirty_not_complete_count_v1()
             RETURNS bigint LANGUAGE sql STABLE
             SET search_path=pg_catalog,public
             AS $function$ SELECT 0::bigint $function$
@@ -512,6 +611,123 @@ def _lesson_row(engine: Engine) -> dict[str, object]:
             )
         ).mappings().one()
     return dict(row)
+
+
+@pytest.mark.skipif(
+    not _postgres_tools_available(),
+    reason="local PostgreSQL binaries are required for cutover tests",
+)
+def test_single_pipeline_reset_clears_history_and_first_event_creates_h0(
+    projection_cutover_postgres: tuple[Engine, Engine, Engine],
+) -> None:
+    admin, _cutover, _teacher = projection_cutover_postgres
+    backend_dir = Path(__file__).resolve().parents[1]
+    with admin.begin() as connection:
+        template_count = connection.execute(
+            text("SELECT count(*) FROM public.task_templates")
+        ).scalar_one()
+        connection.execute(
+            text(
+                """
+                INSERT INTO public.dts_ingest_checkpoints(
+                  source_region,topic,partition_id,next_offset,
+                  source_timestamp,source_position,updated_at
+                ) VALUES (
+                  'ovs','old-topic',0,99,1786523000,'old',clock_timestamp()
+                )
+                """
+            )
+        )
+    admin_url = admin.url.render_as_string(hide_password=False)
+    _run_alembic(backend_dir, admin_url, "upgrade", "head")
+
+    with admin.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT mode,row_version,projection_generation,"
+                "qualification_grants_enabled,time_catchup_status "
+                "FROM public.dts_pipeline_control WHERE control_id='PRIMARY'"
+            )
+        ).one() == ("V2_PRIMARY", 1, 1, False, "NOT_REQUIRED")
+        assert connection.execute(
+            text(
+                "SELECT active_projection,row_version "
+                "FROM public.dts_projection_read_routes "
+                "WHERE route_id='PRIMARY'"
+            )
+        ).one() == ("V2", 2)
+        assert connection.execute(
+            text("SELECT count(*) FROM public.dts_ingest_checkpoints")
+        ).scalar_one() == 0
+        assert connection.execute(
+            text("SELECT count(*) FROM public.dts_v2_reconciliation_runs")
+        ).scalar_one() == 0
+        assert connection.execute(
+            text("SELECT count(*) FROM public.dts_projection_switch_audits")
+        ).scalar_one() == 0
+        assert connection.execute(
+            text("SELECT count(*) FROM public.dts_source_scope_states")
+        ).scalar_one() == 0
+        assert connection.execute(
+            text("SELECT count(*) FROM public.dts_pipeline_reset_audits")
+        ).scalar_one() == 1
+        assert connection.execute(
+            text("SELECT count(*) FROM public.task_templates")
+        ).scalar_one() == template_count
+        manifest_sha = connection.execute(
+            text(
+                "SELECT source_profile_manifest_sha256 "
+                "FROM public.dts_pipeline_reset_audits"
+            )
+        ).scalar_one()
+
+    ingest_url = admin.url.set(username="tit_dts_ingest_runtime").render_as_string(
+        hide_password=False
+    )
+    ingest = create_engine(ingest_url)
+    try:
+        with ingest.begin() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT public.initialize_dts_event_stream_v1("
+                    "'ovs','new-topic',0,'epoch-ovs-reset-1',"
+                    "'new-consumer',123,1786523400,'first-position',:manifest)"
+                ),
+                {"manifest": manifest_sha},
+            ).scalar_one() == "INITIALIZED"
+        with ingest.begin() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT public.initialize_dts_event_stream_v1("
+                    "'ovs','new-topic',0,'epoch-ovs-reset-1',"
+                    "'new-consumer',999,1786523500,'later-position',:manifest)"
+                ),
+                {"manifest": manifest_sha},
+            ).scalar_one() == "EXISTS"
+    finally:
+        ingest.dispose()
+
+    with admin.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT next_offset,source_timestamp,"
+                "source_partition_epoch_id,consumer_group,is_current_epoch "
+                "FROM public.dts_ingest_checkpoints"
+            )
+        ).one() == (
+            123,
+            1786523400,
+            "epoch-ovs-reset-1",
+            "new-consumer",
+            True,
+        )
+        assert connection.execute(
+            text(
+                "SELECT has_function_privilege("
+                "'tit_dts_ingest_runtime',"
+                "'public.claim_v1_compat_dirty_key_v1(text)','EXECUTE')"
+            )
+        ).scalar_one() is False
 
 
 @pytest.mark.skipif(

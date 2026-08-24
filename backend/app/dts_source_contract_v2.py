@@ -159,6 +159,74 @@ V2_SOURCE_RAW_FIELD_TYPE_NUMBERS_BY_TABLE: dict[str, Mapping[str, int]] = {
 }
 
 
+def _event_contract_profile_id(table: str) -> str | None:
+    if table not in V2_BUSINESS_SOURCE_TABLES:
+        return None
+    return f"dts-event-fields:v1:{table}"
+
+
+def v2_source_profile_id(table: str) -> str | None:
+    """Return an approved physical profile or the code-owned event contract.
+
+    Fresh-start does not reconstruct rows that predate the configured start.
+    A new INSERT is therefore its own baseline; later sparse changes merge only
+    into that persisted baseline.  The fallback identifies the versioned
+    allow-list contract and does not claim knowledge of the physical source
+    table schema.
+    """
+
+    return V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE.get(
+        table
+    ) or _event_contract_profile_id(table)
+
+
+def _uses_event_field_contract(table: str) -> bool:
+    return (
+        table in V2_BUSINESS_SOURCE_TABLES
+        and table not in V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE
+    )
+
+
+def _persisted_fields_for_table(table: str, region: str) -> frozenset[str] | None:
+    configured = V2_PERSISTED_PROTECTED_FIELDS_BY_TABLE.get(table)
+    if configured is not None:
+        return configured
+    prefix = f"{region}_"
+    if not table.startswith(prefix):
+        return None
+    suffix = table.removeprefix(prefix)
+    fields = V2_SOURCE_FIELD_WHITELIST.get(suffix)
+    if fields is None:
+        return None
+    if region == "dom":
+        return fields - DOMESTIC_STUDENT_ID_FIELDS
+    return fields
+
+
+V2_EVENT_CONTRACT_MANIFEST_SHA256 = hashlib.sha256(
+    json.dumps(
+        [
+            {
+                "source_region": table.split("_", 1)[0],
+                "source_table": table,
+                "profile_id": _event_contract_profile_id(table),
+                "persisted_fields": sorted(
+                    _persisted_fields_for_table(
+                        table,
+                        table.split("_", 1)[0],
+                    )
+                    or ()
+                ),
+            }
+            for table in sorted(V2_BUSINESS_SOURCE_TABLES)
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
+
+
 @dataclass(frozen=True)
 class V2ValidatedCurrentRow:
     """A current row whose v2 profile and typed identity were persisted."""
@@ -283,7 +351,36 @@ def with_v2_source_image_completeness(
 
     table = event.table_name or ""
     expected_fields = V2_COMPLETE_IMAGE_SOURCE_FIELDS_BY_TABLE.get(table)
-    if expected_fields is None or event.operation not in DATA_OPERATIONS:
+    if event.operation not in DATA_OPERATIONS:
+        return replace(
+            event,
+            source_images_complete=False,
+            source_image_profile_id=None,
+            _v2_source_image_completeness_proof=None,
+            _domestic_protection_proof=None,
+        )
+    if expected_fields is None:
+        profile_id = _event_contract_profile_id(table)
+        if profile_id is None:
+            return replace(
+                event,
+                source_images_complete=False,
+                source_image_profile_id=None,
+                _v2_source_image_completeness_proof=None,
+                _domestic_protection_proof=None,
+            )
+        _assert_event_matches_source_profile(event, table=table)
+        before, after = _required_images(event)
+        _require_authoritative_identity_images(
+            operation=event.operation,
+            before=before,
+            after=after,
+        )
+        if event.operation == "INSERT":
+            return _attest_v2_source_image_completeness(
+                event,
+                source_image_profile_id=profile_id,
+            )
         return replace(
             event,
             source_images_complete=False,
@@ -368,10 +465,13 @@ def build_v2_source_route(
             type(type_number) is not int or type_number < 0
         ):
             raise DtsRecordError("DTS_SOURCE_FIELD_TYPE_NUMBERS_INVALID")
-    expected_profile_id = V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE.get(table)
+    expected_profile_id = v2_source_profile_id(table)
     if expected_profile_id is None:
         raise DtsRecordError("DTS_SOURCE_SCHEMA_PROFILE_MISSING")
-    persisted_fields = V2_PERSISTED_PROTECTED_FIELDS_BY_TABLE.get(table)
+    persisted_fields = _persisted_fields_for_table(
+        table,
+        event.source_region,
+    )
     if persisted_fields is None:
         raise DtsRecordError("DTS_SOURCE_SCHEMA_PROFILE_INCOMPLETE")
     whitelist = persisted_fields
@@ -407,9 +507,12 @@ def build_v2_source_route(
     complete_profile_proof = _has_v2_source_image_completeness_proof(
         event,
         expected_profile_id=expected_profile_id,
-    ) and _protected_images_retain_complete_shape(
-        event,
-        expected_fields=V2_COMPLETE_IMAGE_SOURCE_FIELDS_BY_TABLE[table],
+    ) and (
+        _uses_event_field_contract(table)
+        or _protected_images_retain_complete_shape(
+            event,
+            expected_fields=V2_COMPLETE_IMAGE_SOURCE_FIELDS_BY_TABLE[table],
+        )
     )
     if (
         event.source_images_complete
@@ -460,8 +563,11 @@ def build_v2_source_route(
     ):
         raise DtsRecordError("DTS_SOURCE_PRIMARY_KEY_TYPE_DRIFT")
     effective_key_type = event_key_type or normalized_current_key_type
-    expected_key_type = V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE[table]
-    if effective_key_type != expected_key_type:
+    expected_key_type = V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE.get(table)
+    if effective_key_type is None or (
+        expected_key_type is not None
+        and effective_key_type != expected_key_type
+    ):
         raise DtsRecordError("DTS_SOURCE_PRIMARY_KEY_TYPE_MISMATCH")
     identity_images: list[Mapping[str, Any]] = []
     if has_existing_current:

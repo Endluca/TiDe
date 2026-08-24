@@ -826,7 +826,8 @@ elif [[ "${TARGET_MIGRATION}" == "0043_p_rel_execution_catalog" ]]; then
         select count(*) = 1
           and min(version_num) in (
             '20260822_99_blacklist_three_state',
-            '20260823_100_scope_snapshot_diff'
+            '20260823_100_scope_snapshot_diff',
+            '20260824_101_dts_single_pipeline_reset'
           )
         from public.alembic_version
       )

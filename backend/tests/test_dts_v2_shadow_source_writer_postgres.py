@@ -943,19 +943,118 @@ def test_appoint_only_shadow_writer_is_atomic_typed_private_and_inert(
             region="dom",
             operation="UPDATE",
             offset=7,
-            before=_row(2002, "22", None),
-            after=_row(2002, "23", None),
+            before=_row(2004, "22", None),
+            after=_row(2004, "23", None),
         )
-        with pytest.raises(
-            DtsV2ShadowSourceWriterError,
-            match="SOURCE_CURRENT_PROVENANCE_REJECTED",
-        ):
-            with engine.begin() as connection:
-                writer.apply_appoint_cdc(
-                    connection,
-                    legacy_event,
-                    ACTIVE_EPOCH,
+        with engine.begin() as connection:
+            ignored = writer.apply_appoint_cdc(
+                connection,
+                legacy_event,
+                ACTIVE_EPOCH,
+            )
+            assert (ignored.status, ignored.source_row_revision) == (
+                "IGNORED_MISSING_CURRENT",
+                None,
+            )
+            assert connection.execute(
+                text(
+                    """
+                    SELECT count(*) FROM public.dts_source_rows
+                    WHERE source_region='dom'
+                      AND source_table='dom_appoint'
+                      AND source_key='2004'
+                    """
                 )
+            ).scalar_one() == 0
+            assert connection.execute(
+                text(
+                    """
+                    SELECT count(*) FROM public.dts_source_row_versions
+                    WHERE source_region='dom'
+                      AND source_table='dom_appoint'
+                      AND source_key='2004'
+                    """
+                )
+            ).scalar_one() == 0
+
+            inserted_after_h0 = writer.apply_appoint_cdc(
+                connection,
+                _event(
+                    region="dom",
+                    operation="INSERT",
+                    offset=71,
+                    before=None,
+                    after=_row(2004, "23", None),
+                ),
+                ACTIVE_EPOCH,
+            )
+            updated_after_insert = writer.apply_appoint_cdc(
+                connection,
+                _event(
+                    region="dom",
+                    operation="UPDATE",
+                    offset=72,
+                    before=_row(2004, "23", None),
+                    after=_row(2004, "24", None),
+                ),
+                ACTIVE_EPOCH,
+            )
+            assert (
+                inserted_after_h0.status,
+                inserted_after_h0.source_row_revision,
+                updated_after_insert.status,
+                updated_after_insert.source_row_revision,
+            ) == ("APPLIED", 1, "APPLIED", 2)
+
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.dts_source_rows(
+                      source_region,source_table,source_key,source_key_data,
+                      dependency_keys,source_row,is_deleted,source_timestamp,
+                      last_record_id,source_position,last_topic,
+                      last_partition,last_offset,row_version,
+                      provenance_state
+                    ) VALUES (
+                      'dom','dom_appoint','2003',
+                      jsonb_build_object('id',2003),'{}'::jsonb,
+                      jsonb_build_object('id',2003,'t_id','22'),false,
+                      1,1,'legacy','legacy-topic',0,1,1,'LEGACY_PENDING'
+                    )
+                    """
+                )
+            )
+
+        with engine.begin() as connection:
+            ignored_legacy_placeholder = writer.apply_appoint_cdc(
+                connection,
+                _sparse_dom_event(
+                    offset=70,
+                    before={"id": 2003, "t_id": "22"},
+                    after={"id": 2003, "t_id": "23"},
+                    source_field_types={
+                        "id": "NUMERIC",
+                        "t_id": "NUMERIC",
+                    },
+                ),
+                ACTIVE_EPOCH,
+            )
+            assert (
+                ignored_legacy_placeholder.status,
+                ignored_legacy_placeholder.source_row_revision,
+            ) == ("IGNORED_MISSING_CURRENT", None)
+            assert connection.execute(
+                text(
+                    """
+                    SELECT provenance_state,source_row_revision,
+                           source_row ->> 't_id'
+                    FROM public.dts_source_rows
+                    WHERE source_region='dom'
+                      AND source_table='dom_appoint'
+                      AND source_key='2003'
+                    """
+                )
+            ).one() == ("LEGACY_PENDING", None, "22")
 
         with pytest.raises(
             DtsV2ShadowSourceWriterError,

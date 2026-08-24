@@ -938,7 +938,7 @@ def test_domestic_student_ids_are_hmac_protected_before_routing() -> None:
     assert candidate.target_values["学员id"] == token
 
 
-def test_ingest_preparation_keeps_appoint_incomplete_without_verified_profile() -> None:
+def test_ingest_preparation_uses_new_insert_as_event_contract_baseline() -> None:
     fields = [
         "id",
         "t_id",
@@ -989,8 +989,10 @@ def test_ingest_preparation_keeps_appoint_incomplete_without_verified_profile() 
 
     protected = prepare_change_event_for_ingest(event, settings)
 
-    assert protected.source_images_complete is False
-    assert protected.source_image_profile_id is None
+    assert protected.source_images_complete is True
+    assert protected.source_image_profile_id == (
+        "dts-event-fields:v1:dom_appoint"
+    )
     assert protected.after is not None
     assert "s_id" not in protected.after
     assert protected.after["student_token"].startswith("dom:v1:")

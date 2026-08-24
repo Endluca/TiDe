@@ -350,12 +350,8 @@ describe('teacher database migration chain', () => {
       'teacher 0043 要求 public head 99 或 100 已发布两条稳定、零分、REAL 的可靠性任务模板',
     );
     expect(production).toContain('min(version_num) in (');
-    expect(production).toContain(
-      "'20260822_99_blacklist_three_state',",
-    );
-    expect(production).toContain(
-      "'20260823_100_scope_snapshot_diff'",
-    );
+    expect(production).toContain("'20260822_99_blacklist_three_state',");
+    expect(production).toContain("'20260824_101_dts_single_pipeline_reset'");
     expect(production).toContain(
       "row_id in ('P-REL-MEMO:v1', 'P-REL-ATTENDANCE:v1')",
     );

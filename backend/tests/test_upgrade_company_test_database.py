@@ -57,6 +57,7 @@ def test_full_plan_preserves_every_cross_schema_switch_point() -> None:
         ),
         ("teacher", upgrade.TEACHER_43),
         ("public", upgrade.PUBLIC_100),
+        ("public", upgrade.PUBLIC_101),
     ]
     assert plan[-1].expected_state == upgrade.FINAL_STATE
 
@@ -106,6 +107,10 @@ def test_full_plan_preserves_every_cross_schema_switch_point() -> None:
         (
             upgrade.DatabaseState(upgrade.PUBLIC_99, upgrade.TEACHER_43),
             upgrade.PUBLIC_100,
+        ),
+        (
+            upgrade.DatabaseState(upgrade.PUBLIC_100, upgrade.TEACHER_43),
+            upgrade.PUBLIC_101,
         ),
     ],
 )
@@ -177,6 +182,7 @@ def test_default_main_is_read_only_and_prints_the_plan(
     assert upgrade.PUBLIC_54 in output
     assert upgrade.PUBLIC_99 in output
     assert upgrade.PUBLIC_100 in output
+    assert upgrade.PUBLIC_101 in output
     assert upgrade.TEACHER_43 in output
 
 

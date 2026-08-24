@@ -11,7 +11,6 @@ from app.dts_v2_dual_capture_store import (
     DtsV2DualCaptureStoreError,
     PostgresDtsV2DualCaptureSink,
     _event_payload_hash,
-    _initial_h0_route_matches,
 )
 from app.dts_v2_dirty_queue_store import DirtyKeyV2
 from app.dts_v2_shadow_source_writer import DtsV2ShadowSourceWriteResult
@@ -159,6 +158,7 @@ class _UnitSink(PostgresDtsV2DualCaptureSink):
             source_partition_epoch_id=EPOCH_ID,
             consumer_group=CONSUMER_GROUP,
             control_group=CONTROL_GROUP,
+            source_profile_manifest_sha256="a" * 64,
             engine=engine,  # type: ignore[arg-type]
             v2_writer=writer,
             dirty_queue_store=queue_store,
@@ -205,6 +205,15 @@ class _UnitSink(PostgresDtsV2DualCaptureSink):
     ) -> bool:
         del connection, event, dirty_keys
         raise AssertionError("dual capture must never call legacy persistence")
+
+    def _was_missing_course_update_ignored(
+        self,
+        connection: object,
+        *,
+        event: DtsChangeEvent,
+    ) -> bool:
+        del connection, event
+        return False
 
     def _write_or_validate_ledger(
         self,
@@ -469,67 +478,6 @@ def test_ledger_hash_commits_sdk_field_type_number_evidence() -> None:
     assert first_hash != second_hash
 
 
-def test_control_vector_attests_each_subscription_group_independently() -> None:
-    vector = [
-        {
-            "source_region": "dom",
-            "topic": "dom-topic",
-            "partition_id": 0,
-            "source_partition_epoch_id": "dom-epoch",
-            "consumer_group": "dom-subscription-group",
-        },
-        {
-            "source_region": "ovs",
-            "topic": "ovs-topic",
-            "partition_id": 0,
-            "source_partition_epoch_id": EPOCH_ID,
-            "consumer_group": CONSUMER_GROUP,
-        },
-    ]
-
-    assert _initial_h0_route_matches(
-        vector,
-        source_region="dom",
-        topic="dom-topic",
-        partition=0,
-        source_partition_epoch_id="dom-epoch",
-        consumer_group="dom-subscription-group",
-    )
-    assert _initial_h0_route_matches(
-        vector,
-        source_region="ovs",
-        topic="ovs-topic",
-        partition=0,
-        source_partition_epoch_id=EPOCH_ID,
-        consumer_group=CONSUMER_GROUP,
-    )
-    assert not _initial_h0_route_matches(
-        vector,
-        source_region="ovs",
-        topic="ovs-topic",
-        partition=0,
-        source_partition_epoch_id=EPOCH_ID,
-        consumer_group="dom-subscription-group",
-    )
-    assert not _initial_h0_route_matches(
-        [
-            *vector,
-            {
-                "source_region": "ovs",
-                "topic": "ovs-topic",
-                "partition_id": 0,
-                "source_partition_epoch_id": "other-epoch",
-                "consumer_group": "other-subscription-group",
-            },
-        ],
-        source_region="ovs",
-        topic="ovs-topic",
-        partition=0,
-        source_partition_epoch_id=EPOCH_ID,
-        consumer_group=CONSUMER_GROUP,
-    )
-
-
 def test_direct_and_invalid_batch_shape_fail_before_any_write() -> None:
     sink, engine, _calls = _sink()
 
@@ -566,7 +514,6 @@ def test_direct_and_invalid_batch_shape_fail_before_any_write() -> None:
         "source_region",
         "epoch_id",
         "consumer_group",
-        "control_group",
         "error_code",
     ),
     (
@@ -574,29 +521,19 @@ def test_direct_and_invalid_batch_shape_fail_before_any_write() -> None:
             "",
             EPOCH_ID,
             CONSUMER_GROUP,
-            CONTROL_GROUP,
             "DTS_V2_DUAL_CAPTURE_SOURCE_REGION_REQUIRED",
         ),
         (
             "ovs",
             " ",
             CONSUMER_GROUP,
-            CONTROL_GROUP,
             "DTS_V2_DUAL_CAPTURE_EPOCH_ID_REQUIRED",
         ),
         (
             "ovs",
             EPOCH_ID,
             "",
-            CONTROL_GROUP,
             "DTS_V2_DUAL_CAPTURE_CONSUMER_GROUP_REQUIRED",
-        ),
-        (
-            "ovs",
-            EPOCH_ID,
-            CONSUMER_GROUP,
-            "",
-            "DTS_V2_DUAL_CAPTURE_CONTROL_GROUP_REQUIRED",
         ),
     ),
 )
@@ -604,7 +541,6 @@ def test_constructor_requires_explicit_v2_identity(
     source_region: str,
     epoch_id: str,
     consumer_group: str,
-    control_group: str,
     error_code: str,
 ) -> None:
     with pytest.raises(DtsV2DualCaptureStoreError, match=error_code):
@@ -613,7 +549,23 @@ def test_constructor_requires_explicit_v2_identity(
             source_region=source_region,
             source_partition_epoch_id=epoch_id,
             consumer_group=consumer_group,
-            control_group=control_group,
+            engine=_Engine(),  # type: ignore[arg-type]
+            v2_writer=_Writer([]),
+        )
+
+
+def test_single_pipeline_requires_profile_manifest_identity() -> None:
+    settings = DtsIngestDatabaseSettings(host="unused.invalid", password="x")
+    with pytest.raises(
+        DtsV2DualCaptureStoreError,
+        match="^DTS_V2_SOURCE_PROFILE_MANIFEST_SHA256_REQUIRED$",
+    ):
+        PostgresDtsV2DualCaptureSink(
+            settings,
+            pipeline_mode="V2_PRIMARY",
+            source_region="ovs",
+            source_partition_epoch_id=EPOCH_ID,
+            consumer_group=CONSUMER_GROUP,
             engine=_Engine(),  # type: ignore[arg-type]
             v2_writer=_Writer([]),
         )

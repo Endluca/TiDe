@@ -280,12 +280,12 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "CREATE TABLE tide.crm_sso_logins" in preflight
     assert "20260811_56_p_fb_negative_copy" in preflight
     assert "20260811_57_g02_document" in preflight
-    assert "20260823_100_scope_snapshot_diff" in preflight
+    assert "20260824_101_dts_single_pipeline_reset" in preflight
     assert "20260822_98_task_v2_refresh" in preflight
     assert "2026-07-24-lesson-memo-rules-v1" in preflight
     assert "2026-08-22-reliability-course-595-v1" in preflight
     assert "p-rel-memo-document" in preflight
-    assert "public 100 / teacher 0043（38 条）" in preflight
+    assert "public 101 / teacher 0043（38 条）" in preflight
     assert "DELETE FROM tide.task_step_definitions" in preflight
     assert (
         '"requiredStepKeys":\\["g02-environment-photo",'
@@ -307,7 +307,7 @@ def test_combined_preflight_and_database_probe_fail_closed() -> None:
     assert "pg_stat_ssl" in probe
     assert "has_database_privilege" in probe
     assert "contract probe role has write-capable privileges" in probe
-    assert "20260823_100_scope_snapshot_diff" in probe
+    assert "20260824_101_dts_single_pipeline_reset" in probe
     assert "dts_source_snapshot_desired_rows" in probe
     assert "publish_source_snapshot_candidate_v3" in probe
     assert "guard_dom_lesson_student_privacy_v1" in probe

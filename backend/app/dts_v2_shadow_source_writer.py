@@ -33,10 +33,10 @@ from .dts_source_contract_v2 import (
     V2_BUSINESS_SOURCE_SUFFIXES_BY_REGION,
     V2_SOURCE_FIELD_WHITELIST,
     V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE,
-    V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE,
     V2SourceRouteDecision,
     V2ValidatedCurrentRow,
     build_v2_source_route,
+    v2_source_profile_id,
 )
 from .dts_v2_dirty_queue_store import DirtyKeyV2, DtsV2DirtyQueueError
 
@@ -99,7 +99,7 @@ class DtsV2ShadowSourceWriter:
             )
 
         table = event.table_name or ""
-        expected_profile = V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE.get(table)
+        expected_profile = v2_source_profile_id(table)
         if expected_profile is None:
             raise DtsV2ShadowSourceWriterError(
                 "DTS_V2_SHADOW_SOURCE_PROFILE_MISSING"
@@ -214,18 +214,35 @@ class DtsV2ShadowSourceWriter:
             source_table=table,
             source_key=source_key,
         )
-        current = (
-            None
-            if stored_current is None
-            else _validated_current(stored_current, event=event)
+        legacy_current = bool(
+            stored_current is not None
+            and _is_legacy_pending_current(stored_current)
         )
-        if stored_current is not None:
+        current = None
+        if stored_current is not None and not legacy_current:
+            current = _validated_current(stored_current, event=event)
+        if stored_current is not None and not legacy_current:
             _require_source_position_advances(
                 connection,
                 event=event,
                 source_partition_epoch_id=source_partition_epoch_id,
                 incoming_epoch=incoming_epoch,
                 stored_current=stored_current,
+            )
+        if (
+            table in {"dom_appoint", "ovs_appoint"}
+            and event.operation == "UPDATE"
+            and current is None
+        ):
+            # Fresh-start deliberately has no pre-H0 course baseline.  An
+            # UPDATE for a course that was never inserted into V2 cannot prove
+            # the previous teacher or the rest of the course facts, so it is
+            # acknowledged as an ignored source event without creating source
+            # current/version state or dirty work.
+            return _ignored_missing_course_update_result(
+                event=event,
+                source_key=source_key,
+                source_key_type=source_key_type,
             )
         try:
             route = build_v2_source_route(event, current=current)
@@ -245,7 +262,7 @@ class DtsV2ShadowSourceWriter:
             )
 
         semantic_replay = False
-        if stored_current is not None:
+        if stored_current is not None and not legacy_current:
             if event.operation == "INSERT" and not stored_current["is_deleted"]:
                 raise DtsV2ShadowSourceWriterError("SOURCE_INSERT_CONFLICT")
             if event.operation in {"UPDATE", "DELETE"} and not _same_json(
@@ -270,15 +287,19 @@ class DtsV2ShadowSourceWriter:
                         "SOURCE_BEFORE_CONFLICT"
                     )
 
-        semantic_noop = not semantic_replay and _is_semantic_noop(
-            operation=event.operation,
-            route=route,
-            stored_current=stored_current,
+        semantic_noop = (
+            not semantic_replay
+            and not legacy_current
+            and _is_semantic_noop(
+                operation=event.operation,
+                route=route,
+                stored_current=stored_current,
+            )
         )
 
         revision = (
             1
-            if stored_current is None
+            if stored_current is None or legacy_current
             else int(stored_current["source_row_revision"]) + 1
         )
         dependency_keys = _source_dependency_keys(route, event.source_region)
@@ -344,14 +365,17 @@ def _event_source_identity(event: DtsChangeEvent) -> tuple[str, str]:
     table = event.table_name or ""
     expected_key_type = V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE.get(table)
     raw_key_type = event.source_field_types.get("id")
-    if (
-        expected_key_type is None
-        or not isinstance(raw_key_type, str)
-        or raw_key_type.upper() != expected_key_type
+    normalized_raw_key_type = (
+        raw_key_type.upper() if isinstance(raw_key_type, str) else None
+    )
+    if normalized_raw_key_type not in {"NUMERIC", "TEXT"} or (
+        expected_key_type is not None
+        and normalized_raw_key_type != expected_key_type
     ):
         raise DtsV2ShadowSourceWriterError(
             "DTS_SOURCE_PRIMARY_KEY_TYPE_MISMATCH"
         )
+    assert normalized_raw_key_type is not None
     images = (
         (event.after,)
         if event.operation == "INSERT"
@@ -365,12 +389,14 @@ def _event_source_identity(event: DtsChangeEvent) -> tuple[str, str]:
             raise DtsV2ShadowSourceWriterError(
                 "DTS_V2_SHADOW_PRIMARY_KEY_REQUIRED"
             )
-        canonical.append(_canonical_source_key(image["id"], expected_key_type))
+        canonical.append(
+            _canonical_source_key(image["id"], normalized_raw_key_type)
+        )
     if not canonical or any(value != canonical[0] for value in canonical[1:]):
         raise DtsV2ShadowSourceWriterError(
             "DTS_V2_SHADOW_PRIMARY_KEY_UPDATE_NOT_ALLOWED"
         )
-    return expected_key_type, canonical[0]
+    return normalized_raw_key_type, canonical[0]
 
 
 def _canonical_source_key(value: Any, source_type: str) -> str:
@@ -1195,6 +1221,37 @@ def _validated_current(
     return current
 
 
+def _is_legacy_pending_current(row: Mapping[str, Any]) -> bool:
+    """Accept a pre-H0 v1 row only as an untrusted identity placeholder.
+
+    Its business image is never merged into v2.  A complete first UPDATE or
+    DELETE must reconstruct the v2 current row from the event images; a sparse
+    event therefore remains fail-closed in ``build_v2_source_route``.
+    """
+
+    if row.get("provenance_state") not in {None, "LEGACY_PENDING"}:
+        return False
+    return all(
+        row.get(field) is None
+        for field in (
+            "source_row_revision",
+            "last_source_partition_epoch_id",
+            "last_version_kind",
+            "source_position_v2",
+            "record_id_type",
+            "record_id_numeric",
+            "record_id_text",
+            "source_timestamp_v2",
+            "source_payload_hash",
+            "source_key_type",
+            "source_key_numeric",
+            "source_key_text",
+            "source_schema_profile_id",
+            "source_field_types",
+        )
+    )
+
+
 def _same_json(left: Any, right: Any) -> bool:
     return _canonical_json(left) == _canonical_json(right)
 
@@ -1838,4 +1895,38 @@ def _result(
         source_row_revision=(None if revision is None else int(revision)),
         protected_payload_hash=route.protected_payload_hash,
         dirty_keys=_dirty_keys_for_route(route, event.source_region),
+    )
+
+
+def _ignored_missing_course_update_result(
+    *,
+    event: DtsChangeEvent,
+    source_key: str,
+    source_key_type: str,
+) -> DtsV2ShadowSourceWriteResult:
+    table = event.table_name or ""
+    payload_hash = hashlib.sha256(
+        _canonical_json(
+            {
+                "contract": "dts-v2-ignore-missing-course-update-v1",
+                "source_region": event.source_region,
+                "source_table": table,
+                "source_key": source_key,
+                "source_key_type": source_key_type,
+                "operation": event.operation,
+                "before": event.before,
+                "after": event.after,
+                "source_field_types": event.source_field_types,
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+    return DtsV2ShadowSourceWriteResult(
+        status="IGNORED_MISSING_CURRENT",
+        source_region=event.source_region,
+        source_table=table,
+        source_key=source_key,
+        source_key_type=source_key_type,
+        source_row_revision=None,
+        protected_payload_hash=payload_hash,
+        dirty_keys=(),
     )

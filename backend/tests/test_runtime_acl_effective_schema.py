@@ -89,6 +89,7 @@ def test_effective_acl_covers_every_root_table_and_all_score_views() -> None:
         "dts_teacher_time_recheck_results",
         "dts_teacher_time_recheck_schedule",
         "dts_v2_reconciliation_runs",
+        "dts_pipeline_reset_audits",
         "lesson_source_region_backfill_manifest",
         "lesson_source_region_migration_control",
         "ops_case_recovery_events",

@@ -1,88 +1,73 @@
-# DTS v2 部署与切换清单
+# DTS 单通道正式发布清单
 
-本文只描述发布执行边界。业务规则以
-[`DTS_direct开发冻结实施规格.md`](DTS_direct开发冻结实施规格.md) 为准。
+目标：删除系统中全部历史消费事实，DOM、OVS 从同一个明确的新时间点开始，只消费该时间点之后的新事件。没有 V1、双写、追平、旧数据回填或 V1/V2 对账。
 
-## 1. 版本目标
+## 1. 固定版本与规则
 
-- public Alembic head：`20260823_100_scope_snapshot_diff`
-- teacher migration head：`0043_p_rel_execution_catalog`
-- teacher canonical migration：精确 38 条
-- 稳定读取路由：由数据库 `dts_projection_read_routes` 决定，不由 Pod 环境变量自行决定
+- public head：`20260824_101_dts_single_pipeline_reset`
+- teacher head：`0043_p_rel_execution_catalog`
+- 唯一外部运行模式：`SINGLE_PIPELINE`
+- `dom_appoint/ovs_appoint`：INSERT 建立课程；UPDATE 时课程当前态不存在则记录 `COURSE_UPDATE_WITHOUT_CURRENT_IGNORED`、推进 checkpoint，不创建课程；课程已存在则正常更新
+- rev101 是破坏性迁移：清空课程、教师投影、参与记录、积分、资格、关系、任务实例、通知/输出、DTS ledger/checkpoint/current/version/dirty/scope 等消费事实；保留任务目录、积分规则和版本化配置
 
-`V1` 不是第二套长期业务版本。它只用于升级前运行；迁移后使用以下三态：
+## 2. 发布前
 
-| 数据库模式 | V1 兼容投影 | V2 Domain | V2 业务物化 | 用途 |
-|---|---|---|---|---|
-| `V1_COMPAT_DUAL_CAPTURE` | 开 | 开 | 关 | 双写追平和对账 |
-| `V2_PRIMARY` | 关 | 开 | 开 | 正式主链路 |
-| `ROLLED_BACK` | 开 | 开 | 关 | 紧急回退到兼容读取 |
+1. 固定一个带时区的新消费时间，例如 `2026-08-25T00:00:00+08:00`。DOM、OVS 使用完全相同的值。
+2. 固定待发布 commit 和三个镜像。
+3. 备份正式数据库并验证备份可读。
+4. 停止旧 DOM、OVS 和 application，确认数据库中没有相关运行角色的在途事务。
+5. 保存旧 DTS consumer group、topic 和订阅配置；新发布继续使用真实订阅，但每个地区配置一个新的、互不相同的 `TIT_DTS_SOURCE_PARTITION_EPOCH_ID`。
 
-两个消费通道使用独立队列和进度。任何通道都不能替另一通道确认已消费。
+## 3. 执行顺序
 
-## 2. 切换前硬门槛
+### 3.1 数据库迁移
 
-缺少任一项都停在 `V1_COMPAT_DUAL_CAPTURE`，不得切 `V2_PRIMARY`：
+以迁移角色执行 public Alembic 到 head；teacher 未到 0043 时再执行 teacher 迁移。读回：
 
-1. 已审核的地区/表级 source profile 已进入发布镜像，manifest SHA-256 与数据库批准记录一致；仓库当前空 manifest 不能用于生产。
-2. DOM/OVS 真实消费组、topic、broker epoch、H0 vector 和 checkpoint 已现场读回。
-3. CURRENT scope snapshot 有权威导出、源事务一致性 token、文件 SHA-256、profile SHA-256 和 fence 证明；空文件或 `SOURCE_MISSING` 不能冒充 `COMPLETE`。
-4. V1/V2 队列无死信、无过期租约，双流已追平同一 fence。
-5. 14 类 reconciliation 结果全部通过：教师宽表、逐课分、逐课组件、收藏观察、收藏归因、触发、任务、Case、提醒、账户、组件账户、积分流水计划、资格和 Outbox 覆盖。
-6. 课程 595 的考试 `courseTaskId/paperId` 未提供时，`P-REL-ATTENDANCE` 只能进入课程并展示视频进度，必须保持 `completionEnabled=false`，不能验收自动完成。
+```sql
+SELECT version_num FROM public.alembic_version;
+SELECT migration_id, migration_order, filename, sha256, applied_at
+FROM tide.schema_migrations
+ORDER BY migration_order;
+SELECT * FROM public.dts_projection_readiness_v1();
+```
 
-## 3. 发布顺序
+必须满足：public head 正确、teacher canonical 账本正确、readiness 为 `READY_SINGLE_PIPELINE`。同时确认 reset audit 恰有本次记录，旧 checkpoint、ledger、source current/version 和业务事实表为空。
 
-1. 固定待发布 commit/image digest，备份数据库，确认维护窗口。停止旧 SourceWide、旧 DTS 消费者和积分写事务，确认没有在途事务后再迁移。
-2. 使用 `tide_sys_admin` 的一次性迁移连接执行 public Alembic 到 head；读回必须精确为 `20260823_100_scope_snapshot_diff`。
-3. 在 public 已到 head 后执行 teacher 迁移到 `0043_p_rel_execution_catalog`；读回精确 38 条账本，并执行 teacher `verify.sh`。
-4. 使用真实 DOM/OVS epoch 和 H0 vector 调用 rev79 受限 bootstrap；读回 control 初态必须为 `V1_COMPAT_DUAL_CAPTURE`。不得手工 `INSERT/UPDATE dts_pipeline_control`。
-5. 部署同一版本镜像：
-   - 两个 DTS 项目均设 `TIT_DTS_PIPELINE_MODE=V1_COMPAT_DUAL_CAPTURE`；
-   - legacy projection 保持开启；
-   - application 设 `TIT_V2_RUNTIME_ENABLED=true`；
-   - V2 Domain 追数，V2 Outbox/Favorite 保持非 PRIMARY standby。
-6. 分别读回两个 DTS heartbeat/checkpoint、application 三组 V2 health、V1/V2 dirty queue 和 source profile identity。配置声明不能替代数据库读回。
-7. 用受限 scope coordinator 先 `validate`、再 `dry-run`，确认 hash、角色、目标 head、scope 和当前态一致后才 `apply`；最后 `readback`。命令入口：
+### 3.2 发布 DOM
 
-   ```bash
-   cd backend
-   .venv/bin/python scripts/run_dts_source_scope_snapshot.py validate \
-     --candidate /受控路径/snapshot.jsonl \
-     --profile-manifest /受控路径/dts_source_profiles_v2.json \
-     --expected-artifact-sha256 64位小写SHA256 \
-     --expected-profile-manifest-sha256 64位小写SHA256
+关键配置：
 
-   .venv/bin/python scripts/run_dts_source_scope_snapshot.py dry-run \
-     --candidate /受控路径/snapshot.jsonl \
-     --profile-manifest /受控路径/dts_source_profiles_v2.json \
-     --expected-artifact-sha256 64位小写SHA256 \
-     --expected-profile-manifest-sha256 64位小写SHA256
-   ```
+```dotenv
+TIT_DTS_PIPELINE_MODE=SINGLE_PIPELINE
+TIT_DTS_START_AT=2026-08-25T00:00:00+08:00
+TIT_DTS_SOURCE_PARTITION_EPOCH_ID=<本次 DOM 新值>
+```
 
-   `dry-run` 不写库；`apply` 使用相同四项证据。完整变量和读回格式见
-   [`DTS_source_scope_snapshot协调器.md`](DTS_source_scope_snapshot协调器.md)。
-8. 固定同一个 `evaluation_as_of`，生成 V1/V2 14 类结果清单和技术门禁清单；使用专用 `tit_dts_projection_cutover_runtime` 角色记录 reconciliation PASS。运行 ID、manifest、fence 或 control/route version 任一变化都必须重新生成，不复用旧 PASS。
-9. 最终切换使用维护窗口：暂停两条 DTS 写入和 application 后台 Worker；调用 `switch_dts_projection_mode_v2(..., 'V2_PRIMARY')` 原子更新数据库 control 与稳定读取路由；随后把两个 DTS 项目改为 `V2_PRIMARY`、关闭 legacy projection，再启动同版本 application。不能先滚一个 Pod 再等待另一套状态追上。
-10. 读回 `dts_projection_readiness_v1()`、两个外部 API、三组 V2 health、稳定教师积分/课程视图和 14 类抽样。只有这些证据通过后，才能单独评审并打开不可逆资格授予门禁。
+启动后必须看到首条新事件建立 DOM checkpoint；checkpoint 的初始 offset 和时间来自真实事件，不由迁移伪造。核对 ledger 持续推进且没有 profile、权限或 schema 错误后再继续。
 
-## 4. 回滚
+### 3.3 发布 OVS
 
-1. 先关闭不可逆资格授予门禁并暂停写入。
-2. 使用上次成功切换留下的 control/route version 和受限 cutover 角色，调用 `switch_dts_projection_mode_v2(..., 'ROLLED_BACK')`。
-3. 两个 DTS 项目改为 `ROLLED_BACK`，重新开启 legacy projection；application V2 Domain 继续追数，Outbox/Favorite 停止物化。
-4. 读回稳定视图已回到 `V1_COMPAT`，再恢复流量。
+配置与 DOM 相同，但 epoch id 使用本次 OVS 新值。启动后按同样方式确认 OVS checkpoint 和 ledger 推进。
 
-回滚不撤销已经合法授予的出营或金牌资格；发现错误资格时走审计后的业务补偿，不直接删事实。
+### 3.4 发布 application
 
-## 5. 发布完成证据
+DOM、OVS 都已产生新 checkpoint 后发布 application，启用现行 Domain/Outbox/Favorite 等消费进程。首次发布保持不可逆出营/金牌授予门禁关闭；抽样确认课程、代课、评价标签、缺席、收藏 24 小时归因、拉黑、投诉、TESOL 和积分正确后，再用受限命令打开门禁，并让 application 的资格门禁配置与数据库一致。
 
-- public/teacher 两条迁移 head 和账本读回；
-- 两个 Gaea 项目的地区、image digest、pipeline mode、checkpoint 和 heartbeat；
-- source profile approval、scope snapshot、fence 与 H0 bootstrap 审计；
-- reconciliation PASS、switch audit、readiness；
-- 队列/死信/租约统计和逐类业务抽样；
-- 教师总分展示上限 200、实际分继续累计、出营/金牌时间与不可逆资格读回；
-- 代课、评价、标签、缺席、收藏 24 小时归因、拉黑、投诉、TESOL、DOM 映射的回放样本。
+## 4. 上线验收
 
-代码、迁移、测试或 Pod 健康本身都不是“已上线”证明。
+- DOM/OVS：heartbeat、checkpoint、epoch、消费延迟正常；无旧时间点事件落库
+- 缺失课程的 appoint UPDATE：ledger 为 `IGNORED`，无课程/source current/dirty key
+- appoint INSERT 后 t_id 更新：旧教师参与记录变缺席，新教师新增参与记录；首次进入 end 的教师冻结为完课教师
+- 评价、标签、缺席原因及任务、收藏/拉黑、投诉、TESOL、出营/金牌与确认文档一致
+- dirty、Domain、Outbox、Favorite 无过期租约和死信；课程和积分读取稳定
+
+## 5. 异常处理
+
+没有 V1 回退通道。异常时停止 DOM、OVS 和 application：
+
+- 代码或配置问题：修复后从数据库 checkpoint 继续
+- 需要重新选择消费日期：恢复发布前备份，重新执行 reset 流程；不得直接手改 checkpoint
+- 已消费数据发生业务错误：停止发布并纠正代码，不用旧 V1 数据补写
+
+正式环境迁移、发布和最终读回由发布人执行；代码测试通过不等于正式环境已上线。

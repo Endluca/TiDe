@@ -1383,6 +1383,39 @@ class DtsSourceProfileApprovalV2Record(Base):
     approved_by: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
+class DtsPipelineResetAuditRecord(Base):
+    """One-shot destructive reset evidence for the only DTS pipeline."""
+
+    __tablename__ = "dts_pipeline_reset_audits"
+    __table_args__ = (
+        CheckConstraint(
+            "source_profile_manifest_sha256 ~ '^[0-9a-f]{64}$' "
+            "AND history_policy='CLEAR_ALL_CONSUMED_HISTORY' "
+            "AND event_scope='POST_CONFIGURED_START' "
+            "AND btrim(reset_by)<>''",
+            name="ck_dts_pipeline_reset_audit_shape",
+        ).ddl_if(dialect="postgresql"),
+        {
+            "comment": (
+                "One-shot destructive DTS reset evidence. Catalog/configuration "
+                "and operator identity survive; consumed and dependent facts do not."
+            )
+        },
+    )
+
+    reset_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    source_profile_manifest_sha256: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    history_policy: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    reset_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    reset_by: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
 class DtsV2ReconciliationRunRecord(Base):
     """Immutable database-verified fourteen-result PASS evidence."""
 

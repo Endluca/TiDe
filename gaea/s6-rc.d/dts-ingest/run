@@ -15,56 +15,16 @@ fi
 : "${TIT_DTS_INGEST_DB_HOST:?TIT_DTS_INGEST_DB_HOST is required}"
 : "${TIT_DTS_INGEST_DB_PASSWORD:?TIT_DTS_INGEST_DB_PASSWORD is required}"
 
-case "${TIT_DTS_PIPELINE_MODE:-V1}" in
-  V1)
-    ;;
-  V1_COMPAT_DUAL_CAPTURE)
-    : "${TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID:?TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID is required}"
-    : "${TIT_DTS_V2_CONTROL_GROUP:?TIT_DTS_V2_CONTROL_GROUP is required}"
-    if [ "${TIT_DTS_PROJECTION_MODE:-queued}" != "queued" ]; then
-      printf '%s\n' 'V1_COMPAT_DUAL_CAPTURE requires queued projection mode' >&2
-      exit 64
-    fi
-    if [ "${TIT_DTS_PROJECTION_ENABLED:-false}" != "true" ]; then
-      printf '%s\n' 'V1_COMPAT_DUAL_CAPTURE requires legacy projection enabled' >&2
-      exit 64
-    fi
-    ;;
-  V2_PRIMARY)
-    : "${TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID:?TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID is required}"
-    : "${TIT_DTS_V2_CONTROL_GROUP:?TIT_DTS_V2_CONTROL_GROUP is required}"
-    if [ "${TIT_DTS_PROJECTION_MODE:-queued}" != "queued" ]; then
-      printf '%s\n' 'V2_PRIMARY requires queued projection mode' >&2
-      exit 64
-    fi
-    if [ "${TIT_DTS_PROJECTION_ENABLED:-false}" != "false" ]; then
-      printf '%s\n' 'V2_PRIMARY requires legacy projection disabled' >&2
-      exit 64
-    fi
-    ;;
-  ROLLED_BACK)
-    : "${TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID:?TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID is required}"
-    : "${TIT_DTS_V2_CONTROL_GROUP:?TIT_DTS_V2_CONTROL_GROUP is required}"
-    if [ "${TIT_DTS_PROJECTION_MODE:-queued}" != "queued" ]; then
-      printf '%s\n' 'ROLLED_BACK requires queued projection mode' >&2
-      exit 64
-    fi
-    if [ "${TIT_DTS_PROJECTION_ENABLED:-false}" != "true" ]; then
-      printf '%s\n' 'ROLLED_BACK requires legacy projection enabled' >&2
-      exit 64
-    fi
-    ;;
-  *)
-    printf '%s\n' 'TIT_DTS_PIPELINE_MODE is invalid' >&2
-    exit 64
-    ;;
-esac
+if [ "${TIT_DTS_PIPELINE_MODE:-SINGLE_PIPELINE}" != "SINGLE_PIPELINE" ]; then
+  printf '%s\n' 'only SINGLE_PIPELINE is supported' >&2
+  exit 64
+fi
+: "${TIT_DTS_SOURCE_PARTITION_EPOCH_ID:?TIT_DTS_SOURCE_PARTITION_EPOCH_ID is required}"
 
 cd /app/operations
 exec s6-setuidgid gaea \
   /opt/venv/bin/python /app/operations/scripts/run_dts_ingest.py \
-  --watch --max-messages 2000 --max-projection-keys 1000 \
-  --projection-time-budget-seconds 20 \
+  --watch --max-messages 2000 \
   --idle-timeout-ms 10000 --interval-seconds 3 \
   --heartbeat-path /tmp/tit-dts-ingest-heartbeat \
   --readiness-path /tmp/tit-dts-ingest-readiness

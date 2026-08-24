@@ -1,12 +1,12 @@
 # DTS direct 事件人工验证与纠错手册
 
 > 状态：人工验收稿，不是发布完成证明
-> 适用模式：`TIT_DTS_PROJECTION_MODE=direct`
+> 当前运行模式：`TIT_DTS_PIPELINE_MODE=SINGLE_PIPELINE`；文中的 direct 只表示逐事件业务规则，不表示仍有 legacy direct projector
 > 原始代码审查基线：`flow/release` `436127d423966bd5077af5ad947956510bd00c30`
 > 本次本地复审基线：`release` `f6bb8ef49da1fe7525a2fb63e5674c9bd5af95ea`
 > 整理日期：2026-08-21
 > 验证原则：先记录“代码实际行为”，再判断“业务是否认可”；不能把代码现状直接当成正确口径。
-> 目标实现唯一输入：`DTS_direct开发冻结实施规格.md`
+> 业务规则依据：`DTS_direct开发冻结实施规格.md`；清库与发布顺序以 `DTS_v2部署与切换清单.md` 为准
 > 实现准备审查：见 `DTS_direct事件人工验证与纠错手册_审查与累计修改项清单.md`。当前行为与目标行为冲突时，开发必须采用冻结实施规格；不得用代码默认值替代业务规则。
 
 ## 1. 这份手册解决什么问题
@@ -108,6 +108,10 @@ DTS source_region='ovs'
 - 参与记录需要独立业务键，不能继续只用 `appoint_id` 做唯一键。
 
 #### 2.4.2 `t_id` 变更就是代课事件
+
+以下规则以 V2 已存在该课程为前提。fresh-start 上线后不回填旧课程；若首个收到的课程主表事件是
+UPDATE，且 V2 当前态没有该 `appoint_id`，则按 7.3 的缺失课程规则忽略，不能只凭这次 UPDATE
+补造旧课程及代课参与。
 
 对一条 `dom_appoint UPDATE`，如果：
 
@@ -676,6 +680,19 @@ WHERE "学员id" IS NOT NULL
 （包括 `on/cancel/其他/NULL`）均计 1；`peak_booked_cnt` 统计其中明确为 Peak 的参与。
 
 ### 7.3 UPDATE
+
+fresh-start 只处理联合 H0 之后的新事件，课程基线只由 H0 后的 INSERT 建立。对
+`dom_appoint/ovs_appoint UPDATE`：
+
+- V2 已存在该课程：按本节规则正常合并；`t_id` 变化时执行代课拆分；
+- V2 不存在该课程：事件账本记 `IGNORED` 和
+  `COURSE_UPDATE_WITHOUT_CURRENT_IGNORED`，checkpoint 正常前进，但不创建 source current/version、
+  课程、教师参与或 dirty key；
+- 以后收到该课程 INSERT 时，从 INSERT 建立新基线；即使此后重放之前已忽略的 UPDATE，也必须仍然
+  判为 duplicate/ignored，不能修改新基线。
+
+这个例外只针对课程主表的缺失课程 UPDATE，不得扩大为“所有乱序子事件都丢弃”；评价、标签、投诉等
+子事实仍按各自的持久化和依赖重算规则处理。
 
 appoint UPDATE 保留课程已经接收的以下子事实：
 
@@ -1538,7 +1555,7 @@ assignment、Case 或提醒。
 | T70 | 同一课程并发重算 | 参与、收藏、任务、积分唯一约束无重复 |
 | T70A | A→B→A 同批到达后才投影 | 版本历史保留三个转换，脏键合并不吞掉 B，稳定得到 seq=1/2/3 |
 | T70B | DOM/OVS 同 appoint ID 且同一教师两课均 perfect，贯穿兼容/cutover/rollback | v2、兼容表和旧 Worker 均两行隔离；perfect_cnt=2、完美分=8，回滚不覆盖/漏课 |
-| T70C | 无基线时首个 appoint 事件是 A→B UPDATE | 用完整 before 建 seq1/BEFORE 且 assigned_at=SOURCE_MISSING，再用 after 建 seq2；before 不足则等待/冲突，不猜教师 |
+| T70C | 无 V2 课程基线时首个 appoint 事件是 A→B UPDATE | 账本记 `COURSE_UPDATE_WITHOUT_CURRENT_IGNORED` 并推进 checkpoint；不建 current/version、课程、参与或 dirty key；后续 INSERT 建基线后重放该 UPDATE 仍为 duplicate/ignored |
 | T70D | A→B 以新 offset 紧邻重复；以及 before/after 均与当前不符 | 前者 SEMANTIC_REPLAY 不新增参与/Outbox；后者 SOURCE_CONFLICT；A→B→A→B 仍保留第二次 B 参与 |
 | T71 | 主键原地变化 | 整批失败、checkpoint 不前进、无 ACK |
 | T72 | 退役 QA 与 user_complaint 全 CRUD | 账本/checkpoint 正确，无独立业务输出 |
@@ -1606,9 +1623,9 @@ T37 同时验收已冻结聚合：所有状态都形成普通参与并计 `total
 ## 17. 实现前纠错清单（历史审查基线）
 
 本节保留 2026-08-21 实现前审查时发现的 K01–K18，便于追溯“为什么这样改”，不再表示代码 head
-仍存在这些差距。代码 head 已通过 rev66–100 和对应运行时实现收敛这些规则；人工验收应按前文
-T01–T80 契约和当前测试执行。数据库迁移、真实 source profile/scope、双写追平及生产切流仍需在
-部署阶段单独读回，不能仅凭代码完成推断已上线。
+仍存在这些差距。代码 head 已通过 rev66–101 和对应运行时实现收敛这些规则；人工验收应按前文
+T01–T80 契约和当前测试执行。本次发布还需在部署阶段读回数据库迁移、真实 source profile、
+联合 H0、DOM/OVS checkpoint 和 V2 业务抽样；不要求 source-scope 快照、双写追平或 V1/V2 对账。
 
 ### K01：未知被写成 false
 

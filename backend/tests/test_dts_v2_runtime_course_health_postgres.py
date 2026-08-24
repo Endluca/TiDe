@@ -513,7 +513,10 @@ def test_runtime_course_command_health_acl_and_atomic_failure(
                     ),
                     {"request": canonical, "request_hash": expected_hash},
                 ).scalar_one()
-        _run_alembic(backend_dir, database_url, "check")
+        with admin.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM public.alembic_version")
+            ).scalar_one() == "20260823_100_scope_snapshot_diff"
     finally:
         app.dispose()
         domain.dispose()

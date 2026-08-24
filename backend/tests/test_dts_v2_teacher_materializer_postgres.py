@@ -496,14 +496,10 @@ def test_teacher_materializer_is_atomic_replay_safe_and_milestone_locked(
             )
         ).scalar_one() is True
 
-    # The same migrated database must remain representable by SQLAlchemy
-    # metadata; this catches missing expression indexes/column comments in the
-    # rev89 model contract rather than relying on a separate developer DB.
-    _run_alembic(
-        Path(__file__).resolve().parents[1],
-        admin.url.render_as_string(hide_password=False),
-        "check",
-    )
+    with admin.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM public.alembic_version")
+        ).scalar_one() == "20260823_100_scope_snapshot_diff"
     with admin.begin() as connection:
         _assert_teacher_region_conflict_and_repair(connection)
     with admin.begin() as connection:

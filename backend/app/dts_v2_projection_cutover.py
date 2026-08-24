@@ -28,6 +28,9 @@ READINESS_REGPROCEDURE = "public.dts_projection_readiness_v1()"
 PREVIEW_REGPROCEDURE = (
     "public.preview_dts_v2_reconciliation_evidence_v1(timestamptz,text)"
 )
+FRESH_START_REGPROCEDURE = (
+    "public.bootstrap_dts_v2_primary_fresh_v1(text,text,jsonb,text,text)"
+)
 RECONCILIATION_PROTOCOL = "dts-v2-reconciliation-pass-v1"
 ROUTE_CONTRACT_VERSION = "teacher-read-route-v1"
 
@@ -115,10 +118,56 @@ class DtsV2ProjectionReadiness:
     route_row_version: int | None
     time_catchup_status: str | None
     reconciliation_run_id: str | None
+    fresh_start_run_id: str | None
 
 
 class PostgresDtsV2ProjectionCutoverStore:
     """Invoke the database-owned reconciliation and route state machine."""
+
+    def bootstrap_fresh_start(
+        self,
+        connection: Connection,
+        *,
+        run_id: str,
+        consumer_group: str,
+        routes: Sequence[Mapping[str, Any]],
+        expected_vector_hash: str,
+        source_profile_manifest_sha256: str,
+    ) -> dict[str, Any]:
+        value = connection.execute(
+            text(
+                "SELECT public.bootstrap_dts_v2_primary_fresh_v1("
+                ":run_id,:consumer_group,CAST(:routes AS jsonb),"
+                ":vector_hash,:profile_sha256)"
+            ),
+            {
+                "run_id": run_id,
+                "consumer_group": consumer_group,
+                "routes": json.dumps(
+                    [dict(route) for route in routes],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ),
+                "vector_hash": expected_vector_hash,
+                "profile_sha256": source_profile_manifest_sha256,
+            },
+        ).scalar_one()
+        result = _mapping(value, "DTS_V2_FRESH_START_RESPONSE_INVALID")
+        if result.get("run_id") != run_id:
+            _fail("DTS_V2_FRESH_START_RESPONSE_IDENTITY_MISMATCH")
+        if result.get("status") not in {"APPLIED", "REPLAYED"}:
+            _fail("DTS_V2_FRESH_START_RESPONSE_STATUS_INVALID")
+        if (
+            result.get("target_mode") != "V2_PRIMARY"
+            or result.get("active_projection") != "V2"
+            or result.get("event_scope") != "POST_H0_ONLY"
+            or result.get("history_policy") != "NO_BACKFILL"
+            or result.get("qualification_grants_enabled") is not False
+        ):
+            _fail("DTS_V2_FRESH_START_RESPONSE_STATE_INVALID")
+        return result
 
     def preview_reconciliation_evidence(
         self,
@@ -258,6 +307,9 @@ class PostgresDtsV2ProjectionCutoverStore:
             reconciliation_run_id=_optional_string(
                 result.get("reconciliation_run_id")
             ),
+            fresh_start_run_id=_optional_string(
+                result.get("fresh_start_run_id")
+            ),
         )
 
 
@@ -299,6 +351,7 @@ __all__ = [
     "DtsV2ProjectionCutoverError",
     "DtsV2ProjectionReadiness",
     "DtsV2ReconciliationEvidence",
+    "FRESH_START_REGPROCEDURE",
     "PostgresDtsV2ProjectionCutoverStore",
     "PREVIEW_REGPROCEDURE",
     "READINESS_REGPROCEDURE",

@@ -735,16 +735,15 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
         with engine.begin() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260823_100_scope_snapshot_diff"
+            ).scalar_one() == "20260824_101_dts_single_pipeline_reset"
             assert connection.execute(
                 text(
                     """
-                    SELECT graduation_state, payload ->> 'graduation_state'
-                    FROM public.teachers
+                    SELECT count(*) FROM public.teachers
                     WHERE teacher_id = 'T-CLEANUP'
                     """
                 )
-            ).one() == ("IN_CAMP", "IN_CAMP")
+            ).scalar_one() == 0
             assert connection.execute(
                 text(
                     """

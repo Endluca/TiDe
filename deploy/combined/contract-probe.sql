@@ -104,7 +104,7 @@ BEGIN
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260823_100_scope_snapshot_diff' THEN
+    ) IS DISTINCT FROM '20260824_101_dts_single_pipeline_reset' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 

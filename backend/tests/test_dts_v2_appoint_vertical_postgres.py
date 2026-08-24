@@ -430,23 +430,32 @@ def test_sparse_appoint_versions_project_one_step_and_freeze_first_end(
     ]
 
     with engine.begin() as connection:
-        with pytest.raises(
-            DtsV2ShadowSourceWriterError,
-            match="DTS_V2_SHADOW_CURRENT_REQUIRED_FOR_SPARSE_EVENT",
-        ):
-            writer.apply_appoint_cdc(
-                connection,
-                _sparse_event(
-                    offset=80,
-                    before={"id": 8001, "t_id": 80},
-                    after={"id": 8001, "t_id": 81},
-                    source_field_types={
-                        "id": "NUMERIC",
-                        "t_id": "NUMERIC",
-                    },
-                ),
-                ACTIVE_EPOCH,
+        ignored = writer.apply_appoint_cdc(
+            connection,
+            _sparse_event(
+                offset=80,
+                before={"id": 8001, "t_id": 80},
+                after={"id": 8001, "t_id": 81},
+                source_field_types={
+                    "id": "NUMERIC",
+                    "t_id": "NUMERIC",
+                },
+            ),
+            ACTIVE_EPOCH,
+        )
+        assert (ignored.status, ignored.source_row_revision) == (
+            "IGNORED_MISSING_CURRENT",
+            None,
+        )
+        assert connection.execute(
+            text(
+                """
+                SELECT count(*) FROM public.dts_source_rows
+                WHERE source_region='dom' AND source_table='dom_appoint'
+                  AND source_key='8001'
+                """
             )
+        ).scalar_one() == 0
 
     for revision, event in enumerate(events, start=1):
         with engine.begin() as connection:

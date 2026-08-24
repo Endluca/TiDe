@@ -237,7 +237,7 @@ def test_gaea_dts_module_omits_the_application_build_graph() -> None:
     assert "run_dts_ingest.py" in dts_runtime
     assert "TIT_PROCESS_PROFILE=dts-ingest" in dts_runtime
     assert "TIT_DTS_TRANSPORT=official_java" in dts_runtime
-    assert "TIT_DTS_PIPELINE_MODE=V1" in dts_runtime
+    assert "TIT_DTS_PIPELINE_MODE=SINGLE_PIPELINE" in dts_runtime
     assert "TIT_DTS_STARTUP_RETRY_SECONDS=15" in dts_runtime
     assert "/deployments/dts-transport.jar" in dts_runtime
     assert "/deployments/dts-diagnose.jar" in dts_runtime
@@ -536,7 +536,7 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260823_100_scope_snapshot_diff"',
+        'EXPECTED_PUBLIC_HEAD="20260824_101_dts_single_pipeline_reset"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -690,7 +690,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260823_100_scope_snapshot_diff\\n' ;;
+  6) printf '20260824_101_dts_single_pipeline_reset\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -1181,6 +1181,8 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
         "/app/bin/source-wide-enabled.sh"
     )
     assert "TIT_SCORE_WORKER_HEARTBEAT" in dockerfile
+    assert "TIT_SOURCE_WIDE_ENABLED=false" in dockerfile
+    assert "TIT_V2_RUNTIME_ENABLED=true" in dockerfile
     assert "TIT_SOURCE_WORKER_HEARTBEAT" in dockerfile
     assert "TIT_SOURCE_WORKER_READINESS" in dockerfile
     assert "TIT_DTS_INGEST_HEARTBEAT" in dockerfile
@@ -1207,8 +1209,8 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "TIT_DTS_INGEST_DB_PASSWORD is required" in dts_run
     assert "TIT_DTS_INGEST_DB_SSLMODE is required" not in dts_run
     assert "--watch --max-messages 2000" in dts_run
-    assert "--max-projection-keys 1000" in dts_run
-    assert "--projection-time-budget-seconds 20" in dts_run
+    assert "--max-projection-keys" not in dts_run
+    assert "--projection-time-budget-seconds" not in dts_run
     assert (S6_DIR / "dts-ingest" / "timeout-kill").read_text(
         encoding="utf-8"
     ).strip() == "25000"
@@ -1544,7 +1546,7 @@ def test_gaea_application_runtime_env_template_is_non_secret_and_current(
     assert assignments["TIT_SOURCE_WIDE_ENABLED"] == "false"
     assert assignments["TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED"] == "false"
     assert assignments["TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS"] == "900"
-    assert assignments["TIT_V2_RUNTIME_ENABLED"] == "false"
+    assert assignments["TIT_V2_RUNTIME_ENABLED"] == "true"
     assert assignments["TIT_V2_EXPECTED_DATABASE"] == "tide_system_test"
     assert assignments["TIT_V2_RUNTIME_BATCH_SIZE"] == "25"
     assert assignments["TIT_V2_DOMAIN_LEASE_SECONDS"] == "120"
@@ -1663,7 +1665,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "TIT_DTS_ALLOW_INSECURE_DB" in readme
     assert "SHOW ssl=off" in readme
     assert "dts-ingest.pre-ssl-off.env.example" in readme
-    assert "TIT_DTS_COHORT_START" in readme
+    assert "TIT_DTS_COHORT_START" not in readme
     assert "2026-08-13" in readme
     assert "TIT_DTS_PROJECTION_ENABLED=false" in readme
     assert "TIT_DTS_STARTUP_RETRY_SECONDS" in readme
@@ -1680,7 +1682,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "15/30/60" in readme
     assert "重试期间 readiness 与 heartbeat 都不存在" in readme
     assert "TIT_DTS_ACTIVATION_AT" in readme
-    assert "TIT_DTS_REQUIRED_OVS_TOPIC" in readme
+    assert "TIT_DTS_REQUIRED_OVS_TOPIC" not in readme
     assert "探针不读取消息" in readme
     assert "不提交 offset" in readme
     assert "不能用 readiness 代替接入证据" in readme
@@ -1688,7 +1690,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "DTS_BROKER_KAFKA_REQUEST_TIMEOUT" in readme
     assert "每次容器进程启动/重启" in readme
     assert "不在镜像构建或周期 healthcheck" in readme
-    assert "TIT_DTS_REQUIRED_DOM_TOPIC" in readme
+    assert "TIT_DTS_REQUIRED_DOM_TOPIC" not in readme
     assert "海外项目必须位于新加坡" in readme
     assert "国内项目必须位于中国大陆" in readme
     assert "TIT_DTS_EXECUTION_REGION=sg" in readme
@@ -1699,7 +1701,8 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "专线限制网络路径但" in readme
     assert "不加密 PostgreSQL 流量" in readme
     assert "正式环境仍固定 `verify-full`" in readme
-    assert "只允许海外项目启用全局宽表投影" in readme
+    assert "旧 SourceWide 必须保持关闭" in readme
+    assert "DOM/OVS 两个 DTS 项目都只做 V2 ingest" in readme
     assert "pg_try_advisory_lock" not in readme
     assert "session advisory" in readme
     assert "session advisory lock" in readme
@@ -1747,42 +1750,35 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "不代表" in readme
 
 
-def test_application_examples_enable_source_wide_by_default() -> None:
+def test_application_examples_enable_only_v2_source_processing() -> None:
     for path in (APPLICATION_ENV, COMBINED_ENV):
         content = path.read_text(encoding="utf-8")
-        assert content.count("TIT_SOURCE_WIDE_ENABLED=true") == 1
+        assert content.count("TIT_SOURCE_WIDE_ENABLED=false") == 1
         assert content.count(
             "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED=false"
         ) == 1
 
     application = APPLICATION_ENV.read_text(encoding="utf-8")
+    assert application.count("TIT_V2_RUNTIME_ENABLED=true") == 1
     assert application.count("TIT_DB_STATEMENT_TIMEOUT_MS=30000") == 1
     assert "TIT_DB_STATEMENT_TIMEOUT_MS=0" not in application
 
 
-def test_dts_region_examples_share_the_projection_activation_contract() -> None:
+def test_dts_region_examples_are_single_pipeline_without_legacy_activation() -> None:
     overseas = DTS_OVS_ENV.read_text(encoding="utf-8")
     domestic = DTS_DOM_ENV.read_text(encoding="utf-8")
     generic = DTS_GENERIC_ENV.read_text(encoding="utf-8")
-    expected_topics = {
-        "TIT_DTS_REQUIRED_OVS_TOPIC=ap_southeast_1_vpc_pc_"
-        "gs5986x4885426aej_dba_tide_source_ovs_version2",
-        "TIT_DTS_REQUIRED_DOM_TOPIC=cn_beijing_vpc_pc_"
-        "2ze5w28lmdr8f626y_dba_tide_source_dom_version2",
-    }
-
     for content in (overseas, domestic):
-        assert "TIT_DTS_PROJECTION_ENABLED=false" in content
-        assert "TIT_DTS_ACTIVATION_AT=" in content
-        for topic in expected_topics:
-            assert topic in content
+        assert "TIT_DTS_PROJECTION_ENABLED" not in content
+        assert "TIT_DTS_START_AT=\n" in content
 
     for content in (generic, overseas, domestic):
-        assert content.count("TIT_DTS_PIPELINE_MODE=V1") == 1
+        assert content.count("TIT_DTS_PIPELINE_MODE=SINGLE_PIPELINE") == 1
+        assert "TIT_DTS_PROJECTION_MODE" not in content
         assert content.count(
-            "TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID="
+            "TIT_DTS_SOURCE_PARTITION_EPOCH_ID="
         ) == 1
-        assert content.count("TIT_DTS_V2_CONTROL_GROUP=") == 1
+        assert "TIT_DTS_V2_CONTROL_GROUP" not in content
         assert content.count("TIT_DTS_INGEST_DB_SSLMODE=verify-full") == 1
         assert content.count("TIT_DTS_ALLOW_INSECURE_DB=false") == 1
         assert content.count(
@@ -1792,6 +1788,12 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
             "TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS=15000"
         ) == 1
         assert "TIT_DTS_INGEST_DB_SSLMODE=disable" not in content
+        assert "TIT_DTS_COHORT_START" not in content
+        assert "TIT_DTS_COHORT_END_EXCLUSIVE" not in content
+        assert "TIT_DTS_PROJECTION_MAX_ATTEMPTS" not in content
+        assert "TIT_DTS_ACTIVATION_AT" not in content
+        assert "TIT_DTS_REQUIRED_OVS_TOPIC" not in content
+        assert "TIT_DTS_REQUIRED_DOM_TOPIC" not in content
 
     assert "TIT_DTS_EXECUTION_REGION=sg" in overseas
     assert "TIT_DTS_EXECUTION_REGION=cn" in domestic
@@ -1808,8 +1810,7 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     assert generic.count("TIT_DTS_DOM_STUDENT_HMAC_PASSWORD=") == 1
     assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in domestic
     assert "TIT_DTS_DOM_STUDENT_HMAC_KEY" not in generic
-    assert domestic.count("TIT_DTS_PROJECTION_ENABLED=false") == 1
-    assert "TIT_DTS_PROJECTION_ENABLED=true" not in domestic
+    assert "TIT_DTS_PROJECTION_ENABLED" not in domestic
     assert "dts-ingest.pre-ssl-off.env.example" in domestic
 
     pre_override = DTS_PRE_SSL_OFF_ENV.read_text(encoding="utf-8")
@@ -1848,19 +1849,16 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     )
 
 
-def test_gaea_dts_service_enforces_projection_matrix_for_pipeline_modes() -> None:
+def test_gaea_dts_service_accepts_only_single_pipeline() -> None:
     runtime = (S6_DIR / "dts-ingest" / "run").read_text(encoding="utf-8")
 
-    assert '${TIT_DTS_PIPELINE_MODE:-V1}' in runtime
-    assert "V1_COMPAT_DUAL_CAPTURE)" in runtime
-    assert "TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID is required" in runtime
-    assert "TIT_DTS_V2_CONTROL_GROUP is required" in runtime
-    assert "requires queued projection mode" in runtime
-    assert "V2_PRIMARY)" in runtime
-    assert "ROLLED_BACK)" in runtime
-    assert "V2_PRIMARY requires legacy projection disabled" in runtime
-    assert "ROLLED_BACK requires legacy projection enabled" in runtime
-    assert "requested DTS pipeline mode is not enabled by this image" not in runtime
+    assert '${TIT_DTS_PIPELINE_MODE:-SINGLE_PIPELINE}' in runtime
+    assert '!= "SINGLE_PIPELINE"' in runtime
+    assert "TIT_DTS_SOURCE_PARTITION_EPOCH_ID is required" in runtime
+    assert "TIT_DTS_V2_CONTROL_GROUP" not in runtime
+    assert "V1_COMPAT_DUAL_CAPTURE" not in runtime
+    assert "ROLLED_BACK" not in runtime
+    assert "TIT_DTS_START_AT is required" in runtime
     assert "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD" not in APPLICATION_ENV.read_text(
         encoding="utf-8"
     )

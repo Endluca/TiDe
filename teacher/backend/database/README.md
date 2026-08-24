@@ -209,9 +209,9 @@ bash database/scripts/test-production-migrator.sh
 ## 公司测试库
 
 - 迁移配置必须放在 Git/镜像工作区之外，权限精确为 `600`；不要使用仓库内的 `database/.env.company-test` 作为迁移入口。
-- 代码侧初始化门禁面向完整 release 内容链、最终 ACL、DTS v2、国内学生隐私边界、课程映射和两条 P-REL execution；fresh、旧前缀、无账本或旧编号账本均不能由初始化脚本自动认领。最终目标必须同时达到 public 100 / teacher 0043；public 65 / teacher 0042 与 public 99 / teacher 0043 都只是必经历史切换点。
+- 代码侧初始化门禁面向完整 release 内容链、最终 ACL、DTS v2、国内学生隐私边界、课程映射和两条 P-REL execution；fresh、旧前缀、无账本或旧编号账本均不能由初始化脚本自动认领。最终目标必须同时达到 public 101 / teacher 0043；public 65 / teacher 0042 与 public 99 / teacher 0043 都只是必经历史切换点。
 - 从仓库根目录运行 `backend/scripts/upgrade_company_test_database.py`。省略 `--apply` 时只读检查并输出计划；提交时必须同时给出 `--backup-confirmed --maintenance-window-confirmed`。脚本按 public 54（含 rev51）→ teacher 0037（含 0033）→ public 55–57 → teacher 0040（含 0039）→ teacher 0041 → public 59–65 → teacher 0042 → public 66–99 → teacher 0043 逐段执行和读回。未知组合、错序、账本/checksum 漂移均失败关闭。
-- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260823_100_scope_snapshot_diff` 与精确 38 条 canonical Tide 0043 账本。它逐项核对顺序、文件名、SHA-256、最终实存结构、DTS v2、隐私 Trigger 和两条 P-REL execution 后，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL、Mock Seed 或共享模板写入。
+- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260824_101_dts_single_pipeline_reset` 与精确 38 条 canonical Tide 0043 账本。它逐项核对顺序、文件名、SHA-256、最终实存结构、DTS、隐私 Trigger 和两条 P-REL execution 后，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL、Mock Seed 或共享模板写入。
 - 初始化器不得与 public/Tide migrator 并发运行；受控部署必须先完成迁移并释放迁移窗口，再执行初始化器。
 - 日常应用账号固定为 `tit_teacher_crud`，对 public 使用最终文档列出的 6 个只读对象和 4 张 CRUD 表，对普通 `tide.*` 表使用表级 CRUD；`tide.crm_sso_logins` 只保留 `SELECT / INSERT / UPDATE`，禁止删除一次性兑换事实。不读取原始积分、课程事实或评分配置表，越权业务写入由 Trigger/约束拒绝。
 - 内部测试后端的 `TIDE_DATABASE_URL` 和 `SHIWEN_READ_DATABASE_URL` 均由该配置生成并指向同一公司测试库；运行时不再使用本地 PostgreSQL 或本地数据回退。

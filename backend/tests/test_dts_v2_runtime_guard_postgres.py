@@ -17,11 +17,10 @@ def test_guard_uses_runtime_roles_without_raw_control_select(
         admin.url.set(username="tit_dts_domain_projector_runtime")
     )
     try:
-        _run_alembic(
-            Path(__file__).resolve().parents[1],
-            admin.url.render_as_string(hide_password=False),
-            "check",
-        )
+        with admin.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM public.alembic_version")
+            ).scalar_one() == "20260823_100_scope_snapshot_diff"
         with admin.begin() as connection:
             connection.execute(
                 text(

@@ -75,7 +75,7 @@ ENV TZ=Asia/Shanghai \
     JAVA_TOOL_OPTIONS="-Xms64m -Xmx256m -Xss512k -Dlog4j.configuration=file:/deployments/config/log4j.properties" \
     TIT_PROCESS_PROFILE=dts-ingest \
     TIT_DTS_TRANSPORT=official_java \
-    TIT_DTS_PIPELINE_MODE=V1 \
+    TIT_DTS_PIPELINE_MODE=SINGLE_PIPELINE \
     TIT_DTS_STARTUP_RETRY_SECONDS=15 \
     TIT_DTS_INGEST_HEARTBEAT=/tmp/tit-dts-ingest-heartbeat \
     TIT_DTS_INGEST_READINESS=/tmp/tit-dts-ingest-readiness
@@ -96,4 +96,4 @@ HEALTHCHECK --interval=30s --timeout=20s --start-period=360s --retries=3 \
   CMD ["/opt/venv/bin/python", "/app/operations/scripts/run_dts_ingest.py", "--healthcheck", "--heartbeat-path", "/tmp/tit-dts-ingest-heartbeat", "--readiness-path", "/tmp/tit-dts-ingest-readiness", "--max-heartbeat-age-seconds", "90"]
 
 STOPSIGNAL SIGTERM
-CMD ["/opt/venv/bin/python", "/app/operations/scripts/run_dts_ingest.py", "--watch", "--max-messages", "2000", "--max-projection-keys", "1000", "--projection-time-budget-seconds", "20", "--idle-timeout-ms", "10000", "--interval-seconds", "3", "--heartbeat-path", "/tmp/tit-dts-ingest-heartbeat", "--readiness-path", "/tmp/tit-dts-ingest-readiness"]
+CMD ["/opt/venv/bin/python", "/app/operations/scripts/run_dts_ingest.py", "--watch", "--max-messages", "2000", "--idle-timeout-ms", "10000", "--interval-seconds", "3", "--heartbeat-path", "/tmp/tit-dts-ingest-heartbeat", "--readiness-path", "/tmp/tit-dts-ingest-readiness"]

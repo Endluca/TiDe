@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260823_100_scope_snapshot_diff"
+EXPECTED_PUBLIC_HEAD="20260824_101_dts_single_pipeline_reset"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1

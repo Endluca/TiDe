@@ -1,6 +1,6 @@
 # PostgreSQL 运行说明
 
-运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；当前代码 head 为 public `20260823_100_scope_snapshot_diff`、teacher `0043_p_rel_execution_catalog`，teacher 为精确 38 条 canonical 账本。public 51–65 / teacher 0033–0042 完成 TESOL、G04、G02、CRM SSO 与课程映射；public 66–99 完成 DTS v2 来源、参与人、完课冻结、资格、关系、积分、Outbox、切流和三态证据契约，public 100 增加 profile 绑定、CURRENT snapshot diff、GLOBAL/TEACHER membership 替换与 CDC overlay；teacher 0043 发布 `P-REL-MEMO/P-REL-ATTENDANCE` 执行目录。最终权限以 `docs/数据库角色与权限最终版.md` 为准，业务字段所有权、状态机、不可逆事实和幂等账本由 Trigger/约束保护。公司 TEST 库上次现场状态不等于当前代码 head；上线前必须执行剩余迁移并用真实运行角色读回复验。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这不代表外部日更、业务验收或生产已经上线。
+运行时数据库固定为 PostgreSQL。SQLite 只允许由自动化测试显式注入，不能作为运营试跑事实源。仓库支持本机 Unix Socket 开发库 `tit_growth` 和公司测试实例中的隔离数据库。旧库 `tit_growth_test` 保持在 revision 38；当前代码 head 为 public `20260824_101_dts_single_pipeline_reset`、teacher `0043_p_rel_execution_catalog`，teacher 为精确 38 条 canonical 账本。public 51–65 / teacher 0033–0042 完成 TESOL、G04、G02、CRM SSO 与课程映射；public 66–100 完成 DTS 来源、参与人、完课冻结、资格、关系、积分、Outbox 和当前态覆盖；teacher 0043 发布 `P-REL-MEMO/P-REL-ATTENDANCE` 执行目录；public 101 清空历史消费事实，并把运行态固定为从显式新时间点开始的单消费通道。最终权限以 `docs/数据库角色与权限最终版.md` 为准，业务字段所有权、状态机、不可逆事实和幂等账本由 Trigger/约束保护。公司 TEST 库上次现场状态不等于当前代码 head；上线前必须执行剩余迁移并用真实运行角色读回复验。重建前旧库封存为 `tit_growth_test_v2_pre0030_20260810`。这不代表外部日更、业务验收或生产已经上线。
 
 教师工单使用教师端维护的共享事实表 `public.teacher_support_tickets`。TiDe 只读取该表，并通过
 `public.append_teacher_support_ticket_operator_message(...)` 追加运营回复；不在本项目迁移中复制或管理该表。
@@ -229,7 +229,7 @@ macOS Keychain 读取，不能写进命令、仓库或环境文件。
 - `20260818_62_dts_claim_idx` 用 `CREATE INDEX CONCURRENTLY` 为 `PENDING` FIFO 和到期 `RETRY` 队列增加部分索引，不改业务事实。
 - `20260819_63_dts_direct_privacy` 保留 queued 的来源镜像校验，并允许 `tit_dts_ingest_runtime` 只在 direct 事务显式标记 `dom/ovs` 后写课程宽表。国内学生仍必须是 `dom:v1:<HMAC-SHA256>`，OVS 写入不得携带 `dom:` token。
 - `20260819_64_g05_g08_courses` 只原位更新 G05/G08 已发布课程文案和匹配旧副本的 G08 展示文案，保留 assignment 状态、分值和完成事实。
-- `20260819_65_g09_set_course` / teacher 0042 是 G09 的历史交叉切换点；当前 public head 为 `20260823_100_scope_snapshot_diff`，teacher head 为 `0043_p_rel_execution_catalog`。public 66–99 落地 DTS v2 运行/切换契约，public 100 补齐 source-scope snapshot diff 和 CDC membership overlay，teacher 0043 发布两类缺席任务执行目录。
+- `20260819_65_g09_set_course` / teacher 0042 是 G09 的历史交叉切换点；当前 public head 为 `20260824_101_dts_single_pipeline_reset`，teacher head 为 `0043_p_rel_execution_catalog`。public 66–100 落地现行业务规则和消费事实结构，teacher 0043 发布两类缺席任务执行目录，public 101 清空旧消费事实并启用新时间点后的单消费通道。
 - `seed_database.py` 只幂等补齐 14 个当前任务模板，不创建教师或任何运行时业务事实，也不修改投诉规则导入或触发结果。G01–G09 assignment 由教师写入流程初始化；初始化不创建通知、提醒或投递意图。隔离测试中的 Mock fixture 不进入运营运行库。
 - `seed_config_center.py` 只创建本地默认配置版本；空库读取不会由 API 隐式补配置。
 - 两个 Seed 脚本都要求 `APP_ENV` 明确为 `local / dev / development / test`，否则拒绝执行。

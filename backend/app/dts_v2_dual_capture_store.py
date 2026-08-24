@@ -1,12 +1,10 @@
-"""Atomic v2 source capture, dirty enqueue, ledger and checkpoint sink.
+"""Atomic single-pipeline source capture, dirty enqueue and checkpoint sink.
 
-``V1_COMPAT_DUAL_CAPTURE`` uses the existing transport/ACK boundary but does
-not call the legacy queued persistence helper: rev80 replaced that helper's
-three-column dirty identity.  One PostgreSQL transaction now owns the v2
-source version/current, authoritative SOURCE_REVISION dirty inputs, immutable
-ingest receipt and the already bootstrapped shared checkpoint.  Returning from
-``apply``/``apply_batch`` still happens only after commit, so the transport's
-existing post-return acknowledgement remains the sole ACK path.
+One PostgreSQL transaction owns source version/current, authoritative
+SOURCE_REVISION dirty inputs, immutable ingest receipt and checkpoint. After a
+destructive reset the first event at/after ``TIT_DTS_START_TIMESTAMP`` creates
+the stream epoch/checkpoint inside the same transaction; no legacy projector,
+dual capture, reconciliation or cutover path participates.
 
 Control and retired/out-of-profile records have no v2 source row or business
 dirty key.  They receive only a payload-free routing receipt and advance the
@@ -53,45 +51,52 @@ from .dts_v2_shadow_source_writer import (
 from .dts_v2_dirty_queue_store import DirtyKeyV2, DtsV2DirtyQueueStore
 
 
-DUAL_CAPTURE_MODE = "V1_COMPAT_DUAL_CAPTURE"
 V2_PRIMARY_MODE = "V2_PRIMARY"
-ROLLED_BACK_MODE = "ROLLED_BACK"
-V2_CAPTURE_MODES = frozenset(
-    {DUAL_CAPTURE_MODE, V2_PRIMARY_MODE, ROLLED_BACK_MODE}
-)
 _V2_IDENTITY_VERSION = "V2_EPOCH"
+_MISSING_COURSE_UPDATE_ISSUE = "COURSE_UPDATE_WITHOUT_CURRENT_IGNORED"
 _DTS_DIRTY_GUARD_V96_PROSRC_SHA256 = (
     "43faaad828f20a8988c4cf1212490b48ad8aa28782112a5e97c355d307a6d2e2"
 )
 
 
 class DtsV2DualCaptureStoreError(DtsIngestStoreError):
-    """Dual capture cannot prove one atomic, epoch-aware write."""
+    """The single source pipeline cannot prove an atomic epoch-aware write."""
 
 
 class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
-    """Persist the complete v2 ingest transition in one transaction."""
+    """Persist the complete single-pipeline ingest transition atomically."""
 
     def __init__(
         self,
         settings: DtsIngestDatabaseSettings,
         *,
-        pipeline_mode: str = DUAL_CAPTURE_MODE,
+        pipeline_mode: str = V2_PRIMARY_MODE,
         source_region: str,
         source_partition_epoch_id: str,
         consumer_group: str,
-        control_group: str,
+        start_timestamp_seconds: int = 0,
+        control_group: str | None = None,
+        source_profile_manifest_sha256: str | None = None,
         engine: Engine | None = None,
         v2_writer: Any | None = None,
         dirty_queue_store: Any | None = None,
     ) -> None:
+        del control_group
         if source_region not in {"dom", "ovs"}:
             raise DtsV2DualCaptureStoreError(
                 "DTS_V2_DUAL_CAPTURE_SOURCE_REGION_REQUIRED"
             )
-        if pipeline_mode not in V2_CAPTURE_MODES:
+        if pipeline_mode != V2_PRIMARY_MODE:
             raise DtsV2DualCaptureStoreError(
-                "DTS_V2_CAPTURE_PIPELINE_MODE_INVALID"
+                "DTS_SINGLE_PIPELINE_MODE_INVALID"
+            )
+        if (
+            isinstance(start_timestamp_seconds, bool)
+            or not isinstance(start_timestamp_seconds, int)
+            or start_timestamp_seconds < 0
+        ):
+            raise DtsV2DualCaptureStoreError(
+                "DTS_SINGLE_PIPELINE_START_TIMESTAMP_INVALID"
             )
         super().__init__(
             settings,
@@ -107,9 +112,10 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             consumer_group,
             "DTS_V2_DUAL_CAPTURE_CONSUMER_GROUP_REQUIRED",
         )
-        self.control_group = _required_text(
-            control_group,
-            "DTS_V2_DUAL_CAPTURE_CONTROL_GROUP_REQUIRED",
+        self.start_timestamp_seconds = start_timestamp_seconds
+        self.source_profile_manifest_sha256 = _required_sha256(
+            source_profile_manifest_sha256,
+            "DTS_V2_SOURCE_PROFILE_MANIFEST_SHA256_REQUIRED",
         )
         writer = (
             DtsV2ShadowSourceWriter(enabled=True)
@@ -148,8 +154,8 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         source_region: str,
         topic: str,
         partition: int,
-    ) -> DtsResumeCheckpoint:
-        """Validate the bootstrapped mode/epoch/checkpoint before transport."""
+    ) -> DtsResumeCheckpoint | None:
+        """Validate current state; an empty reset intentionally returns None."""
 
         self._require_source_region(source_region)
         self._require_queued_only()
@@ -162,6 +168,8 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 partition=partition,
                 lock_checkpoint=False,
             )
+        if state is None:
+            return None
         return DtsResumeCheckpoint(
             next_offset=state["next_offset"],
             source_timestamp=state["source_timestamp"],
@@ -173,9 +181,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         source_region: str,
         topic: str,
         partition: int,
-    ) -> DtsResumeCheckpoint:
-        # A dual-capture runtime can never start from an absent legacy
-        # checkpoint.  Bootstrap must first attach the current epoch and group.
+    ) -> DtsResumeCheckpoint | None:
         return self.validate_startup(
             source_region=source_region,
             topic=topic,
@@ -200,6 +206,19 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 partition=event.partition,
                 lock_checkpoint=True,
             )
+            if checkpoint is None:
+                self._initialize_stream_if_missing(connection, event)
+                checkpoint = self._validate_dual_capture_state(
+                    connection,
+                    source_region=event.source_region,
+                    topic=event.topic,
+                    partition=event.partition,
+                    lock_checkpoint=True,
+                )
+            if checkpoint is None:
+                raise DtsV2DualCaptureStoreError(
+                    "DTS_SINGLE_PIPELINE_STREAM_INIT_MISSING"
+                )
             (
                 duplicate,
                 _next_checkpoint_version,
@@ -261,6 +280,19 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 partition=first_event.partition,
                 lock_checkpoint=True,
             )
+            if checkpoint is None:
+                self._initialize_stream_if_missing(connection, first_event)
+                checkpoint = self._validate_dual_capture_state(
+                    connection,
+                    source_region=first_event.source_region,
+                    topic=first_event.topic,
+                    partition=first_event.partition,
+                    lock_checkpoint=True,
+                )
+            if checkpoint is None:
+                raise DtsV2DualCaptureStoreError(
+                    "DTS_SINGLE_PIPELINE_STREAM_INIT_MISSING"
+                )
             checkpoint_row_version = checkpoint["checkpoint_row_version"]
             next_offset = checkpoint["next_offset"]
             duplicates: list[bool] = []
@@ -281,6 +313,44 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 )
                 duplicates.append(duplicate)
             return tuple(duplicates)
+
+    def _initialize_stream_if_missing(
+        self,
+        connection: Connection,
+        event: DtsChangeEvent,
+    ) -> None:
+        if event.source_timestamp < self.start_timestamp_seconds:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_EVENT_BEFORE_CONFIGURED_START"
+            )
+        initialized = connection.execute(
+            text(
+                """
+                SELECT public.initialize_dts_event_stream_v1(
+                  :source_region,:topic,:partition,:epoch_id,
+                  :consumer_group,:initial_offset,:source_timestamp,
+                  :source_position,:profile_manifest_sha256
+                )
+                """
+            ),
+            {
+                "source_region": event.source_region,
+                "topic": event.topic,
+                "partition": event.partition,
+                "epoch_id": self.source_partition_epoch_id,
+                "consumer_group": self.consumer_group,
+                "initial_offset": event.offset,
+                "source_timestamp": event.source_timestamp,
+                "source_position": event.source_position,
+                "profile_manifest_sha256": (
+                    self.source_profile_manifest_sha256
+                ),
+            },
+        ).scalar_one()
+        if initialized not in {"INITIALIZED", "EXISTS"}:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_SINGLE_PIPELINE_STREAM_INIT_INVALID"
+            )
 
     def _validate_event(self, event: DtsChangeEvent) -> None:
         self._require_source_region(event.source_region)
@@ -433,6 +503,12 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                         SELECT
                           has_function_privilege(
                             current_user,
+                            'public.initialize_dts_event_stream_v1('
+                            'text,text,integer,text,text,bigint,bigint,text,text)',
+                            'EXECUTE'
+                          ),
+                          has_function_privilege(
+                            current_user,
                             'public.enqueue_dirty_from_source_revision_v2('
                             'text,text,text,bigint,text,text,text)',
                             'EXECUTE'
@@ -488,29 +564,6 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                             current_user,
                             'public.check_dts_dirty_key_integrity_v2()',
                             'EXECUTE'
-                          ),
-                          has_function_privilege(
-                            current_user,
-                            'public.claim_v1_compat_dirty_key_v1(text)',
-                            'EXECUTE'
-                          ),
-                          has_function_privilege(
-                            current_user,
-                            'public.complete_v1_compat_dirty_key_v1('
-                            'text,text,text,text,text,bigint,bigint)',
-                            'EXECUTE'
-                          ),
-                          has_function_privilege(
-                            current_user,
-                            'public.fail_v1_compat_dirty_key_v1('
-                            'text,text,text,text,text,text,integer,integer,'
-                            'integer)',
-                            'EXECUTE'
-                          ),
-                          has_function_privilege(
-                            current_user,
-                            'public.dts_v1_compat_dirty_not_complete_count_v1()',
-                            'EXECUTE'
                           )
                         """
                     )
@@ -520,16 +573,13 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     True,
                     True,
                     True,
-                    False,
-                    True,
-                    True,
                     True,
                     False,
+                    True,
+                    True,
+                    True,
                     False,
-                    True,
-                    True,
-                    True,
-                    True,
+                    False,
                 ):
                     raise DtsV2DualCaptureStoreError(
                         "DTS_V2_DUAL_CAPTURE_FUNCTION_PRIVILEGE_INVALID"
@@ -543,15 +593,12 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                                  COALESCE(functions.proconfig,ARRAY[]::text[])
                                )
                         FROM unnest(ARRAY[
+                          'initialize_dts_event_stream_v1(text,text,integer,text,text,bigint,bigint,text,text)',
                           'enqueue_dirty_from_source_revision_v2(text,text,text,bigint,text,text,text)',
                           'lock_dts_source_partition_epoch_for_ingest_v2(text,text,text,integer)',
                           'lock_dts_source_table_for_ingest_v3(text,text)',
                           'scope_membership_apply_cdc_v3(text,text,text,bigint,jsonb,jsonb,boolean)',
-                          'check_dts_dirty_key_integrity_v2()',
-                          'claim_v1_compat_dirty_key_v1(text)',
-                          'complete_v1_compat_dirty_key_v1(text,text,text,text,text,bigint,bigint)',
-                          'fail_v1_compat_dirty_key_v1(text,text,text,text,text,text,integer,integer,integer)',
-                          'dts_v1_compat_dirty_not_complete_count_v1()'
+                          'check_dts_dirty_key_integrity_v2()'
                         ]::text[]) WITH ORDINALITY AS expected(
                           function_name,function_order
                         )
@@ -567,6 +614,12 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     (str(row[0]), bool(row[1]), bool(row[2]))
                     for row in protected_functions
                 ) != (
+                    (
+                        "initialize_dts_event_stream_v1("
+                        "text,text,integer,text,text,bigint,bigint,text,text)",
+                        True,
+                        True,
+                    ),
                     (
                         "enqueue_dirty_from_source_revision_v2("
                         "text,text,text,bigint,text,text,text)",
@@ -592,28 +645,6 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     ),
                     (
                         "check_dts_dirty_key_integrity_v2()",
-                        True,
-                        True,
-                    ),
-                    (
-                        "claim_v1_compat_dirty_key_v1(text)",
-                        True,
-                        True,
-                    ),
-                    (
-                        "complete_v1_compat_dirty_key_v1("
-                        "text,text,text,text,text,bigint,bigint)",
-                        True,
-                        True,
-                    ),
-                    (
-                        "fail_v1_compat_dirty_key_v1("
-                        "text,text,text,text,text,text,integer,integer,integer)",
-                        True,
-                        True,
-                    ),
-                    (
-                        "dts_v1_compat_dirty_not_complete_count_v1()",
                         True,
                         True,
                     ),
@@ -710,7 +741,14 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             )
         replay_expected = event.offset < expected_next_offset
         v2_result: DtsV2ShadowSourceWriteResult | None = None
-        if _is_v2_business_event(event):
+        ignored_missing_course_update = (
+            replay_expected
+            and self._was_missing_course_update_ignored(
+                connection,
+                event=event,
+            )
+        )
+        if _is_v2_business_event(event) and not ignored_missing_course_update:
             v2_result = self._v2_writer.apply_cdc(
                 connection,
                 event,
@@ -732,13 +770,26 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 raise DtsV2DualCaptureStoreError(
                     "DTS_V2_DUAL_CAPTURE_SOURCE_RESULT_INVALID"
                 )
-            if replay_expected != (v2_result.status == "REPLAYED"):
+            ignored_missing_course_update = (
+                v2_result.status == "IGNORED_MISSING_CURRENT"
+            )
+            if replay_expected != (
+                v2_result.status == "REPLAYED"
+                or (
+                    replay_expected
+                    and ignored_missing_course_update
+                )
+            ):
                 raise DtsV2DualCaptureStoreError(
                     "DTS_V2_DUAL_CAPTURE_LEDGER_VERSION_INCONSISTENT"
                 )
 
         revision_dirty_keys = _result_dirty_keys(v2_result)
-        if v2_result is not None and v2_result.status != "REPLAYED":
+        if (
+            v2_result is not None
+            and v2_result.status
+            not in {"REPLAYED", "IGNORED_MISSING_CURRENT"}
+        ):
             revision = v2_result.source_row_revision
             if (
                 isinstance(revision, bool)
@@ -763,9 +814,15 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     )
 
         route_status = (
-            "PROCESSED" if v2_result is not None else "IGNORED"
+            "IGNORED"
+            if v2_result is None or ignored_missing_course_update
+            else "PROCESSED"
         )
         issue_codes = _ledger_issue_codes(route_hints)
+        if ignored_missing_course_update:
+            issue_codes = tuple(
+                dict.fromkeys((*issue_codes, _MISSING_COURSE_UPDATE_ISSUE))
+            )
         position = _source_position_v2(
             event,
             source_partition_epoch_id=self.source_partition_epoch_id,
@@ -775,7 +832,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             source_partition_epoch_id=self.source_partition_epoch_id,
             protected_source_hash=(
                 None
-                if v2_result is None
+                if v2_result is None or ignored_missing_course_update
                 else v2_result.protected_payload_hash
             ),
         )
@@ -790,6 +847,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         )
         if duplicate != replay_expected or (
             v2_result is not None
+            and not ignored_missing_course_update
             and duplicate != (v2_result.status == "REPLAYED")
         ):
             raise DtsV2DualCaptureStoreError(
@@ -808,6 +866,17 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             expected_next_offset if duplicate else event.offset + 1,
         )
 
+    def _was_missing_course_update_ignored(
+        self,
+        connection: Connection,
+        *,
+        event: DtsChangeEvent,
+    ) -> bool:
+        return _ledger_has_ignored_missing_course_update(
+            connection,
+            event=event,
+        )
+
     def _validate_dual_capture_state(
         self,
         connection: Connection,
@@ -816,7 +885,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         topic: str,
         partition: int,
         lock_checkpoint: bool,
-    ) -> Mapping[str, Any]:
+    ) -> Mapping[str, Any] | None:
         try:
             missing_relations = connection.execute(
                 text(
@@ -848,6 +917,10 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     """
                     SELECT
                       to_regprocedure(
+                        'public.initialize_dts_event_stream_v1('
+                        'text,text,integer,text,text,bigint,bigint,text,text)'
+                      ) IS NOT NULL,
+                      to_regprocedure(
                         'public.enqueue_dirty_from_source_revision_v2('
                         'text,text,text,bigint,text,text,text)'
                       ) IS NOT NULL,
@@ -863,6 +936,12 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                         'public.scope_membership_apply_cdc_v3('
                         'text,text,text,bigint,jsonb,jsonb,boolean)'
                       ) IS NOT NULL,
+                      has_function_privilege(
+                        'tit_dts_ingest_runtime',
+                        'public.initialize_dts_event_stream_v1('
+                        'text,text,integer,text,text,bigint,bigint,text,text)',
+                        'EXECUTE'
+                      ),
                       has_function_privilege(
                         'tit_dts_ingest_runtime',
                         'public.enqueue_dirty_from_source_revision_v2('
@@ -893,23 +972,6 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                         'text,text,text,text,text,jsonb,bigint,text)',
                         'EXECUTE'
                       ),
-                      has_function_privilege(
-                        'tit_dts_ingest_runtime',
-                        'public.claim_v1_compat_dirty_key_v1(text)',
-                        'EXECUTE'
-                      ),
-                      has_function_privilege(
-                        'tit_dts_ingest_runtime',
-                        'public.complete_v1_compat_dirty_key_v1('
-                        'text,text,text,text,text,bigint,bigint)',
-                        'EXECUTE'
-                      ),
-                      has_function_privilege(
-                        'tit_dts_ingest_runtime',
-                        'public.fail_v1_compat_dirty_key_v1('
-                        'text,text,text,text,text,text,integer,integer,integer)',
-                        'EXECUTE'
-                      ),
                       EXISTS (
                         SELECT 1
                         FROM unnest(ARRAY[
@@ -937,10 +999,9 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 True,
                 True,
                 True,
+                True,
+                True,
                 False,
-                True,
-                True,
-                True,
                 False,
             ):
                 raise DtsV2DualCaptureStoreError(
@@ -950,8 +1011,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             control_rows = connection.execute(
                 text(
                     """
-                    SELECT mode, consumer_group, initial_h0_vector,
-                           row_version
+                    SELECT mode,row_version
                     FROM public.dts_pipeline_control
                     WHERE control_id = 'PRIMARY'
                     """
@@ -966,24 +1026,52 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 raise DtsV2DualCaptureStoreError(
                     "DTS_V2_DUAL_CAPTURE_MODE_MISMATCH"
                 )
-            if control.get("consumer_group") != self.control_group:
-                raise DtsV2DualCaptureStoreError(
-                    "DTS_V2_DUAL_CAPTURE_CONTROL_GROUP_MISMATCH"
-                )
             _positive_version(
                 control.get("row_version"),
                 "DTS_V2_DUAL_CAPTURE_CONTROL_INVALID",
             )
-            if not _initial_h0_route_matches(
-                control.get("initial_h0_vector"),
-                source_region=source_region,
-                topic=topic,
-                partition=partition,
-                source_partition_epoch_id=self.source_partition_epoch_id,
-                consumer_group=self.consumer_group,
-            ):
+
+            checkpoint_rows = connection.execute(
+                text(
+                    """
+                    SELECT next_offset,source_timestamp,
+                           source_partition_epoch_id,consumer_group,
+                           checkpoint_row_version,is_current_epoch
+                    FROM public.dts_ingest_checkpoints
+                    WHERE source_region=:source_region
+                      AND topic=:topic AND partition_id=:partition
+                    """
+                ),
+                {
+                    "source_region": source_region,
+                    "topic": topic,
+                    "partition": partition,
+                },
+            ).mappings().all()
+            if not checkpoint_rows:
+                stale_epoch = connection.execute(
+                    text(
+                        """
+                        SELECT 1 FROM public.dts_source_partition_epochs
+                        WHERE source_region=:source_region
+                          AND topic=:topic AND partition_id=:partition
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "source_region": source_region,
+                        "topic": topic,
+                        "partition": partition,
+                    },
+                ).scalar_one_or_none()
+                if stale_epoch is not None:
+                    raise DtsV2DualCaptureStoreError(
+                        "DTS_SINGLE_PIPELINE_PARTIAL_STREAM_STATE"
+                    )
+                return None
+            if len(checkpoint_rows) != 1:
                 raise DtsV2DualCaptureStoreError(
-                    "DTS_V2_DUAL_CAPTURE_CONTROL_ROUTE_MISMATCH"
+                    "DTS_V2_DUAL_CAPTURE_CHECKPOINT_CONFLICT"
                 )
 
             epoch_rows = connection.execute(
@@ -1305,6 +1393,11 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         return next_version
 
 
+# Public runtime name. The historical class name remains as an import alias so
+# existing unit fixtures do not create a second implementation path.
+PostgresDtsSourceEventSink = PostgresDtsV2DualCaptureSink
+
+
 def _is_v2_business_event(event: DtsChangeEvent) -> bool:
     if event.operation not in DATA_OPERATIONS:
         return False
@@ -1322,6 +1415,7 @@ def _result_dirty_keys(
         return ()
     if result.status not in {
         "APPLIED",
+        "IGNORED_MISSING_CURRENT",
         "NOOP",
         "SEMANTIC_REPLAY",
         "REPLAYED",
@@ -1333,6 +1427,10 @@ def _result_dirty_keys(
     if not isinstance(raw_keys, tuple) or any(
         not isinstance(key, DirtyKeyV2) for key in raw_keys
     ):
+        raise DtsV2DualCaptureStoreError(
+            "DTS_V2_DUAL_CAPTURE_DIRTY_KEYS_INVALID"
+        )
+    if result.status == "IGNORED_MISSING_CURRENT" and raw_keys:
         raise DtsV2DualCaptureStoreError(
             "DTS_V2_DUAL_CAPTURE_DIRTY_KEYS_INVALID"
         )
@@ -1354,6 +1452,44 @@ def _result_dirty_keys(
     return raw_keys
 
 
+def _ledger_has_ignored_missing_course_update(
+    connection: Connection,
+    *,
+    event: DtsChangeEvent,
+) -> bool:
+    if (
+        event.operation != "UPDATE"
+        or event.table_name not in {"dom_appoint", "ovs_appoint"}
+    ):
+        return False
+    row = connection.execute(
+        text(
+            """
+            SELECT route_status,issue_codes
+            FROM public.dts_ingest_events
+            WHERE source_region=:source_region
+              AND topic=:topic
+              AND partition_id=:partition
+              AND offset_value=:offset
+            """
+        ),
+        {
+            "source_region": event.source_region,
+            "topic": event.topic,
+            "partition": event.partition,
+            "offset": event.offset,
+        },
+    ).mappings().one_or_none()
+    if row is None:
+        return False
+    issue_codes = row.get("issue_codes")
+    return (
+        row.get("route_status") == "IGNORED"
+        and isinstance(issue_codes, list)
+        and _MISSING_COURSE_UPDATE_ISSUE in issue_codes
+    )
+
+
 def _ledger_issue_codes(route_hints: DirtyKeySet) -> tuple[str, ...]:
     values = (*route_hints.issues, route_hints.ignored_reason)
     return tuple(
@@ -1371,41 +1507,19 @@ def _required_text(value: Any, error: str) -> str:
     return value.strip()
 
 
-def _initial_h0_route_matches(
-    initial_h0_vector: Any,
-    *,
-    source_region: str,
-    topic: str,
-    partition: int,
-    source_partition_epoch_id: str,
-    consumer_group: str,
-) -> bool:
-    if not isinstance(initial_h0_vector, list):
-        return False
-    stream_routes = 0
-    matching_routes = 0
-    for route in initial_h0_vector:
-        if not isinstance(route, Mapping):
-            return False
-        if (
-            route.get("source_region") == source_region
-            and route.get("topic") == topic
-            and route.get("partition_id") == partition
-        ):
-            stream_routes += 1
-            if (
-                route.get("source_partition_epoch_id")
-                == source_partition_epoch_id
-                and route.get("consumer_group") == consumer_group
-            ):
-                matching_routes += 1
-    return stream_routes == 1 and matching_routes == 1
-
-
 def _positive_version(value: Any, error: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise DtsV2DualCaptureStoreError(error)
     return value
+
+
+def _required_sha256(value: Any, error: str) -> str:
+    text_value = _required_text(value, error)
+    if len(text_value) != 64 or any(
+        character not in "0123456789abcdef" for character in text_value
+    ):
+        raise DtsV2DualCaptureStoreError(error)
+    return text_value
 
 
 def _non_negative_int(value: Any, error: str) -> int:
@@ -1557,10 +1671,8 @@ def _stream_event(
 
 
 __all__ = [
-    "DUAL_CAPTURE_MODE",
-    "ROLLED_BACK_MODE",
-    "V2_CAPTURE_MODES",
     "V2_PRIMARY_MODE",
     "DtsV2DualCaptureStoreError",
+    "PostgresDtsSourceEventSink",
     "PostgresDtsV2DualCaptureSink",
 ]

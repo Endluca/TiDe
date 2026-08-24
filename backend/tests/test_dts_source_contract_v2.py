@@ -34,6 +34,19 @@ _PRODUCTION_PROFILE_DEFAULTS = (
 pytestmark = pytest.mark.usefixtures("synthetic_v2_appoint_profiles")
 
 
+def _dom_settings() -> DtsConsumerSettings:
+    return DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.invalid:9092",),
+        topic="dom-topic",
+        group_id="dom-v2-source-contract-test",
+        account="test-account",
+        password="test-password",
+        execution_region="cn",
+        domestic_student_hmac_key="11" * 32,
+    )
+
+
 def _event(
     *,
     table: str,
@@ -94,20 +107,19 @@ def _complete_appoint_insert(
         )
     )
     if region == "dom":
-        event = protect_domestic_student_ids(
-            event,
-            DtsConsumerSettings(
-                source_region="dom",
-                broker_urls=("broker.invalid:9092",),
-                topic="dom-topic",
-                group_id="dom-v2-source-contract-test",
-                account="test-account",
-                password="test-password",
-                execution_region="cn",
-                domestic_student_hmac_key="11" * 32,
-            ),
-        )
+        event = protect_domestic_student_ids(event, _dom_settings())
     assert event.source_images_complete is True
+    return event
+
+
+def _prepared_event_contract_insert(
+    *, table: str, region: str, after: dict[str, Any]
+) -> DtsChangeEvent:
+    event = with_v2_source_image_completeness(
+        _event(table=table, region=region, after=after)
+    )
+    if region == "dom":
+        event = protect_domestic_student_ids(event, _dom_settings())
     return event
 
 
@@ -187,7 +199,7 @@ def test_grading_whitelist_retains_confirmed_rule_fields_until_profile_is_verifi
     assert "private_note" not in V2_SOURCE_FIELD_WHITELIST["user_teacher_grading"]
 
 
-def test_absence_and_certification_remain_whitelist_only_without_profiles() -> None:
+def test_absence_and_certification_use_code_owned_event_contract() -> None:
     assert "reason_type" in V2_SOURCE_FIELD_WHITELIST["teacher_absent_reason"]
     assert "reason_desc" not in V2_SOURCE_FIELD_WHITELIST["teacher_absent_reason"]
     assert {
@@ -205,16 +217,18 @@ def test_absence_and_certification_remain_whitelist_only_without_profiles() -> N
             {"id": 1, "teacher_id": 7, "certification_code": "16", "certification_status": 1},
         ),
     ):
-        with pytest.raises(
-            DtsRecordError,
-            match="^DTS_SOURCE_SCHEMA_PROFILE_MISSING$",
-        ):
-            build_v2_source_route(
-                _event(table=table, region="dom", after=after, images_complete=True)
+        route = build_v2_source_route(
+            _prepared_event_contract_insert(
+                table=table,
+                region="dom",
+                after=after,
             )
+        )
+        assert route.route_status == "VERSIONED"
+        assert route.source_schema_profile_id == f"dts-event-fields:v1:{table}"
 
 
-def test_production_defaults_attest_no_business_source_profile(
+def test_production_defaults_use_event_images_without_physical_table_profiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert _PRODUCTION_PROFILE_DEFAULTS == ({}, {}, {})
@@ -244,13 +258,13 @@ def test_production_defaults_attest_no_business_source_profile(
                     after={"id": 1},
                 )
             )
-            assert event.source_images_complete is False
-            assert event.source_image_profile_id is None
-            with pytest.raises(
-                DtsRecordError,
-                match="^DTS_SOURCE_SCHEMA_PROFILE_MISSING$",
-            ):
-                build_v2_source_route(event)
+            if region == "dom":
+                event = protect_domestic_student_ids(event, _dom_settings())
+            assert event.source_images_complete is True
+            assert event.source_image_profile_id == (
+                f"dts-event-fields:v1:{region}_{suffix}"
+            )
+            assert build_v2_source_route(event).route_status == "VERSIONED"
 
 
 def test_appoint_rejects_removed_cancel_reason_when_not_physically_selected() -> None:
@@ -608,18 +622,18 @@ def test_appoint_current_requires_matching_provenance_profile_and_identity(
         build_v2_source_route(event, current=current)
 
 
-def test_first_row_for_unverified_table_profile_fails_closed() -> None:
-    with pytest.raises(
-        DtsRecordError,
-        match="^DTS_SOURCE_SCHEMA_PROFILE_MISSING$",
-    ):
-        build_v2_source_route(
-            _event(
-                table="ovs_user_teacher_grading",
-                after={"id": 1, "appoint_id": 9, "score": 5},
-                images_complete=True,
-            )
+def test_first_new_row_uses_event_as_its_baseline() -> None:
+    route = build_v2_source_route(
+        _prepared_event_contract_insert(
+            table="ovs_user_teacher_grading",
+            region="ovs",
+            after={"id": 1, "appoint_id": 9, "score": 5},
         )
+    )
+    assert route.route_status == "VERSIONED"
+    assert route.source_schema_profile_id == (
+        "dts-event-fields:v1:ovs_user_teacher_grading"
+    )
 
 
 @pytest.mark.parametrize(
@@ -772,9 +786,10 @@ def test_sparse_grading_update_remains_profile_missing_even_with_current(
         ),
         row=current,
     )
+    event = protect_domestic_student_ids(event, _dom_settings())
     with pytest.raises(
         DtsRecordError,
-        match="^DTS_SOURCE_SCHEMA_PROFILE_MISSING$",
+        match="^DTS_SOURCE_CURRENT_PROVENANCE_MISMATCH$",
     ):
         build_v2_source_route(event, current=unverified_current)
 

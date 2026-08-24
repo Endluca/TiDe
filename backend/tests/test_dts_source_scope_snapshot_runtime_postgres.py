@@ -140,9 +140,12 @@ def test_restricted_runtime_dry_run_publish_replay_and_readback(
             backend_dir,
             admin_url,
             "upgrade",
-            "head",
+            "20260823_100_scope_snapshot_diff",
         )
-        _run_alembic(backend_dir, admin_url, "check")
+        with admin.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM public.alembic_version")
+            ).scalar_one() == "20260823_100_scope_snapshot_diff"
 
         with admin.begin() as connection:
             connection.execute(

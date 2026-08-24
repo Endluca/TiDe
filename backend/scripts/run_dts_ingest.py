@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import signal
-import socket
 import sys
 import time
 from collections.abc import Mapping
@@ -28,7 +27,6 @@ from app.dts_ingest_store import (  # noqa: E402
     DtsProjectionActivationSettings,
     PostgresDtsEventSink,
 )
-from app.dts_direct_projector import DtsDirectWideProjector  # noqa: E402
 from app.dts_java_transport import (  # noqa: E402
     DtsJavaTransportError,
     OfficialJavaDtsTransport,
@@ -41,24 +39,15 @@ from app.dts_source_consumer import (  # noqa: E402
     DtsRecordError,
     safe_kafka_error_diagnostic,
 )
-from app.dts_wide_projector import (  # noqa: E402
-    DtsWideProjectionError,
-    DtsWideProjector,
+from app.dts_wide_projector import DtsWideProjectionError  # noqa: E402
+from app.dts_v2_dual_capture_store import (  # noqa: E402
+    PostgresDtsSourceEventSink,
 )
 
 
 _stop_requested = False
-_LEGACY_V1_PIPELINE_MODE = "V1"
-_DUAL_CAPTURE_PIPELINE_MODE = "V1_COMPAT_DUAL_CAPTURE"
-_V2_PRIMARY_PIPELINE_MODE = "V2_PRIMARY"
-_ROLLED_BACK_PIPELINE_MODE = "ROLLED_BACK"
-_V2_CAPTURE_PIPELINE_MODES = frozenset(
-    {
-        _DUAL_CAPTURE_PIPELINE_MODE,
-        _V2_PRIMARY_PIPELINE_MODE,
-        _ROLLED_BACK_PIPELINE_MODE,
-    }
-)
+_PIPELINE_MODE = "SINGLE_PIPELINE"
+_DATABASE_PIPELINE_MODE = "V2_PRIMARY"
 _DEFAULT_STARTUP_RETRY_SECONDS = 15.0
 _MAX_STARTUP_RETRY_SECONDS = 60.0
 _RETRYABLE_DTS_STARTUP_ERROR_CODES = frozenset(
@@ -97,19 +86,15 @@ _RETRYABLE_STORE_STARTUP_ERROR_CODES = frozenset(
 class _RuntimeContract:
     stream_settings: DtsConsumerSettings
     database_settings: DtsIngestDatabaseSettings
-    projection_enabled: bool
-    projection_mode: str
-    activation_settings: DtsProjectionActivationSettings | None
     startup_retry_seconds: float
     transport_mode: str
     pipeline_mode: str
-    dual_capture: _DualCaptureRuntimeContract | None
+    capture: _SourceCaptureRuntimeContract
 
 
 @dataclass(frozen=True)
-class _DualCaptureRuntimeContract:
+class _SourceCaptureRuntimeContract:
     source_partition_epoch_id: str
-    control_group: str
     source_profile_manifest_sha256: str
 
     def safe_summary(self) -> dict[str, str]:
@@ -127,7 +112,6 @@ class _DualCaptureRuntimeContract:
 class _StartedIngest:
     sink: PostgresDtsEventSink
     consumer: Any
-    projector: DtsWideProjector | DtsDirectWideProjector
     checkpoint: int | None
     broker_probe: dict[str, object]
 
@@ -170,18 +154,6 @@ def _emit_startup_probe(payload: dict[str, bool | int | str]) -> None:
     )
 
 
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise DtsConfigurationError(f"{name}_INVALID")
-
-
 def _dts_transport_mode(
     environ: dict[str, str] | None = None,
 ) -> str:
@@ -197,19 +169,62 @@ def _dts_transport_mode(
 def _pipeline_mode(
     environ: dict[str, str] | None = None,
 ) -> str:
-    """Select the database-controlled ingest contract for this process."""
+    """Reject every retired runtime branch; production has one pipeline."""
 
     values = os.environ if environ is None else environ
-    value = values.get(
-        "TIT_DTS_PIPELINE_MODE",
-        _LEGACY_V1_PIPELINE_MODE,
-    ).strip()
-    if value not in {_LEGACY_V1_PIPELINE_MODE, *_V2_CAPTURE_PIPELINE_MODES}:
-        raise DtsConfigurationError("TIT_DTS_PIPELINE_MODE_INVALID")
-    return value
+    value = values.get("TIT_DTS_PIPELINE_MODE", _PIPELINE_MODE).strip()
+    if value != _PIPELINE_MODE:
+        raise DtsConfigurationError("TIT_DTS_PIPELINE_MODE_RETIRED")
+    projection_enabled = values.get(
+        "TIT_DTS_PROJECTION_ENABLED", "false"
+    ).strip().lower()
+    if projection_enabled not in {"", "false"}:
+        raise DtsConfigurationError("TIT_DTS_LEGACY_PROJECTION_RETIRED")
+    return _PIPELINE_MODE
 
 
-def _required_dual_capture_text(
+# Retained as pure parsers for the historical projector unit suite.  The
+# production composition below never calls them; _pipeline_mode() rejects the
+# legacy projection switch before any transport or database connection.
+def _env_flag(name: str, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise DtsConfigurationError(f"{name}_INVALID")
+
+
+def _projection_mode(
+    *,
+    enabled: bool,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    values = os.environ if environ is None else environ
+    mode = values.get("TIT_DTS_PROJECTION_MODE", "queued").strip().lower()
+    if mode not in {"queued", "direct"}:
+        raise DtsConfigurationError("TIT_DTS_PROJECTION_MODE_INVALID")
+    if mode == "direct" and not enabled:
+        raise DtsConfigurationError(
+            "DTS_DIRECT_PROJECTION_REQUIRES_ENABLED"
+        )
+    return mode
+
+
+def _projection_activation_settings(
+    *,
+    enabled: bool,
+    environ: Mapping[str, str] | None = None,
+) -> DtsProjectionActivationSettings | None:
+    if not enabled:
+        return None
+    return DtsProjectionActivationSettings.from_env(environ)
+
+
+def _required_capture_text(
     values: Mapping[str, str],
     name: str,
     *,
@@ -227,65 +242,41 @@ def _required_dual_capture_text(
 
 
 def _v2_source_profile_manifest_evidence(source_region: str) -> str:
-    """Require an attested profile for every v2 business table in-region."""
+    """Return the code-owned event-field contract identity.
+
+    New INSERT images establish the post-reset baseline, so deployment no
+    longer depends on a separately supplied physical source-table manifest.
+    """
 
     try:
         from app.dts_source_contract_v2 import (
             V2_BUSINESS_SOURCE_SUFFIXES_BY_REGION,
-            V2_SOURCE_PROFILE_REGISTRY,
+            V2_EVENT_CONTRACT_MANIFEST_SHA256,
         )
     except ValueError as exc:
         raise DtsConfigurationError(
             "DTS_V2_SOURCE_PROFILE_MANIFEST_INVALID"
         ) from exc
 
-    expected_tables = {
-        f"{source_region}_{suffix}"
-        for suffix in V2_BUSINESS_SOURCE_SUFFIXES_BY_REGION[source_region]
-    }
-    configured_tables = {
-        table
-        for table, profile in V2_SOURCE_PROFILE_REGISTRY.profiles_by_table.items()
-        if profile.region == source_region
-    }
-    if configured_tables != expected_tables:
-        raise DtsConfigurationError(
-            "DTS_V2_SOURCE_PROFILE_REGION_INCOMPLETE"
-        )
-    return V2_SOURCE_PROFILE_REGISTRY.manifest_sha256
+    if source_region not in V2_BUSINESS_SOURCE_SUFFIXES_BY_REGION:
+        raise DtsConfigurationError("TIT_DTS_SOURCE_REGION_UNSUPPORTED")
+    return V2_EVENT_CONTRACT_MANIFEST_SHA256
 
 
-def _dual_capture_runtime_contract(
+def _source_capture_runtime_contract(
     *,
-    pipeline_mode: str,
-    projection_mode: str,
     source_region: str,
     environ: dict[str, str] | None = None,
-) -> _DualCaptureRuntimeContract | None:
-    if pipeline_mode == _LEGACY_V1_PIPELINE_MODE:
-        return None
-    if pipeline_mode not in _V2_CAPTURE_PIPELINE_MODES:
-        raise DtsConfigurationError("TIT_DTS_PIPELINE_MODE_INVALID")
-    if projection_mode != "queued":
-        raise DtsConfigurationError(
-            "DTS_V2_DUAL_CAPTURE_DIRECT_FORBIDDEN"
-        )
-
+) -> _SourceCaptureRuntimeContract:
     values = os.environ if environ is None else environ
-    source_partition_epoch_id = _required_dual_capture_text(
+    source_partition_epoch_id = _required_capture_text(
         values,
-        "TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID",
+        "TIT_DTS_SOURCE_PARTITION_EPOCH_ID",
         max_length=160,
     )
-    control_group = _required_dual_capture_text(
-        values,
-        "TIT_DTS_V2_CONTROL_GROUP",
-        max_length=256,
-    )
     manifest_sha256 = _v2_source_profile_manifest_evidence(source_region)
-    return _DualCaptureRuntimeContract(
+    return _SourceCaptureRuntimeContract(
         source_partition_epoch_id=source_partition_epoch_id,
-        control_group=control_group,
         source_profile_manifest_sha256=manifest_sha256,
     )
 
@@ -455,30 +446,6 @@ def _diagnostic_sslmode(
     return value if value in {"verify-full", "disable"} else None
 
 
-def _projection_activation_settings(
-    *,
-    enabled: bool,
-    environ: dict[str, str] | None = None,
-) -> DtsProjectionActivationSettings | None:
-    if not enabled:
-        return None
-    return DtsProjectionActivationSettings.from_env(environ)
-
-
-def _projection_mode(
-    *,
-    enabled: bool,
-    environ: dict[str, str] | None = None,
-) -> str:
-    values = os.environ if environ is None else environ
-    mode = values.get("TIT_DTS_PROJECTION_MODE", "queued").strip().lower()
-    if mode not in {"queued", "direct"}:
-        raise DtsConfigurationError("TIT_DTS_PROJECTION_MODE_INVALID")
-    if mode == "direct" and not enabled:
-        raise DtsConfigurationError("DTS_DIRECT_PROJECTION_REQUIRES_ENABLED")
-    return mode
-
-
 def _load_runtime_contract(args: argparse.Namespace) -> _RuntimeContract:
     if not isfinite(args.interval_seconds) or args.interval_seconds < 0:
         raise DtsConfigurationError("DTS_INTERVAL_SECONDS_INVALID")
@@ -499,53 +466,17 @@ def _load_runtime_contract(args: argparse.Namespace) -> _RuntimeContract:
         expected_host=APPROVED_INSECURE_PRE_HOST,
         expected_port=APPROVED_INSECURE_PRE_PORT,
     )
-    projection_enabled = _env_flag("TIT_DTS_PROJECTION_ENABLED", False)
-    projection_mode = _projection_mode(enabled=projection_enabled)
     pipeline_mode = _pipeline_mode()
-    dual_capture = _dual_capture_runtime_contract(
-        pipeline_mode=pipeline_mode,
-        projection_mode=projection_mode,
+    capture = _source_capture_runtime_contract(
         source_region=stream_settings.source_region,
     )
-    if pipeline_mode in {
-        _DUAL_CAPTURE_PIPELINE_MODE,
-        _ROLLED_BACK_PIPELINE_MODE,
-    } and not projection_enabled:
-        raise DtsConfigurationError(
-            "DTS_V1_COMPAT_PROJECTION_MUST_BE_ENABLED"
-        )
-    if (
-        pipeline_mode == _V2_PRIMARY_PIPELINE_MODE
-        and projection_enabled
-    ):
-        raise DtsConfigurationError(
-            "DTS_V2_PRIMARY_LEGACY_PROJECTION_MUST_BE_DISABLED"
-        )
-    if (
-        pipeline_mode == _LEGACY_V1_PIPELINE_MODE
-        and stream_settings.source_region == "dom"
-        and projection_enabled
-        and projection_mode != "direct"
-    ):
-        raise DtsConfigurationError("DTS_DOM_PROJECTION_FORBIDDEN")
-    activation_settings = _projection_activation_settings(
-        enabled=projection_enabled and projection_mode == "queued",
-    )
-    if activation_settings is not None:
-        activation_settings.require_current_stream(
-            source_region=stream_settings.source_region,
-            topic=stream_settings.topic,
-        )
     return _RuntimeContract(
         stream_settings=stream_settings,
         database_settings=database_settings,
-        projection_enabled=projection_enabled,
-        projection_mode=projection_mode,
-        activation_settings=activation_settings,
         startup_retry_seconds=_startup_retry_seconds(args),
         transport_mode=_dts_transport_mode(),
         pipeline_mode=pipeline_mode,
-        dual_capture=dual_capture,
+        capture=capture,
     )
 
 
@@ -553,38 +484,25 @@ def _new_ingest_sink(
     contract: _RuntimeContract,
 ) -> PostgresDtsEventSink:
     stream_settings = contract.stream_settings
-    dual_capture = getattr(contract, "dual_capture", None)
-    if dual_capture is None:
-        return PostgresDtsEventSink(
-            contract.database_settings,
-            source_region=stream_settings.source_region,
-            # Direct mode rebuilds fresh resources after a stale connection
-            # and resumes from the authoritative DB checkpoint. Avoid one
-            # otherwise redundant SELECT 1 before every bounded batch.
-            pool_pre_ping=(
-                getattr(contract, "projection_mode", "queued") != "direct"
-            ),
-        )
-
-    return _create_dual_capture_sink(
+    capture = contract.capture
+    return _create_source_capture_sink(
         contract.database_settings,
-        pipeline_mode=contract.pipeline_mode,
+        pipeline_mode=_DATABASE_PIPELINE_MODE,
         source_region=stream_settings.source_region,
-        source_partition_epoch_id=dual_capture.source_partition_epoch_id,
+        source_partition_epoch_id=capture.source_partition_epoch_id,
         consumer_group=stream_settings.group_id,
-        control_group=dual_capture.control_group,
+        start_timestamp_seconds=stream_settings.start_timestamp_seconds,
+        source_profile_manifest_sha256=(
+            capture.source_profile_manifest_sha256
+        ),
     )
 
 
-def _create_dual_capture_sink(
+def _create_source_capture_sink(
     settings: DtsIngestDatabaseSettings,
     **kwargs: object,
 ) -> PostgresDtsEventSink:
-    # Importing the v2 writer also loads the attested physical source-profile
-    # registry.  Keep legacy V1 startup independent from that new contract.
-    from app.dts_v2_dual_capture_store import PostgresDtsV2DualCaptureSink
-
-    return PostgresDtsV2DualCaptureSink(settings, **kwargs)
+    return PostgresDtsSourceEventSink(settings, **kwargs)
 
 
 def _start_ingest_once(
@@ -601,56 +519,22 @@ def _start_ingest_once(
     consumer: Any | None = None
     try:
         processor = DtsEventProcessor(sink)
-        if getattr(contract, "projection_mode", "queued") == "direct":
-            projector = DtsDirectWideProjector()
-            sink.enable_direct_projection(projector)
-        else:
-            projector = DtsWideProjector(
-                sink.engine,
-                worker_id=(
-                    f"{stream_settings.source_region}:"
-                    f"{socket.gethostname()}:{os.getpid()}"
-                ),
-            )
-        projector.settings.require_subscription_boundary(
-            stream_settings.start_timestamp_seconds
-        )
-        # These checks create no source rows and advance no offsets.
+        # An empty reset has no database checkpoint yet. The transport starts
+        # from TIT_DTS_START_TIMESTAMP; the first committed event atomically
+        # establishes the epoch/checkpoint before any source fact is written.
         resume_source_timestamp: int | None = None
-        dual_resume_checkpoint = None
-        if getattr(contract, "dual_capture", None) is not None:
-            dual_resume_checkpoint = sink.validate_startup(
-                source_region=stream_settings.source_region,
-                topic=stream_settings.topic,
-                partition=stream_settings.partition,
-            )
-        if dual_resume_checkpoint is not None:
-            checkpoint = dual_resume_checkpoint.next_offset
+        resume_checkpoint = sink.validate_startup(
+            source_region=stream_settings.source_region,
+            topic=stream_settings.topic,
+            partition=stream_settings.partition,
+        )
+        if resume_checkpoint is not None:
+            checkpoint = resume_checkpoint.next_offset
             resume_source_timestamp = (
-                dual_resume_checkpoint.source_timestamp
-            )
-        elif contract.transport_mode == "official_java":
-            resume_checkpoint = sink.resume_checkpoint(
-                source_region=stream_settings.source_region,
-                topic=stream_settings.topic,
-                partition=stream_settings.partition,
-            )
-            checkpoint = (
-                None
-                if resume_checkpoint is None
-                else resume_checkpoint.next_offset
-            )
-            resume_source_timestamp = (
-                None
-                if resume_checkpoint is None
-                else resume_checkpoint.source_timestamp
+                resume_checkpoint.source_timestamp
             )
         else:
-            checkpoint = sink.resume_offset(
-                source_region=stream_settings.source_region,
-                topic=stream_settings.topic,
-                partition=stream_settings.partition,
-            )
+            checkpoint = None
         sink.validate_domestic_student_privacy_state()
         if _stop_requested:
             return None
@@ -660,9 +544,7 @@ def _start_ingest_once(
                 processor,
                 resume_offset=checkpoint,
                 resume_source_timestamp=resume_source_timestamp,
-                lightweight_prefilter_enabled=(
-                    getattr(contract, "projection_mode", "queued") == "direct"
-                ),
+                lightweight_prefilter_enabled=False,
                 idle_timeout_ms=args.idle_timeout_ms,
                 stop_requested=lambda: _stop_requested,
             )
@@ -688,14 +570,9 @@ def _start_ingest_once(
         )
         if _stop_requested:
             return None
-        if contract.activation_settings is not None:
-            sink.acquire_projection_activation(contract.activation_settings)
-        if _stop_requested:
-            return None
         started = _StartedIngest(
             sink=sink,
             consumer=consumer,
-            projector=projector,
             checkpoint=checkpoint,
             broker_probe=dict(broker_probe),
         )
@@ -819,8 +696,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Persist one Aliyun DTS subscription into the restricted target "
-            "and project it into both source-wide tables using the selected "
-            "queued or direct mode."
+            "using the single event-only source-capture contract."
         )
     )
     parser.add_argument("--max-messages", type=int, default=2_000)
@@ -867,16 +743,8 @@ def _close_started_ingest(started: _StartedIngest) -> None:
 def _pipeline_health_summary(
     contract: _RuntimeContract,
 ) -> dict[str, str]:
-    summary = {
-        "mode": getattr(
-            contract,
-            "pipeline_mode",
-            _LEGACY_V1_PIPELINE_MODE,
-        )
-    }
-    dual_capture = getattr(contract, "dual_capture", None)
-    if dual_capture is not None:
-        summary.update(dual_capture.safe_summary())
+    summary = {"mode": contract.pipeline_mode}
+    summary.update(contract.capture.safe_summary())
     return summary
 
 
@@ -921,8 +789,6 @@ def _run(args: argparse.Namespace) -> int:
 
         stream_settings = contract.stream_settings
         database_settings = contract.database_settings
-        projection_enabled = contract.projection_enabled
-        projection_mode = getattr(contract, "projection_mode", "queued")
         retry_diagnostic: dict[str, bool | str] | None = None
         try:
             started_at = datetime.now(timezone.utc).isoformat()
@@ -979,32 +845,6 @@ def _run(args: argparse.Namespace) -> int:
                         args.readiness_path,
                     )
                     return 0
-                if projection_enabled:
-                    if projection_mode == "direct":
-                        projection = started.projector.drain_counts()
-                    else:
-                        # Prove the checked-out session is still the one that
-                        # acquired the global projector lock before every batch.
-                        started.sink.assert_projection_lock_held()
-                        projection = started.projector.run_batch(
-                            max_keys=args.max_projection_keys,
-                            max_seconds=args.projection_time_budget_seconds,
-                        )
-                else:
-                    projection = {
-                        "dirty_keys": 0,
-                        "lesson_upserts": 0,
-                        "lesson_deletes": 0,
-                        "teacher_upserts": 0,
-                        "teacher_deletes": 0,
-                        "unchanged": 0,
-                        "retries": 0,
-                        "quarantined": 0,
-                        "source_queries": 0,
-                        "cache_hits": 0,
-                        "elapsed_ms": 0,
-                        "budget_exhausted": 0,
-                    }
                 if _stop_requested:
                     _clear_health_files(
                         args.heartbeat_path,
@@ -1017,16 +857,16 @@ def _run(args: argparse.Namespace) -> int:
                     "connection": stream_settings.safe_summary(),
                     "target": database_settings.safe_summary(),
                     "ingest": result,
-                    "projection": projection,
-                    "projection_enabled": projection_enabled,
-                    "projection_mode": projection_mode,
                     "pipeline": _pipeline_health_summary(contract),
                 }
                 _write_health(args.heartbeat_path, heartbeat)
                 attempt = 0
                 print(
                     json.dumps(
-                        {"mode": "DTS_WIDE_PROJECTION", **heartbeat},
+                        {
+                            "mode": "DTS_EVENT_INGEST",
+                            **heartbeat,
+                        },
                         ensure_ascii=False,
                         sort_keys=True,
                     ),

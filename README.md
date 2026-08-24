@@ -109,7 +109,7 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码迁移 head 为 public `20260823_100_scope_snapshot_diff` 与 teacher
+- 当前代码迁移 head 为 public `20260824_101_dts_single_pipeline_reset` 与 teacher
   `0043_p_rel_execution_catalog`，最终 teacher canonical 账本为 38 条，其中
   `20260811_51_g01_tesol_only` / `0033_g01_tesol_only`
   将 G01 收窄为 TESOL-only，`20260811_54_g04_remove_device_check` /
@@ -128,7 +128,7 @@ Tide_teachers_camp/
   public `20260812_56_lean_roles` 与 teacher `0037_g04_remove_device_check`，
   teacher 为精确 32 条 canonical 账本；升级保留 public
   `20260810_50_g04_sections` / teacher `0032_first_login_onboarding` 中间切换点，
-  G01、G04 与源宽表均已应用对应契约，但这不是当前 public 100 / teacher 0043 的完成证明。
+  G01、G04 与源宽表均已应用对应契约，但这不是当前 public 101 / teacher 0043 的完成证明。
   重建前旧库封存为
   `tit_growth_test_v2_pre0030_20260810`，仅保留 DBA 回滚连接。代码目标结构中
   `teacher_source_wide` 有 55 个业务字段，并另含 9 个只服务 DTS v2 的来源身份/完整性内部字段，
@@ -143,7 +143,7 @@ Tide_teachers_camp/
 - “任务已创建”不等于“通知已送达”；“测试环境可运行”不等于“生产上线”。
 - 当前运营 API 的公开读写路径均直接使用 PostgreSQL 事务/查询，可运行多个 API Worker；
   本地一键启动中的运营 API 默认单 Worker，便于开发排查。
-- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、来源当前态、独立 V1/V2 工作队列、数据库位点，以及 22/55 个业务字段（23/64 个物理列）的宽表投影代码已实现；真实消费组 ID（sid）、经审核的 source profile 与 source-scope snapshot 仍必须在部署时从真实订阅和源库证据生成并读回。截至 2026-08-19，系统库现场读回仍是 public `20260818_62_dts_claim_idx`；必须在维护窗口按迁移链升到当前代码 head，部署同版本镜像并完成双写追平、14 类结果对账后，才可把数据库控制态切为 `V2_PRIMARY`。数据库到 head 仍不能替代应用发布、真实消费或业务验收。海外消费者运行在新加坡，国内消费者通过“AI 效率中心”团队的独立 Gaea 项目 `tida-camp-dts-dom` 运行在中国大陆集群；平台项目选择和 `TIT_DTS_EXECUTION_REGION=cn` 都必须在新 Pod 上读回，不能只凭变量声明推断地理放置。国内消费者在构造任何发往海外 PostgreSQL 的 SQL 参数前，使用仅注入国内项目的密钥把原始学生 ID 转为 `dom:v1:<HMAC-SHA256>`，海外项目和海外数据库均不得持有该密钥或原始国内学生 ID；稳定 token 仍按伪名数据受限管理。默认及正式环境固定 `sslmode=verify-full`。当前 `tide_system_test` PRE 固定专线端点允许用既有 `sslmode=disable` 受控例外；该例外不得扩展到其他端点、库或正式环境。当前仍无新版本在国内/海外正式 Pod 的成功 readiness/heartbeat、双流 checkpoint、目标写入或真实字段对账，不能视为链路联调完成；外部生产接入、真实通知回执、监控、备份和回滚仍待执行。
+- 国内/海外 DTS 的字段映射、Avro 消费、持久事件账本、来源当前态、工作队列、数据库位点和领域投影已实现。本次正式发布在维护窗口停止旧进程后，由 rev101 清空全部历史消费事实；DOM、OVS 使用同一个带时区的新消费时间并依次启动，每个 partition 的首条新事件建立真实 checkpoint。系统不启动 V1、不回填、不追平，也不做 V1/V2 对账。课程主表 UPDATE 若没有课程当前态则只记账并推进位点，只有 INSERT 建立课程基线。新 INSERT 以代码内固定的业务字段允许集作为基线，不要求另行提供整张物理源表结构；后续稀疏 UPDATE 只覆盖这条已建立的当前态。海外消费者运行在新加坡，国内消费者运行在中国大陆集群；国内消费者必须在构造任何海外 PostgreSQL 参数前把学生 ID 转为 `dom:v1:<HMAC-SHA256>`。正式环境固定 `sslmode=verify-full`。数据库到 head、Pod Ready 或 checkpoint 前进都不代替真实业务抽样和最终验收。
 - 2026-08-19 源码新增的未发布 `direct` 是现行 v1 诊断实现：它直接更新 22/55 宽表，不写通用源当前态/脏键，乱序子事实会永久丢失。该行为不得作为下一步业务实现目标，也不得以清空既有事实后依赖 DTS 七天窗口重建。现行差异见 [`docs/DTS事件直接投影规则.md`](docs/DTS事件直接投影规则.md)；目标 v2 必须让 direct/queued 共用“事件账本 + 来源当前态/tombstone + 脏键 + 领域重算”链路，唯一开发契约见 [`docs/DTS_direct开发冻结实施规格.md`](docs/DTS_direct开发冻结实施规格.md)。
 - 后续 DTS 业务修订已继续确版：`缺席原因明细` 只取同课程同教师最新 `dom_teacher_absent_reason.reason_type`，`no_notice_cnt` 只认 `No Notification`；`Unfilled Lesson Memo`→`P-REL-MEMO`，其他非空原因（包括 `No Notification`）→`P-REL-ATTENDANCE`，空原因不创建缺席任务；假早退已由代码与 rev73 从字段、事件、触发和输出中整体移除；`qa_ac_classroom_record` 不再作为 CPU、网络来源，替换来源接入前两字段保持 `NULL`；课程事实不按 `use_point/status` 或入职 30 天过滤，`on` 状态的代课仍要保留旧教师缺席和新教师参与；收藏/拉黑为不依赖完课的师生关系，收藏分在课程 `end+24h` 唯一归因，同一师生取消后重收藏也不开启新获分周期；rev75 已把旧 `IN_PROGRESS/NOT_IN_CAMP` 在营值迁为 `IN_CAMP`，数据库与运行时仅允许 `IN_CAMP/GRADUATED`；TESOL 只认 `certification_code='16' AND certification_status=1`；评价标签不再过滤 `type/status`；投诉 grandson 为 `NULL` 或非 82 均可有效。代码完成不等于数据库已执行 rev73/rev75、真实 DTS 已消费或业务已验收。
 
@@ -327,15 +327,15 @@ docker compose -f docker-compose.production.yml up -d api score-settlement sourc
 [联合部署说明](deploy/combined/README.md) 和
 [联合 Compose](deploy/combined/docker-compose.yml)。两端使用不同域名、独立容器与
 独立受限数据库角色，只共享同一个逻辑 PostgreSQL 数据库；宿主机只暴露统一 Edge。
-联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59–65 → teacher 0042 → public 66–99 → teacher 0043 → public 100` 完成跨 Schema 迁移、隐私加固、DTS v2 运行与切换契约、任务执行目录升级，最终到达
-public `20260823_100_scope_snapshot_diff` 和教师端 `0043_p_rel_execution_catalog`，并同时通过
+联合部署门禁要求先按 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59–65 → teacher 0042 → public 66–99 → teacher 0043 → public 100–101` 完成跨 Schema 迁移、隐私加固、DTS v2 运行与切换契约、任务执行目录升级，最终到达
+public `20260824_101_dts_single_pipeline_reset` 和教师端 `0043_p_rel_execution_catalog`，并同时通过
 固定提交源码中的精确 `G01–G09` 标题/分值预检和目标数据库契约探针。
 其中 public 54 阶段包含 rev51 G01 TESOL-only，teacher 37 阶段包含 0033 G01 规则迁移，
 public 55 收敛教师源字段，release public 56 / teacher 0038 追加个性化拍照，
 release public 57 / teacher 0039–0040 发布 G02 原生文档，teacher 0041 增加 CRM SSO；
 public 59 合并 release 内容链与 ACL/DTS 分支，将运行权限统一为最终表级 ACL，并用
-Trigger/受限视图保留业务所有权；public 60–78 完成国内学生 HMAC、direct 隐私、课程映射、来源版本、参与人/完课冻结、资格、`dom`、在线状态、假早退和 CPU/网络旧来源退役、关系/收藏、两态在营及逐课积分契约。public 79–99 再完成 v2 epoch、独立脏队列、领域事实、最小权限、scope 协调、Outbox 三态、收藏与积分物化、纠错、任务/非任务输出、投诉分类扇出、受保护切流、V1 兼容队列、不可逆资格门禁、时间重检、固定任务回灌和拉黑阈值三态；public 100 完成 profile 绑定、CURRENT snapshot diff、GLOBAL/TEACHER membership 替换与 CDC overlay；teacher 0043 发布 `P-REL-MEMO/P-REL-ATTENDANCE` 执行目录。迁移后必须排空待重算事件并完成积分与 14 类输出对账；未执行 DMS、未完成真实源表 profile/scope 证据和新旧切换前，不得把生产读路由改为 v2。
-当前代码中的 v2 source profile registry 默认明确为空；兼容白名单不能作为物理源表或 DTS selected-column 证据。只有后续提交经版本化审核的地区/表级 profile manifest 后，v2 business writer 才能从 `DTS_SOURCE_SCHEMA_PROFILE_MISSING` 门禁中解除。
+Trigger/受限视图保留业务所有权；public 60–78 完成国内学生 HMAC、direct 隐私、课程映射、来源版本、参与人/完课冻结、资格、`dom`、在线状态、假早退及 CPU/网络旧来源退役、关系/收藏、两态在营及逐课积分契约。public 79–99 再完成 v2 epoch、独立脏队列、领域事实、最小权限、scope 协调、Outbox 三态、收藏与积分物化、纠错、任务/非任务输出、投诉分类扇出、受保护切流、不可逆资格门禁、时间重检、固定任务回灌和拉黑阈值三态；public 100 完成 profile 绑定、CURRENT snapshot diff、GLOBAL/TEACHER membership 替换与 CDC overlay；teacher 0043 发布 `P-REL-MEMO/P-REL-ATTENDANCE` 执行目录；public 101 清空历史消费事实并切为单消费通道，DOM/OVS 各自从显式配置的新时间点开始，首条事件建立真实 checkpoint。正式发布不运行 V1、不回填、不追平，也不做 V1/V2 对账；`dom_appoint/ovs_appoint` 的 UPDATE 若没有课程当前态则记为忽略并推进 checkpoint。
+当前运行链使用代码内版本化的事件字段契约：只保留业务白名单字段，DOM 学生标识先做 HMAC 保护；INSERT 建立新基线，UPDATE 只能合并到已存在当前态。物理 source-profile registry 仍可用于更严格的字段类型审计，但不再是本次单通道发布的启动前置条件。
 教师端未到 0043、最终 canonical 账本不是精确 38 条、目录缺项或语义错误都会失败关闭；在 public 47 及之后的空库直接
 回放 teacher 历史链同样会失败关闭。即使门禁通过，也不能把“已有 Compose”解释为
 已完成生产切流。

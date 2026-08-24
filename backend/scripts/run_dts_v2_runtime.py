@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-import re
 import signal
 import sys
 import time
@@ -41,7 +40,6 @@ from app.dts_v2_teacher_time_recheck import (
 from app.runtime_settings import operations_database_transport_mode
 
 
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _STOP = False
 _URL_ENV = {
     DOMAIN_COMPONENT: "TIT_V2_DOMAIN_DATABASE_URL",
@@ -128,23 +126,7 @@ def _database_url(component: str) -> str:
 
 
 def _safe_identity() -> dict[str, str]:
-    result: dict[str, str] = {}
-    names = {
-        "source_profile_manifest_sha256": (
-            "TIT_V2_SOURCE_PROFILE_MANIFEST_SHA256"
-        ),
-        "source_partition_epoch_sha256": (
-            "TIT_V2_SOURCE_PARTITION_EPOCH_SHA256"
-        ),
-        "initial_h0_vector_sha256": "TIT_V2_INITIAL_H0_VECTOR_SHA256",
-        "cutover_run_id_sha256": "TIT_V2_CUTOVER_RUN_ID_SHA256",
-    }
-    for field, name in names.items():
-        value = os.environ.get(name, "").strip()
-        if _SHA256.fullmatch(value) is None:
-            raise DtsV2RuntimeRunnerError(f"{name}_INVALID")
-        result[field] = value
-    return result
+    return {"pipeline_contract": "single-event-pipeline-v1"}
 
 
 def _qualification_grants_enabled_from_env() -> bool:
@@ -169,7 +151,7 @@ def _build_worker(component: str, engine, identity: dict[str, str]):
                 engine,
                 worker_id=f"dts-v2-domain:{os.getpid()}",
                 cutover_coverage_identity={
-                    "protocol_version": "dts-v2-runtime-coverage-v1",
+                    "protocol_version": "dts-single-runtime-coverage-v1",
                     **identity,
                 },
                 lease_seconds=_positive_int(
@@ -242,6 +224,10 @@ def _runtime_snapshot(
             component=component,
             stale_after_seconds=threshold,
         )
+        if snapshot.mode != "V2_PRIMARY" or snapshot.projection_generation != 1:
+            raise DtsV2RuntimeRunnerError(
+                "DTS_SINGLE_PIPELINE_DATABASE_STATE_INVALID"
+            )
         if component == OUTBOX_COMPONENT:
             database_gate = connection.execute(
                 text(
@@ -278,9 +264,8 @@ def _runtime_snapshot(
 
 
 def _component_active(component: str, snapshot: Any) -> bool:
-    if component == DOMAIN_COMPONENT:
-        return True
-    return snapshot.mode == "V2_PRIMARY"
+    del component
+    return snapshot.mode == "V2_PRIMARY" and snapshot.projection_generation == 1
 
 
 def _component_ready(component: str, snapshot: Any) -> bool:
@@ -296,12 +281,7 @@ def _component_ready(component: str, snapshot: Any) -> bool:
         ):
             return runtime_ready and snapshot.teacher_time_recheck.ready
         return runtime_ready
-    return (
-        component in {OUTBOX_COMPONENT, FAVORITE_COMPONENT}
-        and snapshot.mode in {"V1_COMPAT_DUAL_CAPTURE", "ROLLED_BACK"}
-        and type(snapshot.projection_generation) is int
-        and snapshot.projection_generation >= 0
-    )
+    return False
 
 
 def _safe_payload(component: str, snapshot, identity: dict[str, str]) -> dict[str, Any]:
@@ -418,11 +398,9 @@ def run(args: argparse.Namespace) -> int:
                     threshold=args.stale_after_seconds,
                 )
             else:
-                # Outbox and favorite processes remain observable, validated
-                # standbys outside V2_PRIMARY.  They deliberately construct no
-                # worker and perform no business write.
-                worker = None
-                result = {}
+                raise DtsV2RuntimeRunnerError(
+                    "DTS_SINGLE_PIPELINE_DATABASE_STATE_INVALID"
+                )
             payload = _safe_payload(component, snapshot, identity)
             payload["last_run_counts"] = {
                 key: value

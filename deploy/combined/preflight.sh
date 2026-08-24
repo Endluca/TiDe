@@ -3,8 +3,9 @@ set -euo pipefail
 
 combined_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 contract_probe="${combined_dir}/contract-probe.sql"
-public_previous_migration="${combined_dir}/../../backend/migrations/versions/20260822_99_blacklist_threshold_three_state.py"
-public_final_migration="${combined_dir}/../../backend/migrations/versions/20260823_100_source_scope_snapshot_diff.py"
+public_penultimate_migration="${combined_dir}/../../backend/migrations/versions/20260822_99_blacklist_threshold_three_state.py"
+public_previous_migration="${combined_dir}/../../backend/migrations/versions/20260823_100_source_scope_snapshot_diff.py"
+public_final_migration="${combined_dir}/../../backend/migrations/versions/20260824_101_dts_single_pipeline_reset.py"
 
 fail() {
   printf '联合部署预检失败：%s\n' "$1" >&2
@@ -339,23 +340,31 @@ teacher_p_rel_execution_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/mi
 [[ -f "${contract_probe}" ]] \
   || fail "缺少联合部署数据库契约探针"
 [[ -f "${public_final_migration}" ]] \
-  || fail "缺少最终 public 100 source-scope snapshot diff 迁移"
+  || fail "缺少最终 public 101 DTS v2 fresh-start 迁移"
 [[ -f "${public_previous_migration}" ]] \
+  || fail "缺少 public 100 source-scope snapshot diff 迁移"
+[[ -f "${public_penultimate_migration}" ]] \
   || fail "缺少 public 99 拉黑三态迁移"
 grep -Fq 'revision: str = "20260822_99_blacklist_three_state"' \
-  "${public_previous_migration}" \
+  "${public_penultimate_migration}" \
   || fail "public 99 迁移 revision 漂移"
 grep -Fq 'down_revision: Union[str, None] = "20260822_98_task_v2_refresh"' \
-  "${public_previous_migration}" \
+  "${public_penultimate_migration}" \
   || fail "public 99 未从 public 98 连续升级"
 grep -Fq 'revision: str = "20260823_100_scope_snapshot_diff"' \
-  "${public_final_migration}" \
-  || fail "最终 public 迁移 revision 不是 20260823_100_scope_snapshot_diff"
+  "${public_previous_migration}" \
+  || fail "public 100 迁移 revision 漂移"
 grep -Fq 'down_revision: Union[str, None] = "20260822_99_blacklist_three_state"' \
+  "${public_previous_migration}" \
+  || fail "public 100 未从 public 99 连续升级"
+grep -Fq 'revision: str = "20260824_101_dts_single_pipeline_reset"' \
   "${public_final_migration}" \
-  || fail "最终 public 100 未从 public 99 连续升级"
-grep -Fq "20260823_100_scope_snapshot_diff" "${contract_probe}" \
-  || fail "数据库契约探针未固定最终 public head 20260823_100_scope_snapshot_diff"
+  || fail "最终 public 迁移 revision 不是 20260824_101_dts_single_pipeline_reset"
+grep -Fq 'down_revision: Union[str, None] = "20260823_100_scope_snapshot_diff"' \
+  "${public_final_migration}" \
+  || fail "最终 public 101 未从 public 100 连续升级"
+grep -Fq "20260824_101_dts_single_pipeline_reset" "${contract_probe}" \
+  || fail "数据库契约探针未固定最终 public head 20260824_101_dts_single_pipeline_reset"
 grep -Fq "P-REL-MEMO is not the exact reviewed READY document execution" \
   "${contract_probe}" \
   || fail "数据库契约探针未校验 P-REL-MEMO READY execution"
@@ -598,4 +607,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；历史交叉迁移门完成后，先到 public 99 并执行 teacher 0043_p_rel_execution_catalog，再升级 public 100；最终必须通过 public 100 / teacher 0043（38 条）、source-scope v3 及两条 P-REL execution 契约探针。\n'
+printf '联合部署静态预检通过；历史交叉迁移门完成后，先到 public 99 并执行 teacher 0043_p_rel_execution_catalog，再升级 public 100–101；最终必须通过 public 101 / teacher 0043（38 条）、fresh-start 及两条 P-REL execution 契约探针。\n'

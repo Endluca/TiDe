@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from copy import deepcopy
 from pathlib import Path
@@ -141,6 +142,41 @@ def test_evidence_hash_changes_profile_identity(tmp_path: Path) -> None:
         first_registry.profiles_by_table["dom_appoint"].profile_id
         != second_registry.profiles_by_table["dom_appoint"].profile_id
     )
+
+
+def test_manifest_identity_is_the_database_canonical_profile_vector_hash(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "profiles.json"
+    domestic = _profile()
+    overseas = deepcopy(domestic)
+    overseas.update(table="ovs_appoint", region="ovs")
+    overseas["selected_raw_fields"] = ["id", "t_id"]
+    overseas["persisted_protected_fields"] = ["id", "t_id"]
+    overseas["protected_derived_fields"] = []
+    overseas["field_type_evidence"] = {"id": "NUMERIC", "t_id": "NUMERIC"}
+    overseas["raw_field_type_numbers"] = {"id": 20, "t_id": 20}
+    _write_manifest(manifest, profiles=[overseas, domestic])
+
+    registry = load_dts_source_profile_registry(manifest)
+    vector = [dict(item) for item in registry.profile_vector]
+    expected = hashlib.sha256(
+        json.dumps(
+            vector,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert [item["source_table"] for item in vector] == [
+        "dom_appoint",
+        "ovs_appoint",
+    ]
+    assert registry.manifest_sha256 == expected
+    assert registry.artifact_sha256 == hashlib.sha256(
+        manifest.read_bytes()
+    ).hexdigest()
 
 
 @pytest.mark.parametrize(

@@ -30,6 +30,23 @@ from scripts.run_dts_ingest import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _single_pipeline_capture_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep legacy transport tests focused on their original boundary."""
+
+    monkeypatch.setenv(
+        "TIT_DTS_SOURCE_PARTITION_EPOCH_ID",
+        "test-single-pipeline-epoch",
+    )
+    monkeypatch.setattr(
+        run_dts_ingest,
+        "_v2_source_profile_manifest_evidence",
+        lambda _source_region: "a" * 64,
+    )
+
+
 def test_projection_flag_defaults_off_and_accepts_explicit_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -154,7 +171,7 @@ def test_domestic_projection_is_forbidden_before_sink_creation(
     )
     monkeypatch.setattr(
         run_dts_ingest,
-        "PostgresDtsEventSink",
+            "PostgresDtsSourceEventSink",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("domestic projection must fail before DB creation")
         ),
@@ -164,7 +181,7 @@ def test_domestic_projection_is_forbidden_before_sink_creation(
 
     with pytest.raises(
         DtsConfigurationError,
-        match="^DTS_DOM_PROJECTION_FORBIDDEN$",
+        match="^TIT_DTS_LEGACY_PROJECTION_RETIRED$",
     ):
         run_dts_ingest._run(args)
 
@@ -193,7 +210,7 @@ def test_domestic_private_line_plaintext_reuses_existing_database_gate(
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(
         run_dts_ingest,
-        "PostgresDtsEventSink",
+            "PostgresDtsSourceEventSink",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("plaintext passed the pre-connection gates")
         ),
@@ -650,6 +667,7 @@ def test_shadow_main_emits_safe_kafka_error(
     assert "runtime-secret" not in stderr
 
 
+@pytest.mark.skip(reason="legacy projection worker was removed from DTS ingest")
 def test_unexpected_projection_failure_prevents_a_success_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -657,6 +675,7 @@ def test_unexpected_projection_failure_prevents_a_success_heartbeat(
     stream_settings = SimpleNamespace(
         source_region="ovs",
         topic="ovs-topic",
+        group_id="ovs-group",
         partition=0,
         start_timestamp_seconds=1786550400,
         require_target_transport=lambda **_kwargs: None,
@@ -680,8 +699,8 @@ def test_unexpected_projection_failure_prevents_a_success_heartbeat(
         activation_acquired = False
         lock_checked = False
 
-        def resume_offset(self, **_kwargs: object) -> int:
-            return 42
+        def validate_startup(self, **_kwargs: object) -> object:
+            return SimpleNamespace(next_offset=42, source_timestamp=1786550300)
 
         def validate_domestic_student_privacy_state(self) -> None:
             pass
@@ -699,11 +718,6 @@ def test_unexpected_projection_failure_prevents_a_success_heartbeat(
 
         def close(self) -> None:
             self.closed = True
-
-    class Projector:
-        settings = SimpleNamespace(
-            require_subscription_boundary=lambda _value: None
-        )
 
         def run_batch(self, **_kwargs: object) -> object:
             raise DtsWideProjectionError("DTS_WIDE_PROJECTION_FAILED")
@@ -759,13 +773,8 @@ def test_unexpected_projection_failure_prevents_a_success_heartbeat(
     )
     monkeypatch.setattr(
         run_dts_ingest,
-        "PostgresDtsEventSink",
+        "PostgresDtsSourceEventSink",
         lambda *_args, **_kwargs: sink,
-    )
-    monkeypatch.setattr(
-        run_dts_ingest,
-        "DtsWideProjector",
-        lambda *_args, **_kwargs: Projector(),
     )
     monkeypatch.setattr(run_dts_ingest, "DtsKafkaConsumer", Consumer)
     monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
@@ -820,6 +829,7 @@ def test_startup_probe_failure_prevents_readiness(
     stream_settings = SimpleNamespace(
         source_region="dom",
         topic="dom-topic",
+        group_id="dom-group",
         partition=0,
         start_timestamp_seconds=1786550400,
         require_target_transport=lambda **_kwargs: None,
@@ -838,8 +848,8 @@ def test_startup_probe_failure_prevents_readiness(
         closed = False
         privacy_contract_registered = False
 
-        def resume_offset(self, **_kwargs: object) -> int:
-            return 42
+        def validate_startup(self, **_kwargs: object) -> object:
+            return SimpleNamespace(next_offset=42, source_timestamp=1786550300)
 
         def validate_domestic_student_privacy_state(self) -> None:
             pass
@@ -851,11 +861,6 @@ def test_startup_probe_failure_prevents_readiness(
 
         def close(self) -> None:
             self.closed = True
-
-    class Projector:
-        settings = SimpleNamespace(
-            require_subscription_boundary=lambda _value: None
-        )
 
     class Consumer:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -881,13 +886,8 @@ def test_startup_probe_failure_prevents_readiness(
     )
     monkeypatch.setattr(
         run_dts_ingest,
-        "PostgresDtsEventSink",
+        "PostgresDtsSourceEventSink",
         lambda *_args, **_kwargs: sink,
-    )
-    monkeypatch.setattr(
-        run_dts_ingest,
-        "DtsWideProjector",
-        lambda *_args, **_kwargs: Projector(),
     )
     monkeypatch.setattr(run_dts_ingest, "DtsKafkaConsumer", Consumer)
     monkeypatch.setattr(run_dts_ingest, "_stop_requested", False)
@@ -1037,19 +1037,14 @@ def test_permanent_or_unknown_startup_errors_are_not_retried(
     )
 
 
-@pytest.mark.parametrize(
-    ("projection_mode", "expected_prefilter"),
-    [("queued", False), ("direct", True)],
-)
 def test_official_java_startup_receives_database_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
-    projection_mode: str,
-    expected_prefilter: bool,
 ) -> None:
     events: list[object] = []
     stream_settings = SimpleNamespace(
         source_region="dom",
         topic="dom-topic",
+        group_id="dom-group",
         partition=0,
         start_timestamp_seconds=1786523400,
         domestic_student_hmac_fingerprint=lambda: "fingerprint",
@@ -1059,7 +1054,7 @@ def test_official_java_startup_receives_database_checkpoint(
     class Sink:
         engine = object()
 
-        def resume_checkpoint(self, **kwargs: object) -> object:
+        def validate_startup(self, **kwargs: object) -> object:
             events.append(("resume", kwargs))
             return SimpleNamespace(
                 next_offset=42,
@@ -1074,18 +1069,8 @@ def test_official_java_startup_receives_database_checkpoint(
         ) -> None:
             events.append(("privacy_contract", kwargs))
 
-        def enable_direct_projection(self, projector: object) -> None:
-            events.append(("direct_projection", projector))
-
         def close(self) -> None:
             events.append("sink_closed")
-
-    class Projector:
-        settings = SimpleNamespace(
-            require_subscription_boundary=lambda value: events.append(
-                ("subscription_boundary", value)
-            )
-        )
 
     class JavaTransport:
         def __init__(
@@ -1112,27 +1097,21 @@ def test_official_java_startup_receives_database_checkpoint(
     sink = Sink()
     monkeypatch.setattr(
         run_dts_ingest,
-        "PostgresDtsEventSink",
+        "PostgresDtsSourceEventSink",
         lambda settings, **kwargs: (
             sink
             if settings is database_settings
             and kwargs
             == {
+                "pipeline_mode": "V2_PRIMARY",
                 "source_region": "dom",
-                "pool_pre_ping": projection_mode != "direct",
+                "source_partition_epoch_id": "test-single-pipeline-epoch",
+                "consumer_group": "dom-group",
+                "start_timestamp_seconds": 1786523400,
+                "source_profile_manifest_sha256": "a" * 64,
             }
             else (_ for _ in ()).throw(AssertionError("sink contract"))
         ),
-    )
-    monkeypatch.setattr(
-        run_dts_ingest,
-        "DtsWideProjector",
-        lambda *_args, **_kwargs: Projector(),
-    )
-    monkeypatch.setattr(
-        run_dts_ingest,
-        "DtsDirectWideProjector",
-        lambda *_args, **_kwargs: Projector(),
     )
     monkeypatch.setattr(
         run_dts_ingest,
@@ -1151,8 +1130,11 @@ def test_official_java_startup_receives_database_checkpoint(
         stream_settings=stream_settings,
         database_settings=database_settings,
         transport_mode="official_java",
-        activation_settings=None,
-        projection_mode=projection_mode,
+        pipeline_mode="SINGLE_PIPELINE",
+        capture=SimpleNamespace(
+            source_partition_epoch_id="test-single-pipeline-epoch",
+            source_profile_manifest_sha256="a" * 64,
+        ),
     )
     args = run_dts_ingest.build_parser().parse_args(
         ["--idle-timeout-ms", "4321"]
@@ -1170,9 +1152,7 @@ def test_official_java_startup_receives_database_checkpoint(
     assert init[1] is stream_settings
     assert init[3]["resume_offset"] == 42
     assert init[3]["resume_source_timestamp"] == 1786523300
-    assert (
-        init[3]["lightweight_prefilter_enabled"] is expected_prefilter
-    )
+    assert init[3]["lightweight_prefilter_enabled"] is False
     assert init[3]["idle_timeout_ms"] == 4321
     assert callable(init[3]["stop_requested"])
     assert events.index("privacy_state") < events.index("java_probe")
@@ -1195,6 +1175,7 @@ def test_watch_retries_transient_startup_with_fresh_resources_before_ready(
     stream_settings = SimpleNamespace(
         source_region="ovs",
         topic="ovs-topic",
+        group_id="ovs-group",
         partition=0,
         start_timestamp_seconds=1786550400,
         require_target_transport=lambda **_kwargs: None,
@@ -1215,8 +1196,8 @@ def test_watch_retries_transient_startup_with_fresh_resources_before_ready(
             self.closed = False
             self.privacy_contract_registered = False
 
-        def resume_offset(self, **_kwargs: object) -> int:
-            return 42
+        def validate_startup(self, **_kwargs: object) -> object:
+            return SimpleNamespace(next_offset=42, source_timestamp=1786550300)
 
         def validate_domestic_student_privacy_state(self) -> None:
             pass
@@ -1228,11 +1209,6 @@ def test_watch_retries_transient_startup_with_fresh_resources_before_ready(
 
         def close(self) -> None:
             self.closed = True
-
-    class Projector:
-        settings = SimpleNamespace(
-            require_subscription_boundary=lambda _value: None
-        )
 
     class Consumer:
         instances = 0
@@ -1283,11 +1259,8 @@ def test_watch_retries_transient_startup_with_fresh_resources_before_ready(
         "DtsIngestDatabaseSettings",
         SimpleNamespace(from_env=lambda: database_settings),
     )
-    monkeypatch.setattr(run_dts_ingest, "PostgresDtsEventSink", build_sink)
     monkeypatch.setattr(
-        run_dts_ingest,
-        "DtsWideProjector",
-        lambda *_args, **_kwargs: Projector(),
+        run_dts_ingest, "PostgresDtsSourceEventSink", build_sink
     )
     monkeypatch.setattr(run_dts_ingest, "DtsKafkaConsumer", Consumer)
     monkeypatch.setattr(run_dts_ingest, "_wait_for_startup_retry", skip_wait)
@@ -1476,7 +1449,7 @@ def test_startup_retry_backoff_is_exponential_and_bounded() -> None:
     ] == [15.0, 30.0, 60.0, 60.0, 60.0]
 
 
-@pytest.mark.parametrize("stop_stage", ["consumer", "projector"])
+@pytest.mark.parametrize("stop_stage", ["consumer"])
 def test_sigterm_during_steady_work_removes_health_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1494,7 +1467,13 @@ def test_sigterm_during_steady_work_removes_health_evidence(
     contract = SimpleNamespace(
         stream_settings=stream_settings,
         database_settings=database_settings,
-        projection_enabled=stop_stage == "projector",
+        pipeline_mode="SINGLE_PIPELINE",
+        capture=SimpleNamespace(
+            safe_summary=lambda: {
+                "source_partition_epoch_id_sha256": "a" * 64,
+                "source_profile_manifest_sha256": "b" * 64,
+            }
+        ),
         startup_retry_seconds=15.0,
     )
 
@@ -1581,7 +1560,13 @@ def test_sigterm_interrupting_java_transport_is_a_clean_shutdown(
     contract = SimpleNamespace(
         stream_settings=stream_settings,
         database_settings=database_settings,
-        projection_enabled=False,
+        pipeline_mode="SINGLE_PIPELINE",
+        capture=SimpleNamespace(
+            safe_summary=lambda: {
+                "source_partition_epoch_id_sha256": "a" * 64,
+                "source_profile_manifest_sha256": "b" * 64,
+            }
+        ),
         startup_retry_seconds=15.0,
     )
 
@@ -1652,7 +1637,13 @@ def test_watch_rebuilds_after_transient_java_transport_failure(
     contract = SimpleNamespace(
         stream_settings=stream_settings,
         database_settings=database_settings,
-        projection_enabled=False,
+        pipeline_mode="SINGLE_PIPELINE",
+        capture=SimpleNamespace(
+            safe_summary=lambda: {
+                "source_partition_epoch_id_sha256": "a" * 64,
+                "source_profile_manifest_sha256": "b" * 64,
+            }
+        ),
         startup_retry_seconds=1.0,
     )
 

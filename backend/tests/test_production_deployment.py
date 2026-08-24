@@ -295,7 +295,7 @@ def test_readme_runs_preflight_before_migration() -> None:
         "--profile migration run --rm migrate"
     )
     assert preflight < migration
-    assert "20260823_100_scope_snapshot_diff" in readme
+    assert "20260824_101_dts_single_pipeline_reset" in readme
     assert "0041_crm_sso_hybrid" in readme
     assert "0043_p_rel_execution_catalog" in readme
     assert "20260811_51_g01_tesol_only" in readme
@@ -309,5 +309,5 @@ def test_readme_runs_preflight_before_migration() -> None:
         "public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → "
         "teacher 0037 → public 55 → release public 56 → teacher 0038 → "
         "release public 57 → teacher 0040 → teacher 0041 → public 59–65 → "
-        "teacher 0042 → public 66–99 → teacher 0043 → public 100"
+        "teacher 0042 → public 66–99 → teacher 0043 → public 100–101"
     ) in readme

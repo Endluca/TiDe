@@ -291,7 +291,7 @@ ON public.teacher_support_tickets
 TO tit_growth_app, tit_teacher_crud, tide_support_ticket_owner;
 SQL
   # 这个辅助步骤只镜像教师依赖的历史 public 63 结构；
-  # 后续夹具仍会依次前进到 public 65、public 99 / teacher 0043 和最终 public 100。
+  # 后续夹具仍会依次前进到 public 65、public 99 / teacher 0043 和最终 public 101。
   set_public_head "${database_name}" "20260819_63_dts_direct_privacy"
 }
 
@@ -4437,4 +4437,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、teacher canonical 0043 与最终 public 100 账本契约、跨 Schema 顺序门禁、0022–0043、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、G05/G08/G09 阔知课程、P-REL-MEMO 文档、P-REL-ATTENDANCE 课程 595、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；public 65 / teacher 0042 和 public 99 / teacher 0043 仍作为历史必经切换点，真实 public rev60–100 迁移由根仓库迁移测试验收。"
+echo "生产 migrator fresh/upgrade、teacher canonical 0043 与最终 public 101 账本契约、跨 Schema 顺序门禁、0022–0043、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、G05/G08/G09 阔知课程、P-REL-MEMO 文档、P-REL-ATTENDANCE 课程 595、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；public 65 / teacher 0042 和 public 99 / teacher 0043 仍作为历史必经切换点，真实 public rev60–101 迁移由根仓库迁移测试验收。"

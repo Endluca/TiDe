@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
-from pathlib import Path
 
 import pytest
 
@@ -10,11 +8,7 @@ from scripts import run_dts_v2_runtime as runner
 from app.dts_v2_runtime_composition import DtsV2RuntimeHealthSnapshot
 
 
-def _hash(character: str) -> str:
-    return character * 64
-
-
-def test_runner_validates_dedicated_role_target_and_safe_hashes(
+def test_runner_validates_dedicated_role_target_and_fixed_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APP_ENV", "test")
@@ -24,31 +18,18 @@ def test_runner_validates_dedicated_role_target_and_safe_hashes(
         "postgresql+psycopg://tit_dts_domain_projector_runtime:secret@"
         "db.invalid/tit_growth?sslmode=verify-full",
     )
-    for name, character in (
-        ("TIT_V2_SOURCE_PROFILE_MANIFEST_SHA256", "a"),
-        ("TIT_V2_SOURCE_PARTITION_EPOCH_SHA256", "b"),
-        ("TIT_V2_INITIAL_H0_VECTOR_SHA256", "c"),
-        ("TIT_V2_CUTOVER_RUN_ID_SHA256", "d"),
-    ):
-        monkeypatch.setenv(name, _hash(character))
-
     assert runner._database_url("domain").endswith(
         "/tit_growth?sslmode=verify-full"
     )
     identity = runner._safe_identity()
-    assert set(identity) == {
-        "source_profile_manifest_sha256",
-        "source_partition_epoch_sha256",
-        "initial_h0_vector_sha256",
-        "cutover_run_id_sha256",
-    }
+    assert identity == {"pipeline_contract": "single-event-pipeline-v1"}
     assert "secret" not in str(identity)
 
 
 def test_runtime_file_payload_contains_only_safe_aggregate_health() -> None:
     snapshot = SimpleNamespace(
-        mode="V1_COMPAT_DUAL_CAPTURE",
-        projection_generation=0,
+        mode="V2_PRIMARY",
+        projection_generation=1,
         runnable_count=1,
         active_lease_count=2,
         expired_lease_count=0,
@@ -61,15 +42,10 @@ def test_runtime_file_payload_contains_only_safe_aggregate_health() -> None:
     payload = runner._safe_payload(
         "domain",
         snapshot,
-        {
-            "source_profile_manifest_sha256": _hash("a"),
-            "source_partition_epoch_sha256": _hash("b"),
-            "initial_h0_vector_sha256": _hash("c"),
-            "cutover_run_id_sha256": _hash("d"),
-        },
+        {"pipeline_contract": "single-event-pipeline-v1"},
     )
-    assert payload["mode"] == "V1_COMPAT_DUAL_CAPTURE"
-    assert payload["projection_generation"] == 0
+    assert payload["mode"] == "V2_PRIMARY"
+    assert payload["projection_generation"] == 1
     assert payload["active"] is True
     assert not any(
         token in str(payload).lower()
@@ -97,44 +73,30 @@ def test_wrong_database_role_fails_without_echoing_url(
 
 
 @pytest.mark.parametrize(
-    ("component", "mode", "expected"),
+    ("mode", "generation", "expected"),
     [
-        ("domain", "V1_COMPAT_DUAL_CAPTURE", True),
-        ("domain", "ROLLED_BACK", True),
-        ("outbox", "V1_COMPAT_DUAL_CAPTURE", False),
-        ("favorite", "ROLLED_BACK", False),
-        ("outbox", "V2_PRIMARY", True),
-        ("favorite", "V2_PRIMARY", True),
+        ("V2_PRIMARY", 1, True),
+        ("V2_PRIMARY", 2, False),
+        ("V1_COMPAT_DUAL_CAPTURE", 0, False),
+        ("ROLLED_BACK", 1, False),
     ],
 )
 def test_component_activity_follows_pipeline_mode(
-    component: str,
     mode: str,
+    generation: int,
     expected: bool,
 ) -> None:
     assert runner._component_active(
-        component,
-        SimpleNamespace(mode=mode),
+        "domain",
+        SimpleNamespace(mode=mode, projection_generation=generation),
     ) is expected
-
-
-def test_outbox_and_favorite_standby_are_database_ready() -> None:
-    for component, mode in (
-        ("outbox", "V1_COMPAT_DUAL_CAPTURE"),
-        ("favorite", "ROLLED_BACK"),
-    ):
-        snapshot = SimpleNamespace(
-            mode=mode,
-            projection_generation=0,
-        )
-        assert runner._component_ready(component, snapshot) is True
 
 
 def test_outbox_primary_requires_time_recheck_health() -> None:
     base = DtsV2RuntimeHealthSnapshot(
         protocol_version="dts-v2-outbox-runtime-health-v1",
         mode="V2_PRIMARY",
-        projection_generation=4,
+        projection_generation=1,
         runnable_count=0,
         active_lease_count=0,
         expired_lease_count=0,
@@ -147,7 +109,7 @@ def test_outbox_primary_requires_time_recheck_health() -> None:
     health = runner.TeacherTimeRecheckHealthV2(
         protocol_version="dts-v2-teacher-time-recheck-health-v1",
         mode="V2_PRIMARY",
-        projection_generation=4,
+        projection_generation=1,
         schedule_due=False,
         current_date_missing_count=0,
         runnable_count=0,
@@ -213,65 +175,3 @@ def test_qualification_gate_env_is_exact_and_required(
         match="TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED_INVALID",
     ):
         runner._qualification_grants_enabled_from_env()
-
-
-def test_outbox_dual_mode_stays_alive_without_building_or_running_worker(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    for name, character in (
-        ("TIT_V2_SOURCE_PROFILE_MANIFEST_SHA256", "a"),
-        ("TIT_V2_SOURCE_PARTITION_EPOCH_SHA256", "b"),
-        ("TIT_V2_INITIAL_H0_VECTOR_SHA256", "c"),
-        ("TIT_V2_CUTOVER_RUN_ID_SHA256", "d"),
-    ):
-        monkeypatch.setenv(name, _hash(character))
-    monkeypatch.setenv("TIT_V2_EXPECTED_DATABASE", "tit_growth")
-    monkeypatch.setattr(runner, "_database_url", lambda _component: "ignored")
-
-    class Engine:
-        def dispose(self) -> None:
-            pass
-
-    engine = Engine()
-    monkeypatch.setattr(runner, "build_engine", lambda *_a, **_k: engine)
-    snapshot = SimpleNamespace(
-        mode="V1_COMPAT_DUAL_CAPTURE",
-        projection_generation=0,
-        runnable_count=9,
-        active_lease_count=0,
-        expired_lease_count=0,
-        business_wait_count=0,
-        dead_count=0,
-        stale_runnable_count=0,
-        oldest_runnable_age_seconds=1,
-        oldest_active_lease_age_seconds=None,
-    )
-    monkeypatch.setattr(runner, "_runtime_snapshot", lambda *_a, **_k: snapshot)
-    monkeypatch.setattr(
-        runner,
-        "_build_worker",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("standby must not construct a worker")
-        ),
-    )
-    monkeypatch.setattr(runner, "_STOP", False)
-    heartbeat = tmp_path / "heartbeat"
-    readiness = tmp_path / "readiness"
-    args = SimpleNamespace(
-        component="outbox",
-        healthcheck=False,
-        watch=False,
-        interval_seconds=1.0,
-        stale_after_seconds=900,
-        max_heartbeat_age_seconds=90,
-        max_readiness_age_seconds=90,
-        heartbeat_path=heartbeat,
-        readiness_path=readiness,
-    )
-
-    assert runner.run(args) == 0
-    payload = json.loads(heartbeat.read_text(encoding="ascii"))
-    assert payload["active"] is False
-    assert payload["last_run_counts"] == {}
-    assert readiness.exists()

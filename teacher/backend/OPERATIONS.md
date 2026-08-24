@@ -102,7 +102,7 @@ docker build -t tide-teacher-api:reviewed .
 
 镜像只暴露 `3000`，其内置健康检查请求 `/health/ready`。生产环境中，容器进入
 healthy 不只代表 Node 进程存在：public Alembic 账本必须唯一指向
-`20260823_100_scope_snapshot_diff`，教师端迁移账本必须是完整的 38 条 canonical 清单，包含
+`20260824_101_dts_single_pipeline_reset`，教师端迁移账本必须是完整的 38 条 canonical 清单，包含
 `0033_g01_tesol_only`、`0037_g04_remove_device_check`、
 `0038_personalized_environment_photo`、`0039_g02_policy_document`、
 `0040_g02_document_read_status`、`0041_crm_sso_hybrid`、`0042_g09_set_kuozhi_course`，且唯一最新版本为
@@ -124,7 +124,7 @@ healthy 不只代表 Node 进程存在：public Alembic 账本必须唯一指向
 后台任务嵌在每个 NestJS API 进程中。多 Pod 部署时所有副本可设置
 `BACKGROUND_JOBS_ENABLED=true`：四类全局调度任务依靠数据库租约单活并在持有者退出
 或租约过期后接管。所有副本必须连接同一个已按顺序应用 G01、G02、G04、个性化拍照和
-CRM SSO 与 P-REL 迁移、已到 public 100 / teacher 0043，并已应用最终表级 ACL、国内学生隐私边界与业务保护 Trigger
+CRM SSO 与 P-REL 迁移、已到 public 101 / teacher 0043，并已应用最终表级 ACL、国内学生隐私边界与业务保护 Trigger
 的 PostgreSQL。生产文件统一使用私有 OSS；若非生产仍使用 `LOCAL`，多 Pod 必须挂载
 同一 RWX 存储到完全相同的 `LOCAL_FILE_STORAGE_DIR`，RWO／各 Pod 本地盘会导致上传后
 由其他副本读取失败。

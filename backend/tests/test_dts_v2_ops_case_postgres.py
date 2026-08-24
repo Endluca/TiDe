@@ -144,12 +144,22 @@ def ops_case_postgres(tmp_path: Path) -> Iterator[tuple[Engine, Engine, Engine]]
         )
         with admin_engine.begin() as connection:
             _seed_external_personalized_catalog(connection)
-        _run_alembic(backend_dir, admin_url, "upgrade", "head")
+        _run_alembic(
+            backend_dir,
+            admin_url,
+            "upgrade",
+            "20260823_100_scope_snapshot_diff",
+        )
 
         # Empty history is reversibly additive, and a replay sees the existing
         # restricted runtime role instead of creating a second identity.
         _run_alembic(backend_dir, admin_url, "downgrade", REVISION_85)
-        _run_alembic(backend_dir, admin_url, "upgrade", "head")
+        _run_alembic(
+            backend_dir,
+            admin_url,
+            "upgrade",
+            "20260823_100_scope_snapshot_diff",
+        )
         with admin_engine.begin() as connection:
             connection.execute(
                 text(

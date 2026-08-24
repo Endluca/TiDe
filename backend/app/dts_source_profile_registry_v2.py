@@ -78,7 +78,9 @@ class DtsSourceProfile:
 @dataclass(frozen=True)
 class DtsSourceProfileRegistry:
     manifest_version: int
+    artifact_sha256: str
     manifest_sha256: str
+    profile_vector: tuple[Mapping[str, str], ...]
     profiles_by_table: Mapping[str, DtsSourceProfile]
 
     def profile_for(self, table: str) -> DtsSourceProfile | None:
@@ -154,9 +156,34 @@ def load_dts_source_profile_registry(
             )
         profiles[profile.table] = profile
 
+    profile_vector_values = tuple(
+        {
+            "source_region": profile.region,
+            "source_table": profile.table,
+            "source_schema_profile_id": profile.profile_id,
+        }
+        for profile in sorted(
+            profiles.values(),
+            key=lambda item: (item.region, item.table),
+        )
+    )
+    canonical_profile_vector = json.dumps(
+        profile_vector_values,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return DtsSourceProfileRegistry(
         manifest_version=_MANIFEST_VERSION,
-        manifest_sha256=hashlib.sha256(raw).hexdigest(),
+        artifact_sha256=hashlib.sha256(raw).hexdigest(),
+        # The database approval contract historically calls the canonical
+        # profile-vector hash ``manifest_sha256``.  Keep that public identity
+        # exact; the byte-for-byte JSON artifact hash remains separately
+        # available as ``artifact_sha256``.
+        manifest_sha256=hashlib.sha256(canonical_profile_vector).hexdigest(),
+        profile_vector=tuple(
+            MappingProxyType(value) for value in profile_vector_values
+        ),
         profiles_by_table=MappingProxyType(profiles),
     )
 

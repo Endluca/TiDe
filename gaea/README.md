@@ -24,13 +24,13 @@ application 镜像由 s6-overlay 管理八个业务进程入口：
 | `teacher-api` | `3000` | NestJS 教师端 API；只在 Pod 内访问，不配置 Gaea Ingress |
 | `score-settlement` | 无 | 固定任务积分结算候选进程、数据库选主和本 Pod heartbeat |
 | `source-wide` | 无 | 字段级源事件消费候选进程、数据库选主和本 Pod heartbeat/readiness |
-| `dts-v2-domain` | 无 | 三种合法 pipeline mode 下持续追平规范化事实、domain revision 与影子 Outbox |
+| `dts-v2-domain` | 无 | `V2_PRIMARY` 下处理规范化事实、domain revision 与 Outbox |
 | `dts-v2-outbox` | 无 | 仅 V2_PRIMARY 领取并物化完整聚合类型矩阵 |
 | `dts-v2-favorite` | 无 | 仅 V2_PRIMARY 到期观察收藏关系并原子结算唯一归课 |
 
 轻量 DTS 镜像不包含上述八个进程、Node、两个前端、教师 NestJS 或 Nginx。它以非 root
-Python PID 1 运行 `run_dts_ingest.py`，Python 持有数据库、国内 HMAC、账本，以及课程/教师宽表
-23/64 个物理列（22/55 个业务字段）的投影，并管理一个运行官方 DTS SDK 1.4.0 主流程的 Java
+Python PID 1 运行 `run_dts_ingest.py`，Python 持有数据库、国内 HMAC、V2 账本、source version
+与 dirty enqueue，并管理一个运行官方 DTS SDK 1.4.0 主流程的 Java
 子进程。Java stdout 只传 NDJSON
 事件和 SDK checkpoint 接受确认，Kafka/SDK 诊断走 stderr；Java 先发送有界批次的 `EVENT`
 和 `BATCH_COMPLETE`，Python 整批数据库事务成功后才回一个 `DURABLE_ACK_BATCH`。Java 随后仅对最后一条连续 ADVANCE
@@ -258,7 +258,7 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 
 | 变量名 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `TIT_SOURCE_WIDE_ENABLED` | 否 | `true` | 仅首次 DTS 投影排空窗口可设为 `false`；只接受小写 `true`／`false`，非法值失败关闭 |
+| `TIT_SOURCE_WIDE_ENABLED` | 否 | `false` | fresh-start 只运行 V2 Domain/Outbox/Favorite；旧 SourceWide 必须保持关闭 |
 | `TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED` | 否 | `false` | 只接受小写 `true`／`false`；`false` 继续刷新积分与当前门槛，但禁止出营/金牌资格首次变为已获得 |
 | `TIT_SOURCE_WORKER_EXPECTED_DATABASE` | 是 | 无 | 固定目标库名，必须与 URL 一致 |
 | `TIT_SOURCE_WORKER_DB_POOL_SIZE` | 否 | `1` | Worker 连接池上限 |
@@ -267,47 +267,35 @@ session advisory lock 选出当前 leader；standby 不执行结算，但继续�
 | `TIT_SOURCE_WORKER_DB_APPLICATION_NAME` | 否 | `tit-growth-source-worker` | PostgreSQL 连接标识 |
 | `TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS` | 否 | `900` | SourceWide 健康检查允许已到执行时间的 `PENDING` 事件继续滞留的最大秒数，必须大于 0 |
 
-SourceWide 直接复用运营 `DATABASE_URL`；它与运营 API 属于同一后端信任边界，不再额外
-注入一份数据库密码。`TIT_SOURCE_WIDE_ENABLED=false` 只在 `application` Profile 暂停
-SourceWide s6 服务；聚合健康检查仍检查运营 API、教师 API 和积分 Worker，但会有意识地
-跳过 SourceWide heartbeat/readiness。DTS 项目不读取该变量，因此接入和宽表投影可继续追平。
-该开关不是常态运行模式，也不是业务资格规则；只用于首次投影排空，恢复 `true` 并确认
-SourceWide heartbeat/readiness 和 Outbox 排空后，才可进行积分、任务和当前门槛链路验收。
+SourceWide 直接复用运营 `DATABASE_URL`，但它只属于已退役的历史投影链。本次单通道发布中
+`TIT_SOURCE_WIDE_ENABLED=false` 是常态配置，s6 保持该进程暂停，聚合健康检查显式跳过
+它的 heartbeat/readiness。积分、任务和当前门槛链由 V2 Domain/Outbox/Favorite 健康和
+业务抽样验收，不得把该开关恢复为 `true`。
 不可逆资格另由 `TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED` 独立失败关闭。当前预发布
 必须保持 `false`：积分、任务分和 `graduation_criteria_met / gold_criteria_met` 仍会更新，
 但任何尚未获得的出营或金牌资格都不会首次变为 `true`；既有已获得资格不受影响。只有后续
-业务终态/双流水位门禁完成并单独验收后，才允许明确改为 `true`。空值、大小写变体、`1`、
+上线后 V2 抽样、死信/租约和分数门槛读回通过并单独评审后，才允许明确改为 `true`。空值、大小写变体、`1`、
 `yes` 等均为非法配置，应用 API 与两个 Worker 会失败关闭。
-SourceWide 健康探针会使用同一个受限数据库身份直接读取 Outbox：任一
-`source_wide.changed.v1` 事件进入 `DEAD_LETTER`，或已经失败过的事件在 `available_at`
-到期后继续 `PENDING` 超过上述阈值，整个 Pod 即不健康。首次解暂停时积压但尚未尝试的
-`attempt_count=0` 事件允许 Worker 追平；尚未到 `available_at` 的正常退避事件也不计为
-超龄。数据库探测失败同样失败关闭；重启不会清除终态事件，必须先检查 `last_error`、修复
-源数据或投影问题并按运维流程重新入队，不能用反复重启掩盖毒事件。
+SourceWide 的 v1 Outbox 健康逻辑仅供历史回滚排障，不进入本次 Pod 健康结论。
 
-## DTS v2 运行进程变量
+## DTS 业务运行进程变量
 
-`TIT_V2_RUNTIME_ENABLED` 默认保持 `false`。受保护命令、健康快照和权限回归已落地，但只有在
-public 迁移到当前 head、真实 profile/scope 证据完成并进入受控双捕获后才允许启用。启用后 Domain 使用
+`TIT_V2_RUNTIME_ENABLED` 在本次发布配置中固定为 `true`。application 只能在 public 迁移到
+当前 head、readiness 为 `READY_SINGLE_PIPELINE` 且 DOM/OVS 都已建立新 checkpoint 后发布。Domain 使用
 `tit_dts_domain_projector_runtime`，Outbox 和 Favorite 使用
 `tit_dts_outbox_worker_runtime`；三个连接池必须分别注入 URL，不能复用运营 `DATABASE_URL`。
 
 | 变量名 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `TIT_V2_RUNTIME_ENABLED` | 否 | `false` | 只接受小写 `true`/`false`；缺完整 capability 时即使设为 true 也会失败关闭 |
+| `TIT_V2_RUNTIME_ENABLED` | 是 | `true` | 只接受小写 `true`；缺完整 capability 时失败关闭 |
 | `TIT_V2_EXPECTED_DATABASE` | 启用时 | 无 | 三个专用 URL 必须指向同一精确库名 |
-| `TIT_V2_DOMAIN_DATABASE_URL` | 启用时 | 无 | Domain 专用受限 LOGIN；兼容、PRIMARY、回滚三种模式都持续影子追数 |
-| `TIT_V2_OUTBOX_DATABASE_URL` | 启用时 | 无 | Outbox 专用受限 LOGIN；非 PRIMARY 不领取、不发布、不写失败状态 |
-| `TIT_V2_FAVORITE_DATABASE_URL` | 启用时 | 无 | Favorite 独立连接池，使用 Outbox 角色；非 PRIMARY 不领取/重领/结算 |
+| `TIT_V2_DOMAIN_DATABASE_URL` | 启用时 | 无 | Domain 专用受限 LOGIN；本次只允许 `V2_PRIMARY` |
+| `TIT_V2_OUTBOX_DATABASE_URL` | 启用时 | 无 | Outbox 专用受限 LOGIN；处理 V2 Domain 事件 |
+| `TIT_V2_FAVORITE_DATABASE_URL` | 启用时 | 无 | Favorite 独立连接池，使用 Outbox 角色 |
 | `TIT_V2_RUNTIME_BATCH_SIZE` | 否 | `25` | 每轮最大领取数，范围 1-1000 |
 | `TIT_V2_DOMAIN_LEASE_SECONDS` | 否 | `120` | Domain dirty lease，范围 15-300 秒 |
 | `TIT_V2_TIME_RECHECK_LEASE_SECONDS` | 否 | `120` | Outbox 进程内教师时间重检 lease，范围 15-300 秒；负责新师/旧师、30 天出营观察等无新 DTS 事件也会变化的规则 |
-| `TIT_V2_SOURCE_PROFILE_MANIFEST_SHA256` | 启用时 | 无 | 已核验 source profile manifest 的小写 SHA-256 |
-| `TIT_V2_SOURCE_PARTITION_EPOCH_SHA256` | 启用时 | 无 | epoch 安全标识，仅配置/输出 hash，不输出原值 |
-| `TIT_V2_INITIAL_H0_VECTOR_SHA256` | 启用时 | 无 | bootstrap H0 vector 的小写 SHA-256 |
-| `TIT_V2_CUTOVER_RUN_ID_SHA256` | 启用时 | 无 | cutover run identity 的小写 SHA-256 |
-
-每个领取事务与实际业务事务都调用数据库 cutover transaction guard 并持 shared advisory
+每个领取事务与实际业务事务都调用数据库运行态 guard 并持 shared advisory
 lock。Domain 比较 mode+generation；生产物化比较 PRIMARY generation。切换竞态下已领取工作
 保留给后续 reap/retry，不能误标 DONE/FAILED。heartbeat/readiness 只包含非敏感模式、代次、
 上述 hash 和聚合 lag/lease 数，不包含 URL、账号、token、epoch 原值或业务主键。
@@ -405,11 +393,9 @@ SDK 异步动作且没有同步成功回执。DB 已有 checkpoint 时，用其 
 `durable_next_offset` 用于区分 SDK 拉取、Java 路由/结构化、Python 验证/HMAC、跨区数据库事务和
 checkpoint 推进瓶颈；日志不得包含 Avro payload、结构化 record 或业务字段值。
 
-首次追平阶段两个项目都必须关闭投影；激活后只允许海外项目启用全局宽表投影，国内项目固定
-`TIT_DTS_PROJECTION_ENABLED=false` 并只做 ingest。海外项目必须先通过数据库激活门禁，并持有
-全局 PostgreSQL session advisory lock；国内项目误开启投影会在启动时失败关闭。每个 DTS Pod
-的数据库池固定为 2 条连接，其中
-1 条由投影锁专用连接持续占用，另 1 条供接入事务和投影事务串行复用。PostgreSQL
+fresh-start 中 DOM/OVS 两个 DTS 项目都只做 V2 ingest，并固定
+`TIT_DTS_PROJECTION_ENABLED=false`。课程、任务、积分和收藏物化由最后发布的 application 内
+V2 Domain/Outbox/Favorite 进程负责；任一 DTS 项目误开 legacy projection 都会启动失败。PostgreSQL
 `application_name` 分别为 `tit-dts-ingest-ovs` 和 `tit-dts-ingest-dom`，便于现场区分连接。
 
 两套非敏感订阅配置如下；对应的生产安全基线文件是
@@ -428,7 +414,7 @@ checkpoint 推进瓶颈；日志不得包含 Avro payload、结构化 record 或
 | `TIT_DTS_TOPIC` | `ap_southeast_1_vpc_pc_gs5986x4885426aej_dba_tide_source_ovs_version2` | `cn_beijing_vpc_pc_2ze5w28lmdr8f626y_dba_tide_source_dom_version2` |
 | `TIT_DTS_GROUP_ID` | 海外订阅“数据消费”页生成的消费组 ID（sid） | 国内订阅“数据消费”页生成的消费组 ID（sid） |
 | `TIT_DTS_ACCOUNT` | `titconsumeovs` | `titconsumedom` |
-| `TIT_DTS_START_AT` | `2026-08-10T14:16:00+08:00` | `2026-08-12T16:30:00+08:00` |
+| `TIT_DTS_START_AT` | 本次统一的新时间点，必须带时区 | 与海外完全相同的新时间点 |
 | `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` | 禁止配置 | CSPRNG 生成的 32-byte 密钥，精确编码为 64 位小写 hex；必须使用该含 `PASSWORD` 的名称触发 Gaea 敏感值掩码 |
 
 每个项目还需要以下共同变量：
@@ -437,20 +423,13 @@ checkpoint 推进瓶颈；日志不得包含 Avro payload、结构化 record 或
 |---|---:|---|---|
 | `TIT_PROCESS_PROFILE` | 是 | `dts-ingest` | 只启动 DTS 业务进程 |
 | `TIT_DTS_TRANSPORT` | 镜像固定 | `official_java` | 正式 Gaea 使用官方 Java 1.0 transport；`kafka_python` 只保留为显式回退诊断 |
-| `TIT_DTS_PIPELINE_MODE` | 否 | `V1` | 支持 `V1`、`V1_COMPAT_DUAL_CAPTURE`、`V2_PRIMARY`、`ROLLED_BACK`；必须与数据库 control 一致。双捕获/回滚要求 legacy projection 开启，PRIMARY 要求关闭 legacy projection；不允许只改环境变量切流 |
-| `TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID` | 双捕获时 | 每个地区当前 ACTIVE BROKER epoch ID | DOM/OVS 各自填写，readiness/heartbeat 只输出 SHA-256，不输出原值 |
-| `TIT_DTS_V2_CONTROL_GROUP` | 双捕获时 | H0 bootstrap 的 fleet/control identity | 两个项目填写相同的控制身份；不能替代各订阅真实的 `TIT_DTS_GROUP_ID` |
+| `TIT_DTS_PIPELINE_MODE` | 是 | `SINGLE_PIPELINE` | 唯一接受的外部运行模式 |
+| `TIT_DTS_SOURCE_PARTITION_EPOCH_ID` | 是 | 每个地区为本次重置生成的新值 | DOM/OVS 各自填写且不得相同，readiness/heartbeat 只输出 SHA-256 |
 | `TIT_DTS_STARTUP_RETRY_SECONDS` | 否 | `15` | `--watch` 启动暂态与稳态 Java transport 暂态恢复使用；以该值起步、2 倍退避并在 60 秒封顶，默认 `15/30/60`，允许范围 `(0,60]` |
 | `TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` | 回退模式 | `15000` | 仅 `kafka_python` 回退启动门禁使用；不传给 `official_java` |
 | `TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` | 回退模式 | `15000` | 仅 `kafka_python` 回退 ApiVersions 使用；Java 1.0 无此参数 |
 | `TIT_DTS_PASSWORD` | 是 | 各自 Gaea 密钥 | 只用于本项目对应订阅的 DTS SASL |
-| `TIT_DTS_COHORT_START` | 否 | `2026-08-13` | 北京时间新教师 cohort 起点，按 `dom_teacher.status_on_time` 日期筛选；两项目必须一致 |
-| `TIT_DTS_COHORT_END_EXCLUSIVE` | 否 | 空 | 开放式人群；需要封闭批次时才设置不含当天的结束边界 |
-| `TIT_DTS_PROJECTION_ENABLED` | 否 | `false` | 国内项目始终为 `false`；双流追平并通过激活门禁后，只允许海外项目改为 `true` |
-| `TIT_DTS_PROJECTION_MAX_ATTEMPTS` | 否 | `8` | 同一脏键周期的投影尝试上限，范围 `1–100`；默认约 15 分钟退避后保留错误并隔离该键，不终止其他投影和接入 |
-| `TIT_DTS_ACTIVATION_AT` | 投影开启时 | 显式带时区时间 | 两条订阅都必须追平到该 source time；两个项目使用同一值 |
-| `TIT_DTS_REQUIRED_OVS_TOPIC` | 投影开启时 | 海外 topic | 激活门禁核对海外 partition 0 数据库 checkpoint |
-| `TIT_DTS_REQUIRED_DOM_TOPIC` | 投影开启时 | 国内 topic | 激活门禁核对国内 partition 0 数据库 checkpoint |
+| `TIT_DTS_PROJECTION_ENABLED` | 禁止 | 不配置 | 历史 direct projection 已退役；配置为 `true` 会拒绝启动 |
 | `TIT_DTS_INGEST_DB_HOST` | 是 | `tide-system.rwlb.singapore.rds.aliyuncs.com` | 不含端口或 scheme |
 | `TIT_DTS_INGEST_DB_PORT` | 否 | `5432` | PostgreSQL 端口 |
 | `TIT_DTS_INGEST_DB_SSLMODE` | 否 | `verify-full`；固定 PRE 专线端点可覆盖为 `disable` | 国内、海外 PRE 使用相同数据库传输例外；正式环境固定 `verify-full` |
@@ -461,11 +440,10 @@ checkpoint 推进瓶颈；日志不得包含 Avro payload、结构化 record 或
 消费组名称。运行时会在任何网络连接前拒绝仓库曾误发的名称占位值；SASL 用户名仍由代码按
 `<TIT_DTS_ACCOUNT>-<TIT_DTS_GROUP_ID>` 生成。
 
-`V1_COMPAT_DUAL_CAPTURE` 仍只允许 `TIT_DTS_PROJECTION_MODE=queued`。启动顺序为：先校验该地区
-业务源表 profile 全量存在，再由数据库核对 `PRIMARY` control、route 实际 sid、ACTIVE epoch 和
-current checkpoint，最后才建立 broker transport。任一项缺失都不写 readiness，也不连接后降级到
-V1；每批仍只有 v2+v1 同事务成功返回后才 ACK。readiness/heartbeat 只记录 pipeline mode、epoch
-SHA-256 和 profile manifest SHA-256，用于部署读回和跨项目对账。
+两个项目都使用 `TIT_DTS_PIPELINE_MODE=SINGLE_PIPELINE`，并配置同一个带时区的
+`TIT_DTS_START_AT`。重置后数据库没有伪造 checkpoint；每个 partition 的首条新事件原子建立
+epoch/checkpoint，此后只从数据库 checkpoint 续跑。不会启动或降级到 V1；每批只有事件账本、
+source version/current、dirty work 和 checkpoint 同事务成功后才 ACK。
 
 数据库名、Schema 和角色在代码中失败关闭为
 `tide_system_test / public / tit_dts_ingest_runtime`。SSL 默认 `verify-full`。以下明文例外只适用于
@@ -540,26 +518,12 @@ phase 日志还会动态输出 `remaining_probe_budget_ms`、`effective_request_
 中重复执行。镜像 HEALTHCHECK 表达 readiness 与消费进展，不是独立 liveness；发布时
 必须读回 Gaea 实际 `startupProbe/readinessProbe/livenessProbe`，不得让 liveness 因启动期缺少健康文件
 而杀掉仍在安全重试的进程。首轮以及后续消费循环成功完成后才
-刷新 heartbeat，其中包含本轮接入和宽表投影计数。两者同时健康只证明服务具备消费条件并持续
-运行，不证明至少消费到一条业务消息或字段值已通过对账。国内项目的起始边界已固定为
-`2026-08-12T16:30:00+08:00`；任一项目未注入
-本项目 `TIT_DTS_PASSWORD` 时失败关闭。`TIT_DTS_START_AT` 是首次回放边界，不是 Pod 启动
-时间；海外、国内起点均早于 `2026-08-13` cohort。两条链路先追平到同一激活时刻并完成静态
-投诉分类字典装载/引用完整性检查。开启投影时，代码要求两地区指定 topic 的 partition 0
-checkpoint 均存在且 `source_timestamp >= TIT_DTS_ACTIVATION_AT`，要求未删除的
-`dom_complaint_cate` 字典非空，并拒绝任何未删除投诉引用字典中不存在的 `category_ids`；
-三项新变量在投影关闭时均不读取。门禁通过且取得全局投影锁后，国内和海外当前态才通过
-同一脏键机制汇合计算。暂态依赖缺失按指数退避；同一脏键达到
-`TIT_DTS_PROJECTION_MAX_ATTEMPTS` 后保留 `RETRY`、错误码和尝试次数，以 PostgreSQL
-`infinity` 停放并计入 heartbeat 的 `projection.quarantined`，但不终止其他投影和接入。该键收到
-新的真实源事件后由接入事务重置为新一轮 `PENDING`；明确带有可信课程日期且早于 cohort 的
-历史关系事件直接完成为忽略。不能用 Pod 重启或人工清错误字段掩盖永久毒键。
-投影器每轮最多尝试 1000 个键，但在 20 秒预算到达后先刷新 heartbeat 并把消费执行权交回主循环；
-课程源当前态在单键事务内一次预取复用，教师评分和投诉按 100 个课程依赖分组读取，未改变课程
-宽表的重算不再重复置脏教师。每轮只 checkout 一条数据库连接，每个键仍保持独立事务和失败隔离，
-避免每键重复执行连接池 checkout 与传输安全复核。heartbeat 的 `projection` 额外记录
-`source_queries/cache_hits/elapsed_ms/budget_exhausted`；排空期间应同时观察完成速率、PENDING
-斜率和数据库负载，不能只靠继续调大键上限掩盖慢 SQL。
+刷新 heartbeat。两者同时健康只证明服务具备消费条件并持续运行，不证明至少消费到一条业务
+消息或业务结果正确。fresh-start 不读取 legacy cohort、activation、required-topic 或投影重试变量；
+`TIT_DTS_START_AT` 保持为空，DOM/OVS 都只能从数据库中已绑定联合 H0 的 checkpoint 恢复。
+任一项目未注入本项目 `TIT_DTS_PASSWORD`、profile 身份与数据库 fresh-start 审计不一致，或试图
+启用 legacy projection，都会在 broker 消费前失败关闭。V2 dirty key 的领取、隔离和物化由最后
+发布的 application 内 Domain/Outbox/Favorite 进程负责。
 
 ## 教师端运行变量
 
@@ -680,10 +644,11 @@ docker stop tide-camp-gaea-test
 
 ## 发布顺序
 
-当前发布必须到达 public `20260823_100_scope_snapshot_diff`、teacher
+当前发布必须到达 public `20260824_101_dts_single_pipeline_reset`、teacher
 `0043_p_rel_execution_catalog`，并按
-[`DTS v2 部署与切换清单`](../docs/DTS_v2部署与切换清单.md) 执行维护窗口迁移、双捕获、
-真实 profile/scope、14 类对账和原子切流。不得再按下方 public65/teacher0042 的旧流程上线。
+[`DTS 单通道正式发布清单`](../docs/DTS_v2部署与切换清单.md) 清空旧消费事实，设置统一的新消费时间，
+再依次发布 DOM、OVS 和 application。本次不启动 V1 通道、不回填旧数据、不执行
+V1/V2 对账。不得再按下方 public65/teacher0042 的旧流程上线。
 
 ## 历史 V1 发布顺序（仅供追溯，禁止执行）
 

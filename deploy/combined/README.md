@@ -1,11 +1,11 @@
 # 教师端与运营端同机部署
 
 状态：**部署骨架与技术加固已建立，联合门禁已固定到 public
-`20260823_100_scope_snapshot_diff`、教师端 `0043_p_rel_execution_catalog` 和唯一当前
+`20260824_101_dts_single_pipeline_reset`、教师端 `0043_p_rel_execution_catalog` 和唯一当前
 `G01–G09` 目录。跨所有权迁移必须严格按 public 46 → teacher 0028 → public 50 →
 teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 →
 release public 57 → teacher 0040 → teacher 0041 → public 59–65 → teacher 0042 →
-public 66–99 → teacher 0043 → public 100 执行；
+public 66–99 → teacher 0043 → public 100–101 执行；
 完整链和数据库契约探针未通过前禁止上线。**
 
 ## 结论
@@ -123,15 +123,15 @@ execution ID，也不能清空教师已有进度。0025 是向前语义迁移，
    同时检查两条数据库连接。
 4. 教师端 API 的后台调度器虽然仍嵌在 HTTP 进程，但所有全局任务都通过
    `tide.job_leases` 竞争数据库租约；只有当前持租约副本执行，续租失败立即停止，其他副本
-   可接管。G04 与个性化环境图片均走任务提交校验，不再有独立照片队列。联合部署固定完整升级到 public 100 / teacher 0043。
+   可接管。G04 与个性化环境图片均走任务提交校验，不再有独立照片队列。联合部署固定完整升级到 public 101 / teacher 0043。
 
 切流前仍需关闭两项：
 
-1. 在目标库按顺序执行到 public 100 / teacher 0043：先在 public 50 / teacher 0032
+1. 在目标库按顺序执行到 public 101 / teacher 0043：先在 public 50 / teacher 0032
    完成历史 G04 三模块链，再通过 public 54 / teacher 0037 将当前 G04 收敛为照片审核与
    课件准备两个模块，再用 public 55 收敛源宽表，执行 public 56 / teacher 0038 的个性化环境拍照，
    再执行 public 57 / teacher 0039–0040 的 G02 原生文档和 teacher 0041 的 CRM SSO 结构，
-   然后依次执行 ACL/DTS 合并迁移到 public 59、国内学生隐私迁移到 public 60、public 61/62、public 63 direct 隐私门禁、public 64 G05/G08 课程文案和 public 65 G09 课程文案；在 public 65 执行 teacher 0042，再连续升级 public 66–99、执行 teacher 0043，最后升级 public 100。验证 0025 保留 execution ID、步骤/规则 ID 和教师进度，同时验证 rev47–100 与 0027–0043 完成本地 Quiz
+   然后依次执行 ACL/DTS 合并迁移到 public 59、国内学生隐私迁移到 public 60、public 61/62、public 63 direct 隐私门禁、public 64 G05/G08 课程文案和 public 65 G09 课程文案；在 public 65 执行 teacher 0042，再连续升级 public 66–99、执行 teacher 0043，最后升级 public 100–101。验证 0025 保留 execution ID、步骤/规则 ID 和教师进度，同时验证 rev47–101 与 0027–0043 完成本地 Quiz
    退役、旧视图和空置对象清理、G01 TESOL-only 收窄、G04 两模块收敛、引导状态建表与个性化环境拍照发布，
    DTS 状态表和最终表级 ACL，且未越权改写共享业务事实。
 2. 教师端主 PRD 仍描述“TIDE 刷新后再修改工单状态”，需要与已落地的原子回复函数同步，
@@ -224,13 +224,13 @@ bash deploy/combined/preflight.sh
 docker compose -f deploy/combined/docker-compose.yml config --quiet
 ```
 
-教师端未按完整顺序到 public 100 / teacher 0043、最终账本不是精确 38 条、G04 仍含当前设备步骤、
+教师端未按完整顺序到 public 101 / teacher 0043、最终账本不是精确 38 条、G04 仍含当前设备步骤、
 目录缺项、个性化拍照、G02 文档或 P-REL execution 契约不精确、仍含 G10 或任一标题/分值语义错误时，应在预检阶段停止，
 这是预期结果。
 
 ## 发布顺序
 
-1. 评审 public 100、教师端 0043、任务编码、G01 TESOL-only 读取过滤、G04 两模块、
+1. 评审 public 101、教师端 0043、任务编码、G01 TESOL-only 读取过滤、G04 两模块、
    个性化拍照、G02 文档与阅读状态、CRM SSO、源宽表 v1.2、DTS 状态和最终数据库角色；
    固定包含完整修复的新提交 SHA。
 2. 停止两端写流量、教师后台任务和积分结算 Worker。
@@ -291,7 +291,7 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
 
 9. 确认 public 54 / teacher 0037 同时就绪且当前 G04 已不再返回设备步骤后，严格按
    `20260811_55_source_wide_v12` → `20260811_56_p_fb_negative_copy` → teacher 0038 →
-   `20260811_57_g02_document` → teacher 0040 → teacher 0041 → public 59–65 → teacher 0042 → public 66–99 → teacher 0043 → public 100
+   `20260811_57_g02_document` → teacher 0040 → teacher 0041 → public 59–65 → teacher 0042 → public 66–99 → teacher 0043 → public 100–101
    继续。public 55 收敛教师源宽表，release public 56 更新稳定 `P-FB-NEGATIVE:v1`
    文案，0038 发布个性化授课环境拍照；release public 57 发布 G02 精确文案，0039/0040
    原位切换到版本化文档并增加阅读状态约束，0041 新增 CRM SSO。最后一步才将 ACL/DTS
@@ -301,8 +301,8 @@ docker compose -f deploy/combined/docker-compose.yml config --quiet
    然后依次应用 `20260819_64_g05_g08_courses` 和 `20260819_65_g09_set_course`，在该精确
    public 65 切换点执行 teacher 0042；之后将 Alembic 连续升级到
    `20260822_99_blacklist_three_state`，再执行 teacher 0043，最后应用
-   `20260823_100_scope_snapshot_diff`。不得在 teacher 0037 之前执行
-   public 55；最终契约探针只接受 public 100 / teacher 0043。
+   `20260824_101_dts_single_pipeline_reset`。不得在 teacher 0037 之前执行
+   public 55；最终契约探针只接受 public 101 / teacher 0043。
 
 10. 确认 teacher 账本精确为 38 条且 head 为 0043，再以只读共享目录模式核对执行内容：
    0033 G01 TESOL-only、0037 G04 两模块且无当前设备步骤、0038 个性化环境拍照、
