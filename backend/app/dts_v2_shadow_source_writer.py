@@ -239,7 +239,7 @@ class DtsV2ShadowSourceWriter:
             # the previous teacher or the rest of the course facts, so it is
             # acknowledged as an ignored source event without creating source
             # current/version state or dirty work.
-            return _ignored_missing_course_update_result(
+            return _ignored_missing_current_result(
                 event=event,
                 source_key=source_key,
                 source_key_type=source_key_type,
@@ -249,8 +249,14 @@ class DtsV2ShadowSourceWriter:
         except (DtsRecordError, ValueError) as exc:
             raise DtsV2ShadowSourceWriterError(str(exc)) from exc
         if route.route_status == "WAITING_CURRENT_ROW":
-            raise DtsV2ShadowSourceWriterError(
-                "DTS_V2_SHADOW_CURRENT_REQUIRED_FOR_SPARSE_EVENT"
+            # An event-only fresh start has no snapshot for rows created
+            # before H0.  A sparse UPDATE/DELETE cannot safely reconstruct
+            # that row, so acknowledge it without inventing source state or
+            # blocking every later event in the partition.
+            return _ignored_missing_current_result(
+                event=event,
+                source_key=source_key,
+                source_key_type=source_key_type,
             )
         _require_versioned_route(route)
         if (
@@ -1898,7 +1904,7 @@ def _result(
     )
 
 
-def _ignored_missing_course_update_result(
+def _ignored_missing_current_result(
     *,
     event: DtsChangeEvent,
     source_key: str,
@@ -1908,7 +1914,7 @@ def _ignored_missing_course_update_result(
     payload_hash = hashlib.sha256(
         _canonical_json(
             {
-                "contract": "dts-v2-ignore-missing-course-update-v1",
+                "contract": "dts-v2-ignore-missing-source-current-v1",
                 "source_region": event.source_region,
                 "source_table": table,
                 "source_key": source_key,

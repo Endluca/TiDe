@@ -54,7 +54,7 @@ from .dts_v2_dirty_queue_store import DirtyKeyV2, DtsV2DirtyQueueStore
 
 V2_PRIMARY_MODE = "V2_PRIMARY"
 _V2_IDENTITY_VERSION = "V2_EPOCH"
-_MISSING_COURSE_UPDATE_ISSUE = "COURSE_UPDATE_WITHOUT_CURRENT_IGNORED"
+_MISSING_SOURCE_CURRENT_ISSUE = "SOURCE_CHANGE_WITHOUT_CURRENT_IGNORED"
 _DTS_DIRTY_GUARD_V96_PROSRC_SHA256 = (
     "43faaad828f20a8988c4cf1212490b48ad8aa28782112a5e97c355d307a6d2e2"
 )
@@ -744,14 +744,14 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             )
         replay_expected = event.offset < expected_next_offset
         v2_result: DtsV2ShadowSourceWriteResult | None = None
-        ignored_missing_course_update = (
+        ignored_missing_current = (
             replay_expected
-            and self._was_missing_course_update_ignored(
+            and self._was_missing_current_ignored(
                 connection,
                 event=event,
             )
         )
-        if _is_v2_business_event(event) and not ignored_missing_course_update:
+        if _is_v2_business_event(event) and not ignored_missing_current:
             try:
                 v2_result = self._v2_writer.apply_cdc(
                     connection,
@@ -783,14 +783,14 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 raise DtsV2DualCaptureStoreError(
                     "DTS_V2_DUAL_CAPTURE_SOURCE_RESULT_INVALID"
                 )
-            ignored_missing_course_update = (
+            ignored_missing_current = (
                 v2_result.status == "IGNORED_MISSING_CURRENT"
             )
             if replay_expected != (
                 v2_result.status == "REPLAYED"
                 or (
                     replay_expected
-                    and ignored_missing_course_update
+                    and ignored_missing_current
                 )
             ):
                 raise DtsV2DualCaptureStoreError(
@@ -828,13 +828,13 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
 
         route_status = (
             "IGNORED"
-            if v2_result is None or ignored_missing_course_update
+            if v2_result is None or ignored_missing_current
             else "PROCESSED"
         )
         issue_codes = _ledger_issue_codes(route_hints)
-        if ignored_missing_course_update:
+        if ignored_missing_current:
             issue_codes = tuple(
-                dict.fromkeys((*issue_codes, _MISSING_COURSE_UPDATE_ISSUE))
+                dict.fromkeys((*issue_codes, _MISSING_SOURCE_CURRENT_ISSUE))
             )
         position = _source_position_v2(
             event,
@@ -845,7 +845,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             source_partition_epoch_id=self.source_partition_epoch_id,
             protected_source_hash=(
                 None
-                if v2_result is None or ignored_missing_course_update
+                if v2_result is None or ignored_missing_current
                 else v2_result.protected_payload_hash
             ),
         )
@@ -860,7 +860,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         )
         if duplicate != replay_expected or (
             v2_result is not None
-            and not ignored_missing_course_update
+            and not ignored_missing_current
             and duplicate != (v2_result.status == "REPLAYED")
         ):
             raise DtsV2DualCaptureStoreError(
@@ -879,13 +879,13 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             expected_next_offset if duplicate else event.offset + 1,
         )
 
-    def _was_missing_course_update_ignored(
+    def _was_missing_current_ignored(
         self,
         connection: Connection,
         *,
         event: DtsChangeEvent,
     ) -> bool:
-        return _ledger_has_ignored_missing_course_update(
+        return _ledger_has_ignored_missing_current(
             connection,
             event=event,
         )
@@ -1465,15 +1465,12 @@ def _result_dirty_keys(
     return raw_keys
 
 
-def _ledger_has_ignored_missing_course_update(
+def _ledger_has_ignored_missing_current(
     connection: Connection,
     *,
     event: DtsChangeEvent,
 ) -> bool:
-    if (
-        event.operation != "UPDATE"
-        or event.table_name not in {"dom_appoint", "ovs_appoint"}
-    ):
+    if event.operation not in {"UPDATE", "DELETE"}:
         return False
     row = connection.execute(
         text(
@@ -1499,7 +1496,7 @@ def _ledger_has_ignored_missing_course_update(
     return (
         row.get("route_status") == "IGNORED"
         and isinstance(issue_codes, list)
-        and _MISSING_COURSE_UPDATE_ISSUE in issue_codes
+        and _MISSING_SOURCE_CURRENT_ISSUE in issue_codes
     )
 
 

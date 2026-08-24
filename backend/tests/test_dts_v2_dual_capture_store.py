@@ -5,8 +5,14 @@ from typing import Any
 
 import pytest
 
+from app import dts_v2_shadow_source_writer as shadow_source_writer
 from app.dts_ingest_store import DtsIngestDatabaseSettings
-from app.dts_source_consumer import DirtyKeySet, DtsChangeEvent
+from app.dts_source_consumer import (
+    DirtyKeySet,
+    DtsChangeEvent,
+    DtsConsumerSettings,
+    prepare_change_event_for_ingest,
+)
 from app.dts_v2_dual_capture_store import (
     DtsV2DualCaptureStoreError,
     PostgresDtsV2DualCaptureSink,
@@ -15,6 +21,7 @@ from app.dts_v2_dual_capture_store import (
 from app.dts_v2_dirty_queue_store import DirtyKeyV2
 from app.dts_v2_shadow_source_writer import (
     DtsV2ShadowSourceWriteResult,
+    DtsV2ShadowSourceWriter,
     DtsV2ShadowSourceWriterError,
 )
 
@@ -211,7 +218,7 @@ class _UnitSink(PostgresDtsV2DualCaptureSink):
         del connection, event, dirty_keys
         raise AssertionError("dual capture must never call legacy persistence")
 
-    def _was_missing_course_update_ignored(
+    def _was_missing_current_ignored(
         self,
         connection: object,
         *,
@@ -432,6 +439,91 @@ def test_writer_failure_adds_only_safe_failed_event_context() -> None:
     assert error.safe_source_operation == "UPDATE"
     assert error.safe_source_offset == 1
     assert (engine.begins, engine.commits, engine.rollbacks) == (1, 0, 1)
+
+
+@pytest.mark.parametrize("operation", ("UPDATE", "DELETE"))
+def test_sparse_non_course_change_without_current_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    before = {"id": 901, "status": "off"}
+    event = DtsChangeEvent(
+        source_region="dom",
+        topic="dom-topic",
+        partition=0,
+        offset=20_740_311,
+        record_id=20_740_311,
+        source_timestamp=1_786_982_400,
+        source_txid="tx-schedule",
+        source_position="opaque-schedule",
+        operation=operation,
+        database_name="source",
+        schema_name="public",
+        table_name="dom_teacher_class_schedule",
+        before=before,
+        after=(
+            {"id": 901, "status": "on"}
+            if operation == "UPDATE"
+            else None
+        ),
+        source_field_types={"id": "NUMERIC", "status": "TEXT"},
+    )
+    protected_event = prepare_change_event_for_ingest(
+        event,
+        DtsConsumerSettings(
+            source_region="dom",
+            execution_region="cn",
+            broker_urls=("broker.invalid:18003",),
+            topic="dom-topic",
+            group_id="dom-test-group",
+            account="dom-test-account",
+            password="unused",
+            domestic_student_hmac_key="a" * 64,
+        ),
+    )
+
+    class Connection:
+        @staticmethod
+        def in_transaction() -> bool:
+            return True
+
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_require_broker_epoch",
+        lambda *_args, **_kwargs: {"status": "ACTIVE"},
+    )
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_lock_source_table_for_cdc",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_lock_identity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_read_version_identity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_read_current_for_update",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = DtsV2ShadowSourceWriter(enabled=True).apply_cdc(
+        Connection(),  # type: ignore[arg-type]
+        protected_event,
+        EPOCH_ID,
+    )
+
+    assert result.status == "IGNORED_MISSING_CURRENT"
+    assert result.source_table == "dom_teacher_class_schedule"
+    assert result.source_key == "901"
+    assert result.source_row_revision is None
+    assert result.dirty_keys == ()
 
 
 @pytest.mark.parametrize(

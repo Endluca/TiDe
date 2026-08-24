@@ -686,7 +686,7 @@ fresh-start 只处理联合 H0 之后的新事件，课程基线只由 H0 后的
 
 - V2 已存在该课程：按本节规则正常合并；`t_id` 变化时执行代课拆分；
 - V2 不存在该课程：事件账本记 `IGNORED` 和
-  `COURSE_UPDATE_WITHOUT_CURRENT_IGNORED`，checkpoint 正常前进，但不创建 source current/version、
+  `SOURCE_CHANGE_WITHOUT_CURRENT_IGNORED`，checkpoint 正常前进，但不创建 source current/version、
   课程、教师参与或 dirty key；
 - 以后收到该课程 INSERT 时，从 INSERT 建立新基线；即使此后重放之前已忽略的 UPDATE，也必须仍然
   判为 duplicate/ignored，不能修改新基线。
@@ -1555,7 +1555,7 @@ assignment、Case 或提醒。
 | T70 | 同一课程并发重算 | 参与、收藏、任务、积分唯一约束无重复 |
 | T70A | A→B→A 同批到达后才投影 | 版本历史保留三个转换，脏键合并不吞掉 B，稳定得到 seq=1/2/3 |
 | T70B | DOM/OVS 同 appoint ID 且同一教师两课均 perfect，贯穿兼容/cutover/rollback | v2、兼容表和旧 Worker 均两行隔离；perfect_cnt=2、完美分=8，回滚不覆盖/漏课 |
-| T70C | 无 V2 课程基线时首个 appoint 事件是 A→B UPDATE | 账本记 `COURSE_UPDATE_WITHOUT_CURRENT_IGNORED` 并推进 checkpoint；不建 current/version、课程、参与或 dirty key；后续 INSERT 建基线后重放该 UPDATE 仍为 duplicate/ignored |
+| T70C | 无 V2 课程基线时首个 appoint 事件是 A→B UPDATE | 账本记 `SOURCE_CHANGE_WITHOUT_CURRENT_IGNORED` 并推进 checkpoint；不建 current/version、课程、参与或 dirty key；后续 INSERT 建基线后重放该 UPDATE 仍为 duplicate/ignored |
 | T70D | A→B 以新 offset 紧邻重复；以及 before/after 均与当前不符 | 前者 SEMANTIC_REPLAY 不新增参与/Outbox；后者 SOURCE_CONFLICT；A→B→A→B 仍保留第二次 B 参与 |
 | T71 | 主键原地变化 | 整批失败、checkpoint 不前进、无 ACK |
 | T72 | 退役 QA 与 user_complaint 全 CRUD | 账本/checkpoint 正确，无独立业务输出 |

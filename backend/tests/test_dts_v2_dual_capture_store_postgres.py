@@ -465,7 +465,7 @@ def test_single_pipeline_first_event_missing_update_and_insert(
             ).one() == (
                 "IGNORED",
                 0,
-                ["COURSE_UPDATE_WITHOUT_CURRENT_IGNORED"],
+                ["SOURCE_CHANGE_WITHOUT_CURRENT_IGNORED"],
             )
             assert connection.execute(
                 text("SELECT count(*) FROM public.dts_source_rows")

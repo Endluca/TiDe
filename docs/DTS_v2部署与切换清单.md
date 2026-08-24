@@ -7,7 +7,7 @@
 - public head：`20260824_101_dts_single_pipeline_reset`
 - teacher head：`0043_p_rel_execution_catalog`
 - 唯一外部运行模式：`SINGLE_PIPELINE`
-- `dom_appoint/ovs_appoint`：INSERT 建立课程；UPDATE 时课程当前态不存在则记录 `COURSE_UPDATE_WITHOUT_CURRENT_IGNORED`、推进 checkpoint，不创建课程；课程已存在则正常更新
+- 所有业务源表：无当前行且无法组成完整当前行的 UPDATE/DELETE 记录 `SOURCE_CHANGE_WITHOUT_CURRENT_IGNORED`、推进 checkpoint，不创建 source current/version 或 dirty key；后续 INSERT 建立基线后再正常处理。`dom_appoint/ovs_appoint` 无基线 UPDATE 始终按此规则忽略
 - rev101 是破坏性迁移：清空课程、教师投影、参与记录、积分、资格、关系、任务实例、通知/输出、DTS ledger/checkpoint/current/version/dirty/scope 等消费事实；保留任务目录、积分规则和版本化配置
 
 ## 2. 发布前
