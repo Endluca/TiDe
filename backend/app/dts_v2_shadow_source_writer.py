@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -61,6 +61,20 @@ class DtsV2ShadowSourceWriteResult:
     dirty_keys: tuple[DirtyKeyV2, ...] = ()
 
 
+@dataclass
+class DtsV2ShadowSourceBatchContext:
+    """Locks and current identities shared by one serialized stream batch."""
+
+    source_region: str
+    topic: str
+    partition: int
+    source_partition_epoch_id: str
+    incoming_epoch: Mapping[str, Any]
+    locked_tables: frozenset[str]
+    current_identities: set[tuple[str, str, str]]
+    new_offsets: frozenset[int]
+
+
 class DtsV2ShadowSourceWriter:
     """Append one verified CDC version and advance only its shadow current."""
 
@@ -83,11 +97,131 @@ class DtsV2ShadowSourceWriter:
             source_partition_epoch_id,
         )
 
+    def prepare_batch(
+        self,
+        connection: Connection,
+        events: Sequence[DtsChangeEvent],
+        source_partition_epoch_id: str,
+    ) -> DtsV2ShadowSourceBatchContext | None:
+        """Acquire invariant locks once and preload existing source current.
+
+        The caller already owns the stream checkpoint row for the complete
+        transaction.  Repeating epoch/table/identity advisory locks for every
+        record adds several cross-region round trips without adding further
+        serialization.  One shared source-table lock per table still excludes
+        snapshot publication while the ordered CDC batch is applied.
+        """
+
+        business_events = tuple(
+            event
+            for event in events
+            if _is_business_source_table(
+                source_region=event.source_region,
+                source_table=event.table_name or "",
+            )
+            and event.operation in {"INSERT", "UPDATE", "DELETE"}
+        )
+        if not business_events:
+            return None
+        first = business_events[0]
+        stream_identity = (
+            first.source_region,
+            first.topic,
+            first.partition,
+        )
+        if any(
+            (event.source_region, event.topic, event.partition)
+            != stream_identity
+            for event in business_events
+        ):
+            raise DtsV2ShadowSourceWriterError(
+                "DTS_V2_SHADOW_BATCH_STREAM_MISMATCH"
+            )
+
+        identities: set[tuple[str, str, str]] = set()
+        tables: set[str] = set()
+        for event in business_events:
+            table = event.table_name or ""
+            _source_key_type, source_key = _event_source_identity(event)
+            tables.add(table)
+            identities.add((event.source_region, table, source_key))
+
+        incoming_epoch = _require_broker_epoch(
+            connection,
+            event=first,
+            source_partition_epoch_id=source_partition_epoch_id,
+        )
+        for table in sorted(tables):
+            _lock_source_table_for_cdc(
+                connection,
+                source_region=first.source_region,
+                source_table=table,
+            )
+
+        current_identities: set[tuple[str, str, str]] = set()
+        if identities:
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT current.source_region,
+                           current.source_table,
+                           current.source_key
+                    FROM public.dts_source_rows AS current
+                    JOIN jsonb_to_recordset(CAST(:identities AS jsonb))
+                      AS requested(
+                        source_region text,
+                        source_table text,
+                        source_key text
+                      )
+                      ON requested.source_region=current.source_region
+                     AND requested.source_table=current.source_table
+                     AND requested.source_key=current.source_key
+                    FOR UPDATE OF current
+                    """
+                ),
+                {
+                    "identities": json.dumps(
+                        [
+                            {
+                                "source_region": source_region,
+                                "source_table": source_table,
+                                "source_key": source_key,
+                            }
+                            for source_region, source_table, source_key
+                            in sorted(identities)
+                        ],
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                    )
+                },
+            ).mappings()
+            current_identities.update(
+                (
+                    str(row["source_region"]),
+                    str(row["source_table"]),
+                    str(row["source_key"]),
+                )
+                for row in rows
+            )
+
+        return DtsV2ShadowSourceBatchContext(
+            source_region=first.source_region,
+            topic=first.topic,
+            partition=first.partition,
+            source_partition_epoch_id=source_partition_epoch_id,
+            incoming_epoch=incoming_epoch,
+            locked_tables=frozenset(tables),
+            current_identities=current_identities,
+            new_offsets=frozenset(event.offset for event in business_events),
+        )
+
     def apply_cdc(
         self,
         connection: Connection,
         event: DtsChangeEvent,
         source_partition_epoch_id: str,
+        *,
+        batch_context: DtsV2ShadowSourceBatchContext | None = None,
     ) -> DtsV2ShadowSourceWriteResult:
         if self.enabled is not True:
             raise DtsV2ShadowSourceWriterError(
@@ -144,32 +278,57 @@ class DtsV2ShadowSourceWriter:
             source_partition_epoch_id=source_partition_epoch_id,
         )
 
-        incoming_epoch = _require_broker_epoch(
-            connection,
-            event=event,
-            source_partition_epoch_id=source_partition_epoch_id,
-        )
-        _lock_source_table_for_cdc(
-            connection,
-            source_region=event.source_region,
-            source_table=table,
-        )
-        _lock_identity(
-            connection,
-            "source-current",
-            event.source_region,
-            table,
-            source_key,
-        )
-        _lock_identity(
-            connection,
-            "source-version",
-            event.source_region,
-            source_partition_epoch_id,
-            event.topic,
-            event.partition,
-            event.offset,
-        )
+        if batch_context is None:
+            incoming_epoch = _require_broker_epoch(
+                connection,
+                event=event,
+                source_partition_epoch_id=source_partition_epoch_id,
+            )
+            _lock_source_table_for_cdc(
+                connection,
+                source_region=event.source_region,
+                source_table=table,
+            )
+            _lock_identity(
+                connection,
+                "source-current",
+                event.source_region,
+                table,
+                source_key,
+            )
+            _lock_identity(
+                connection,
+                "source-version",
+                event.source_region,
+                source_partition_epoch_id,
+                event.topic,
+                event.partition,
+                event.offset,
+            )
+        else:
+            if (
+                batch_context.source_region != event.source_region
+                or batch_context.topic != event.topic
+                or batch_context.partition != event.partition
+                or batch_context.source_partition_epoch_id
+                != source_partition_epoch_id
+                or table not in batch_context.locked_tables
+                or event.offset not in batch_context.new_offsets
+            ):
+                raise DtsV2ShadowSourceWriterError(
+                    "DTS_V2_SHADOW_BATCH_CONTEXT_MISMATCH"
+                )
+            incoming_epoch = batch_context.incoming_epoch
+            identity = (event.source_region, table, source_key)
+            if (
+                event.operation in {"UPDATE", "DELETE"}
+                and identity not in batch_context.current_identities
+            ):
+                return _ignored_missing_current_result(
+                    event=event,
+                    source_key=source_key,
+                    source_key_type=source_key_type,
+                )
 
         replay = _read_version_identity(
             connection,
@@ -349,7 +508,7 @@ class DtsV2ShadowSourceWriter:
             after_dependency_keys=after_dependency_keys,
             after_is_present=event.operation != "DELETE",
         )
-        return _result(
+        result = _result(
             "SEMANTIC_REPLAY"
             if semantic_replay
             else ("NOOP" if semantic_noop else "APPLIED"),
@@ -357,6 +516,11 @@ class DtsV2ShadowSourceWriter:
             route=route,
             revision=revision,
         )
+        if batch_context is not None:
+            batch_context.current_identities.add(
+                (event.source_region, table, source_key)
+            )
+        return result
 
 
 def _event_source_identity(event: DtsChangeEvent) -> tuple[str, str]:

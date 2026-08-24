@@ -296,6 +296,15 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 )
             checkpoint_row_version = checkpoint["checkpoint_row_version"]
             next_offset = checkpoint["next_offset"]
+            prepare_batch = getattr(self._v2_writer, "prepare_batch", None)
+            if callable(prepare_batch):
+                return self._apply_optimized_batch_transaction(
+                    connection,
+                    prepared,
+                    checkpoint_row_version=checkpoint_row_version,
+                    next_offset=next_offset,
+                    prepare_batch=prepare_batch,
+                )
             duplicates: list[bool] = []
             # Do not bulk-fold v2 current.  Applying each event in source order
             # inside this one transaction preserves A -> B -> A transitions for
@@ -314,6 +323,101 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 )
                 duplicates.append(duplicate)
             return tuple(duplicates)
+
+    def _apply_optimized_batch_transaction(
+        self,
+        connection: Connection,
+        prepared: Sequence[tuple[DtsChangeEvent, DirtyKeySet]],
+        *,
+        checkpoint_row_version: int,
+        next_offset: int,
+        prepare_batch: Any,
+    ) -> tuple[bool, ...]:
+        """Persist a continuous batch with one ledger and checkpoint write.
+
+        Exact replay records remain on the established validation path.  The
+        new suffix is already serialized by the stream checkpoint lock, so it
+        can share source-table locks/current prefetch and defer its immutable
+        ledger plus checkpoint transition until every ordered source mutation
+        has succeeded in this transaction.
+        """
+
+        replay_items: list[tuple[DtsChangeEvent, DirtyKeySet]] = []
+        new_items: list[tuple[DtsChangeEvent, DirtyKeySet]] = []
+        expected_new_offset = next_offset
+        for item in prepared:
+            event = item[0]
+            if event.offset < next_offset:
+                if new_items:
+                    raise DtsV2DualCaptureStoreError(
+                        "DTS_DATABASE_BATCH_OFFSET_ORDER_INVALID"
+                    )
+                replay_items.append(item)
+                continue
+            if event.offset != expected_new_offset:
+                raise DtsV2DualCaptureStoreError(
+                    "DTS_DATABASE_OFFSET_NOT_CONTIGUOUS"
+                )
+            new_items.append(item)
+            expected_new_offset = event.offset + 1
+
+        duplicate_flags: list[bool] = []
+        for event, dirty_keys in replay_items:
+            duplicate, checkpoint_row_version, replay_next_offset = (
+                self._apply_dual_event(
+                    connection,
+                    event,
+                    dirty_keys,
+                    expected_checkpoint_row_version=checkpoint_row_version,
+                    expected_next_offset=next_offset,
+                )
+            )
+            if not duplicate or replay_next_offset != next_offset:
+                raise DtsV2DualCaptureStoreError(
+                    "DTS_V2_DUAL_CAPTURE_REPLAY_INVALID"
+                )
+            duplicate_flags.append(True)
+
+        if not new_items:
+            return tuple(duplicate_flags)
+
+        batch_context = prepare_batch(
+            connection,
+            tuple(event for event, _dirty_keys in new_items),
+            self.source_partition_epoch_id,
+        )
+        deferred_ledger: list[dict[str, Any]] = []
+        initial_checkpoint_version = checkpoint_row_version
+        expected_next_offset = next_offset
+        for event, dirty_keys in new_items:
+            duplicate, checkpoint_row_version, expected_next_offset = (
+                self._apply_dual_event(
+                    connection,
+                    event,
+                    dirty_keys,
+                    expected_checkpoint_row_version=checkpoint_row_version,
+                    expected_next_offset=expected_next_offset,
+                    batch_context=batch_context,
+                    deferred_ledger=deferred_ledger,
+                )
+            )
+            if duplicate:
+                raise DtsV2DualCaptureStoreError(
+                    "DTS_V2_DUAL_CAPTURE_LEDGER_VERSION_INCONSISTENT"
+                )
+            duplicate_flags.append(False)
+
+        self._write_new_ledger_batch(connection, deferred_ledger)
+        last_event = new_items[-1][0]
+        self._advance_batch_checkpoint(
+            connection,
+            event=last_event,
+            expected_checkpoint_row_version=initial_checkpoint_version,
+            next_checkpoint_row_version=checkpoint_row_version,
+            expected_next_offset=next_offset,
+            advanced_next_offset=expected_next_offset,
+        )
+        return tuple(duplicate_flags)
 
     def _initialize_stream_if_missing(
         self,
@@ -737,6 +841,8 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         *,
         expected_checkpoint_row_version: int,
         expected_next_offset: int,
+        batch_context: Any | None = None,
+        deferred_ledger: list[dict[str, Any]] | None = None,
     ) -> tuple[bool, int, int]:
         if event.offset > expected_next_offset:
             raise DtsV2DualCaptureStoreError(
@@ -753,11 +859,19 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         )
         if _is_v2_business_event(event) and not ignored_missing_current:
             try:
-                v2_result = self._v2_writer.apply_cdc(
-                    connection,
-                    event,
-                    self.source_partition_epoch_id,
-                )
+                if batch_context is None:
+                    v2_result = self._v2_writer.apply_cdc(
+                        connection,
+                        event,
+                        self.source_partition_epoch_id,
+                    )
+                else:
+                    v2_result = self._v2_writer.apply_cdc(
+                        connection,
+                        event,
+                        self.source_partition_epoch_id,
+                        batch_context=batch_context,
+                    )
             except DtsV2ShadowSourceWriterError as exc:
                 # These attributes are consumed only by the process-level
                 # safe diagnostic formatter.  They identify the failed CDC
@@ -849,8 +963,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 else v2_result.protected_payload_hash
             ),
         )
-        duplicate = self._write_or_validate_ledger(
-            connection,
+        ledger_parameters = self._ledger_parameters(
             event=event,
             source_position=position,
             event_payload_hash=payload_hash,
@@ -858,6 +971,23 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             dirty_key_count=len(revision_dirty_keys),
             issue_codes=issue_codes,
         )
+        if deferred_ledger is None:
+            duplicate = self._write_or_validate_ledger(
+                connection,
+                event=event,
+                source_position=position,
+                event_payload_hash=payload_hash,
+                route_status=route_status,
+                dirty_key_count=len(revision_dirty_keys),
+                issue_codes=issue_codes,
+            )
+        else:
+            if replay_expected:
+                raise DtsV2DualCaptureStoreError(
+                    "DTS_V2_DUAL_CAPTURE_REPLAY_INVALID"
+                )
+            deferred_ledger.append(ledger_parameters)
+            duplicate = False
         if duplicate != replay_expected or (
             v2_result is not None
             and not ignored_missing_current
@@ -866,13 +996,16 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             raise DtsV2DualCaptureStoreError(
                 "DTS_V2_DUAL_CAPTURE_LEDGER_VERSION_INCONSISTENT"
             )
-        checkpoint_row_version = self._advance_or_validate_checkpoint(
-            connection,
-            event=event,
-            duplicate=duplicate,
-            expected_checkpoint_row_version=expected_checkpoint_row_version,
-            expected_next_offset=expected_next_offset,
-        )
+        if deferred_ledger is None:
+            checkpoint_row_version = self._advance_or_validate_checkpoint(
+                connection,
+                event=event,
+                duplicate=duplicate,
+                expected_checkpoint_row_version=expected_checkpoint_row_version,
+                expected_next_offset=expected_next_offset,
+            )
+        else:
+            checkpoint_row_version = expected_checkpoint_row_version + 1
         return (
             duplicate,
             checkpoint_row_version,
@@ -1211,26 +1344,14 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         dirty_key_count: int,
         issue_codes: Sequence[str],
     ) -> bool:
-        parameters = {
-            "source_region": event.source_region,
-            "topic": event.topic,
-            "partition": event.partition,
-            "offset": event.offset,
-            "record_id": event.record_id,
-            "source_timestamp": event.source_timestamp,
-            "source_txid": event.source_txid,
-            "opaque_source_position": event.source_position,
-            "operation": event.operation,
-            "source_database": event.database_name,
-            "source_schema": event.schema_name,
-            "source_table": event.table_name,
-            "route_status": route_status,
-            "dirty_key_count": dirty_key_count,
-            "issue_codes": _json_dump(list(issue_codes)),
-            "epoch_id": self.source_partition_epoch_id,
-            "source_position": _json_dump(source_position),
-            "event_payload_hash": event_payload_hash,
-        }
+        parameters = self._ledger_parameters(
+            event=event,
+            source_position=source_position,
+            event_payload_hash=event_payload_hash,
+            route_status=route_status,
+            dirty_key_count=dirty_key_count,
+            issue_codes=issue_codes,
+        )
         inserted = connection.execute(
             text(
                 """
@@ -1301,6 +1422,157 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 "DTS_V2_DUAL_CAPTURE_LEDGER_IDENTITY_CONFLICT"
             )
         return True
+
+    def _ledger_parameters(
+        self,
+        *,
+        event: DtsChangeEvent,
+        source_position: Mapping[str, Any],
+        event_payload_hash: str,
+        route_status: str,
+        dirty_key_count: int,
+        issue_codes: Sequence[str],
+    ) -> dict[str, Any]:
+        return {
+            "source_region": event.source_region,
+            "topic": event.topic,
+            "partition": event.partition,
+            "offset": event.offset,
+            "record_id": event.record_id,
+            "source_timestamp": event.source_timestamp,
+            "source_txid": event.source_txid,
+            "opaque_source_position": event.source_position,
+            "operation": event.operation,
+            "source_database": event.database_name,
+            "source_schema": event.schema_name,
+            "source_table": event.table_name,
+            "route_status": route_status,
+            "dirty_key_count": dirty_key_count,
+            "issue_codes": _json_dump(list(issue_codes)),
+            "epoch_id": self.source_partition_epoch_id,
+            "source_position": _json_dump(source_position),
+            "event_payload_hash": event_payload_hash,
+        }
+
+    def _write_new_ledger_batch(
+        self,
+        connection: Connection,
+        records: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if not records:
+            return
+        payload = [
+            {
+                **record,
+                "partition_id": record["partition"],
+                "offset_value": record["offset"],
+                "issue_codes": json.loads(str(record["issue_codes"])),
+                "source_position": json.loads(str(record["source_position"])),
+            }
+            for record in records
+        ]
+        inserted_count = connection.execute(
+            text(
+                """
+                WITH incoming AS MATERIALIZED (
+                  SELECT *
+                  FROM jsonb_to_recordset(CAST(:records AS jsonb)) AS item(
+                    source_region text,topic text,partition_id integer,
+                    offset_value bigint,record_id bigint,source_timestamp bigint,
+                    source_txid text,opaque_source_position text,
+                    operation text,source_database text,source_schema text,
+                    source_table text,route_status text,dirty_key_count integer,
+                    issue_codes jsonb,epoch_id text,source_position jsonb,
+                    event_payload_hash text
+                  )
+                ), inserted AS (
+                  INSERT INTO public.dts_ingest_events (
+                    source_region,topic,partition_id,offset_value,
+                    record_id,source_timestamp,source_txid,source_position,
+                    operation,source_database,source_schema,source_table,
+                    route_status,dirty_key_count,issue_codes,
+                    identity_version,source_partition_epoch_id,
+                    source_position_v2,event_payload_hash
+                  )
+                  SELECT source_region,topic,partition_id,offset_value,
+                         record_id,source_timestamp,source_txid,
+                         opaque_source_position,operation,source_database,
+                         source_schema,source_table,route_status,
+                         dirty_key_count,issue_codes,'V2_EPOCH',epoch_id,
+                         source_position,event_payload_hash
+                  FROM incoming
+                  ORDER BY offset_value
+                ON CONFLICT (
+                    source_region,topic,partition_id,offset_value
+                ) DO NOTHING
+                  RETURNING offset_value
+                )
+                SELECT count(*) FROM inserted
+                """
+            ),
+            {
+                "records": json.dumps(
+                    payload,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            },
+        ).scalar_one()
+        if inserted_count != len(records):
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_LEDGER_IDENTITY_CONFLICT"
+            )
+
+    def _advance_batch_checkpoint(
+        self,
+        connection: Connection,
+        *,
+        event: DtsChangeEvent,
+        expected_checkpoint_row_version: int,
+        next_checkpoint_row_version: int,
+        expected_next_offset: int,
+        advanced_next_offset: int,
+    ) -> None:
+        updated = connection.execute(
+            text(
+                """
+                UPDATE public.dts_ingest_checkpoints
+                SET next_offset = :advanced_next_offset,
+                    source_timestamp = :source_timestamp,
+                    source_position = :source_position,
+                    updated_at = clock_timestamp(),
+                    source_partition_epoch_id = :epoch_id,
+                    consumer_group = :consumer_group,
+                    checkpoint_row_version = :next_version,
+                    is_current_epoch = true
+                WHERE source_region = :source_region
+                  AND topic = :topic AND partition_id = :partition
+                  AND next_offset = :expected_next_offset
+                  AND source_partition_epoch_id = :epoch_id
+                  AND consumer_group = :consumer_group
+                  AND checkpoint_row_version = :expected_version
+                  AND is_current_epoch IS TRUE
+                RETURNING checkpoint_row_version
+                """
+            ),
+            {
+                "source_region": event.source_region,
+                "topic": event.topic,
+                "partition": event.partition,
+                "expected_next_offset": expected_next_offset,
+                "advanced_next_offset": advanced_next_offset,
+                "source_timestamp": event.source_timestamp,
+                "source_position": event.source_position,
+                "epoch_id": self.source_partition_epoch_id,
+                "consumer_group": self.consumer_group,
+                "expected_version": expected_checkpoint_row_version,
+                "next_version": next_checkpoint_row_version,
+            },
+        ).scalar_one_or_none()
+        if updated != next_checkpoint_row_version:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_CHECKPOINT_CONFLICT"
+            )
 
     def _advance_or_validate_checkpoint(
         self,

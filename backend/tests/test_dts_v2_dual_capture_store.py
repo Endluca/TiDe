@@ -110,6 +110,41 @@ class _Writer:
         )
 
 
+class _BatchWriter(_Writer):
+    def prepare_batch(
+        self,
+        connection: object,
+        events: tuple[DtsChangeEvent, ...],
+        source_partition_epoch_id: str,
+    ) -> object:
+        del connection
+        context = object()
+        self.calls.append(
+            (
+                "prepare-batch",
+                tuple(event.offset for event in events),
+                source_partition_epoch_id,
+                context,
+            )
+        )
+        return context
+
+    def apply_cdc(
+        self,
+        connection: object,
+        event: DtsChangeEvent,
+        source_partition_epoch_id: str,
+        *,
+        batch_context: object | None = None,
+    ) -> DtsV2ShadowSourceWriteResult:
+        assert batch_context is not None
+        return super().apply_cdc(
+            connection,
+            event,
+            source_partition_epoch_id,
+        )
+
+
 class _QueueStore:
     def __init__(
         self,
@@ -284,6 +319,43 @@ class _UnitSink(PostgresDtsV2DualCaptureSink):
         )
 
 
+class _BatchUnitSink(_UnitSink):
+    def _write_new_ledger_batch(
+        self,
+        connection: object,
+        records: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+    ) -> None:
+        del connection
+        self.calls.append(
+            (
+                "ledger-batch",
+                tuple(record["offset"] for record in records),
+            )
+        )
+
+    def _advance_batch_checkpoint(
+        self,
+        connection: object,
+        *,
+        event: DtsChangeEvent,
+        expected_checkpoint_row_version: int,
+        next_checkpoint_row_version: int,
+        expected_next_offset: int,
+        advanced_next_offset: int,
+    ) -> None:
+        del connection
+        self.calls.append(
+            (
+                "checkpoint-batch",
+                event.offset,
+                expected_checkpoint_row_version,
+                next_checkpoint_row_version,
+                expected_next_offset,
+                advanced_next_offset,
+            )
+        )
+
+
 def _event(
     offset: int,
     *,
@@ -389,6 +461,43 @@ def test_batch_uses_one_transaction_and_never_calls_legacy_dirty_upsert() -> Non
     second_v2 = calls.index(("v2", 1, EPOCH_ID))
     assert second_v2 > first_ledger
     assert calls[-1] == ("checkpoint-v2", 1, False, 12, 1)
+
+
+def test_batch_capable_writer_defers_ledger_and_checkpoint_once() -> None:
+    calls: list[tuple[Any, ...]] = []
+    engine = _Engine()
+    writer = _BatchWriter(calls)
+    sink = _BatchUnitSink(
+        engine,
+        writer,
+        calls,
+        queue_store=_QueueStore(calls),
+    )
+
+    events = tuple(
+        (
+            _event(offset, operation="HEARTBEAT", table_name=None),
+            DirtyKeySet(ignored_reason="CONTROL_RECORD"),
+            None,
+        )
+        for offset in range(100)
+    )
+    assert sink.apply_batch(events) == (False,) * 100
+
+    assert (engine.begins, engine.commits, engine.rollbacks) == (1, 1, 0)
+    assert sum(call[0] == "prepare-batch" for call in calls) == 1
+    assert sum(call[0] == "ledger-batch" for call in calls) == 1
+    assert sum(call[0] == "checkpoint-batch" for call in calls) == 1
+    assert not any(call[0] == "ledger" for call in calls)
+    assert not any(call[0] == "checkpoint-v2" for call in calls)
+    assert calls[-1] == (
+        "checkpoint-batch",
+        99,
+        11,
+        111,
+        0,
+        100,
+    )
 
 
 def test_exact_replay_requires_source_version_and_ledger_and_does_not_enqueue() -> None:
@@ -524,6 +633,71 @@ def test_sparse_non_course_change_without_current_is_ignored(
     assert result.source_key == "901"
     assert result.source_row_revision is None
     assert result.dirty_keys == ()
+
+
+def test_shadow_batch_missing_current_uses_one_prefetch_and_no_event_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = tuple(_event(offset) for offset in range(100))
+    calls: list[str] = []
+
+    class _Rows:
+        @staticmethod
+        def mappings() -> tuple[()]:
+            return ()
+
+    class _Connection:
+        @staticmethod
+        def in_transaction() -> bool:
+            return True
+
+        @staticmethod
+        def execute(*_args: Any, **_kwargs: Any) -> _Rows:
+            calls.append("current-prefetch")
+            return _Rows()
+
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_require_broker_epoch",
+        lambda *_args, **_kwargs: {"status": "ACTIVE"},
+    )
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_lock_source_table_for_cdc",
+        lambda *_args, **_kwargs: calls.append("table-lock"),
+    )
+    for forbidden in (
+        "_lock_identity",
+        "_read_version_identity",
+        "_read_current_for_update",
+    ):
+        monkeypatch.setattr(
+            shadow_source_writer,
+            forbidden,
+            lambda *_args, _name=forbidden, **_kwargs: pytest.fail(
+                f"unexpected per-event SQL path: {_name}"
+            ),
+        )
+
+    writer = DtsV2ShadowSourceWriter(enabled=True)
+    connection = _Connection()
+    context = writer.prepare_batch(connection, events, EPOCH_ID)
+    assert context is not None
+
+    results = tuple(
+        writer.apply_cdc(
+            connection,  # type: ignore[arg-type]
+            event,
+            EPOCH_ID,
+            batch_context=context,
+        )
+        for event in events
+    )
+
+    assert {result.status for result in results} == {
+        "IGNORED_MISSING_CURRENT"
+    }
+    assert calls == ["table-lock", "current-prefetch"]
 
 
 @pytest.mark.parametrize(
