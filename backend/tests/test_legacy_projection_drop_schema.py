@@ -353,7 +353,7 @@ def test_downgrade_restores_exact_tables_constraints_indexes_and_acl(
     assert "GRANT SELECT, INSERT, DELETE ON TABLE" in acl_sql
     assert "public.lesson_dimension_scores" in acl_sql
     assert "tit_teacher_crud" in acl_sql
-    assert "tide_business_app" in acl_sql
+    assert "tit_teacher_crud" in acl_sql
     assert "GRANT ALL" not in acl_sql.upper()
 
 

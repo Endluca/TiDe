@@ -27,8 +27,8 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-DOMAIN_ROLE = "tit_dts_domain_projector_runtime"
-PUBLISHER_ROLE = "tit_dts_complaint_rule_publisher_runtime"
+DOMAIN_ROLE = "tit_growth_app"
+PUBLISHER_ROLE = "tit_growth_app"
 CATALOG_LOCK_KEY = (
     "tit:catalog:COMPLAINT_RULE_SET:ACTIVE_COMPLAINT_RULE_SET"
 )
@@ -82,8 +82,8 @@ def _preflight_and_role() -> None:
         DO $complaint_catalog_v2_role$
         BEGIN
           IF to_regrole('{PUBLISHER_ROLE}') IS NULL THEN
-            CREATE ROLE {PUBLISHER_ROLE} LOGIN NOINHERIT NOSUPERUSER
-              NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+            RAISE EXCEPTION
+              'required application role is missing: {PUBLISHER_ROLE}';
           END IF;
           IF EXISTS (
             SELECT 1 FROM pg_roles WHERE rolname='{PUBLISHER_ROLE}'
@@ -642,7 +642,7 @@ def _install_catalog_dirty_wrapper() -> None:
         DECLARE fingerprint text;
         BEGIN
           IF actor_name<>current_user AND actor_name<>
-               'tit_dts_complaint_rule_publisher_runtime' THEN
+               'tit_growth_app' THEN
             RAISE EXCEPTION 'COMPLAINT_RULE_CATALOG_CALLER_FORBIDDEN'
               USING ERRCODE='42501';
           END IF;
@@ -729,7 +729,7 @@ def _install_category_reverse_fanout() -> None:
         DECLARE noop_count integer:=0;
         BEGIN
           IF actor_name<>current_user AND actor_name<>
-               'tit_dts_domain_projector_runtime' THEN
+               'tit_growth_app' THEN
             RAISE EXCEPTION
               'DTS_V2_COMPLAINT_CATEGORY_FANOUT_CALLER_FORBIDDEN'
               USING ERRCODE='42501';
@@ -1206,9 +1206,10 @@ def _apply_acl() -> None:
         rf"""
         REVOKE ALL PRIVILEGES ON TABLE
           public.complaint_rule_imports,
-          public.complaint_category_rules,
           public.complaint_rule_publication_audits
         FROM PUBLIC,{PUBLISHER_ROLE};
+        REVOKE ALL PRIVILEGES ON TABLE public.complaint_category_rules
+        FROM PUBLIC;
         REVOKE ALL PRIVILEGES ON TABLE
           public.dts_dirty_keys,public.dts_dirty_key_inputs
         FROM {PUBLISHER_ROLE},{DOMAIN_ROLE};
@@ -1240,9 +1241,8 @@ def _apply_acl() -> None:
         DECLARE role_name text;
         BEGIN
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_growth_app','tit_teacher_crud','tit_dts_ingest_runtime',
-            'tit_dts_outbox_worker_runtime',
-            'tit_dts_scope_coordinator_runtime','tide_business_app'
+            'tit_teacher_crud','tit_dts_ingest_runtime',
+            'tide_support_ticket_owner'
           ] LOOP
             IF to_regrole(role_name) IS NOT NULL THEN
               EXECUTE format(

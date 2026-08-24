@@ -21,7 +21,7 @@ def test_revision_83_is_additive_fail_closed_and_role_restricted() -> None:
     assert "SNAPSHOT_DIFF_REQUIRED_NOT_IMPLEMENTED" in source
     assert "CDC_OVERLAY_REPLAY_NOT_IMPLEMENTED" in source
     assert "SOURCE_SCOPE_FALSE_COMPLETE_FORBIDDEN" in source
-    assert "tit_dts_scope_coordinator_runtime" in source
+    assert "tit_growth_app" in source
     assert "SECURITY DEFINER" in source
     assert "FROM PUBLIC, tit_growth_app, tit_dts_ingest_runtime" in source
     assert "GRANT EXECUTE ON FUNCTION" in source

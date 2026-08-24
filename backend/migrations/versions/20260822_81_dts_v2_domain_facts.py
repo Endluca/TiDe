@@ -821,11 +821,11 @@ def _apply_acl() -> None:
 
             DO $domain_fact_optional_acl$
             BEGIN
-                IF to_regrole('tit_dts_domain_projector_runtime') IS NOT NULL THEN
+                IF to_regrole('tit_growth_app') IS NOT NULL THEN
                     IF EXISTS (
                         SELECT 1
                         FROM pg_roles
-                        WHERE rolname = 'tit_dts_domain_projector_runtime'
+                        WHERE rolname = 'tit_growth_app'
                           AND (
                               NOT rolcanlogin OR rolinherit OR rolsuper
                               OR rolcreatedb OR rolcreaterole OR rolreplication
@@ -833,21 +833,21 @@ def _apply_acl() -> None:
                           )
                     ) THEN
                         RAISE EXCEPTION
-                            'tit_dts_domain_projector_runtime must be a restricted NOINHERIT LOGIN role';
+                            'tit_growth_app must be a restricted NOINHERIT LOGIN role';
                     END IF;
                     EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE '
                         '{fact_table_list},public.domain_aggregate_revisions '
-                        'FROM tit_dts_domain_projector_runtime';
+                        'FROM tit_growth_app';
                     EXECUTE 'GRANT SELECT,INSERT,UPDATE ON TABLE '
                         '{fact_table_list} '
-                        'TO tit_dts_domain_projector_runtime';
+                        'TO tit_growth_app';
                     EXECUTE 'GRANT SELECT ON TABLE '
                         'public.domain_aggregate_revisions '
-                        'TO tit_dts_domain_projector_runtime';
+                        'TO tit_growth_app';
                     EXECUTE 'GRANT EXECUTE ON FUNCTION '
                         'public.dts_canonical_json_v1(jsonb),'
                         'public.dts_canonical_json_sha256_v1(jsonb) '
-                        'TO tit_dts_domain_projector_runtime';
+                        'TO tit_growth_app';
                 END IF;
             END
             $domain_fact_optional_acl$;

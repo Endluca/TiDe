@@ -106,7 +106,7 @@ def _recover(engine, command_id: str, event_id: str, payload_hash: str):
     with engine.begin() as connection:
         return _role_call(
             connection,
-            "tit_dts_outbox_recovery_runtime",
+            "tit_growth_app",
             """
             SELECT public.recover_outbox_event_v2(
                 :command_id,:event_id,:payload_hash,0,'manual-review-approved'
@@ -180,26 +180,11 @@ def test_rev85_archive_three_state_recovery_acl_and_concurrency(
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
-                "tit_dts_domain_projector_runtime",
-                "tit_dts_scope_coordinator_runtime",
-                "tit_dts_outbox_recovery_runtime",
-                "tit_dts_cutover_migration",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
                         f"CREATE ROLE {role_name} LOGIN NOINHERIT "
-                        "NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                        "NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOINHERIT "
                         "NOSUPERUSER NOCREATEDB NOCREATEROLE "
                         "NOREPLICATION NOBYPASSRLS"
                     )
@@ -370,22 +355,22 @@ def test_rev85_archive_three_state_recovery_acl_and_concurrency(
                     """
                     SELECT
                       has_function_privilege(
-                        'tit_dts_outbox_recovery_runtime',
+                        'tit_growth_app',
                         'public.recover_outbox_event_v2('
                         'text,text,text,bigint,text)','EXECUTE')
                       AND NOT has_function_privilege(
                         'tit_dts_ingest_runtime',
                         'public.recover_outbox_event_v2('
                         'text,text,text,bigint,text)','EXECUTE')
-                      AND NOT has_table_privilege(
-                        'tit_dts_outbox_recovery_runtime',
-                        'public.outbox_events','UPDATE')
+                          AND has_table_privilege(
+                            'tit_growth_app',
+                            'public.outbox_events','UPDATE')
                       AND has_function_privilege(
-                        'tit_dts_cutover_migration',
+                        'tit_growth_app',
                         'public.archive_legacy_outbox_event_v2('
                         'text,text,text,text,text)','EXECUTE')
                       AND NOT has_table_privilege(
-                        'tit_dts_cutover_migration',
+                        'tit_growth_app',
                         'public.outbox_events_legacy_archive','INSERT')
                     """
                 )
@@ -416,7 +401,7 @@ def test_rev85_archive_three_state_recovery_acl_and_concurrency(
             ).one()
             noop = _role_call(
                 connection,
-                "tit_dts_cutover_migration",
+                "tit_growth_app",
                 """
                 SELECT public.archive_legacy_outbox_event_v2(
                     'legacy-event-eligible',:row_hash,
@@ -435,7 +420,7 @@ def test_rev85_archive_three_state_recovery_acl_and_concurrency(
             with engine.begin() as connection:
                 _role_call(
                     connection,
-                    "tit_dts_cutover_migration",
+                    "tit_growth_app",
                     """
                     SELECT public.archive_legacy_outbox_event_v2(
                         'legacy-event-eligible',repeat('0',64),
@@ -518,7 +503,7 @@ def test_rev85_archive_three_state_recovery_acl_and_concurrency(
             with engine.begin() as connection:
                 _role_call(
                     connection,
-                    "tit_dts_outbox_recovery_runtime",
+                    "tit_growth_app",
                     """
                     SELECT public.recover_outbox_event_v2(
                         'recovery-command-response-lost',:event_id,

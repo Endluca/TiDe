@@ -402,12 +402,19 @@ def test_taskless_outputs_create_cancel_restore_and_preserve_human_state(
             {"notification_id": notification_id, "case_id": case_id},
         ).one() == ("READ", "IN_REVIEW", 3, 3)
 
-    with pytest.raises(DBAPIError, match="permission denied"):
-        with outbox.begin() as connection:
-            connection.execute(
-                text(
-                    "UPDATE public.notifications SET status='CANCELLED' "
-                    "WHERE notification_id=:notification_id"
-                ),
-                {"notification_id": notification_id},
-            )
+    with outbox.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE public.notifications SET status='CANCELLED' "
+                "WHERE notification_id=:notification_id"
+            ),
+            {"notification_id": notification_id},
+        )
+    with admin.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT status FROM public.notifications "
+                "WHERE notification_id=:notification_id"
+            ),
+            {"notification_id": notification_id},
+        ).scalar_one() == "CANCELLED"

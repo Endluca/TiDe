@@ -203,23 +203,13 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
                         f"CREATE ROLE {role_name} LOGIN NOINHERIT "
                         "NOSUPERUSER NOCREATEDB NOCREATEROLE "
                         "NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOSUPERUSER "
-                        "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
                     )
                 )
 

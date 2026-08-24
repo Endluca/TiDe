@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -19,8 +19,8 @@ depends_on: Union[str, tuple[str, ...], None] = None
 
 
 GUARD_SIGNATURE = "public.dts_v2_runtime_primary_guard_v1(text)"
-DOMAIN_ROLE = "tit_dts_domain_projector_runtime"
-OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"
+DOMAIN_ROLE = "tit_growth_app"
+OUTBOX_ROLE = "tit_growth_app"
 
 
 def _assert_preconditions() -> None:
@@ -44,21 +44,17 @@ def _ensure_runtime_roles() -> None:
         DO $runtime_guard_roles$
         BEGIN
           IF to_regrole('{DOMAIN_ROLE}') IS NULL THEN
-            CREATE ROLE {DOMAIN_ROLE} LOGIN NOINHERIT NOSUPERUSER
-              NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+            RAISE EXCEPTION 'required application role is missing: {DOMAIN_ROLE}';
           END IF;
           IF EXISTS (
             SELECT 1 FROM pg_roles
-            WHERE rolname IN ('{DOMAIN_ROLE}','{OUTBOX_ROLE}')
+            WHERE rolname = '{DOMAIN_ROLE}'
               AND (NOT rolcanlogin OR rolinherit OR rolsuper
                    OR rolcreatedb OR rolcreaterole OR rolreplication
                    OR rolbypassrls)
-          ) OR (
-            SELECT count(*) FROM pg_roles
-            WHERE rolname IN ('{DOMAIN_ROLE}','{OUTBOX_ROLE}')
-          ) <> 2 THEN
+          ) THEN
             RAISE EXCEPTION
-              'DTS v2 runtime roles must be restricted NOINHERIT LOGIN roles';
+              'tit_growth_app must be a restricted NOINHERIT LOGIN role';
           END IF;
         END
         $runtime_guard_roles$;
@@ -227,7 +223,6 @@ def _backfill_domain_runtime_acl() -> None:
 
         REVOKE INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER ON TABLE
           public.domain_aggregate_revisions,
-          public.outbox_events,
           public.course_favorite_observations,
           public.course_favorite_attributions
         FROM {DOMAIN_ROLE};
@@ -284,12 +279,14 @@ def _assert_installed_contract() -> None:
 def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         raise RuntimeError("DTS v2 runtime guard requires PostgreSQL")
-    _assert_preconditions()
+    if not context.is_offline_mode():
+        _assert_preconditions()
     _ensure_runtime_roles()
     _install_guard()
     _apply_acl_and_comments()
     _backfill_domain_runtime_acl()
-    _assert_installed_contract()
+    if not context.is_offline_mode():
+        _assert_installed_contract()
 
 
 def downgrade() -> None:

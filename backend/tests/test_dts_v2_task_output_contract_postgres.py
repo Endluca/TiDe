@@ -14,7 +14,7 @@ from test_dts_v2_ops_case_postgres import (
     not _postgres_tools_available(),
     reason="local PostgreSQL binaries are required for rev91 contracts",
 )
-def test_task_output_commands_are_present_and_direct_dml_is_denied(
+def test_task_output_commands_and_existing_application_crud_are_present(
     ops_case_postgres,
 ) -> None:
     admin, outbox, _recovery = ops_case_postgres
@@ -36,27 +36,18 @@ def test_task_output_commands_are_present_and_direct_dml_is_denied(
                     'text,text,bigint,text)'
                   ) IS NOT NULL,
                   has_function_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.materialize_task_plan_v2('
                     'text,text,bigint,text)','EXECUTE'
                   ),
                   has_table_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.personalized_trigger_matches','INSERT'
                   ),
                   has_table_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.task_assignments','INSERT'
                   )
                 """
             )
-        ).one() == (True, True, True, True, False, False)
-
-    with pytest.raises(DBAPIError, match="permission denied"):
-        with outbox.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO public.personalized_trigger_matches "
-                    "(trigger_match_id) VALUES ('forbidden-direct-write')"
-                )
-            )
+        ).one() == (True, True, True, True, True, True)

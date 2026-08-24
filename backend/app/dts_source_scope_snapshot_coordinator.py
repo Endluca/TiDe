@@ -37,7 +37,7 @@ from .dts_source_profile_registry_v2 import (
 
 PROTOCOL_VERSION = "dts-source-scope-snapshot-candidate-v1"
 SNAPSHOT_ID_PREFIX = "scope-v1:"
-REQUIRED_DATABASE_ROLE = "tit_dts_scope_coordinator_runtime"
+REQUIRED_DATABASE_ROLE = "tit_growth_app"
 CURRENT_SCOPE_KIND = "CURRENT"
 SUPPORTED_SCOPE_LEVELS = frozenset({"GLOBAL", "TEACHER"})
 DEPENDENCY_FIELDS = (

@@ -282,16 +282,16 @@ SourceWide 的 v1 Outbox 健康逻辑仅供历史回滚排障，不进入本次 
 
 `TIT_V2_RUNTIME_ENABLED` 在本次发布配置中固定为 `true`。application 只能在 public 迁移到
 当前 head、readiness 为 `READY_SINGLE_PIPELINE` 且 DOM/OVS 都已建立新 checkpoint 后发布。Domain 使用
-`tit_dts_domain_projector_runtime`，Outbox 和 Favorite 使用
-`tit_dts_outbox_worker_runtime`；三个连接池必须分别注入 URL，不能复用运营 `DATABASE_URL`。
+`tit_growth_app`，Outbox 和 Favorite 使用
+`tit_growth_app`；三个连接池必须分别注入 URL，不能复用运营 `DATABASE_URL`。
 
 | 变量名 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
 | `TIT_V2_RUNTIME_ENABLED` | 是 | `true` | 只接受小写 `true`；缺完整 capability 时失败关闭 |
-| `TIT_V2_EXPECTED_DATABASE` | 启用时 | 无 | 三个专用 URL 必须指向同一精确库名 |
-| `TIT_V2_DOMAIN_DATABASE_URL` | 启用时 | 无 | Domain 专用受限 LOGIN；本次只允许 `V2_PRIMARY` |
-| `TIT_V2_OUTBOX_DATABASE_URL` | 启用时 | 无 | Outbox 专用受限 LOGIN；处理 V2 Domain 事件 |
-| `TIT_V2_FAVORITE_DATABASE_URL` | 启用时 | 无 | Favorite 独立连接池，使用 Outbox 角色 |
+| `TIT_V2_EXPECTED_DATABASE` | 启用时 | 无 | 三个连接池 URL 必须指向同一精确库名 |
+| `TIT_V2_DOMAIN_DATABASE_URL` | 启用时 | 无 | Domain 独立连接池，登录角色固定为现有 `tit_growth_app`；本次只允许 `V2_PRIMARY` |
+| `TIT_V2_OUTBOX_DATABASE_URL` | 启用时 | 无 | Outbox 独立连接池，登录角色固定为现有 `tit_growth_app` |
+| `TIT_V2_FAVORITE_DATABASE_URL` | 启用时 | 无 | Favorite 独立连接池，登录角色固定为现有 `tit_growth_app` |
 | `TIT_V2_RUNTIME_BATCH_SIZE` | 否 | `25` | 每轮最大领取数，范围 1-1000 |
 | `TIT_V2_DOMAIN_LEASE_SECONDS` | 否 | `120` | Domain dirty lease，范围 15-300 秒 |
 | `TIT_V2_TIME_RECHECK_LEASE_SECONDS` | 否 | `120` | Outbox 进程内教师时间重检 lease，范围 15-300 秒；负责新师/旧师、30 天出营观察等无新 DTS 事件也会变化的规则 |
@@ -589,7 +589,8 @@ Gaea 另行配置。教师 Nginx 只从 `TIDE_TRUSTED_PROXY_CIDRS`（未设时�
 办公室公共 PG 若只能使用非严格 TLS，可以在 TEST 环境使用现有
 `COMPANY_TEST_DATABASE_ENABLED=true` 适配层，并注入 `TIDE_ADMIN_DB_HOST/PORT/NAME`、
 `TIDE_APP_DB_USER/PASSWORD`、`TIDE_ADMIN_DB_SSLMODE`。该适配会让教师写入与来源读取暂时复用
-一个测试账号，只能用于受控 TEST；预发布和生产必须恢复独立 URL 与独立角色。
+一个测试账号，只能用于受控 TEST；预发布和生产仍使用既有四个角色。V2 三个连接池可分别配置 URL，
+但登录角色统一为 `tit_growth_app`，不得再创建额外运行角色。
 
 其余可选邮件、OSS、CDN、通知调度、AI Gateway 与文件限制变量，以
 `teacher/backend/.env.example` 为完整字段表；启用某项能力时不得依赖代码默认值猜测密钥。

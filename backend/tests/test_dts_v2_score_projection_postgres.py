@@ -183,15 +183,14 @@ def test_score_commands_are_idempotent_vector_guarded_and_acl_protected(
                 {"vector": json.dumps(vector)},
             ).scalar_one()
 
-    with pytest.raises(DBAPIError, match="permission denied for function"):
-        with admin.begin() as connection:
-            connection.execute(text("SET LOCAL ROLE tit_growth_app"))
-            connection.execute(
-                text(
-                    "SELECT public.teacher_score_projection_vector_v2("
-                    "'score-t1')"
-                )
-            ).scalar_one()
+    with admin.begin() as connection:
+        connection.execute(text("SET LOCAL ROLE tit_growth_app"))
+        assert connection.execute(
+            text(
+                "SELECT public.teacher_score_projection_vector_v2("
+                "'score-t1')"
+            )
+        ).scalar_one()["teacher_id"] == "score-t1"
 
     with pytest.raises(DBAPIError, match="permission denied for view"):
         with admin.begin() as connection:

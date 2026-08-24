@@ -25,7 +25,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"
+OUTBOX_ROLE = "tit_growth_app"
 APP_ROLE = "tit_growth_app"
 TEACHER_ROLE = "tit_teacher_crud"
 EMPTY_OBJECT_HASH = (
@@ -57,7 +57,7 @@ def _preflight() -> None:
              OR to_regprocedure(
                'public.dts_v2_runtime_primary_guard_v1(text)'
              ) IS NULL
-             OR to_regrole('tit_dts_outbox_worker_runtime') IS NULL THEN
+             OR to_regrole('tit_growth_app') IS NULL THEN
             RAISE EXCEPTION 'DTS_V2_TASK_OUTPUT_PREREQUISITE_MISSING';
           END IF;
           IF to_regprocedure(
@@ -2136,7 +2136,7 @@ def _install_course_reconciler() -> None:
         GRANT EXECUTE ON FUNCTION
           public.reconcile_course_trigger_matches_v2(
             text,text,bigint,bigint,text,jsonb,text
-          ) TO tit_dts_outbox_worker_runtime;
+          ) TO tit_growth_app;
         """
     )
 
@@ -2315,7 +2315,7 @@ def _install_blacklist_reconciler() -> None:
         GRANT EXECUTE ON FUNCTION
           public.reconcile_blacklist_threshold_v2(
             text,text,bigint,bigint,text
-          ) TO tit_dts_outbox_worker_runtime;
+          ) TO tit_growth_app;
         """
     )
 
@@ -2632,7 +2632,7 @@ def _install_task_materializer() -> None:
         ) FROM PUBLIC;
         GRANT EXECUTE ON FUNCTION public.materialize_task_plan_v2(
           text,text,bigint,text
-        ) TO tit_dts_outbox_worker_runtime;
+        ) TO tit_growth_app;
         """
     )
 
@@ -2743,13 +2743,12 @@ def _install_fanout_and_acl() -> None:
 
         REVOKE INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER
           ON TABLE public.personalized_trigger_matches
-          FROM PUBLIC,tit_growth_app,tit_teacher_crud,
-            tit_dts_outbox_worker_runtime;
+          FROM PUBLIC,tit_teacher_crud;
         GRANT SELECT ON TABLE public.personalized_trigger_matches
-          TO tit_growth_app,tit_dts_outbox_worker_runtime;
-        REVOKE INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER
-          ON TABLE public.task_assignments
-          FROM tit_dts_outbox_worker_runtime;
+          TO tit_growth_app;
+        -- Both relations are part of the pre-existing tit_growth_app CRUD
+        -- contract.  V2 adds protected reducers; it does not revoke the
+        -- application's existing write path.
         """
     )
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
@@ -26,7 +26,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-SCOPE_ROLE = "tit_dts_scope_coordinator_runtime"
+SCOPE_ROLE = "tit_growth_app"
 INGEST_ROLE = "tit_dts_ingest_runtime"
 
 
@@ -2312,17 +2312,17 @@ def _install_guards_acl_and_comments() -> None:
 
 
 def _apply_optional_scope_role_acl_v3() -> None:
-    if not _scope_role_exists():
+    if not context.is_offline_mode() and not _scope_role_exists():
         return
     op.execute(
         r"""
         GRANT USAGE ON SCHEMA public
-        TO tit_dts_scope_coordinator_runtime;
+        TO tit_growth_app;
         REVOKE ALL PRIVILEGES ON TABLE
             public.dts_source_snapshot_desired_rows
-        FROM tit_dts_scope_coordinator_runtime;
+        FROM tit_growth_app;
         GRANT SELECT ON TABLE public.dts_source_snapshot_desired_rows
-        TO tit_dts_scope_coordinator_runtime;
+        TO tit_growth_app;
 
         REVOKE ALL ON FUNCTION
             public.dts_v2_source_current_pair_guard(),
@@ -2354,7 +2354,7 @@ def _apply_optional_scope_role_acl_v3() -> None:
             public.publish_source_snapshot_candidate_v2(
                 text,text,text,text,bigint,bigint,text,text
             )
-        FROM tit_dts_scope_coordinator_runtime;
+        FROM tit_growth_app;
 
         GRANT EXECUTE ON FUNCTION
             public.bind_source_snapshot_profile_v3(
@@ -2369,7 +2369,7 @@ def _apply_optional_scope_role_acl_v3() -> None:
             public.publish_source_snapshot_candidate_v3(
                 text,text,text,text,bigint,bigint,text,text
             )
-        TO tit_dts_scope_coordinator_runtime;
+        TO tit_growth_app;
         """
     )
 
@@ -2377,7 +2377,8 @@ def _apply_optional_scope_role_acl_v3() -> None:
 def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
-    _preflight()
+    if not context.is_offline_mode():
+        _preflight()
     _replace_source_key_validator(strict=False)
     _set_source_pair_guard_security(definer=True)
     _add_snapshot_publication_evidence()
@@ -2476,7 +2477,7 @@ def downgrade() -> None:
                 public.publish_source_snapshot_candidate_v2(
                     text,text,text,text,bigint,bigint,text,text
                 )
-            TO tit_dts_scope_coordinator_runtime;
+            TO tit_growth_app;
             """
         )
     op.drop_constraint(

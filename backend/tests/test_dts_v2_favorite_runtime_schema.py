@@ -43,19 +43,21 @@ def test_runtime_score_path_is_rev74_specific_idempotent_and_reversible() -> Non
     assert "DTS_V2_FAVORITE_RUNTIME_DOWNGRADE_DATA_PRESENT" in source
 
 
-def test_runtime_roles_only_receive_command_execution_not_direct_dml() -> None:
+def test_shared_runtime_receives_commands_and_new_tables_stay_protected() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
 
     assert (
-        'OUTBOX_RUNTIME_ROLE = "tit_dts_outbox_worker_runtime"' in source
+        'OUTBOX_RUNTIME_ROLE = "tit_growth_app"' in source
     )
     assert (
         'RECOVERY_RUNTIME_ROLE = '
-        '"tit_favorite_observation_recovery_runtime"' in source
+        '"tit_growth_app"' in source
     )
     assert "FROM {OUTBOX_RUNTIME_ROLE}" in source
     assert "TO {OUTBOX_RUNTIME_ROLE}" in source
     assert "TO {RECOVERY_RUNTIME_ROLE}" in source
-    assert "has_table_privilege(" in source
-    assert "public.course_favorite_observations','INSERT'" in source
-    assert "public.score_entries','INSERT'" in source
+    assert "CREATE ROLE" not in source
+    assert "COMMENT ON ROLE" not in source
+    assert "REVOKE ALL PRIVILEGES ON TABLE" in source
+    assert "public.course_favorite_observations" in source
+    assert "public.course_favorite_attributions" in source

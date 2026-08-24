@@ -50,8 +50,8 @@ class _Connection:
             return _Result(
                 {
                     "database_name": "tit_growth",
-                    "current_role": "tit_dts_domain_projector_runtime",
-                    "session_role": "tit_dts_domain_projector_runtime",
+                    "current_role": "tit_growth_app",
+                    "session_role": "tit_growth_app",
                     "rolcanlogin": True,
                     "rolinherit": False,
                     "rolsuper": False,

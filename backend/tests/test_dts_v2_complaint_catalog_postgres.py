@@ -79,7 +79,7 @@ def test_protected_complaint_catalog_publish_replay_and_immutability(
         assert health_before["ready"] is False
 
         connection.execute(
-            text("SET LOCAL ROLE tit_dts_complaint_rule_publisher_runtime")
+            text("SET LOCAL ROLE tit_growth_app")
         )
         catalog = PostgresDtsV2ComplaintRuleCatalog()
         applied = catalog.publish(
@@ -153,7 +153,7 @@ def test_protected_complaint_catalog_publish_replay_and_immutability(
 
     with admin.begin() as connection:
         connection.execute(
-            text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+            text("SET LOCAL ROLE tit_growth_app")
         )
         category = DtsV2DomainRevisionStore().publish_change(
             connection,
@@ -244,7 +244,7 @@ def test_protected_complaint_catalog_publish_replay_and_immutability(
             {"sha": NEXT_RULE_SHA},
         )
         connection.execute(
-            text("SET LOCAL ROLE tit_dts_complaint_rule_publisher_runtime")
+            text("SET LOCAL ROLE tit_growth_app")
         )
         changed = PostgresDtsV2ComplaintRuleCatalog().publish(
             connection,

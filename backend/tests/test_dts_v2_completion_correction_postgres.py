@@ -162,7 +162,7 @@ def _reconcile(
     event_id: str,
 ) -> dict[str, object]:
     with admin.begin() as connection:
-        connection.execute(text("SET LOCAL ROLE tit_dts_domain_projector_runtime"))
+        connection.execute(text("SET LOCAL ROLE tit_growth_app"))
         return connection.execute(
             text(
                 """

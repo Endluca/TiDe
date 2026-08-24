@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from app.db_models import DtsPipelineResetAuditRecord
+from test_mr60_dms_sql_postgres import _split_dms_onequery_statements
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +14,46 @@ MIGRATION = (
     / "versions"
     / "20260824_101_dts_single_pipeline_reset.py"
 )
+PUBLIC_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260824_public100_to_101_single_pipeline_reset.sql"
+)
+PUBLIC_65_100_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260824_public65_to_100_dts_domain_schema.sql"
+)
+TEACHER_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260824_teacher0042_to_0043_p_rel_execution_catalog.sql"
+)
+TEACHER_CANONICAL = (
+    ROOT.parent
+    / "teacher"
+    / "backend"
+    / "database"
+    / "migrations"
+    / "0043_p_rel_execution_catalog.up.sql"
+)
+
+
+def _assert_dms_onequery_compatible(source: str) -> None:
+    assert not re.search(r"\$[A-Za-z_][A-Za-z0-9_]*\$", source)
+    assert not re.search(r";;[ \t]*$", source, re.MULTILINE)
+    assert not re.search(
+        r"\b(?:CREATE|ALTER|DROP)\s+ROLE\b|\bCOMMENT\s+ON\s+ROLE\b",
+        source,
+        re.IGNORECASE,
+    )
+    statements = _split_dms_onequery_statements(source)
+    assert statements[0].startswith("--")
+    assert any("BEGIN;" in statement for statement in statements[:2])
+    assert any(statement == "COMMIT;" for statement in statements)
 
 
 def test_reset_migration_is_destructive_event_only_and_forward_only() -> None:
@@ -40,3 +82,55 @@ def test_reset_audit_model_records_scope_without_cutover_fields() -> None:
         "reset_at",
         "reset_by",
     }
+
+
+def test_formal_public_dms_is_pinned_and_fail_closed() -> None:
+    source = PUBLIC_DMS.read_text(encoding="utf-8")
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "flow/release@2881507" in source
+    assert "TIT_DTS_START_AT=2026-08-18T00:00:00+08:00" in source
+    assert "dom-single-20260818-2881507-01" in source
+    assert "ovs-single-20260818-2881507-01" in source
+    assert "public rev101 DMS requires public head 100" in source
+    assert "exact 38-row teacher ledger ending at 0043" in source
+    assert "READY_SINGLE_PIPELINE" in source
+    assert "UPDATE alembic_version SET version_num=" in source
+    _assert_dms_onequery_compatible(source)
+
+
+def test_formal_public_65_to_100_dms_matches_observed_heads() -> None:
+    source = PUBLIC_65_100_DMS.read_text(encoding="utf-8")
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "flow/release@2881507" in source
+    assert "public rev65->100 requires public head 65" in source
+    assert "exact 37-row teacher ledger ending at 0042" in source
+    assert "EARLY_CLEAR_ALL_CONSUMED_HISTORY_FOUND_NO_TABLES" in source
+    assert "('public.outbox_events')" in source
+    assert "('public.task_assignments')" in source
+    assert "('public.teachers')" in source
+    assert (
+        "UPDATE alembic_version SET "
+        "version_num='20260823_100_scope_snapshot_diff'" in source
+    )
+    assert "public rev65->100 postflight verification failed" in source
+    _assert_dms_onequery_compatible(source)
+
+
+def test_formal_teacher_dms_wraps_exact_canonical_business_sql() -> None:
+    wrapper = TEACHER_DMS.read_text(encoding="utf-8")
+    canonical = TEACHER_CANONICAL.read_text(encoding="utf-8")
+    canonical_body = canonical.removeprefix("BEGIN;\n").removesuffix(
+        "\nCOMMIT;\n"
+    )
+    assert wrapper.count("\nBEGIN;\n") == 1
+    assert wrapper.count("\nCOMMIT;\n") == 1
+    assert canonical_body in wrapper
+    assert "exact 37-row ledger ending at 0042" in wrapper
+    assert "'0043_p_rel_execution_catalog',\n    38," in wrapper
+    assert (
+        "0bb25fd49de5aac915dfb9a4e52ad567183a97865b4fc4dfd6d0a35d660492bf"
+        in wrapper
+    )
+    _assert_dms_onequery_compatible(wrapper)

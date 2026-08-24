@@ -27,8 +27,8 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-RECOVERY_ROLE = "tit_dts_outbox_recovery_runtime"
-CUTOVER_MIGRATION_ROLE = "tit_dts_cutover_migration"
+RECOVERY_ROLE = "tit_growth_app"
+CUTOVER_MIGRATION_ROLE = "tit_growth_app"
 MIGRATION_RUN_ID = "alembic:20260822_85_outbox_three_state"
 
 
@@ -1320,10 +1320,7 @@ def _apply_acl_and_comments() -> None:
         DECLARE role_name text;
         BEGIN
             FOREACH role_name IN ARRAY ARRAY[
-                'tit_teacher_crud','tit_dts_domain_projector_runtime',
-                'tit_dts_scope_coordinator_runtime','tit_source_monitor',
-                'tit_source_worker','tit_source_wide_runtime',
-                'tide_business_app'
+                'tit_teacher_crud','tide_support_ticket_owner'
             ]::text[] LOOP
                 IF to_regrole(role_name) IS NOT NULL THEN
                     EXECUTE format(
@@ -1343,45 +1340,45 @@ def _apply_acl_and_comments() -> None:
                 END IF;
             END LOOP;
 
-            IF to_regrole('tit_dts_outbox_recovery_runtime') IS NOT NULL THEN
+            IF to_regrole('tit_growth_app') IS NOT NULL THEN
                 IF EXISTS (
                     SELECT 1 FROM pg_roles
-                    WHERE rolname='tit_dts_outbox_recovery_runtime'
+                    WHERE rolname='tit_growth_app'
                       AND (NOT rolcanlogin OR rolinherit OR rolsuper
                            OR rolcreatedb OR rolcreaterole OR rolreplication
                            OR rolbypassrls)
                 ) THEN
                     RAISE EXCEPTION
-                        'tit_dts_outbox_recovery_runtime must be a restricted NOINHERIT LOGIN role';
+                        'tit_growth_app must be a restricted NOINHERIT LOGIN role';
                 END IF;
                 EXECUTE 'GRANT SELECT ON TABLE public.outbox_events,'
                     'public.outbox_events_legacy_archive '
-                    'TO tit_dts_outbox_recovery_runtime';
+                    'TO tit_growth_app';
                 EXECUTE 'GRANT EXECUTE ON FUNCTION '
                     'public.recover_outbox_event_v2('
                     'text,text,text,bigint,text) '
-                    'TO tit_dts_outbox_recovery_runtime';
+                    'TO tit_growth_app';
             END IF;
 
-            IF to_regrole('tit_dts_cutover_migration') IS NOT NULL THEN
+            IF to_regrole('tit_growth_app') IS NOT NULL THEN
                 IF EXISTS (
                     SELECT 1 FROM pg_roles
-                    WHERE rolname='tit_dts_cutover_migration'
+                    WHERE rolname='tit_growth_app'
                       AND (NOT rolcanlogin OR rolinherit OR rolsuper
                            OR rolcreatedb OR rolcreaterole OR rolreplication
                            OR rolbypassrls)
                 ) THEN
                     RAISE EXCEPTION
-                        'tit_dts_cutover_migration must be a restricted NOINHERIT LOGIN role';
+                        'tit_growth_app must be a restricted NOINHERIT LOGIN role';
                 END IF;
                 EXECUTE 'GRANT SELECT ON TABLE public.outbox_events,'
                     'public.outbox_events_legacy_archive '
-                    'TO tit_dts_cutover_migration';
+                    'TO tit_growth_app';
                 EXECUTE 'GRANT EXECUTE ON FUNCTION '
                     'public.preview_legacy_outbox_archive_v2(text,text),'
                     'public.archive_legacy_outbox_event_v2('
                     'text,text,text,text,text) '
-                    'TO tit_dts_cutover_migration';
+                    'TO tit_growth_app';
             END IF;
         END
         $outbox_v2_optional_acl$;

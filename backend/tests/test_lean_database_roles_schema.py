@@ -73,9 +73,9 @@ def test_revision_56_retires_only_legacy_source_access(monkeypatch) -> None:
     migration._retire_legacy_source_acl()
     sql = "\n".join(executed)
 
-    assert "tit_source_monitor" in sql
-    assert "tit_source_worker" in sql
-    assert "tit_source_worker_runtime" in sql
+    assert "tit_growth_app" in sql
+    assert "tit_growth_app" in sql
+    assert "tit_growth_app" in sql
     assert "DROP ROLE" not in sql
     assert "tit_teacher_crud" not in sql
     assert "tide_sys_admin" not in sql

@@ -36,7 +36,7 @@ _DOMAIN_TYPES = frozenset(
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
-_OUTBOX_RUNTIME_ROLE = "tit_dts_outbox_worker_runtime"
+_OUTBOX_RUNTIME_ROLE = "tit_growth_app"
 _DEFAULT_PRIMARY_GUARD = PostgresDtsV2PrimaryTransactionGuard()
 
 

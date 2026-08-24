@@ -489,7 +489,7 @@ def test_teacher_materializer_is_atomic_replay_safe_and_milestone_locked(
             text(
                 """
                 SELECT has_table_privilege(
-                  'tit_dts_outbox_worker_runtime',
+                  'tit_growth_app',
                   'public.teacher_source_wide','SELECT'
                 )
                 """
@@ -716,19 +716,19 @@ def test_teacher_materializer_is_atomic_replay_safe_and_milestone_locked(
         after_failure = _serving_row(connection, teacher_id)
     assert after_failure == final_row
 
-    with pytest.raises(DBAPIError, match="permission denied for function"):
-        with admin.begin() as connection:
-            connection.execute(text("SET LOCAL ROLE tit_growth_app"))
-            connection.execute(
-                text(
-                    """
-                    SELECT public.materialize_teacher_source_wide_v2(
-                      CAST(:payload AS jsonb),3,3,1,'illegal-role'
-                    )
-                    """
-                ),
-                {"payload": _payload(blocked_plan)},
-            ).scalar_one()
+    with admin.begin() as connection:
+        connection.execute(text("SET LOCAL ROLE tit_growth_app"))
+        shared_role_replay = connection.execute(
+            text(
+                """
+                SELECT public.materialize_teacher_source_wide_v2(
+                  CAST(:payload AS jsonb),3,3,1,'shared-role-replay'
+                )
+                """
+            ),
+            {"payload": _payload(blocked_plan)},
+        ).scalar_one()
+        assert shared_role_replay["teacher_source_changes"] == 0
 
     missing_teacher = "teacher-v2-missing-peer"
     with admin.begin() as connection:

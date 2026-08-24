@@ -195,21 +195,21 @@ def test_teacher_time_recheck_daily_transition_acl_and_standby(
                 """
                 SELECT
                   has_function_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.claim_teacher_time_rechecks_v2('
                     'text,integer,integer)','EXECUTE'
                   ),
                   has_function_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.materialize_teacher_time_recheck_v2('
                     'jsonb,bigint,bigint,bigint,text,bigint)','EXECUTE'
                   ),
                   has_table_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.dts_teacher_time_recheck_results','SELECT'
                   ),
                   has_table_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.dts_dirty_keys','UPDATE'
                   )
                 """

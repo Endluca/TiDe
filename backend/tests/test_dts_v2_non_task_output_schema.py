@@ -28,7 +28,7 @@ def test_revision_follows_runtime_course_health_and_installs_one_command():
     assert "SECURITY DEFINER" in source
     assert "dts_v2_runtime_primary_guard_v1(" in source
     assert "GRANT EXECUTE ON FUNCTION" in source
-    assert "TO tit_dts_outbox_worker_runtime" in source
+    assert "TO tit_growth_app" in source
 
 
 def test_notification_and_case_identity_and_lifecycle_are_frozen():
@@ -66,11 +66,10 @@ def test_teacher_notification_copy_is_english_and_only_proves_storage():
     assert "SENT" not in source
 
 
-def test_output_writes_are_command_owned_and_audited():
+def test_output_commands_are_audited_and_history_stays_append_only():
     source = _source()
 
     assert "append_dts_v2_notification_lifecycle_event_v1" in source
     assert "append_dts_v2_case_lifecycle_audit_v1" in source
-    assert "REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON TABLE" in source
-    assert "public.personalized_trigger_matches,public.notifications" in source
-    assert "public.notification_events,public.ops_cases,public.audit_events" in source
+    assert "REVOKE UPDATE,DELETE,TRUNCATE ON TABLE public.notification_events" in source
+    assert "existing tit_growth_app CRUD contract" in source

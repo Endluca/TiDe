@@ -635,7 +635,7 @@ def _restore_acl() -> None:
         BEGIN
             FOREACH role_name IN ARRAY ARRAY[
                 'tit_teacher_crud',
-                'tide_business_app'
+                'tit_teacher_crud'
             ]::text[] LOOP
                 IF EXISTS (
                     SELECT 1 FROM pg_roles WHERE rolname = role_name

@@ -199,27 +199,11 @@ def test_lesson_region_expand_manifest_contract_and_composite_identity(
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
-                "tit_dts_domain_projector_runtime",
-                "tit_dts_scope_coordinator_runtime",
-                "tit_dts_outbox_worker_runtime",
-                "tit_dts_outbox_recovery_runtime",
-                "tit_dts_cutover_migration",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
                         f"CREATE ROLE {role_name} LOGIN NOINHERIT "
-                        "NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                        "NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOINHERIT "
                         "NOSUPERUSER NOCREATEDB NOCREATEROLE "
                         "NOREPLICATION NOBYPASSRLS"
                     )

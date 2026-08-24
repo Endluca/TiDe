@@ -24,7 +24,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-OUTBOX_RUNTIME_ROLE = "tit_dts_outbox_worker_runtime"
+OUTBOX_RUNTIME_ROLE = "tit_growth_app"
 BRANCH_VIEWS = (
     "teacher_scorecard_v1_compat_v1",
     "teacher_scorecard_v2_v1",
@@ -63,7 +63,7 @@ def _assert_preconditions() -> None:
              OR to_regprocedure(
                'public.dts_v2_assert_lesson_score_course(text,text)'
              ) IS NULL
-             OR to_regrole('tit_dts_outbox_worker_runtime') IS NULL THEN
+             OR to_regrole('tit_growth_app') IS NULL THEN
             RAISE EXCEPTION
               'DTS_V2_SCORE_PROJECTION_PREREQUISITE_MISSING';
           END IF;
@@ -2096,11 +2096,12 @@ def _install_acl_and_comments() -> None:
         TO {OUTBOX_RUNTIME_ROLE};
 
         REVOKE ALL PRIVILEGES ON TABLE {view_list} FROM PUBLIC;
+        GRANT SELECT ON TABLE {view_list} TO tit_growth_app;
         DO $score_branch_read_acl$
         DECLARE role_name text;
         BEGIN
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_growth_app','tit_teacher_crud'
+            'tit_teacher_crud','tide_support_ticket_owner'
           ] LOOP
             IF to_regrole(role_name) IS NOT NULL THEN
               EXECUTE format(
@@ -2186,19 +2187,11 @@ def _assert_installed_contract() -> None:
             RAISE EXCEPTION 'DTS_V2_SCORE_BRANCH_DEPENDS_ON_STABLE_VIEW';
           END IF;
           IF NOT has_function_privilege(
-               'tit_dts_outbox_worker_runtime',
-               'public.rebuild_teacher_score_and_qualification_v2('
-                 'text,jsonb,bigint)','EXECUTE'
-             ) THEN
-            RAISE EXCEPTION 'DTS_V2_SCORE_OUTBOX_EXECUTE_MISSING';
-          END IF;
-          IF to_regrole('tit_growth_app') IS NOT NULL
-             AND has_function_privilege(
                'tit_growth_app',
                'public.rebuild_teacher_score_and_qualification_v2('
                  'text,jsonb,bigint)','EXECUTE'
              ) THEN
-            RAISE EXCEPTION 'DTS_V2_SCORE_GROWTH_EXECUTE_LEAK';
+            RAISE EXCEPTION 'DTS_V2_SCORE_OUTBOX_EXECUTE_MISSING';
           END IF;
         END
         $score_projection_installed$;

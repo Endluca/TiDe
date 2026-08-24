@@ -44,16 +44,10 @@ def test_revision_91_installs_the_typed_task_output_contract() -> None:
     assert "chr(0)" not in source
 
 
-def test_revision_91_keeps_runtime_writes_behind_commands() -> None:
+def test_revision_91_adds_commands_without_revoking_application_crud() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     assert "SECURITY DEFINER" in source
-    assert (
-        "REVOKE INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER\n"
-        "          ON TABLE public.personalized_trigger_matches"
-    ) in source
-    assert (
-        "REVOKE INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER\n"
-        "          ON TABLE public.task_assignments"
-    ) in source
+    assert "existing tit_growth_app CRUD" in source
+    assert "ON TABLE public.task_assignments\n          FROM tit_growth_app" not in source
     assert "GRANT EXECUTE ON FUNCTION" in source
     assert "INSERT INTO public.config_versions" not in source

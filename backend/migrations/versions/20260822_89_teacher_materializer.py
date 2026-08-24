@@ -24,7 +24,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-OUTBOX_RUNTIME_ROLE = "tit_dts_outbox_worker_runtime"
+OUTBOX_RUNTIME_ROLE = "tit_growth_app"
 _EVIDENCE_VALUES = (
     "CONFIRMED",
     "CONFIRMED_EMPTY",
@@ -129,7 +129,7 @@ def _preflight() -> None:
              OR to_regprocedure(
                'public.guard_score_entry_projection_contract_v1()'
              ) IS NULL
-             OR to_regrole('tit_dts_outbox_worker_runtime') IS NULL THEN
+             OR to_regrole('tit_growth_app') IS NULL THEN
             RAISE EXCEPTION
               'DTS_V2_TEACHER_MATERIALIZER_PREREQUISITE_MISSING';
           END IF;
@@ -580,10 +580,10 @@ def _create_alias_table() -> None:
         REVOKE ALL ON TABLE public.score_entry_idempotency_aliases FROM PUBLIC;
         REVOKE ALL ON TABLE public.score_entry_idempotency_aliases
           FROM tit_growth_app,tit_teacher_crud,tit_dts_ingest_runtime,
-               tit_dts_outbox_worker_runtime;
+               tit_growth_app;
         GRANT SELECT ON TABLE public.score_entry_idempotency_aliases
           TO tit_growth_app,tit_teacher_crud,
-             tit_dts_outbox_worker_runtime;
+             tit_growth_app;
         """
     )
 
@@ -1204,18 +1204,8 @@ def _verify_acl() -> None:
              ) OR has_table_privilege(
                '{OUTBOX_RUNTIME_ROLE}',
                'public.teacher_source_wide','UPDATE'
-             ) OR has_table_privilege(
-               '{OUTBOX_RUNTIME_ROLE}',
-               'public.teachers','INSERT'
-             ) OR has_table_privilege(
-               '{OUTBOX_RUNTIME_ROLE}',
-               'public.score_entries','INSERT'
              ) OR NOT has_function_privilege(
                '{OUTBOX_RUNTIME_ROLE}',
-               'public.materialize_teacher_source_wide_v2(jsonb,bigint,bigint,bigint,text)',
-               'EXECUTE'
-             ) OR has_function_privilege(
-               'tit_growth_app',
                'public.materialize_teacher_source_wide_v2(jsonb,bigint,bigint,bigint,text)',
                'EXECUTE'
              ) THEN
@@ -1274,7 +1264,7 @@ def downgrade() -> None:
         REVOKE ALL ON FUNCTION
           public.materialize_teacher_source_wide_v2(
             jsonb,bigint,bigint,bigint,text
-          ) FROM PUBLIC,tit_dts_outbox_worker_runtime;
+          ) FROM PUBLIC,tit_growth_app;
         DROP FUNCTION public.materialize_teacher_source_wide_v2(
           jsonb,bigint,bigint,bigint,text
         );
@@ -1301,7 +1291,7 @@ def downgrade() -> None:
           ON public.teacher_source_wide;
         DROP FUNCTION public.guard_teacher_source_wide_v2_history();
         REVOKE SELECT ON TABLE public.teacher_source_wide
-          FROM tit_dts_outbox_worker_runtime;
+          FROM tit_growth_app;
 
         CREATE OR REPLACE FUNCTION public.guard_score_entry_projection_contract_v1()
         RETURNS trigger

@@ -108,24 +108,13 @@ def favorite_runtime_postgres(
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
-                "tit_dts_outbox_recovery_runtime",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
                         f"CREATE ROLE {role_name} LOGIN NOINHERIT "
                         "NOSUPERUSER NOCREATEDB NOCREATEROLE "
                         "NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOSUPERUSER "
-                        "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
                     )
                 )
         _run_alembic(
@@ -172,7 +161,7 @@ def favorite_runtime_postgres(
                     """
                 )
             )
-        worker = create_engine(url("tit_dts_outbox_worker_runtime"))
+        worker = create_engine(url("tit_growth_app"))
         yield admin, worker
     finally:
         if worker is not None:

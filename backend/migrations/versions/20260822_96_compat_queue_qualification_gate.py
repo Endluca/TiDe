@@ -20,9 +20,9 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-CUTOVER_ROLE = "tit_dts_projection_cutover_runtime"
+CUTOVER_ROLE = "tit_growth_app"
 INGEST_ROLE = "tit_dts_ingest_runtime"
-OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"
+OUTBOX_ROLE = "tit_growth_app"
 COMPAT_KEY_TYPES = (
     "COURSE",
     "TEACHER",

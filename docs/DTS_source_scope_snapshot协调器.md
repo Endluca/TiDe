@@ -12,7 +12,7 @@ begin → stage rows → verify → publish → readback
 ```
 
 它不会连接源库、DTS 或 Kafka，不会查询学生原始身份，也不会自行补齐来源数据。
-`dry-run` 只校验文件、专用数据库角色、Schema/ACL 和目标 head/scope，不写数据库。
+`dry-run` 只校验文件、现有 `tit_growth_app` 角色、Schema/ACL 和目标 head/scope，不写数据库。
 
 当前 rev100 的发布边界：
 
@@ -32,7 +32,7 @@ GLOBAL 空集会删除该表当前集合，TEACHER 空集只清该教师 members
 
 数据库连接只从 `TIT_DTS_SCOPE_COORDINATOR_DATABASE_URL` 读取，不回退到通用
 `DATABASE_URL`。登录用户和当前用户都必须精确为
-`tit_dts_scope_coordinator_runtime`，且该角色必须保持：
+`tit_growth_app`，且该角色必须保持：
 
 ```text
 LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
@@ -136,7 +136,7 @@ JSON 格式使用同一字段，把 rows 放在根对象的 `rows` 数组，并�
 ```bash
 cd backend
 
-# 1. 只检查专用角色、Schema、函数 ACL；不写库
+# 1. 只检查现有 tit_growth_app、Schema、函数 ACL；不写库
 .venv/bin/python scripts/run_dts_source_scope_snapshot.py health
 
 # 2. 离线验证 profile/candidate/隐私/排序/所有哈希；不连库

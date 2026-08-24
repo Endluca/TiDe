@@ -96,7 +96,7 @@ def test_revision_81_is_additive_typed_domain_schema(monkeypatch) -> None:
     assert "COMPLAINT_CATEGORY" in sql
     assert "TASK_PLAN" in sql
     assert "^dom:v1:[0-9a-f]{64}$" in sql
-    assert "tit_dts_domain_projector_runtime" in sql
+    assert "tit_growth_app" in sql
     assert "GRANT SELECT,INSERT,UPDATE" in sql
     assert "domain_aggregate_revisions" in sql
     assert "outbox_events" not in sql

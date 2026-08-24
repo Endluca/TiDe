@@ -39,11 +39,12 @@ def test_revision_86_is_additive_after_outbox_three_state() -> None:
     assert migration.revision == REVISION
     assert migration.down_revision == DOWN_REVISION
     source = _migration_path().read_text(encoding="utf-8")
-    assert "CREATE ROLE {OUTBOX_RUNTIME_ROLE} LOGIN NOINHERIT" in source
-    assert "tit_dts_outbox_worker_runtime" in source
+    assert "CREATE ROLE" not in source
+    assert "COMMENT ON ROLE" not in source
+    assert "tit_growth_app" in source
     assert "record_dts_v2_technical_case(" in source
     assert "record_dts_v2_technical_case_recovery(" in source
-    assert "FROM PUBLIC,tit_growth_app,tit_dts_ingest_runtime" in source
+    assert "FROM PUBLIC,tit_dts_ingest_runtime" in source
     assert "DTS_V2_TECHNICAL_CASE_WORK_NOT_DEAD" in source
     assert "DTS_V2_TECHNICAL_RECOVERY_NOT_COMPLETE" in source
     assert "OPS_CASE_APPEND_ONLY" in source
@@ -121,7 +122,7 @@ def test_outbox_worker_requires_the_dedicated_runtime_role_and_orders_proofs() -
         / "dts_v2_outbox_worker.py"
     ).read_text(encoding="utf-8")
 
-    assert '_OUTBOX_RUNTIME_ROLE = "tit_dts_outbox_worker_runtime"' in worker_source
+    assert '_OUTBOX_RUNTIME_ROLE = "tit_growth_app"' in worker_source
     assert "DTS_V2_OUTBOX_RUNTIME_ROLE_REQUIRED" in worker_source
     assert worker_source.index("_publish_locked(connection, event)") < (
         worker_source.index("self.technical_cases.resolve_after_success")

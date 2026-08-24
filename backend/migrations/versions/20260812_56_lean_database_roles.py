@@ -115,9 +115,9 @@ def _retire_legacy_source_acl() -> None:
             relation_name text;
         BEGIN
             FOREACH role_name IN ARRAY ARRAY[
-                'tit_source_monitor',
-                'tit_source_worker',
-                'tit_source_worker_runtime'
+                'tit_growth_app',
+                'tit_growth_app',
+                'tit_growth_app'
             ]::text[] LOOP
                 IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
                     FOREACH relation_name IN ARRAY ARRAY[

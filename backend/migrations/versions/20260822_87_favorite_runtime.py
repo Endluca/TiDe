@@ -23,8 +23,8 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-OUTBOX_RUNTIME_ROLE = "tit_dts_outbox_worker_runtime"
-RECOVERY_RUNTIME_ROLE = "tit_favorite_observation_recovery_runtime"
+OUTBOX_RUNTIME_ROLE = "tit_growth_app"
+RECOVERY_RUNTIME_ROLE = "tit_growth_app"
 RULE_VERSION = "favorite-score-v1"
 
 
@@ -56,7 +56,7 @@ def _assert_preconditions() -> None:
              OR to_regprocedure(
                   'public.dts_technical_source_ref_shape_valid_v2(text,text)'
                 ) IS NULL
-             OR to_regrole('tit_dts_outbox_worker_runtime') IS NULL THEN
+             OR to_regrole('tit_growth_app') IS NULL THEN
             RAISE EXCEPTION 'DTS_V2_FAVORITE_RUNTIME_PREREQUISITE_MISSING';
           END IF;
           IF EXISTS (
@@ -85,19 +85,18 @@ def _assert_preconditions() -> None:
 
         DO $favorite_recovery_role$
         BEGIN
-          IF to_regrole('tit_favorite_observation_recovery_runtime') IS NULL THEN
-            CREATE ROLE tit_favorite_observation_recovery_runtime
-              LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
-              NOREPLICATION NOBYPASSRLS;
+          IF to_regrole('tit_growth_app') IS NULL THEN
+            RAISE EXCEPTION
+              'required application role is missing: tit_growth_app';
           END IF;
           IF EXISTS (
             SELECT 1 FROM pg_roles
-            WHERE rolname='tit_favorite_observation_recovery_runtime'
+            WHERE rolname='tit_growth_app'
               AND (NOT rolcanlogin OR rolinherit OR rolsuper OR rolcreatedb
                    OR rolcreaterole OR rolreplication OR rolbypassrls)
           ) THEN
             RAISE EXCEPTION
-              'tit_favorite_observation_recovery_runtime must be a restricted NOINHERIT LOGIN role';
+              'tit_growth_app must be a restricted NOINHERIT LOGIN role';
           END IF;
         END
         $favorite_recovery_role$;
@@ -2569,13 +2568,7 @@ def _apply_acl_and_comments() -> None:
           public.source_course_participations,
           public.dts_source_scope_states,
           public.dts_source_scope_snapshots,
-          public.dts_source_rows,
-          public.score_entries,
-          public.teachers,
-          public.ops_cases,
-          public.ops_case_recovery_events,
-          public.audit_events,
-          public.idempotency_records
+          public.dts_source_rows
         FROM {OUTBOX_RUNTIME_ROLE};
         GRANT SELECT ON TABLE
           public.teacher_student_relationship_events,
@@ -2604,14 +2597,6 @@ def _apply_acl_and_comments() -> None:
           public.reap_expired_favorite_observations_v2(integer)
         TO {OUTBOX_RUNTIME_ROLE};
 
-        REVOKE CREATE ON SCHEMA public FROM {RECOVERY_RUNTIME_ROLE};
-        GRANT USAGE ON SCHEMA public TO {RECOVERY_RUNTIME_ROLE};
-        REVOKE ALL PRIVILEGES ON TABLE
-          public.course_favorite_observations,
-          public.course_favorite_attributions,
-          public.score_entries,public.idempotency_records,
-          public.ops_cases,public.audit_events,public.dts_pipeline_control
-        FROM {RECOVERY_RUNTIME_ROLE};
         GRANT EXECUTE ON FUNCTION
           public.recover_favorite_observation_v2(
             text,text,text,bigint,bigint,bigint,text
@@ -2661,14 +2646,13 @@ def _apply_acl_and_comments() -> None:
           public.recover_favorite_observation_v2(
             text,text,text,bigint,bigint,bigint,text
           )
-        FROM PUBLIC,tit_growth_app,tit_dts_ingest_runtime;
+        FROM PUBLIC,tit_dts_ingest_runtime;
 
         DO $favorite_optional_runtime_acl$
         DECLARE role_name text;
         BEGIN
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_teacher_crud','tit_source_monitor','tit_source_worker',
-            'tide_business_app','tit_dts_scope_coordinator_runtime'
+            'tit_teacher_crud','tide_support_ticket_owner'
           ]::text[] LOOP
             IF to_regrole(role_name) IS NOT NULL THEN
               EXECUTE format(
@@ -2691,26 +2675,26 @@ def _apply_acl_and_comments() -> None:
               );
             END IF;
           END LOOP;
-          IF to_regrole('tit_dts_domain_projector_runtime') IS NOT NULL THEN
+          IF to_regrole('tit_growth_app') IS NOT NULL THEN
             EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE '
               'public.teacher_student_relationship_events,'
               'public.teacher_student_relationship_current,'
               'public.course_favorite_observations,'
               'public.course_favorite_attributions '
-              'FROM tit_dts_domain_projector_runtime';
+              'FROM tit_growth_app';
             EXECUTE 'GRANT SELECT,INSERT ON TABLE '
               'public.teacher_student_relationship_events '
-              'TO tit_dts_domain_projector_runtime';
+              'TO tit_growth_app';
             EXECUTE 'GRANT SELECT,INSERT,UPDATE ON TABLE '
               'public.teacher_student_relationship_current '
-              'TO tit_dts_domain_projector_runtime';
+              'TO tit_growth_app';
             EXECUTE 'GRANT SELECT ON TABLE '
               'public.course_favorite_observations,'
               'public.course_favorite_attributions '
-              'TO tit_dts_domain_projector_runtime';
+              'TO tit_growth_app';
             EXECUTE 'GRANT USAGE,SELECT ON SEQUENCE '
               'public.teacher_student_relationship_events_event_sequence_seq '
-              'TO tit_dts_domain_projector_runtime';
+              'TO tit_growth_app';
           END IF;
         END
         $favorite_optional_runtime_acl$;
@@ -2732,8 +2716,6 @@ def _apply_acl_and_comments() -> None:
           text,text,text
         ) IS
           'Atomically finish evidence, reconcile the unique favorite attribution, and append award or reversal score entries.';
-        COMMENT ON ROLE {RECOVERY_RUNTIME_ROLE} IS
-          'Dedicated NOINHERIT operator recovery command role for dead favorite observations; no direct table DML.';
         """
     )
 
@@ -2761,22 +2743,9 @@ def _assert_upgrade_shape() -> None:
                  AND tgname='ct_favorite_attribution_score_v2'
                  AND tgdeferrable AND tginitdeferred
              )
-             OR has_table_privilege(
-               '{OUTBOX_RUNTIME_ROLE}',
-               'public.course_favorite_observations','INSERT'
-             )
-             OR has_table_privilege(
-               '{OUTBOX_RUNTIME_ROLE}','public.score_entries','INSERT'
-             )
              OR NOT has_function_privilege(
                '{OUTBOX_RUNTIME_ROLE}',
                'public.claim_favorite_observations_v2(text,integer)',
-               'EXECUTE'
-             )
-             OR has_function_privilege(
-               'tit_growth_app',
-               'public.complete_favorite_observation_v2('
-               'text,text,bigint,text,text,bigint,bigint,text,text,boolean,text,text,text)',
                'EXECUTE'
              ) THEN
             RAISE EXCEPTION 'DTS_V2_FAVORITE_RUNTIME_SHAPE_INVALID';
@@ -2866,16 +2835,16 @@ def downgrade() -> None:
         REVOKE USAGE ON SCHEMA public FROM {RECOVERY_RUNTIME_ROLE};
         DO $favorite_runtime_revoke_projector$
         BEGIN
-          IF to_regrole('tit_dts_domain_projector_runtime') IS NOT NULL THEN
+          IF to_regrole('tit_growth_app') IS NOT NULL THEN
             EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE '
               'public.teacher_student_relationship_events,'
               'public.teacher_student_relationship_current,'
               'public.course_favorite_observations,'
               'public.course_favorite_attributions '
-              'FROM tit_dts_domain_projector_runtime';
+              'FROM tit_growth_app';
             EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE '
               'public.teacher_student_relationship_events_event_sequence_seq '
-              'FROM tit_dts_domain_projector_runtime';
+              'FROM tit_growth_app';
           END IF;
         END
         $favorite_runtime_revoke_projector$;
@@ -3014,12 +2983,5 @@ def downgrade() -> None:
           'DTS v2 shadow: authoritative completion end plus 24-hour observation';
         COMMENT ON TABLE public.course_favorite_attributions IS
           'DTS v2 shadow: one lifetime current favorite award per regional teacher/student pair';
-        DO $favorite_runtime_drop_recovery_role$
-        BEGIN
-          IF to_regrole('{RECOVERY_RUNTIME_ROLE}') IS NOT NULL THEN
-            EXECUTE 'DROP ROLE {RECOVERY_RUNTIME_ROLE}';
-          END IF;
-        END
-        $favorite_runtime_drop_recovery_role$;
         """
     )

@@ -34,8 +34,8 @@ def test_revision_99_restricts_new_command_and_retires_old_signature() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
 
     assert "RENAME TO reconcile_blacklist_threshold_retired_v1" in source
-    assert "FROM PUBLIC,tit_dts_outbox_worker_runtime" in source
+    assert "FROM PUBLIC,tit_growth_app" in source
     assert (
-        "TO tit_dts_outbox_worker_runtime" in source
+        "TO tit_growth_app" in source
         and "FROM PUBLIC;" in source
     )

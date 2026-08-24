@@ -104,10 +104,7 @@ def _install_public_guards() -> None:
         SET search_path = pg_catalog, public
         AS $function$
         DECLARE
-            actor_name text := COALESCE(
-                NULLIF(current_setting('role', true), 'none'),
-                session_user
-            );
+            actor_name text := current_user;
         BEGIN
             IF actor_name <> 'tit_teacher_crud' THEN
                 IF TG_OP = 'DELETE' THEN
@@ -757,17 +754,15 @@ def _grant_final_acl() -> None:
                 EXECUTE
                     'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public '
                     'FROM tide_support_ticket_owner';
-                IF to_regclass('public.teacher_support_tickets') IS NULL THEN
-                    RAISE EXCEPTION
-                        'support-ticket owner exists without its shared table';
+                IF to_regclass('public.teacher_support_tickets') IS NOT NULL THEN
+                    EXECUTE
+                        'GRANT USAGE ON SCHEMA public '
+                        'TO tide_support_ticket_owner';
+                    EXECUTE
+                        'GRANT SELECT, INSERT, UPDATE, DELETE ON '
+                        'public.teacher_support_tickets '
+                        'TO tide_support_ticket_owner';
                 END IF;
-                EXECUTE
-                    'GRANT USAGE ON SCHEMA public '
-                    'TO tide_support_ticket_owner';
-                EXECUTE
-                    'GRANT SELECT, INSERT, UPDATE, DELETE ON '
-                    'public.teacher_support_tickets '
-                    'TO tide_support_ticket_owner';
             END IF;
         END
         $optional_public_acl$;

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -18,7 +18,7 @@ branch_labels: Union[str, tuple[str, ...], None] = None
 depends_on: Union[str, tuple[str, ...], None] = None
 
 
-OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"
+OUTBOX_ROLE = "tit_growth_app"
 OLD_COMMAND = (
     "public.reconcile_blacklist_threshold_v2("
     "text,text,bigint,bigint,text)"
@@ -75,7 +75,7 @@ def _install_three_state_reconciler() -> None:
         REVOKE ALL ON FUNCTION
           public.reconcile_blacklist_threshold_v2(
             text,text,bigint,bigint,text
-          ) FROM PUBLIC,tit_dts_outbox_worker_runtime;
+          ) FROM PUBLIC,tit_growth_app;
         ALTER FUNCTION public.reconcile_blacklist_threshold_v2(
           text,text,bigint,bigint,text
         ) RENAME TO reconcile_blacklist_threshold_retired_v1;
@@ -396,7 +396,7 @@ def _install_three_state_reconciler() -> None:
         GRANT EXECUTE ON FUNCTION
           public.reconcile_blacklist_threshold_v2(
             text,text,bigint,bigint,text,jsonb
-          ) TO tit_dts_outbox_worker_runtime;
+          ) TO tit_growth_app;
         """
     )
 
@@ -404,7 +404,8 @@ def _install_three_state_reconciler() -> None:
 def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         raise RuntimeError("DTS v2 blacklist threshold requires PostgreSQL")
-    _preflight()
+    if not context.is_offline_mode():
+        _preflight()
     _install_three_state_reconciler()
 
 
@@ -428,7 +429,7 @@ def downgrade() -> None:
         REVOKE ALL ON FUNCTION
           public.reconcile_blacklist_threshold_v2(
             text,text,bigint,bigint,text,jsonb
-          ) FROM PUBLIC,tit_dts_outbox_worker_runtime;
+          ) FROM PUBLIC,tit_growth_app;
         DROP FUNCTION public.reconcile_blacklist_threshold_v2(
           text,text,bigint,bigint,text,jsonb
         );
@@ -442,6 +443,6 @@ def downgrade() -> None:
         GRANT EXECUTE ON FUNCTION
           public.reconcile_blacklist_threshold_v2(
             text,text,bigint,bigint,text
-          ) TO tit_dts_outbox_worker_runtime;
+          ) TO tit_growth_app;
         """
     )

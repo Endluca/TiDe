@@ -358,8 +358,8 @@ class _FakeScopeStore:
         return SourceScopeDatabaseHealth(
             ready=True,
             code="DTS_SOURCE_SCOPE_COORDINATOR_READY",
-            current_user="tit_dts_scope_coordinator_runtime",
-            session_user="tit_dts_scope_coordinator_runtime",
+            current_user="tit_growth_app",
+            session_user="tit_growth_app",
             schema_ready=True,
             functions_ready=True,
             direct_write_blocked=True,

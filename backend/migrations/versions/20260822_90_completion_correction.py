@@ -25,8 +25,8 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-DOMAIN_ROLE = "tit_dts_domain_projector_runtime"
-OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"
+DOMAIN_ROLE = "tit_growth_app"
+OUTBOX_ROLE = "tit_growth_app"
 APP_ROLE = "tit_growth_app"
 
 
@@ -94,8 +94,8 @@ def _preflight_and_expand_pointer() -> None:
              OR to_regprocedure(
                'public.reconcile_favorite_attribution_v2(text,text,text,text,bigint,text,text)'
              ) IS NULL
-             OR to_regrole('tit_dts_domain_projector_runtime') IS NULL
-             OR to_regrole('tit_dts_outbox_worker_runtime') IS NULL THEN
+             OR to_regrole('tit_growth_app') IS NULL
+             OR to_regrole('tit_growth_app') IS NULL THEN
             RAISE EXCEPTION
               'DTS_V2_COMPLETION_CORRECTION_PREREQUISITE_MISSING';
           END IF;
@@ -168,7 +168,7 @@ def _preflight_and_expand_pointer() -> None:
         REVOKE ALL ON TABLE
           public.completion_correction_pointer_upgrade_archive
         FROM PUBLIC,tit_growth_app,tit_dts_ingest_runtime,
-          tit_dts_domain_projector_runtime,tit_dts_outbox_worker_runtime;
+          tit_teacher_crud,tide_support_ticket_owner;
 
         LOCK TABLE public.source_courses,public.source_course_participations,
           public.ops_cases,public.ops_decisions,
@@ -199,21 +199,17 @@ def _preflight_and_expand_pointer() -> None:
 
 
 def _install_case_guard() -> None:
-    # Direct table privileges remain absent.  The extra paths below only let
-    # the two SECURITY DEFINER commands pass the existing protected-row guard:
-    # Domain may reconcile a completion Case; app may resolve one only after
-    # the immutable ops_decision row for that exact old revision exists.
+    # tit_growth_app keeps its existing Ops Case CRUD grant.  SECURITY DEFINER
+    # commands run as the table owner; direct application DML remains limited
+    # to the explicit manual-review transitions below.
     op.execute(
         rf"""
         CREATE OR REPLACE FUNCTION public.guard_ops_cases_v2()
         RETURNS trigger
         LANGUAGE plpgsql
-        SECURITY DEFINER
         SET search_path=pg_catalog,public
         AS $function$
-        DECLARE actor_name text := coalesce(
-          nullif(current_setting('role',true),'none'),session_user
-        );
+        DECLARE actor_name text:=current_user;
         DECLARE table_owner text;
         DECLARE has_completed_recovery boolean;
         DECLARE has_completion_decision boolean;
@@ -231,11 +227,7 @@ def _install_case_guard() -> None:
             RETURN NEW;
           END IF;
           IF TG_OP='INSERT' THEN
-            IF NOT (
-                 actor_name IN ('{OUTBOX_ROLE}',table_owner)
-                 OR (actor_name='{DOMAIN_ROLE}' AND
-                     NEW.case_type='COURSE_COMPLETION_CORRECTION')
-               )
+            IF actor_name<>table_owner
                OR NEW.case_revision<>1 OR NEW.row_version<>1
                OR NEW.recovery_evidence_count<>0
                OR NEW.last_recovery_event_id IS NOT NULL
@@ -273,9 +265,7 @@ def _install_case_guard() -> None:
             RAISE EXCEPTION 'DTS_V2_PROTECTED_CASE_VERSION_INVALID'
               USING ERRCODE='23514';
           END IF;
-          IF actor_name IN ('{OUTBOX_ROLE}',table_owner)
-             OR (actor_name='{DOMAIN_ROLE}' AND
-                 NEW.case_type='COURSE_COMPLETION_CORRECTION') THEN
+          IF actor_name=table_owner THEN
             RETURN NEW;
           END IF;
           IF actor_name='{APP_ROLE}' THEN
@@ -788,7 +778,7 @@ def _install_reconcile_command() -> None:
         GRANT EXECUTE ON FUNCTION
           public.reconcile_completion_conflict_case_v2(
             text,text,bigint,text)
-        TO tit_dts_domain_projector_runtime,tit_dts_outbox_worker_runtime;
+        TO tit_growth_app;
         """
     )
 
@@ -1577,7 +1567,7 @@ def _apply_acl_and_comments() -> None:
         GRANT EXECUTE ON FUNCTION
           public.reconcile_completion_conflict_case_v2(
             text,text,bigint,text)
-        TO tit_dts_domain_projector_runtime,tit_dts_outbox_worker_runtime;
+        TO tit_growth_app;
         GRANT EXECUTE ON FUNCTION
           public.apply_completion_correction_decision_v2(jsonb,text)
         TO tit_growth_app;
@@ -1601,12 +1591,9 @@ def _restore_rev86_case_guard() -> None:
         CREATE OR REPLACE FUNCTION public.guard_ops_cases_v2()
         RETURNS trigger
         LANGUAGE plpgsql
-        SECURITY DEFINER
         SET search_path=pg_catalog,public
         AS $function$
-        DECLARE actor_name text := coalesce(
-          nullif(current_setting('role',true),'none'),session_user
-        );
+        DECLARE actor_name text:=current_user;
         DECLARE table_owner text;
         DECLARE has_completed_recovery boolean;
         BEGIN
@@ -1621,7 +1608,7 @@ def _restore_rev86_case_guard() -> None:
             'TASK_MATERIALIZATION_DEAD','DOWNSTREAM_PROJECTION_DEAD'
           ) THEN RETURN NEW; END IF;
           IF TG_OP='INSERT' THEN
-            IF actor_name NOT IN ('{OUTBOX_ROLE}',table_owner)
+            IF actor_name<>table_owner
                OR NEW.case_revision<>1 OR NEW.row_version<>1
                OR NEW.recovery_evidence_count<>0
                OR NEW.last_recovery_event_id IS NOT NULL
@@ -1659,7 +1646,7 @@ def _restore_rev86_case_guard() -> None:
             RAISE EXCEPTION 'DTS_V2_PROTECTED_CASE_VERSION_INVALID'
               USING ERRCODE='23514';
           END IF;
-          IF actor_name='{OUTBOX_ROLE}' OR actor_name=table_owner THEN
+          IF actor_name=table_owner THEN
             RETURN NEW;
           END IF;
           IF actor_name='{APP_ROLE}' THEN

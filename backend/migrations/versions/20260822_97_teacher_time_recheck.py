@@ -26,7 +26,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"
+OUTBOX_ROLE = "tit_growth_app"
 
 
 def _preflight() -> None:
@@ -60,7 +60,7 @@ def _preflight() -> None:
                 required_function;
             END IF;
           END LOOP;
-          IF to_regrole('tit_dts_outbox_worker_runtime') IS NULL THEN
+          IF to_regrole('tit_growth_app') IS NULL THEN
             RAISE EXCEPTION
               'DTS_V2_TIME_RECHECK_PREREQUISITE_MISSING:OUTBOX_ROLE';
           END IF;
@@ -735,7 +735,7 @@ def _install_materializer() -> None:
         DECLARE teacher_changes integer := 0;
         DECLARE result_changes integer := 0;
         BEGIN
-          IF actor_name<>'tit_dts_outbox_worker_runtime'
+          IF actor_name<>'tit_growth_app'
              OR jsonb_typeof(p_payload)<>'object'
              OR (SELECT array_agg(key ORDER BY key)
                  FROM jsonb_object_keys(p_payload) keys(key))
@@ -1188,7 +1188,7 @@ def _apply_acl() -> None:
           public.dts_teacher_time_recheck_results,
           public.dts_teacher_time_recheck_audits
         FROM PUBLIC,tit_growth_app,tit_dts_ingest_runtime,
-          tit_dts_domain_projector_runtime,{OUTBOX_ROLE};
+          tit_teacher_crud,tide_support_ticket_owner;
 
         -- The application rebuilds the date-derived plan from the same two
         -- immutable TEACHER aggregate states used by the regular Outbox
@@ -1231,8 +1231,8 @@ def _apply_acl() -> None:
           ),
           public.teacher_time_recheck_result_proof_v1(text,date),
           public.dts_v2_teacher_time_recheck_health_v1(bigint)
-        FROM tit_growth_app,tit_dts_ingest_runtime,
-          tit_dts_domain_projector_runtime;
+        FROM PUBLIC,tit_dts_ingest_runtime,
+          tit_teacher_crud,tide_support_ticket_owner;
 
         DO $teacher_time_recheck_acl$
         BEGIN
@@ -1252,10 +1252,6 @@ def _apply_acl() -> None:
                'public.domain_aggregate_revisions','UPDATE'
              ) OR NOT has_function_privilege(
                '{OUTBOX_ROLE}',
-               'public.materialize_teacher_time_recheck_v2(jsonb,bigint,bigint,bigint,text,bigint)',
-               'EXECUTE'
-             ) OR has_function_privilege(
-               'tit_growth_app',
                'public.materialize_teacher_time_recheck_v2(jsonb,bigint,bigint,bigint,text,bigint)',
                'EXECUTE'
              ) THEN
@@ -1310,7 +1306,7 @@ def downgrade() -> None:
         $teacher_time_recheck_downgrade_guard$;
 
         REVOKE SELECT ON TABLE public.domain_aggregate_revisions
-          FROM tit_dts_outbox_worker_runtime;
+          FROM tit_growth_app;
 
         DROP TRIGGER trg_enqueue_teacher_time_recheck_after_wide_v2
           ON public.teacher_source_wide;

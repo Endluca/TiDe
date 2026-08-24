@@ -6,6 +6,7 @@ import socket
 import subprocess
 from typing import Any
 
+import psycopg
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
@@ -18,12 +19,19 @@ from app.dts_v2_dual_capture_store import (
     DtsV2DualCaptureStoreError,
     PostgresDtsSourceEventSink,
 )
+from app.dts_v2_runtime_composition import (
+    DOMAIN_COMPONENT,
+    FAVORITE_COMPONENT,
+    OUTBOX_COMPONENT,
+    validate_runtime_startup,
+)
 from dts_v2_test_profiles import SYNTHETIC_APPOINT_SOURCE_FIELDS
 from test_dts_v2_source_current_guards_postgres import (
     _postgres_tools_available,
     _run_alembic,
     _seed_external_personalized_catalog,
 )
+from test_mr60_dms_sql_postgres import _split_dms_onequery_statements
 
 
 pytestmark = pytest.mark.usefixtures("synthetic_v2_appoint_profiles")
@@ -33,6 +41,21 @@ CONSUMER_GROUP = "group-single-pipeline"
 EPOCH_ID = "epoch-single-pipeline-20260824"
 START_TIMESTAMP = 1_787_500_000
 APPOINT_ID = 9001
+
+
+def _execute_dms_onequery_file(database_url: str, sql_path: Path) -> None:
+    statements = _split_dms_onequery_statements(
+        sql_path.read_text(encoding="utf-8")
+    )
+    with psycopg.connect(database_url, autocommit=True) as connection:
+        for statement_number, statement in enumerate(statements, start=1):
+            try:
+                connection.execute(statement)
+            except Exception as error:
+                raise AssertionError(
+                    "DMS onequery statement "
+                    f"{statement_number} failed: {statement[:160]}"
+                ) from error
 
 
 def _row(teacher_id: int, *, appoint_id: int = APPOINT_ID) -> dict[str, Any]:
@@ -147,6 +170,7 @@ def test_single_pipeline_first_event_missing_update_and_insert(
     bootstrap_engine = create_engine(postgres_url)
     admin_engine = None
     runtime_engine = None
+    application_engine = None
     try:
         with bootstrap_engine.connect().execution_options(
             isolation_level="AUTOCOMMIT"
@@ -157,7 +181,7 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
-                "tit_dts_scope_coordinator_runtime",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
@@ -166,18 +190,6 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                         "NOREPLICATION NOBYPASSRLS"
                     )
                 )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOSUPERUSER "
-                        "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-
         admin_url = URL.create(
             "postgresql+psycopg",
             username="postgres",
@@ -194,8 +206,134 @@ def test_single_pipeline_first_event_missing_update_and_insert(
         )
         with admin_engine.begin() as connection:
             _seed_external_personalized_catalog(connection)
-        _run_alembic(backend_dir, admin_url, "upgrade", "head")
+        _run_alembic(
+            backend_dir,
+            admin_url,
+            "upgrade",
+            "20260819_65_g09_set_course",
+        )
+        with admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.outbox_events(
+                      outbox_id,event_id,aggregate_type,aggregate_id,event_type,
+                      payload,status,available_at,attempt_count,last_error,
+                      created_at,published_at
+                    ) VALUES (
+                      'LEGACY-INVALID-STATE','LEGACY-INVALID-STATE',
+                      'LEGACY','LEGACY','legacy.invalid.v1','{}'::jsonb,
+                      'PUBLISHED',clock_timestamp(),0,NULL,
+                      clock_timestamp(),NULL
+                    )
+                    """
+                )
+            )
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS tide"))
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE tide.schema_migrations (
+                      migration_id text PRIMARY KEY,
+                      migration_order integer NOT NULL UNIQUE,
+                      filename text NOT NULL,
+                      sha256 char(64) NOT NULL,
+                      applied_at timestamptz NOT NULL DEFAULT now(),
+                      applied_by text NOT NULL DEFAULT current_user
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO tide.schema_migrations(
+                      migration_id,migration_order,filename,sha256
+                    )
+                    SELECT
+                      'fixture_'||lpad(value::text,4,'0'),
+                      value,
+                      'fixture_'||value||'.up.sql',
+                      repeat('a',64)
+                    FROM generate_series(1,36) AS value
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO tide.schema_migrations(
+                      migration_id,migration_order,filename,sha256
+                    ) VALUES (
+                      '0042_g09_set_kuozhi_course',37,
+                      '0042_g09_set_kuozhi_course.up.sql',
+                      repeat('b',64)
+                    )
+                    """
+                )
+            )
+        psql_url = admin_url.replace(
+            "postgresql+psycopg://", "postgresql://"
+        )
+        public_65_100_sql = (
+            backend_dir
+            / "migrations"
+            / "dms"
+            / "20260824_public65_to_100_dts_domain_schema.sql"
+        )
+        _execute_dms_onequery_file(psql_url, public_65_100_sql)
+        with admin_engine.begin() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM public.alembic_version")
+            ).scalar_one() == "20260823_100_scope_snapshot_diff"
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM public.outbox_events "
+                    "WHERE event_id='LEGACY-INVALID-STATE'"
+                )
+            ).scalar_one() == 0
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO tide.schema_migrations(
+                      migration_id,migration_order,filename,sha256
+                    ) VALUES (
+                      '0043_p_rel_execution_catalog',38,
+                      '0043_p_rel_execution_catalog.up.sql',
+                      '0bb25fd49de5aac915dfb9a4e52ad567183a97865b4fc4dfd6d0a35d660492bf'
+                    )
+                    """
+                )
+            )
+        public_100_101_sql = (
+            backend_dir
+            / "migrations"
+            / "dms"
+            / "20260824_public100_to_101_single_pipeline_reset.sql"
+        )
+        _execute_dms_onequery_file(psql_url, public_100_101_sql)
         _run_alembic(backend_dir, admin_url, "check")
+
+        application_url = URL.create(
+            "postgresql+psycopg",
+            username="tit_growth_app",
+            host="127.0.0.1",
+            port=postgres_port,
+            database="tide_system_test",
+            query={"sslmode": "disable", "options": "-c search_path=public"},
+        ).render_as_string(hide_password=False)
+        application_engine = create_engine(application_url)
+        with application_engine.connect() as connection:
+            for component in (
+                DOMAIN_COMPONENT,
+                OUTBOX_COMPONENT,
+                FAVORITE_COMPONENT,
+            ):
+                validate_runtime_startup(
+                    connection,
+                    component=component,
+                    expected_database="tide_system_test",
+                )
 
         with admin_engine.connect() as connection:
             assert connection.execute(
@@ -399,6 +537,8 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                 {"topic": TOPIC},
             ).scalar_one() == 0
     finally:
+        if application_engine is not None:
+            application_engine.dispose()
         if runtime_engine is not None:
             runtime_engine.dispose()
         if admin_engine is not None:

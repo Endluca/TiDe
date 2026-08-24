@@ -265,11 +265,11 @@ def upgrade() -> None:
                     'public.lock_dts_source_partition_epoch_for_ingest_v2('
                     'text,text,text,integer) FROM tit_teacher_crud';
             END IF;
-            IF to_regrole('tit_dts_domain_projector_runtime') IS NOT NULL THEN
+            IF to_regrole('tit_growth_app') IS NOT NULL THEN
                 EXECUTE 'REVOKE ALL ON FUNCTION '
                     'public.lock_dts_source_partition_epoch_for_ingest_v2('
                     'text,text,text,integer) '
-                    'FROM tit_dts_domain_projector_runtime';
+                    'FROM tit_growth_app';
             END IF;
         END
         $dual_capture_optional_acl$;

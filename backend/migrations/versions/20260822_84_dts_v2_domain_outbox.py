@@ -723,27 +723,27 @@ def _install_publisher() -> None:
 
         DO $domain_outbox_optional_acl$
         BEGIN
-            IF to_regrole('tit_dts_scope_coordinator_runtime') IS NOT NULL THEN
+            IF to_regrole('tit_growth_app') IS NOT NULL THEN
                 EXECUTE 'REVOKE ALL ON FUNCTION '
                     'public.publish_domain_aggregate_revision_v2('
                     'text,jsonb,jsonb,text,jsonb,bigint,jsonb,text,jsonb) '
-                    'FROM tit_dts_scope_coordinator_runtime';
+                    'FROM tit_growth_app';
             END IF;
-            IF to_regrole('tit_dts_domain_projector_runtime') IS NOT NULL THEN
+            IF to_regrole('tit_growth_app') IS NOT NULL THEN
                 IF EXISTS (
                     SELECT 1 FROM pg_roles
-                    WHERE rolname='tit_dts_domain_projector_runtime'
+                    WHERE rolname='tit_growth_app'
                       AND (NOT rolcanlogin OR rolinherit OR rolsuper
                            OR rolcreatedb OR rolcreaterole OR rolreplication
                            OR rolbypassrls)
                 ) THEN
                     RAISE EXCEPTION
-                        'tit_dts_domain_projector_runtime must be a restricted NOINHERIT LOGIN role';
+                        'tit_growth_app must be a restricted NOINHERIT LOGIN role';
                 END IF;
                 EXECUTE 'GRANT EXECUTE ON FUNCTION '
                     'public.publish_domain_aggregate_revision_v2('
                     'text,jsonb,jsonb,text,jsonb,bigint,jsonb,text,jsonb) '
-                    'TO tit_dts_domain_projector_runtime';
+                    'TO tit_growth_app';
             END IF;
         END
         $domain_outbox_optional_acl$;
@@ -762,29 +762,34 @@ def _apply_domain_runtime_acl() -> None:
             TO tit_growth_app;
             GRANT UPDATE (row_version) ON TABLE public.outbox_events
             TO tit_growth_app;
-            IF to_regrole('tit_dts_domain_projector_runtime') IS NOT NULL THEN
+            IF to_regrole('tit_growth_app') IS NOT NULL THEN
                 EXECUTE 'GRANT EXECUTE ON FUNCTION '
                     'public.dts_canonical_json_sha256_v1(jsonb) '
-                    'TO tit_dts_domain_projector_runtime';
+                    'TO tit_growth_app';
                 EXECUTE 'GRANT SELECT ON TABLE '
                     'public.dts_source_partition_epochs,'
                     'public.dts_source_row_versions,'
                     'public.dts_source_rows,'
                     'public.complaint_category_rules,'
                     'public.complaint_rule_imports '
-                    'TO tit_dts_domain_projector_runtime';
+                    'TO tit_growth_app';
                 EXECUTE 'GRANT SELECT,INSERT,UPDATE ON TABLE '
                     'public.source_courses,'
                     'public.source_course_participations '
-                    'TO tit_dts_domain_projector_runtime';
+                    'TO tit_growth_app';
                 EXECUTE 'REVOKE INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER ON TABLE '
-                    'public.domain_aggregate_revisions,'
-                    'public.outbox_events '
-                    'FROM tit_dts_domain_projector_runtime';
+                    'public.domain_aggregate_revisions '
+                    'FROM tit_growth_app';
                 EXECUTE 'GRANT SELECT ON TABLE '
                     'public.domain_aggregate_revisions '
-                    'TO tit_dts_domain_projector_runtime';
+                    'TO tit_growth_app';
             END IF;
+            -- tit_growth_app already owns the application Outbox CRUD contract
+            -- from rev59.  Reusing that role for the V2 publisher/worker must
+            -- add protected command capabilities without narrowing the
+            -- existing application grant.
+            GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.outbox_events
+            TO tit_growth_app;
         END
         $domain_projection_optional_acl$;
         """
@@ -828,13 +833,9 @@ def downgrade() -> None:
         END
         $domain_outbox_downgrade_guard$;
 
-        REVOKE EXECUTE ON FUNCTION
-            public.dts_canonical_json_v1(jsonb),
-            public.dts_canonical_json_sha256_v1(jsonb)
-        FROM tit_growth_app;
         DO $domain_outbox_downgrade_optional_acl$
         BEGIN
-            IF to_regrole('tit_dts_domain_projector_runtime') IS NOT NULL THEN
+            IF to_regrole('tit_growth_app') IS NOT NULL THEN
                 -- rev81 already owns both canonical helper EXECUTE grants. Only
                 -- remove the source/course privileges introduced by rev84 so
                 -- the rev83 ACL is restored exactly.
@@ -844,11 +845,11 @@ def downgrade() -> None:
                     'public.dts_source_rows,'
                     'public.complaint_category_rules,'
                     'public.complaint_rule_imports '
-                    'FROM tit_dts_domain_projector_runtime';
+                    'FROM tit_growth_app';
                 EXECUTE 'REVOKE SELECT,INSERT,UPDATE ON TABLE '
                     'public.source_courses,'
                     'public.source_course_participations '
-                    'FROM tit_dts_domain_projector_runtime';
+                    'FROM tit_growth_app';
             END IF;
         END
         $domain_outbox_downgrade_optional_acl$;

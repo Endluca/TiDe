@@ -56,8 +56,10 @@ def _seed_revision_79_shape(connection) -> None:
                 NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
             CREATE ROLE tit_dts_ingest_runtime LOGIN NOINHERIT NOSUPERUSER
                 NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-            CREATE ROLE tit_dts_domain_projector_runtime LOGIN NOINHERIT
-                NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+            CREATE ROLE tit_teacher_crud LOGIN NOINHERIT NOSUPERUSER
+                NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+            CREATE ROLE tide_support_ticket_owner LOGIN NOINHERIT NOSUPERUSER
+                NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
             CREATE TABLE public.alembic_version (
                 version_num varchar(64) PRIMARY KEY
@@ -168,7 +170,7 @@ def _reset_role(connection) -> None:
 
 
 def _claim(connection) -> dict[str, object]:
-    _set_role(connection, "tit_dts_domain_projector_runtime")
+    _set_role(connection, "tit_growth_app")
     row = connection.execute(
         text(
             """
@@ -371,7 +373,7 @@ def test_revision_80_real_state_machine_and_fail_closed_legacy_drain(
                 "claimed_through_work_revision": 1,
             }
 
-            _set_role(connection, "tit_dts_domain_projector_runtime")
+            _set_role(connection, "tit_growth_app")
             completed_old_claim = connection.execute(
                 text(
                     """
@@ -399,7 +401,7 @@ def test_revision_80_real_state_machine_and_fail_closed_legacy_drain(
                 ],
                 separators=(",", ":"),
             )
-            _set_role(connection, "tit_dts_domain_projector_runtime")
+            _set_role(connection, "tit_growth_app")
             waited = connection.execute(
                 text(
                     """
@@ -444,7 +446,7 @@ def test_revision_80_real_state_machine_and_fail_closed_legacy_drain(
             dead_result = None
             for attempt in range(1, 9):
                 retry_claim = _claim(connection)
-                _set_role(connection, "tit_dts_domain_projector_runtime")
+                _set_role(connection, "tit_growth_app")
                 dead_result = connection.execute(
                     text(
                         """

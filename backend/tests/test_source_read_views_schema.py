@@ -138,7 +138,7 @@ def test_upgrade_switches_only_the_two_views_to_current_source_results(
     assert "'is_perfect'" in sql
 
     assert "TO tit_growth_app" not in sql
-    for role in ("tit_teacher_crud", "tide_business_app"):
+    for role in ("tit_teacher_crud",):
         assert f"TO {role}" in sql
 
 

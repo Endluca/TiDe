@@ -73,8 +73,10 @@ def _seed_revision_80_shape(connection) -> None:
                 NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
             CREATE ROLE tit_dts_ingest_runtime LOGIN NOINHERIT NOSUPERUSER
                 NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-            CREATE ROLE tit_dts_domain_projector_runtime LOGIN NOINHERIT
-                NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+            CREATE ROLE tit_teacher_crud LOGIN NOINHERIT NOSUPERUSER
+                NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+            CREATE ROLE tide_support_ticket_owner LOGIN NOINHERIT NOSUPERUSER
+                NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
             CREATE ROLE rev81_public_probe LOGIN NOINHERIT NOSUPERUSER
                 NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
@@ -434,9 +436,7 @@ def test_revision_81_real_postgres_constraints_acl_and_downgrade(
                     FROM (VALUES
                         ('tit_growth_app','source_course_labels'),
                         ('tit_dts_ingest_runtime','source_course_labels'),
-                        ('tit_dts_domain_projector_runtime',
-                         'source_course_labels'),
-                        ('tit_dts_domain_projector_runtime',
+                        ('tit_growth_app',
                          'domain_aggregate_revisions')
                     ) AS expected(role_name,table_name)
                     ORDER BY role_name,table_name
@@ -444,20 +444,6 @@ def test_revision_81_real_postgres_constraints_acl_and_downgrade(
                 )
             ).all()
             assert privilege_rows == [
-                (
-                    "tit_dts_domain_projector_runtime",
-                    "domain_aggregate_revisions",
-                    False,
-                    False,
-                    False,
-                ),
-                (
-                    "tit_dts_domain_projector_runtime",
-                    "source_course_labels",
-                    True,
-                    True,
-                    False,
-                ),
                 (
                     "tit_dts_ingest_runtime",
                     "source_course_labels",
@@ -467,9 +453,16 @@ def test_revision_81_real_postgres_constraints_acl_and_downgrade(
                 ),
                 (
                     "tit_growth_app",
+                    "domain_aggregate_revisions",
+                    False,
+                    False,
+                    False,
+                ),
+                (
+                    "tit_growth_app",
                     "source_course_labels",
-                    False,
-                    False,
+                    True,
+                    True,
                     False,
                 ),
             ]

@@ -98,7 +98,7 @@ def test_revision_80_installs_region_identity_state_machine_and_acl(
     assert "CREATE FUNCTION public.reap_expired_domain_dirty_keys_v2" in sql
     assert "CREATE FUNCTION public.recover_dts_dirty_key_v2" in sql
     assert "REVOKE ALL PRIVILEGES ON TABLE" in sql
-    assert "tit_dts_domain_projector_runtime" in sql
+    assert "tit_growth_app" in sql
     assert "restricted NOINHERIT LOGIN role" in sql
 
 

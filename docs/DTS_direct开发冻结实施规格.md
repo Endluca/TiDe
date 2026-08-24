@@ -883,9 +883,9 @@ DIRTY_INPUT_REFERENCE_INVALID`，不能用通用upsert复活DEAD。
    从 DEAD 因新输入重开要写 audit，旧技术 Case 保持到新一代真正完成；单纯重放不能复活 DEAD。
 2. 内部 `_claim_dts_dirty_keys_v2(worker_kind,worker_id,batch_size,lease_seconds)` 对PUBLIC和全部runtime角色
    REVOKE EXECUTE，只能由两个SECURITY DEFINER wrapper以常量kind调用：
-   `claim_domain_dirty_keys_v2`只GRANT给NOINHERIT login `tit_dts_domain_projector_runtime`，常量
+   `claim_domain_dirty_keys_v2`只GRANT给NOINHERIT login `tit_growth_app`，常量
    DOMAIN_PROJECTOR并只领COURSE/TEACHER/LABEL/COMPLAINT_CATEGORY/TEACHER_STUDENT；
-   `claim_teacher_time_rechecks_v2`只GRANT给NOINHERIT login `tit_source_wide_runtime`，常量
+   `claim_teacher_time_rechecks_v2`只GRANT给NOINHERIT login `tit_growth_app`，常量
    SOURCEWIDE_TIME_RECHECK并只领TEACHER_TIME_RECHECK。不能在SECURITY DEFINER函数里用current_user判断invoker，
    也不能由worker_id内容决定权限。wrapper只领取
    `status IN (PENDING,RETRY) AND next_attempt_at<=transaction_timestamp()`，按
@@ -2394,7 +2394,7 @@ RESOLVED，IN_REVIEW 只追加 recovery evidence；失败全部回滚。dirty/so
    `dimension=CAPACITY + reason_code=CAPACITY_PEAK_SLOT_40_ACHIEVED + delta_score=10` 的未冲正 legacy 流水，
    才保留原 score_entry_id，并向 `score_entry_idempotency_aliases` 插入 canonical alias；严禁 UPDATE
    append-only 流水的原 idempotency_key。alias 的 PK 为 canonical key，score_entry_id 也唯一，保存
-   migration_run_id/reason/created_at；普通应用只读，只有 cutover 专用迁移角色可 INSERT，且同事务写
+   migration_run_id/reason/created_at；`tit_growth_app` 平时只读，只有受保护 cutover 函数可 INSERT，且同事务写
    migration audit。已获奖证据即使当前 peak_slot_cnt<40 仍保留 10 分。
    候选多条、金额/教师/营期不一致、里程碑被冲正、组件/总账户已有 10 分却找不到唯一流水时分别以
    `CAPACITY_MILESTONE_DEDUPE_CONFLICT/LEDGER_MISMATCH` 停止 cutover，不合并、不补造。无旧获奖证据且

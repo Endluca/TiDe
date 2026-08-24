@@ -77,12 +77,12 @@ def _grant_read_views() -> None:
                 TO tit_teacher_crud;
             END IF;
             IF EXISTS (
-                SELECT 1 FROM pg_roles WHERE rolname = 'tide_business_app'
+                SELECT 1 FROM pg_roles WHERE rolname = 'tit_teacher_crud'
             ) THEN
                 GRANT SELECT ON TABLE
                     public.teacher_scorecard_current,
                     public.teacher_lesson_score_current
-                TO tide_business_app;
+                TO tit_teacher_crud;
             END IF;
         END
         $source_read_view_grants$;

@@ -60,9 +60,9 @@ RUNTIME_COMPONENTS = frozenset(
     {DOMAIN_COMPONENT, OUTBOX_COMPONENT, FAVORITE_COMPONENT}
 )
 RUNTIME_ROLES = {
-    DOMAIN_COMPONENT: "tit_dts_domain_projector_runtime",
-    OUTBOX_COMPONENT: "tit_dts_outbox_worker_runtime",
-    FAVORITE_COMPONENT: "tit_dts_outbox_worker_runtime",
+    DOMAIN_COMPONENT: "tit_growth_app",
+    OUTBOX_COMPONENT: "tit_growth_app",
+    FAVORITE_COMPONENT: "tit_growth_app",
 }
 HEALTH_REGPROCEDURES = {
     DOMAIN_COMPONENT: "public.dts_v2_domain_runtime_health_v1(bigint)",

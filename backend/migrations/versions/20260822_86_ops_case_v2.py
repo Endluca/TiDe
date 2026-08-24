@@ -26,7 +26,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-OUTBOX_RUNTIME_ROLE = "tit_dts_outbox_worker_runtime"
+OUTBOX_RUNTIME_ROLE = "tit_growth_app"
 TECHNICAL_CASE_TYPES = (
     "DTS_DIRTY_KEY_DEAD",
     "DTS_SOURCE_CONFLICT",
@@ -88,9 +88,8 @@ def _assert_preconditions_and_role() -> None:
         DO $ops_case_v2_runtime_role$
         BEGIN
             IF to_regrole('{OUTBOX_RUNTIME_ROLE}') IS NULL THEN
-                EXECUTE 'CREATE ROLE {OUTBOX_RUNTIME_ROLE} LOGIN NOINHERIT '
-                    'NOSUPERUSER NOCREATEDB NOCREATEROLE '
-                    'NOREPLICATION NOBYPASSRLS';
+                RAISE EXCEPTION
+                    'required application role is missing: {OUTBOX_RUNTIME_ROLE}';
             END IF;
             IF EXISTS (
                 SELECT 1 FROM pg_roles
@@ -455,15 +454,35 @@ def _install_guards() -> None:
     protected = _quoted(PROTECTED_CASE_TYPES)
     op.execute(
         rf"""
+        -- rev59 intentionally blocks direct runtime mutation of append-only
+        -- facts.  V2 protected commands are SECURITY DEFINER, so current_user
+        -- distinguishes command-owned writes from direct tit_growth_app DML
+        -- even though both runtimes now share the same login role.
+        CREATE OR REPLACE FUNCTION public.guard_runtime_append_only_fact()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path=pg_catalog,public
+        AS $function$
+        DECLARE actor_name text:=current_user;
+        BEGIN
+          IF actor_name IN (
+            'tit_growth_app','tit_teacher_crud','tit_dts_ingest_runtime'
+          ) THEN
+            RAISE EXCEPTION '% is append-only for runtime roles',
+              TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME
+              USING ERRCODE='42501';
+          END IF;
+          IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+          RETURN NEW;
+        END
+        $function$;
+
         CREATE FUNCTION public.guard_ops_cases_v2()
         RETURNS trigger
         LANGUAGE plpgsql
-        SECURITY DEFINER
         SET search_path=pg_catalog,public
         AS $function$
-        DECLARE actor_name text := coalesce(
-          nullif(current_setting('role',true),'none'),session_user
-        );
+        DECLARE actor_name text:=current_user;
         DECLARE table_owner text;
         DECLARE has_completed_recovery boolean;
         BEGIN
@@ -478,7 +497,7 @@ def _install_guards() -> None:
           END IF;
 
           IF TG_OP='INSERT' THEN
-            IF actor_name NOT IN ('{OUTBOX_RUNTIME_ROLE}',table_owner)
+            IF actor_name<>table_owner
                OR NEW.case_revision<>1 OR NEW.row_version<>1
                OR NEW.recovery_evidence_count<>0
                OR NEW.last_recovery_event_id IS NOT NULL
@@ -518,8 +537,7 @@ def _install_guards() -> None:
               USING ERRCODE='23514';
           END IF;
 
-          IF actor_name='{OUTBOX_RUNTIME_ROLE}'
-             OR actor_name=table_owner THEN
+          IF actor_name=table_owner THEN
             RETURN NEW;
           END IF;
           IF actor_name='tit_growth_app' THEN
@@ -1246,14 +1264,11 @@ def _apply_acl_and_comments() -> None:
         REVOKE CREATE ON SCHEMA public FROM {OUTBOX_RUNTIME_ROLE};
         GRANT USAGE ON SCHEMA public TO {OUTBOX_RUNTIME_ROLE};
         REVOKE ALL PRIVILEGES ON TABLE
-          public.outbox_events,public.ops_cases,public.ops_decisions,
-          public.ops_case_recovery_events,public.audit_events,
-          public.idempotency_records,public.domain_aggregate_revisions,
-          public.dts_pipeline_control
+          public.ops_case_recovery_events
         FROM {OUTBOX_RUNTIME_ROLE};
         GRANT SELECT ON TABLE
           public.outbox_events,public.domain_aggregate_revisions,
-          public.dts_pipeline_control
+          public.dts_pipeline_control,public.ops_case_recovery_events
         TO {OUTBOX_RUNTIME_ROLE};
         GRANT UPDATE(
           status,attempt_count,last_error,available_at,published_at,row_version
@@ -1278,7 +1293,8 @@ def _apply_acl_and_comments() -> None:
           public.record_dts_v2_technical_case_recovery(
             text,text,text,bigint
           )
-        FROM PUBLIC,tit_growth_app,tit_dts_ingest_runtime;
+        FROM PUBLIC,tit_dts_ingest_runtime,
+             tit_teacher_crud,tide_support_ticket_owner;
         GRANT EXECUTE ON FUNCTION
           public.dts_ops_case_is_technical_v2(text),
           public.dts_projection_event_ids_valid_v2(jsonb),
@@ -1290,9 +1306,7 @@ def _apply_acl_and_comments() -> None:
         DECLARE role_name text;
         BEGIN
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_teacher_crud','tit_dts_domain_projector_runtime',
-            'tit_dts_scope_coordinator_runtime','tit_source_monitor',
-            'tit_source_worker','tide_business_app'
+            'tit_teacher_crud','tide_support_ticket_owner'
           ]::text[] LOOP
             IF to_regrole(role_name) IS NOT NULL THEN
               EXECUTE format(
@@ -1312,8 +1326,6 @@ def _apply_acl_and_comments() -> None:
         END
         $ops_case_v2_optional_acl$;
 
-        COMMENT ON ROLE {OUTBOX_RUNTIME_ROLE} IS
-          'Dedicated NOINHERIT runtime for the DTS v2 Outbox Worker; no direct Ops Case or recovery DML.';
         COMMENT ON TABLE public.ops_cases IS
           'Current operational Case state. DTS v2 protected Case identities and evidence are command-owned and delete-forbidden.';
         COMMENT ON COLUMN public.ops_cases.source_ref IS
@@ -1398,14 +1410,9 @@ def downgrade() -> None:
         $ops_case_v2_downgrade_guard$;
 
         REVOKE ALL PRIVILEGES ON TABLE
-          public.outbox_events,public.ops_cases,public.ops_decisions,
-          public.ops_case_recovery_events,public.audit_events,
-          public.idempotency_records,public.domain_aggregate_revisions,
-          public.dts_pipeline_control
+          public.ops_case_recovery_events
         FROM {OUTBOX_RUNTIME_ROLE};
         REVOKE ALL ON FUNCTION
-          public.dts_canonical_json_v1(jsonb),
-          public.dts_canonical_json_sha256_v1(jsonb),
           public.record_dts_v2_technical_case(
             text,text,text,text,text,text,text,text,text,bigint,text,
             integer,bigint

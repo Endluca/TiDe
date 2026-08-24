@@ -30,7 +30,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-SCOPE_COORDINATOR_ROLE = "tit_dts_scope_coordinator_runtime"
+SCOPE_COORDINATOR_ROLE = "tit_growth_app"
 
 SOURCE_TABLES: tuple[tuple[str, str], ...] = (
     ("dom", "dom_appoint"),
@@ -2496,8 +2496,7 @@ def _apply_scope_acl() -> None:
             END IF;
 
             FOREACH role_name IN ARRAY ARRAY[
-                'tit_teacher_crud','tit_dts_domain_projector_runtime',
-                'tit_source_monitor','tit_source_worker','tide_business_app'
+                'tit_teacher_crud','tide_support_ticket_owner'
             ] LOOP
                 IF to_regrole(role_name) IS NOT NULL THEN
                     EXECUTE format(
@@ -2512,8 +2511,7 @@ def _apply_scope_acl() -> None:
             END LOOP;
 
             FOREACH role_name IN ARRAY ARRAY[
-                'tit_growth_app','tit_dts_domain_projector_runtime',
-                'tit_source_monitor','tit_source_worker','tide_business_app'
+                'tit_teacher_crud'
             ] LOOP
                 IF to_regrole(role_name) IS NOT NULL THEN
                     EXECUTE format(

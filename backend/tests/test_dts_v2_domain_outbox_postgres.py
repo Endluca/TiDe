@@ -119,12 +119,6 @@ def _seed_revision_83_shape(connection) -> None:
                 NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
             CREATE ROLE tit_dts_ingest_runtime LOGIN NOINHERIT NOSUPERUSER
                 NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-            CREATE ROLE tit_dts_domain_projector_runtime LOGIN NOINHERIT
-                NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-            CREATE ROLE tit_dts_scope_coordinator_runtime LOGIN NOINHERIT
-                NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-            CREATE ROLE tit_dts_outbox_worker_runtime LOGIN NOINHERIT
-                NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
             CREATE ROLE rev84_public_probe LOGIN NOINHERIT NOSUPERUSER
                 NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
@@ -240,7 +234,7 @@ def _seed_revision_83_shape(connection) -> None:
             GRANT EXECUTE ON FUNCTION
                 public.dts_canonical_json_v1(jsonb),
                 public.dts_canonical_json_sha256_v1(jsonb)
-            TO tit_dts_domain_projector_runtime;
+            TO tit_growth_app;
 
             CREATE TABLE public.dts_source_partition_epochs (id bigint);
             CREATE TABLE public.dts_source_row_versions (id bigint);
@@ -347,7 +341,7 @@ def _seed_revision_83_shape(connection) -> None:
             REVOKE ALL ON FUNCTION public.rev83_scope_outbox_probe()
             FROM PUBLIC;
             GRANT EXECUTE ON FUNCTION public.rev83_scope_outbox_probe()
-            TO tit_dts_scope_coordinator_runtime;
+            TO tit_growth_app;
 
             REVOKE ALL PRIVILEGES ON TABLE
                 public.dts_source_partition_epochs,
@@ -360,10 +354,9 @@ def _seed_revision_83_shape(connection) -> None:
                 public.domain_aggregate_revisions,
                 public.outbox_events
             FROM PUBLIC,tit_growth_app,tit_dts_ingest_runtime,
-                 tit_dts_domain_projector_runtime,
-                 tit_dts_scope_coordinator_runtime,rev84_public_probe;
+                 rev84_public_probe;
             GRANT SELECT ON TABLE public.domain_aggregate_revisions
-            TO tit_dts_domain_projector_runtime;
+            TO tit_growth_app;
             GRANT SELECT,INSERT ON TABLE public.outbox_events
             TO tit_growth_app;
             GRANT UPDATE (
@@ -574,11 +567,11 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
                     SELECT prosecdef,
                            proconfig @> ARRAY['search_path=pg_catalog, public'],
                            has_function_privilege(
-                               'tit_dts_domain_projector_runtime',
+                               'tit_growth_app',
                                oid,'EXECUTE'
                            ),
                            has_function_privilege(
-                               'tit_dts_scope_coordinator_runtime',
+                               'tit_growth_app',
                                oid,'EXECUTE'
                            )
                     FROM pg_proc
@@ -588,7 +581,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
                     )
                     """
                     )
-                ).one() == (True, True, True, False)
+                ).one() == (True, True, True, True)
             assert connection.execute(
                 text(
                     """
@@ -644,7 +637,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
                            )
                     """
                 )
-            ).one() == (True, False, False, True, True)
+            ).one() == (True, True, True, True, True)
 
         # The application role keeps legacy INSERT compatibility, but neither
         # v2 event type may bypass its owner-checked publisher.  Case variants
@@ -714,24 +707,24 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
             """,
         )
 
-        # A clean downgrade must restore rev83's privileges, not revoke the
-        # canonical helper grant that rev81 already owned.
+        # A clean downgrade removes rev84 source-table access while preserving
+        # the canonical helper grants that rev81 already owned.
         _run_alembic(backend_dir, database_url, "downgrade", REVISION_83)
         with engine.connect() as connection:
             assert connection.execute(
                 text(
                     """
                     SELECT has_function_privilege(
-                               'tit_dts_domain_projector_runtime',
+                               'tit_growth_app',
                                'public.dts_canonical_json_sha256_v1(jsonb)',
                                'EXECUTE'
                            ),
                            has_table_privilege(
-                               'tit_dts_domain_projector_runtime',
+                               'tit_growth_app',
                                'public.dts_source_rows','SELECT'
                            ),
                            has_table_privilege(
-                               'tit_dts_domain_projector_runtime',
+                               'tit_growth_app',
                                'public.source_courses','UPDATE'
                            ),
                            has_function_privilege(
@@ -746,7 +739,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
                            )
                     """
                 )
-            ).one() == (True, False, False, False, False)
+                ).one() == (True, False, False, True, True)
         _run_alembic(backend_dir, database_url, "upgrade", REVISION_84)
 
         with engine.connect() as connection:
@@ -812,7 +805,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         coverage = _source_coverage(revision=8)
         with engine.begin() as connection:
             connection.execute(
-                text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+                text("SET LOCAL ROLE tit_growth_app")
             )
             first = store.publish_change(
                 connection,
@@ -871,7 +864,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         # Equal state is a no-op even when newer source provenance is observed.
         with engine.begin() as connection:
             connection.execute(
-                text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+                text("SET LOCAL ROLE tit_growth_app")
             )
             unchanged = store.publish_change(
                 connection,
@@ -906,7 +899,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         # the last observed appoint r9 or discard the new causal work.
         with engine.begin() as connection:
             connection.execute(
-                text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+                text("SET LOCAL ROLE tit_growth_app")
             )
             changed = store.publish_change(
                 connection,
@@ -943,7 +936,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         # provenance event and preserves the last concrete source diagnostics.
         with engine.begin() as connection:
             connection.execute(
-                text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+                text("SET LOCAL ROLE tit_growth_app")
             )
             scoped = store.publish_change(
                 connection,
@@ -982,7 +975,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         _assert_statement_rejected(
             engine,
             """
-            SET LOCAL ROLE tit_dts_domain_projector_runtime;
+            SET LOCAL ROLE tit_growth_app;
             UPDATE public.domain_aggregate_revisions SET revision=99
             WHERE aggregate_type='COURSE'
             """,
@@ -990,7 +983,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         _assert_statement_rejected(
             engine,
             """
-            SET LOCAL ROLE tit_dts_domain_projector_runtime;
+            SET LOCAL ROLE tit_growth_app;
             UPDATE public.outbox_events SET payload=jsonb_build_object()
             WHERE aggregate_type='COURSE'
             """,
@@ -1001,7 +994,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         ):
             with engine.begin() as connection:
                 connection.execute(
-                    text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+                    text("SET LOCAL ROLE tit_growth_app")
                 )
                 connection.execute(
                     text(
@@ -1032,9 +1025,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
                     },
                 )
         for role_name in (
-            "tit_growth_app",
             "tit_dts_ingest_runtime",
-            "tit_dts_scope_coordinator_runtime",
             "rev84_public_probe",
         ):
             _assert_statement_rejected(
@@ -1064,7 +1055,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
             _assert_statement_rejected(
                 engine,
                 """
-                SET LOCAL ROLE tit_dts_domain_projector_runtime;
+                SET LOCAL ROLE tit_growth_app;
                 SELECT public.publish_domain_aggregate_revision_v2(
                     'COURSE',CAST(:key AS jsonb),CAST(:state AS jsonb),
                     :state_hash,jsonb_build_array('status'),11,
@@ -1090,7 +1081,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         with pytest.raises(DBAPIError, match="DOMAIN_JSON_NUMBER_INVALID"):
             with engine.begin() as connection:
                 connection.execute(
-                    text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+                    text("SET LOCAL ROLE tit_growth_app")
                 )
                 connection.execute(
                     text(
@@ -1153,7 +1144,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         with pytest.raises(DBAPIError, match="OUTBOX_ID_CONFLICT"):
             with engine.begin() as connection:
                 connection.execute(
-                    text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+                    text("SET LOCAL ROLE tit_growth_app")
                 )
                 store.publish_change(
                     connection,
@@ -1222,7 +1213,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         with pytest.raises(DBAPIError, match="OUTBOX_ID_CONFLICT"):
             with engine.begin() as connection:
                 connection.execute(
-                    text("SET LOCAL ROLE tit_dts_domain_projector_runtime")
+                    text("SET LOCAL ROLE tit_growth_app")
                 )
                 store.publish_change(
                     connection,
@@ -1284,27 +1275,27 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
                     );
                     GRANT INSERT ON TABLE public.rev84_worker_effects,
                         public.rev84_worker_cases
-                        TO tit_dts_outbox_worker_runtime;
+                        TO tit_growth_app;
                     GRANT SELECT ON TABLE public.outbox_events,
                         public.domain_aggregate_revisions,
                         public.dts_pipeline_control
-                        TO tit_dts_outbox_worker_runtime;
+                        TO tit_growth_app;
                     GRANT UPDATE(
                         status,attempt_count,last_error,available_at,
                         published_at,row_version
                     ) ON public.outbox_events
-                        TO tit_dts_outbox_worker_runtime;
+                        TO tit_growth_app;
                     GRANT EXECUTE ON FUNCTION
                         public.dts_canonical_json_v1(jsonb),
                         public.dts_canonical_json_sha256_v1(jsonb)
-                        TO tit_dts_outbox_worker_runtime;
+                        TO tit_growth_app;
                     """
                 )
             )
 
         runtime_url = URL.create(
             "postgresql+psycopg",
-            username="tit_dts_outbox_worker_runtime",
+            username="tit_growth_app",
             host="127.0.0.1",
             port=port,
             database="postgres",
@@ -1564,7 +1555,7 @@ def test_domain_outbox_revision_uses_one_protected_atomic_protocol(
         # the new trigger/defaults must populate them without extra privileges.
         with engine.begin() as connection:
             connection.execute(
-                text("SET LOCAL ROLE tit_dts_scope_coordinator_runtime")
+                text("SET LOCAL ROLE tit_growth_app")
             )
             scope_event_id = connection.execute(
                 text("SELECT public.rev83_scope_outbox_probe()")

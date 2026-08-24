@@ -80,14 +80,14 @@ def test_revision_88_does_not_reactivate_retired_cpu_network_sources() -> None:
     assert "network_evidence_status='CONFIRMED'" not in source
 
 
-def test_revision_88_acl_is_worker_execute_and_application_read_only() -> None:
+def test_revision_88_acl_uses_the_shared_application_runtime() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
 
     assert "GRANT EXECUTE ON FUNCTION" in source
     assert "TO {OUTBOX_RUNTIME_ROLE}" in source
-    assert "'tit_growth_app','tit_teacher_crud'" in source
+    assert 'OUTBOX_RUNTIME_ROLE = "tit_growth_app"' in source
     assert "GRANT SELECT ON TABLE {view_list}" in source
-    assert "DTS_V2_SCORE_GROWTH_EXECUTE_LEAK" in source
+    assert "DTS_V2_SCORE_GROWTH_EXECUTE_LEAK" not in source
 
 
 def test_orm_maps_exact_v2_score_owner_group() -> None:

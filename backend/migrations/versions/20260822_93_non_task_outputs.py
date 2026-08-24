@@ -20,7 +20,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"
+OUTBOX_ROLE = "tit_growth_app"
 
 
 def _preflight() -> None:
@@ -48,7 +48,7 @@ def _preflight() -> None:
              OR to_regprocedure(
                'public.reconcile_course_trigger_matches_v2(text,text,bigint,bigint,text,jsonb,text)'
              ) IS NULL
-             OR to_regrole('tit_dts_outbox_worker_runtime') IS NULL THEN
+             OR to_regrole('tit_growth_app') IS NULL THEN
             RAISE EXCEPTION 'DTS_V2_NON_TASK_OUTPUT_PREREQUISITE_MISSING';
           END IF;
           IF to_regprocedure(
@@ -718,12 +718,13 @@ def _install_reconcile_command() -> None:
         GRANT EXECUTE ON FUNCTION
           public.reconcile_course_non_task_outputs_v2(
             text,text,bigint,bigint,text,text
-          ) TO tit_dts_outbox_worker_runtime;
+          ) TO tit_growth_app;
 
-        REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON TABLE
-          public.personalized_trigger_matches,public.notifications,
-          public.notification_events,public.ops_cases,public.audit_events
-        FROM tit_dts_outbox_worker_runtime;
+        -- personalized_trigger_matches, notifications, ops_cases and
+        -- audit_events belong to the existing tit_growth_app CRUD contract.
+        -- Only the append-only notification history remains non-writable.
+        REVOKE UPDATE,DELETE,TRUNCATE ON TABLE public.notification_events
+        FROM tit_growth_app;
         """
     )
 
@@ -741,7 +742,7 @@ def downgrade() -> None:
         REVOKE ALL ON FUNCTION
           public.reconcile_course_non_task_outputs_v2(
             text,text,bigint,bigint,text,text
-          ) FROM PUBLIC,tit_dts_outbox_worker_runtime;
+          ) FROM PUBLIC,tit_growth_app;
         DROP FUNCTION public.reconcile_course_non_task_outputs_v2(
           text,text,bigint,bigint,text,text
         );

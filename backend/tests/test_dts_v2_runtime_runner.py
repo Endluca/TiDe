@@ -15,7 +15,7 @@ def test_runner_validates_dedicated_role_target_and_fixed_contract(
     monkeypatch.setenv("TIT_V2_EXPECTED_DATABASE", "tit_growth")
     monkeypatch.setenv(
         "TIT_V2_DOMAIN_DATABASE_URL",
-        "postgresql+psycopg://tit_dts_domain_projector_runtime:secret@"
+        "postgresql+psycopg://tit_growth_app:secret@"
         "db.invalid/tit_growth?sslmode=verify-full",
     )
     assert runner._database_url("domain").endswith(
@@ -61,7 +61,7 @@ def test_wrong_database_role_fails_without_echoing_url(
     monkeypatch.setenv("TIT_V2_EXPECTED_DATABASE", "tit_growth")
     monkeypatch.setenv(
         "TIT_V2_DOMAIN_DATABASE_URL",
-        f"postgresql+psycopg://tit_growth_app:{secret}@db.invalid/"
+        f"postgresql+psycopg://tit_teacher_crud:{secret}@db.invalid/"
         "tit_growth?sslmode=verify-full",
     )
     with pytest.raises(

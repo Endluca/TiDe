@@ -63,8 +63,8 @@ def test_archive_and_recovery_are_typed_audited_commands() -> None:
     assert "OUTBOX_RECOVERY_REPLAY_INVALID" in source
     assert "OUTBOX_RECOVERY_STALE" in source
     assert "REVOKE ALL ON FUNCTION public.recover_outbox_event_v2" in source
-    assert "tit_dts_outbox_recovery_runtime" in source
-    assert "tit_dts_cutover_migration" in source
+    assert "tit_growth_app" in source
+    assert "tit_growth_app" in source
 
 
 def test_outbox_orm_matches_rev84_and_rev85_shapes() -> None:

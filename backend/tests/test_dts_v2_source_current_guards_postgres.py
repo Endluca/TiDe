@@ -419,24 +419,13 @@ def test_revision_69_guards_the_complete_source_version_current_chain(
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
-                "tit_dts_scope_coordinator_runtime",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
                         f"CREATE ROLE {role_name} LOGIN NOINHERIT "
                         "NOSUPERUSER NOCREATEDB NOCREATEROLE "
                         "NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOSUPERUSER "
-                        "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
                     )
                 )
 
@@ -531,6 +520,16 @@ def test_revision_69_guards_the_complete_source_version_current_chain(
                 )
             ).tuples().all()
             assert set(table_privileges) == {
+                (
+                    "tit_growth_app",
+                    "dts_source_partition_epochs",
+                    "SELECT",
+                ),
+                (
+                    "tit_growth_app",
+                    "dts_source_row_versions",
+                    "SELECT",
+                ),
                 (
                     "tit_dts_ingest_runtime",
                     "dts_source_partition_epochs",

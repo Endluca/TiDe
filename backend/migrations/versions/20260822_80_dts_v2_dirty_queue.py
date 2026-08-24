@@ -1620,8 +1620,7 @@ def _apply_acl_and_function_grants() -> None:
         DECLARE role_name text;
         BEGIN
             FOREACH role_name IN ARRAY ARRAY[
-                'tit_teacher_crud','tit_dts_domain_projector_runtime',
-                'tit_source_wide_runtime'
+                'tit_teacher_crud','tide_support_ticket_owner'
             ]::text[] LOOP
                 IF to_regrole(role_name) IS NOT NULL THEN
                     EXECUTE format(
@@ -1636,16 +1635,16 @@ def _apply_acl_and_function_grants() -> None:
                 END IF;
             END LOOP;
 
-            IF to_regrole('tit_dts_domain_projector_runtime') IS NOT NULL THEN
+            IF to_regrole('tit_growth_app') IS NOT NULL THEN
                 IF EXISTS (
                     SELECT 1 FROM pg_roles
-                    WHERE rolname='tit_dts_domain_projector_runtime'
+                    WHERE rolname='tit_growth_app'
                       AND (NOT rolcanlogin OR rolinherit OR rolsuper
                            OR rolcreatedb OR rolcreaterole OR rolreplication
                            OR rolbypassrls)
                 ) THEN
                     RAISE EXCEPTION
-                        'tit_dts_domain_projector_runtime must be a restricted NOINHERIT LOGIN role';
+                        'tit_growth_app must be a restricted NOINHERIT LOGIN role';
                 END IF;
                 EXECUTE 'GRANT EXECUTE ON FUNCTION '
                     'public.claim_domain_dirty_keys_v2(text,integer,integer),'
@@ -1654,7 +1653,7 @@ def _apply_acl_and_function_grants() -> None:
                     'public.wait_domain_dirty_key_v2(text,text,text,text,text,bigint,bigint,jsonb),'
                     'public.fail_domain_dirty_key_v2(text,text,text,text,text,bigint,bigint,text),'
                     'public.reap_expired_domain_dirty_keys_v2(integer) '
-                    'TO tit_dts_domain_projector_runtime';
+                    'TO tit_growth_app';
             END IF;
         END
         $dirty_optional_roles_acl$;
@@ -1681,7 +1680,8 @@ def _apply_acl_and_function_grants() -> None:
             public.recover_dts_dirty_key_v2(
                 text,text,text,text,bigint,bigint,text,text
             )
-        FROM PUBLIC, tit_growth_app, tit_dts_ingest_runtime;
+        FROM PUBLIC, tit_growth_app, tit_dts_ingest_runtime,
+             tit_teacher_crud, tide_support_ticket_owner;
 
         REVOKE ALL ON FUNCTION
             public.claim_domain_dirty_keys_v2(text,integer,integer),
@@ -1698,7 +1698,8 @@ def _apply_acl_and_function_grants() -> None:
                 text,text,text,text,text,bigint,bigint,text
             ),
             public.reap_expired_domain_dirty_keys_v2(integer)
-        FROM PUBLIC, tit_growth_app, tit_dts_ingest_runtime;
+        FROM PUBLIC, tit_dts_ingest_runtime,
+             tit_teacher_crud, tide_support_ticket_owner;
 
         COMMENT ON TABLE public.dts_dirty_keys IS
             'Region-qualified v2 recomputation work; state changes only through SECURITY DEFINER commands.';

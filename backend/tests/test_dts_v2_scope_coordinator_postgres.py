@@ -25,7 +25,7 @@ EPOCH_GROUP = "scope-source-group"
 
 
 def _call(connection, sql: str, parameters: dict[str, object]):
-    connection.execute(text("SET LOCAL ROLE tit_dts_scope_coordinator_runtime"))
+    connection.execute(text("SET LOCAL ROLE tit_growth_app"))
     result = connection.execute(text(sql), parameters).scalar_one()
     connection.execute(text("RESET ROLE"))
     return result
@@ -91,24 +91,11 @@ def test_revision_83_blocks_false_complete_and_is_response_lost_safe(
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
-                "tit_dts_domain_projector_runtime",
-                "tit_dts_scope_coordinator_runtime",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
                         f"CREATE ROLE {role_name} LOGIN NOINHERIT "
-                        "NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                        "NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOINHERIT "
                         "NOSUPERUSER NOCREATEDB NOCREATEROLE "
                         "NOREPLICATION NOBYPASSRLS"
                     )
@@ -135,7 +122,7 @@ def test_revision_83_blocks_false_complete_and_is_response_lost_safe(
                     """
                     SELECT
                       has_function_privilege(
-                        'tit_dts_scope_coordinator_runtime',
+                        'tit_growth_app',
                         'public.begin_source_snapshot_candidate_v2('
                         'text,text,text,text,text,text,text,timestamptz,text,'
                         'jsonb,timestamptz,timestamptz,text,integer,bigint,bigint)',
@@ -149,11 +136,11 @@ def test_revision_83_blocks_false_complete_and_is_response_lost_safe(
                         'EXECUTE'
                       )
                       AND NOT has_table_privilege(
-                        'tit_dts_scope_coordinator_runtime',
+                        'tit_growth_app',
                         'public.dts_source_scope_states','INSERT'
                       )
                       AND has_table_privilege(
-                        'tit_dts_scope_coordinator_runtime',
+                        'tit_growth_app',
                         'public.dts_source_scope_states','SELECT'
                       )
                     """

@@ -14,7 +14,7 @@ def test_guard_uses_runtime_roles_without_raw_control_select(
 ) -> None:
     admin, outbox, _recovery = ops_case_postgres
     domain = create_engine(
-        admin.url.set(username="tit_dts_domain_projector_runtime")
+        admin.url.set(username="tit_growth_app")
     )
     try:
         with admin.connect() as connection:

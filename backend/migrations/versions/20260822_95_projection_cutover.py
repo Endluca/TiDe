@@ -27,7 +27,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-CUTOVER_ROLE = "tit_dts_projection_cutover_runtime"
+CUTOVER_ROLE = "tit_growth_app"
 ROUTE_CONTRACT_VERSION = "teacher-read-route-v1"
 RECONCILIATION_PROTOCOL = "dts-v2-reconciliation-pass-v1"
 FULL_RECONCILIATION_PROVIDER = (
@@ -126,8 +126,8 @@ def _preflight_and_role() -> None:
         DO $projection_cutover_role$
         BEGIN
           IF to_regrole('{CUTOVER_ROLE}') IS NULL THEN
-            CREATE ROLE {CUTOVER_ROLE} LOGIN NOINHERIT NOSUPERUSER
-              NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+            RAISE EXCEPTION
+              'required application role is missing: {CUTOVER_ROLE}';
           END IF;
           IF EXISTS (
             SELECT 1 FROM pg_roles WHERE rolname='{CUTOVER_ROLE}'
@@ -1891,7 +1891,7 @@ def _replace_stable_read_views() -> None:
         DECLARE role_name text;
         BEGIN
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_growth_app','tit_teacher_crud','tide_business_app'
+            'tit_growth_app','tit_teacher_crud'
           ] LOOP
             IF to_regrole(role_name) IS NOT NULL THEN
               EXECUTE format(
@@ -1911,7 +1911,7 @@ def _replace_stable_read_views() -> None:
             END IF;
           END LOOP;
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_teacher_crud','tide_business_app'
+            'tit_teacher_crud'
           ] LOOP
             IF to_regrole(role_name) IS NOT NULL THEN
               EXECUTE format(
@@ -2036,7 +2036,7 @@ def _install_acl_comments_and_assertions() -> None:
             RAISE EXCEPTION 'DTS_PROJECTION_LESSON_IDENTITY_INVALID';
           END IF;
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_growth_app','tit_teacher_crud','tide_business_app'
+            'tit_growth_app','tit_teacher_crud'
           ] LOOP
             IF to_regrole(role_name) IS NOT NULL
                AND EXISTS (
@@ -2110,7 +2110,7 @@ def downgrade() -> None:
         DECLARE role_name text;
         BEGIN
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_teacher_crud','tide_business_app'
+            'tit_teacher_crud'
           ] LOOP
             IF to_regrole(role_name) IS NOT NULL THEN
               EXECUTE format(
@@ -2135,7 +2135,7 @@ def downgrade() -> None:
         DECLARE role_name text;
         BEGIN
           FOREACH role_name IN ARRAY ARRAY[
-            'tit_teacher_crud','tide_business_app'
+            'tit_teacher_crud'
           ] LOOP
             IF to_regrole(role_name) IS NOT NULL THEN
               EXECUTE format(
@@ -2203,15 +2203,3 @@ def downgrade() -> None:
     op.drop_table("dts_v2_reconciliation_runs", schema="public")
     op.drop_table("dts_source_profile_approvals_v2", schema="public")
     op.drop_table("dts_projection_read_routes", schema="public")
-    op.execute(
-        f"""
-        REVOKE USAGE ON SCHEMA public FROM {CUTOVER_ROLE};
-        DO $projection_cutover_drop_role$
-        BEGIN
-          IF to_regrole('{CUTOVER_ROLE}') IS NOT NULL THEN
-            DROP ROLE {CUTOVER_ROLE};
-          END IF;
-        END
-        $projection_cutover_drop_role$;
-        """
-    )

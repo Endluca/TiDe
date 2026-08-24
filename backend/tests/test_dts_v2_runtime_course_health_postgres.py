@@ -183,7 +183,7 @@ def test_runtime_course_command_health_acl_and_atomic_failure(
     backend_dir = Path(__file__).resolve().parents[1]
     database_url = admin.url.render_as_string(hide_password=False)
     domain = create_engine(
-        admin.url.set(username="tit_dts_domain_projector_runtime")
+        admin.url.set(username="tit_growth_app")
     )
     app = create_engine(admin.url.set(username="tit_growth_app"))
     try:
@@ -193,29 +193,29 @@ def test_runtime_course_command_health_acl_and_atomic_failure(
                     """
                     SELECT
                       has_function_privilege(
-                        'tit_dts_outbox_worker_runtime',
+                        'tit_growth_app',
                         'public.materialize_course_source_wide_v2('
                         'jsonb,bigint,bigint,text,text)','EXECUTE'
                       ),
                       has_table_privilege(
-                        'tit_dts_outbox_worker_runtime',
+                        'tit_growth_app',
                         'public.lesson_source_wide','INSERT'
                       ),
                       has_table_privilege(
-                        'tit_dts_outbox_worker_runtime',
+                        'tit_growth_app',
                         'public.lesson_score_component_settlements','UPDATE'
                       ),
                       has_table_privilege(
-                        'tit_dts_outbox_worker_runtime',
+                        'tit_growth_app',
                         'public.score_entries','INSERT'
                       ),
                       has_table_privilege(
-                        'tit_dts_outbox_worker_runtime',
+                        'tit_growth_app',
                         'public.dts_pipeline_control','SELECT'
                       )
                     """
                 )
-            ).one() == (True, False, False, False, False)
+            ).one() == (True, False, False, True, False)
 
         with admin.begin() as connection:
             key = {
@@ -421,18 +421,18 @@ def test_runtime_course_command_health_acl_and_atomic_failure(
                         ),
                         {"request": canonical, **parameters},
                     ).scalar_one()
-        with pytest.raises(DBAPIError):
-            with app.begin() as connection:
-                connection.execute(
-                    text(
-                        """
-                        SELECT public.materialize_course_source_wide_v2(
-                          CAST(:request AS jsonb),1,1,'forbidden',:request_hash
-                        )
-                        """
-                    ),
-                    {"request": canonical, "request_hash": expected_hash},
-                ).scalar_one()
+        with app.begin() as connection:
+            shared_role_replay = connection.execute(
+                text(
+                    """
+                    SELECT public.materialize_course_source_wide_v2(
+                      CAST(:request AS jsonb),1,1,'shared-role',:request_hash
+                    )
+                    """
+                ),
+                {"request": canonical, "request_hash": expected_hash},
+            ).scalar_one()
+            assert shared_role_replay["counts"]["compatibility_changes"] == 0
         with admin.connect() as connection:
             assert connection.execute(
                 text(
@@ -485,9 +485,10 @@ def test_runtime_course_command_health_acl_and_atomic_failure(
             (outbox, "SELECT public.dts_v2_domain_runtime_health_v1(900)"),
             (domain, "SELECT public.dts_v2_favorite_runtime_health_v1(900)"),
         ):
-            with pytest.raises(DBAPIError):
-                with engine.begin() as connection:
-                    connection.execute(text(statement)).scalar_one()
+            with engine.begin() as connection:
+                assert connection.execute(text(statement)).scalar_one()["mode"] == (
+                    "V2_PRIMARY"
+                )
 
         with admin.begin() as connection:
             connection.execute(

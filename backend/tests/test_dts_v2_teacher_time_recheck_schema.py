@@ -61,7 +61,7 @@ def test_migration_exposes_complete_protected_clock_worker_contract() -> None:
     assert "SUPERSEDED_BY_CURRENT_DATE" in source
     assert "DTS_V2_TEACHER_TIME_RECHECK_DATE_REGRESSION" in source
     assert "GRANT EXECUTE ON FUNCTION" in source
-    assert 'OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"' in source
+    assert 'OUTBOX_ROLE = "tit_growth_app"' in source
     assert "TO {OUTBOX_ROLE}" in source
     assert "GRANT INSERT" not in source
     assert "GRANT UPDATE" not in source

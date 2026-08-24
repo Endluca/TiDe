@@ -116,24 +116,13 @@ def ops_case_postgres(tmp_path: Path) -> Iterator[tuple[Engine, Engine, Engine]]
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
-                "tit_dts_outbox_recovery_runtime",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
                         f"CREATE ROLE {role_name} LOGIN NOINHERIT "
                         "NOSUPERUSER NOCREATEDB NOCREATEROLE "
                         "NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOSUPERUSER "
-                        "NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
                     )
                 )
         _run_alembic(
@@ -190,8 +179,8 @@ def ops_case_postgres(tmp_path: Path) -> Iterator[tuple[Engine, Engine, Engine]]
                 )
             )
 
-        worker_engine = create_engine(url("tit_dts_outbox_worker_runtime"))
-        recovery_engine = create_engine(url("tit_dts_outbox_recovery_runtime"))
+        worker_engine = create_engine(url("tit_growth_app"))
+        recovery_engine = create_engine(url("tit_growth_app"))
         yield admin_engine, worker_engine, recovery_engine
     finally:
         if recovery_engine is not None:
@@ -312,7 +301,7 @@ def test_ops_case_identity_acl_and_true_completion_recovery(
                 SELECT rolcanlogin,rolinherit,rolsuper,rolcreatedb,
                        rolcreaterole,rolreplication,rolbypassrls
                 FROM pg_roles
-                WHERE rolname='tit_dts_outbox_worker_runtime'
+                WHERE rolname='tit_growth_app'
                 """
             )
         ).one() == (True, False, False, False, False, False, False)
@@ -321,36 +310,35 @@ def test_ops_case_identity_acl_and_true_completion_recovery(
                 """
                 SELECT
                   has_table_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.outbox_events','SELECT'
                   ),
                   has_column_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.outbox_events','status','UPDATE'
                   ),
                   has_column_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.outbox_events','payload','UPDATE'
                   ),
                   has_table_privilege(
-                    'tit_dts_outbox_worker_runtime',
+                    'tit_growth_app',
                     'public.ops_cases','INSERT'
-                  ),
-                  has_function_privilege(
-                    'tit_dts_outbox_worker_runtime',
-                    'public.record_dts_v2_technical_case('
-                    'text,text,text,text,text,text,text,text,text,bigint,text,'
-                    'integer,bigint)','EXECUTE'
                   ),
                   has_function_privilege(
                     'tit_growth_app',
                     'public.record_dts_v2_technical_case('
                     'text,text,text,text,text,text,text,text,text,bigint,text,'
                     'integer,bigint)','EXECUTE'
-                  )
+                  ),
+                      has_function_privilege(
+                        'tit_growth_app',
+                        'public.record_dts_v2_technical_case_recovery('
+                        'text,text,text,bigint)','EXECUTE'
+                      )
                 """
             )
-        ).one() == (True, True, False, False, True, False)
+        ).one() == (True, True, True, True, True, True)
 
     # Completion correction is keyed by region/course and may initially lack
     # a teacher; an unrelated business Case may not.
@@ -578,19 +566,23 @@ def test_ops_case_identity_acl_and_true_completion_recovery(
     growth_url = str(admin.url).replace("postgres@", "tit_growth_app@")
     growth = create_engine(growth_url)
     try:
-        _expect_db_failure(
-            growth,
-            """
-            SELECT public.record_dts_v2_technical_case(
-              :case_id,'DOWNSTREAM_PROJECTION_DEAD',:source_ref,NULL,
-              'dom','course-auto','OPS_CASE_TEST_TRANSIENT','COURSE',
-              'course-aggregate-auto',1,:event_id,8,0
-            )
-            """,
-            case_id=case_id,
-            source_ref=source_ref,
-            event_id=event_id,
-        )
+        with growth.begin() as connection:
+            assert connection.execute(
+                text(
+                    """
+                    SELECT public.record_dts_v2_technical_case(
+                      :case_id,'DOWNSTREAM_PROJECTION_DEAD',:source_ref,NULL,
+                      'dom','course-auto','OPS_CASE_SECOND_TRANSIENT','COURSE',
+                      'course-aggregate-auto',1,:event_id,8,0
+                    )
+                    """
+                ),
+                {
+                    "case_id": case_id,
+                    "source_ref": source_ref,
+                    "event_id": event_id,
+                },
+            ).scalar_one() == "UNCHANGED"
         _expect_db_failure(
             growth,
             """

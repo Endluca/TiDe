@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -18,8 +18,8 @@ branch_labels: Union[str, tuple[str, ...], None] = None
 depends_on: Union[str, tuple[str, ...], None] = None
 
 
-DOMAIN_ROLE = "tit_dts_domain_projector_runtime"
-OUTBOX_ROLE = "tit_dts_outbox_worker_runtime"
+DOMAIN_ROLE = "tit_growth_app"
+OUTBOX_ROLE = "tit_growth_app"
 COURSE_COMMAND = (
     "public.materialize_course_source_wide_v2("
     "jsonb,bigint,bigint,text,text)"
@@ -1077,24 +1077,20 @@ def _apply_acl_and_assert() -> None:
         rf"""
         REVOKE ALL ON FUNCTION {COURSE_COMMAND},{DOMAIN_HEALTH},
           {OUTBOX_HEALTH},{FAVORITE_HEALTH}
-        FROM PUBLIC,tit_growth_app,tit_dts_ingest_runtime;
-        REVOKE ALL ON FUNCTION {COURSE_COMMAND},{OUTBOX_HEALTH},
-          {FAVORITE_HEALTH} FROM {DOMAIN_ROLE};
-        REVOKE ALL ON FUNCTION {DOMAIN_HEALTH} FROM {OUTBOX_ROLE};
-        GRANT EXECUTE ON FUNCTION {COURSE_COMMAND},{OUTBOX_HEALTH},
-          {FAVORITE_HEALTH} TO {OUTBOX_ROLE};
-        GRANT EXECUTE ON FUNCTION {DOMAIN_HEALTH} TO {DOMAIN_ROLE};
+        FROM PUBLIC,tit_growth_app,tit_dts_ingest_runtime,
+             tit_teacher_crud,tide_support_ticket_owner;
+        GRANT EXECUTE ON FUNCTION {COURSE_COMMAND},{DOMAIN_HEALTH},
+          {OUTBOX_HEALTH},{FAVORITE_HEALTH} TO tit_growth_app;
 
         REVOKE INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER ON TABLE
           public.lesson_source_wide,
           public.lesson_score_component_settlements,
-          public.score_entries,
           public.dts_pipeline_control
-        FROM {OUTBOX_ROLE},{DOMAIN_ROLE},tit_growth_app,
-             tit_dts_ingest_runtime;
+        FROM tit_growth_app,tit_dts_ingest_runtime,
+             tit_teacher_crud,tide_support_ticket_owner;
         REVOKE SELECT ON TABLE public.dts_pipeline_control
-        FROM {OUTBOX_ROLE},{DOMAIN_ROLE};
-        REVOKE CREATE ON SCHEMA public FROM {OUTBOX_ROLE},{DOMAIN_ROLE};
+        FROM tit_growth_app;
+        REVOKE CREATE ON SCHEMA public FROM tit_growth_app;
 
         COMMENT ON FUNCTION {COURSE_COMMAND} IS
           'PRIMARY-only COURSE compatibility and four-component settlement command; derives writes from locked typed facts and proves request hash/generation.';
@@ -1107,19 +1103,15 @@ def _apply_acl_and_assert() -> None:
 
         DO $runtime_course_health_shape$
         BEGIN
-          IF NOT has_function_privilege('{OUTBOX_ROLE}','{COURSE_COMMAND}','EXECUTE')
-             OR has_function_privilege('{DOMAIN_ROLE}','{COURSE_COMMAND}','EXECUTE')
-             OR has_function_privilege('tit_growth_app','{COURSE_COMMAND}','EXECUTE')
-             OR has_table_privilege('{OUTBOX_ROLE}','public.lesson_source_wide','INSERT')
-             OR has_table_privilege('{OUTBOX_ROLE}','public.lesson_source_wide','UPDATE')
-             OR has_table_privilege('{OUTBOX_ROLE}','public.lesson_source_wide','DELETE')
-             OR has_table_privilege('{OUTBOX_ROLE}','public.lesson_score_component_settlements','INSERT')
-             OR has_table_privilege('{OUTBOX_ROLE}','public.score_entries','INSERT')
-             OR has_table_privilege('{OUTBOX_ROLE}','public.dts_pipeline_control','SELECT')
-             OR NOT has_function_privilege('{DOMAIN_ROLE}','{DOMAIN_HEALTH}','EXECUTE')
-             OR has_function_privilege('{OUTBOX_ROLE}','{DOMAIN_HEALTH}','EXECUTE')
-             OR NOT has_function_privilege('{OUTBOX_ROLE}','{OUTBOX_HEALTH}','EXECUTE')
-             OR NOT has_function_privilege('{OUTBOX_ROLE}','{FAVORITE_HEALTH}','EXECUTE') THEN
+          IF NOT has_function_privilege('tit_growth_app','{COURSE_COMMAND}','EXECUTE')
+             OR has_table_privilege('tit_growth_app','public.lesson_source_wide','INSERT')
+             OR has_table_privilege('tit_growth_app','public.lesson_source_wide','UPDATE')
+             OR has_table_privilege('tit_growth_app','public.lesson_source_wide','DELETE')
+             OR has_table_privilege('tit_growth_app','public.lesson_score_component_settlements','INSERT')
+             OR has_table_privilege('tit_growth_app','public.dts_pipeline_control','SELECT')
+             OR NOT has_function_privilege('tit_growth_app','{DOMAIN_HEALTH}','EXECUTE')
+             OR NOT has_function_privilege('tit_growth_app','{OUTBOX_HEALTH}','EXECUTE')
+             OR NOT has_function_privilege('tit_growth_app','{FAVORITE_HEALTH}','EXECUTE') THEN
             RAISE EXCEPTION 'DTS_V2_RUNTIME_COURSE_HEALTH_ACL_INVALID';
           END IF;
         END $runtime_course_health_shape$;
@@ -1130,7 +1122,8 @@ def _apply_acl_and_assert() -> None:
 def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         raise RuntimeError("DTS v2 COURSE/health runtime requires PostgreSQL")
-    _preflight()
+    if not context.is_offline_mode():
+        _preflight()
     _install_score_entry_helper()
     _install_component_command()
     _install_course_command()

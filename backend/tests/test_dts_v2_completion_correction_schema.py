@@ -45,7 +45,7 @@ def test_revision_90_installs_the_two_protected_command_surfaces() -> None:
     assert "current_source.source_position_v2 IS DISTINCT FROM" in source
     assert "CORRECTION_PROJECTION_MAINTENANCE" in source
     assert "FROM PUBLIC,tit_dts_ingest_runtime" in source
-    assert "TO tit_dts_domain_projector_runtime,tit_dts_outbox_worker_runtime" in source
+    assert "TO tit_growth_app;" in source
     assert "TO tit_growth_app" in source
 
 

@@ -105,24 +105,11 @@ def test_restricted_runtime_dry_run_publish_replay_and_readback(
                 "tit_growth_app",
                 "tit_teacher_crud",
                 "tit_dts_ingest_runtime",
-                "tit_dts_domain_projector_runtime",
-                "tit_dts_scope_coordinator_runtime",
+                "tide_support_ticket_owner",
             ):
                 connection.execute(
                     text(
                         f"CREATE ROLE {role_name} LOGIN NOINHERIT "
-                        "NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                        "NOREPLICATION NOBYPASSRLS"
-                    )
-                )
-            for role_name in (
-                "tit_source_monitor",
-                "tit_source_worker",
-                "tide_business_app",
-            ):
-                connection.execute(
-                    text(
-                        f"CREATE ROLE {role_name} NOLOGIN NOINHERIT "
                         "NOSUPERUSER NOCREATEDB NOCREATEROLE "
                         "NOREPLICATION NOBYPASSRLS"
                     )
@@ -232,7 +219,7 @@ def test_restricted_runtime_dry_run_publish_replay_and_readback(
         )
 
         restricted = create_engine(
-            database_url("tit_dts_scope_coordinator_runtime")
+            database_url("tit_growth_app")
         )
         coordinator = DtsSourceScopeSnapshotCoordinator(
             engine=restricted,
