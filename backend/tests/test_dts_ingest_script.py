@@ -19,6 +19,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.dts_source_consumer import DtsConfigurationError
 from app.dts_wide_projector import DtsWideProjectionError
+from app.dts_v2_shadow_source_writer import DtsV2ShadowSourceWriterError
 from scripts import run_dts_ingest
 from scripts import run_dts_source_consumer
 from scripts.run_dts_ingest import (
@@ -397,6 +398,45 @@ def test_unexpected_error_payload_does_not_inspect_or_echo_exception_text() -> N
         "error_code": "DTS_INGEST_UNEXPECTED_ERROR",
         "error_type": "TimeoutError",
     }
+
+
+def test_shadow_writer_payload_exposes_only_safe_event_diagnostics() -> None:
+    error = DtsV2ShadowSourceWriterError(
+        "DTS_V2_SHADOW_CURRENT_REQUIRED_FOR_SPARSE_EVENT"
+    )
+    error.safe_source_region = "dom"
+    error.safe_source_table = "dom_teacher"
+    error.safe_source_operation = "UPDATE"
+    error.safe_source_offset = 20_740_612
+
+    assert _safe_operational_error_payload(error) == {
+        "error_code": "DTS_V2_SHADOW_CURRENT_REQUIRED_FOR_SPARSE_EVENT",
+        "error_type": "DtsV2ShadowSourceWriterError",
+        "source_region": "dom",
+        "source_table": "dom_teacher",
+        "source_operation": "UPDATE",
+        "source_offset": "20740612",
+    }
+
+
+def test_shadow_writer_payload_never_echoes_uncontrolled_error_text() -> None:
+    error = DtsV2ShadowSourceWriterError(
+        "password=must-never-appear teacher_id=6660451"
+    )
+    error.safe_source_region = "dom"
+    error.safe_source_table = "dom_teacher;select secret"
+    error.safe_source_operation = "UPSERT"
+    error.safe_source_offset = -1
+
+    payload = _safe_operational_error_payload(error)
+
+    assert payload == {
+        "error_code": "DTS_V2_SHADOW_SOURCE_WRITE_FAILED",
+        "error_type": "DtsV2ShadowSourceWriterError",
+        "source_region": "dom",
+    }
+    assert "must-never-appear" not in json.dumps(payload)
+    assert "6660451" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize(

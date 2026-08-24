@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -43,6 +44,9 @@ from app.dts_wide_projector import DtsWideProjectionError  # noqa: E402
 from app.dts_v2_dual_capture_store import (  # noqa: E402
     PostgresDtsSourceEventSink,
 )
+from app.dts_v2_shadow_source_writer import (  # noqa: E402
+    DtsV2ShadowSourceWriterError,
+)
 
 
 _stop_requested = False
@@ -50,6 +54,10 @@ _PIPELINE_MODE = "SINGLE_PIPELINE"
 _DATABASE_PIPELINE_MODE = "V2_PRIMARY"
 _DEFAULT_STARTUP_RETRY_SECONDS = 15.0
 _MAX_STARTUP_RETRY_SECONDS = 60.0
+_SAFE_WRITER_ERROR_CODE = re.compile(
+    r"^(?:DTS|SOURCE)_[A-Z0-9_]{1,120}$"
+)
+_SAFE_SOURCE_TABLE = re.compile(r"^(?:dom|ovs)_[a-z0-9_]{1,80}$")
 _RETRYABLE_DTS_STARTUP_ERROR_CODES = frozenset(
     {
         "DTS_BROKER_TCP_DNS_FAILED",
@@ -328,6 +336,39 @@ def _safe_operational_error_payload(
     )
     if kafka_diagnostic is not None:
         payload.update(kafka_diagnostic)
+        return payload
+    if isinstance(exc, DtsV2ShadowSourceWriterError):
+        # Writer exceptions can wrap driver text, so expose the exception
+        # value only when it is a controlled symbolic code.  Event context is
+        # attached at the exact per-event boundary and contains no row data.
+        try:
+            candidate_code = str(exc)
+        except Exception:
+            candidate_code = ""
+        payload["error_code"] = (
+            candidate_code
+            if _SAFE_WRITER_ERROR_CODE.fullmatch(candidate_code)
+            else "DTS_V2_SHADOW_SOURCE_WRITE_FAILED"
+        )
+        source_region = getattr(exc, "safe_source_region", None)
+        source_table = getattr(exc, "safe_source_table", None)
+        source_operation = getattr(exc, "safe_source_operation", None)
+        source_offset = getattr(exc, "safe_source_offset", None)
+        if source_region in {"dom", "ovs"}:
+            payload["source_region"] = source_region
+        if (
+            isinstance(source_table, str)
+            and _SAFE_SOURCE_TABLE.fullmatch(source_table)
+        ):
+            payload["source_table"] = source_table
+        if source_operation in {"INSERT", "UPDATE", "DELETE"}:
+            payload["source_operation"] = source_operation
+        if (
+            isinstance(source_offset, int)
+            and not isinstance(source_offset, bool)
+            and source_offset >= 0
+        ):
+            payload["source_offset"] = str(source_offset)
         return payload
     if not isinstance(exc, OperationalError):
         return payload

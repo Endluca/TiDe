@@ -13,7 +13,10 @@ from app.dts_v2_dual_capture_store import (
     _event_payload_hash,
 )
 from app.dts_v2_dirty_queue_store import DirtyKeyV2
-from app.dts_v2_shadow_source_writer import DtsV2ShadowSourceWriteResult
+from app.dts_v2_shadow_source_writer import (
+    DtsV2ShadowSourceWriteResult,
+    DtsV2ShadowSourceWriterError,
+)
 
 
 EPOCH_ID = "broker:ovs:topic-dual:0:generation:opening"
@@ -77,7 +80,9 @@ class _Writer:
         del connection
         self.calls.append(("v2", event.offset, source_partition_epoch_id))
         if event.offset == self.fail_offset:
-            raise RuntimeError("synthetic-v2-write-failure")
+            raise DtsV2ShadowSourceWriterError(
+                "DTS_V2_SHADOW_CURRENT_REQUIRED_FOR_SPARSE_EVENT"
+            )
         return DtsV2ShadowSourceWriteResult(
             status=(
                 "REPLAYED"
@@ -408,6 +413,25 @@ def test_enqueue_failure_rolls_back_source_ledger_and_checkpoint_batch() -> None
     assert (engine.begins, engine.commits, engine.rollbacks) == (1, 0, 1)
     assert ("v2", 1, EPOCH_ID) in calls
     assert not any(call[:2] == ("ledger", 1) for call in calls)
+
+
+def test_writer_failure_adds_only_safe_failed_event_context() -> None:
+    sink, engine, _calls = _sink(fail_offset=1)
+
+    with pytest.raises(DtsV2ShadowSourceWriterError) as caught:
+        sink.apply_batch(
+            (
+                (_event(0), DirtyKeySet(), None),
+                (_event(1), DirtyKeySet(), None),
+            )
+        )
+
+    error = caught.value
+    assert error.safe_source_region == "ovs"
+    assert error.safe_source_table == "ovs_appoint"
+    assert error.safe_source_operation == "UPDATE"
+    assert error.safe_source_offset == 1
+    assert (engine.begins, engine.commits, engine.rollbacks) == (1, 0, 1)
 
 
 @pytest.mark.parametrize(

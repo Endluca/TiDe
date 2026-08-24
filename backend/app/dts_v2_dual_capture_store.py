@@ -47,6 +47,7 @@ from .dts_source_contract_v2 import V2_BUSINESS_SOURCE_SUFFIXES_BY_REGION
 from .dts_v2_shadow_source_writer import (
     DtsV2ShadowSourceWriteResult,
     DtsV2ShadowSourceWriter,
+    DtsV2ShadowSourceWriterError,
 )
 from .dts_v2_dirty_queue_store import DirtyKeyV2, DtsV2DirtyQueueStore
 
@@ -751,11 +752,21 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             )
         )
         if _is_v2_business_event(event) and not ignored_missing_course_update:
-            v2_result = self._v2_writer.apply_cdc(
-                connection,
-                event,
-                self.source_partition_epoch_id,
-            )
+            try:
+                v2_result = self._v2_writer.apply_cdc(
+                    connection,
+                    event,
+                    self.source_partition_epoch_id,
+                )
+            except DtsV2ShadowSourceWriterError as exc:
+                # These attributes are consumed only by the process-level
+                # safe diagnostic formatter.  They identify the failed CDC
+                # envelope without exposing source row values or identities.
+                exc.safe_source_region = event.source_region
+                exc.safe_source_table = event.table_name
+                exc.safe_source_operation = event.operation
+                exc.safe_source_offset = event.offset
+                raise
             if (
                 v2_result.source_region != event.source_region
                 or v2_result.source_table != event.table_name
