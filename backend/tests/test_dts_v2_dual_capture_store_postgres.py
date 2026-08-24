@@ -314,6 +314,28 @@ def test_single_pipeline_first_event_missing_update_and_insert(
         _execute_dms_onequery_file(psql_url, public_100_101_sql)
         _run_alembic(backend_dir, admin_url, "check")
 
+        with admin_engine.begin() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT has_table_privilege("
+                    "'tit_dts_ingest_runtime',"
+                    "'public.dts_dirty_keys','SELECT')"
+                )
+            ).scalar_one() is True
+            connection.execute(
+                text(
+                    "REVOKE SELECT ON TABLE public.dts_dirty_keys, "
+                    "public.lesson_source_wide FROM tit_dts_ingest_runtime"
+                )
+            )
+        dom_privacy_acl_hotfix_sql = (
+            backend_dir
+            / "migrations"
+            / "dms"
+            / "20260824_public101_dom_privacy_read_acl_hotfix.sql"
+        )
+        _execute_dms_onequery_file(psql_url, dom_privacy_acl_hotfix_sql)
+
         application_url = URL.create(
             "postgresql+psycopg",
             username="tit_growth_app",
@@ -536,6 +558,26 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                 ),
                 {"topic": TOPIC},
             ).scalar_one() == 0
+
+        dom_topic = "dom-topic-v2"
+        dom_sink = PostgresDtsSourceEventSink(
+            settings,
+            source_region="dom",
+            source_partition_epoch_id="dom-epoch-fresh-001",
+            consumer_group="dom-consumer-fresh-001",
+            start_timestamp_seconds=START_TIMESTAMP,
+            source_profile_manifest_sha256=profile_manifest_sha256,
+            engine=runtime_engine,
+        )
+        assert dom_sink.validate_startup(
+            source_region="dom", topic=dom_topic, partition=0
+        ) is None
+        dom_sink.validate_domestic_student_privacy_state()
+        dom_sink.validate_domestic_student_privacy_contract(
+            key_fingerprint="a" * 64,
+            topic=dom_topic,
+            partition=0,
+        )
     finally:
         if application_engine is not None:
             application_engine.dispose()

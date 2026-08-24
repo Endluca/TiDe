@@ -8510,6 +8510,14 @@ REVOKE ALL ON FUNCTION
             public.dts_dirty_key_state_audits
         FROM tit_dts_ingest_runtime;
 
+        -- DOM startup validates privacy state against current lesson and dirty
+        -- facts.  Keep this surface read-only; dirty writes still go through
+        -- the SECURITY DEFINER functions above.
+        GRANT SELECT ON TABLE
+            public.dts_dirty_keys,
+            public.lesson_source_wide
+        TO tit_dts_ingest_runtime;
+
         DO $$
         BEGIN
             IF to_regrole('tit_teacher_crud') IS NOT NULL THEN

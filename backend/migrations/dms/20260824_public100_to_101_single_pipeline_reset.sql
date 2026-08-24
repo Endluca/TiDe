@@ -420,6 +420,11 @@ REVOKE EXECUTE ON FUNCTION
           public.dts_v1_compat_dirty_not_complete_count_v1()
         FROM tit_dts_ingest_runtime;
 
+GRANT SELECT ON TABLE
+          public.dts_dirty_keys,
+          public.lesson_source_wide
+        TO tit_dts_ingest_runtime;
+
 DO $$
         DECLARE relation regclass; remaining bigint;
         BEGIN
@@ -463,7 +468,13 @@ BEGIN
        OR (SELECT count(*) FROM public.source_courses) <> 0
        OR (SELECT count(*) FROM public.teachers) <> 0
        OR (SELECT count(*) FROM public.task_assignments) <> 0
-       OR (SELECT count(*) FROM public.score_entries) <> 0 THEN
+       OR (SELECT count(*) FROM public.score_entries) <> 0
+       OR NOT has_table_privilege(
+            'tit_dts_ingest_runtime','public.dts_dirty_keys','SELECT'
+          )
+       OR NOT has_table_privilege(
+            'tit_dts_ingest_runtime','public.lesson_source_wide','SELECT'
+          ) THEN
         RAISE EXCEPTION 'public rev101 postflight verification failed';
     END IF;
 END

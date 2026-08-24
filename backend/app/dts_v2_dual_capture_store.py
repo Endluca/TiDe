@@ -386,6 +386,8 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             ("public.dts_ingest_events", "INSERT"),
             ("public.dts_ingest_checkpoints", "SELECT"),
             ("public.dts_ingest_checkpoints", "UPDATE"),
+            ("public.dts_dirty_keys", "SELECT"),
+            ("public.lesson_source_wide", "SELECT"),
         )
         forbidden_table_privileges = (
             ("public.dts_source_partition_epochs", "INSERT"),

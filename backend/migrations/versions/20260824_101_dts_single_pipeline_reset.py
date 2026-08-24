@@ -523,6 +523,17 @@ def _retire_legacy_runtime_commands() -> None:
     )
 
 
+def _grant_dom_privacy_runtime_read_acl() -> None:
+    op.execute(
+        f"""
+        GRANT SELECT ON TABLE
+          public.dts_dirty_keys,
+          public.lesson_source_wide
+        TO {INGEST_ROLE};
+        """
+    )
+
+
 def _verify_reset() -> None:
     fact_values = ",".join(f"('public.{name}')" for name in CONSUMED_FACT_ROOTS)
     op.execute(
@@ -546,6 +557,12 @@ def _verify_reset() -> None:
           IF (SELECT count(*) FROM public.dts_pipeline_control)<>1
              OR (SELECT count(*) FROM public.dts_projection_read_routes)<>1
              OR (SELECT count(*) FROM public.dts_pipeline_reset_audits)<>1
+             OR NOT has_table_privilege(
+                  '{INGEST_ROLE}','public.dts_dirty_keys','SELECT'
+                )
+             OR NOT has_table_privilege(
+                  '{INGEST_ROLE}','public.lesson_source_wide','SELECT'
+                )
              OR (public.dts_projection_readiness_v1()->>'ready')::boolean
                   IS NOT TRUE THEN
             RAISE EXCEPTION 'DTS_SINGLE_PIPELINE_RESET_INVALID';
@@ -567,6 +584,7 @@ def upgrade() -> None:
     _install_stream_initializer()
     _replace_readiness()
     _retire_legacy_runtime_commands()
+    _grant_dom_privacy_runtime_read_acl()
     _verify_reset()
 
 

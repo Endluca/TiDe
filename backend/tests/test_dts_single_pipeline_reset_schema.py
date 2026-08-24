@@ -26,6 +26,12 @@ PUBLIC_65_100_DMS = (
     / "dms"
     / "20260824_public65_to_100_dts_domain_schema.sql"
 )
+DOM_PRIVACY_ACL_HOTFIX_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260824_public101_dom_privacy_read_acl_hotfix.sql"
+)
 TEACHER_DMS = (
     ROOT
     / "migrations"
@@ -96,7 +102,26 @@ def test_formal_public_dms_is_pinned_and_fail_closed() -> None:
     assert "exact 38-row teacher ledger ending at 0043" in source
     assert "READY_SINGLE_PIPELINE" in source
     assert "UPDATE alembic_version SET version_num=" in source
+    assert "public.dts_dirty_keys" in source
+    assert "public.lesson_source_wide" in source
+    assert "GRANT SELECT ON TABLE" in source
     _assert_dms_onequery_compatible(source)
+
+
+def test_dom_privacy_acl_hotfix_is_single_statement_and_read_only() -> None:
+    source = DOM_PRIVACY_ACL_HOTFIX_DMS.read_text(encoding="utf-8")
+    statements = _split_dms_onequery_statements(source)
+    assert len(statements) == 1
+    assert "20260824_101_dts_single_pipeline_reset" in source
+    assert "GRANT SELECT ON TABLE" in source
+    assert "public.dts_dirty_keys" in source
+    assert "public.lesson_source_wide" in source
+    assert "INSERT','UPDATE','DELETE','TRUNCATE','TRIGGER" in source
+    assert not re.search(
+        r"\b(?:CREATE|ALTER|DROP)\s+ROLE\b|\bCOMMENT\s+ON\s+ROLE\b",
+        source,
+        re.IGNORECASE,
+    )
 
 
 def test_formal_public_65_to_100_dms_matches_observed_heads() -> None:
