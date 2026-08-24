@@ -45,15 +45,29 @@ def test_source_result_runtime_acl_is_minimal_and_self_verifying(monkeypatch) ->
 
     assert migration.down_revision == "20260806_44_source_reads"
     assert len(migration.revision) <= 32
+    # Revisions 76 and 88 add v2 ownership columns after revision 59 has
+    # already replaced this historical column grant with table-level CRUD.
+    # They must not be projected backwards into rev45.
+    later_v2_ownership_columns = {
+        "v2_source_region",
+        "v2_source_appoint_id",
+        "v2_completion_participation_seq",
+        "v2_teacher_id",
+        "v2_projection_generation",
+    }
     assert set(migration.LESSON_RESULT_UPDATE_COLUMNS) == {
         column.name
         for column in LessonScoreResultRecord.__table__.columns
         if not column.primary_key
+        and column.name not in later_v2_ownership_columns
     }
+    # graduation_score_locked does not exist at revision 45.  Revision 59 later
+    # replaces these column grants with table-level CRUD, so revision 70 does
+    # not need to mutate this historical column list.
     assert set(migration.QUALIFICATION_UPDATE_COLUMNS) == {
         column.name
         for column in TeacherQualificationRecord.__table__.columns
-        if not column.primary_key
+        if not column.primary_key and column.name != "graduation_score_locked"
     }
     assert "GRANT SELECT, INSERT ON TABLE" in grants
     assert "GRANT UPDATE (" in grants

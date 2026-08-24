@@ -44,7 +44,7 @@ function DocumentReadingTaskPanel({ task }) {
     <Suspense fallback={(
       <div className="document-reading-sync" role="status">
         <SpinnerGap className="document-reading-spinner" size={24} />
-        <strong>{language === "zh" ? "正在加载政策文档" : "Loading policy document"}</strong>
+        <strong>{language === "zh" ? "正在加载文档" : "Loading document"}</strong>
       </div>
     )}>
       <DocumentReadingTask task={task} />

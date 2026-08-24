@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "tasks": {
     "G01": {
       "mappingVersion": 6,
@@ -125,6 +125,24 @@
       "integrationStatus": "PARTIAL",
       "launchEnabled": true,
       "completionEnabled": false,
+      "noHeader": true,
+      "courses": [
+        {
+          "courseId": "595",
+          "title": "Reliability Training",
+          "tasks": [
+            { "courseTaskId": "3164", "title": "Attendance Policy Primer", "type": "VIDEO", "required": true, "completionPercent": 100 },
+            { "courseTaskId": "3163", "title": "Reliability Guide", "type": "VIDEO", "required": true, "completionPercent": 100 }
+          ]
+        }
+      ]
+    },
+    "P-REL-ATTENDANCE": {
+      "mappingVersion": 1,
+      "integrationStatus": "PARTIAL",
+      "launchEnabled": true,
+      "completionEnabled": false,
+      "autoCompleteAssignment": false,
       "noHeader": true,
       "courses": [
         {

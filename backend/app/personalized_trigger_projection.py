@@ -38,7 +38,7 @@ from .teacher_copy import (
 )
 
 
-TRIGGER_RULE_VERSION = "personalized_rules_20260724_v2"
+TRIGGER_RULE_VERSION = "personalized_rules_20260822_v3"
 
 PERSONALIZED_TEMPLATE_CODES = {
     "P-REL-MEMO",
@@ -65,6 +65,7 @@ class LessonTriggerProjectionError(ValueError):
 class LessonTriggerRow:
     row_number: int
     raw_payload: dict[str, Any]
+    source_region: str
     lesson_id: str
     teacher_id: str
     student_id: str
@@ -75,7 +76,6 @@ class LessonTriggerRow:
     is_peak: bool | None
     is_late: bool | None
     is_early: bool | None
-    is_false_early_leave: bool | None
     negative_score: float | None
     has_negative_tag: bool | None
     feedback_detail: str | None
@@ -103,6 +103,7 @@ class PersonalizedOutputSpec:
     why: str
     evidence: dict[str, Any]
     teacher_id: str
+    source_region: str
     lesson_id: str | None
     complaint_rule_id: str | None
     dedupe_key: str
@@ -194,6 +195,7 @@ def _merge_lesson_decisions(
             for item in members
         ]
         evidence: dict[str, Any] = {
+            "source_region": row.source_region,
             "lesson_id": row.lesson_id,
             "source_row_number": row.row_number,
             "matched_rule_codes": list(
@@ -212,14 +214,16 @@ def _merge_lesson_decisions(
                 "absence_reason_detail",
                 "is_late",
                 "is_early",
-                "is_fake_early",
             ):
                 if field in item.evidence and field not in evidence:
                     evidence[field] = item.evidence[field]
         if anomalies:
             evidence["anomalies"] = list(dict.fromkeys(anomalies))
         why = " ".join(dict.fromkeys(item.why for item in members))
-        dedupe_key = f"{canonical_rule}:{row.teacher_id}:{row.lesson_id}"
+        dedupe_key = (
+            f"{canonical_rule}:{row.teacher_id}:"
+            f"{row.source_region}:{row.lesson_id}"
+        )
         if output_type == "TEACHER_TASK":
             if task_code == "P-FB-COMPLAINT":
                 complaint_key = hashlib.sha256(
@@ -242,6 +246,7 @@ def _merge_lesson_decisions(
                 why=why,
                 evidence=evidence,
                 teacher_id=row.teacher_id,
+                source_region=row.source_region,
                 lesson_id=row.lesson_id,
                 complaint_rule_id=complaint_rule_id,
                 dedupe_key=dedupe_key,
@@ -259,7 +264,9 @@ def build_output_specs(
     complaint_rule_ids: Mapping[str, str],
 ) -> tuple[list[PersonalizedOutputSpec], int, int, int]:
     result: list[PersonalizedOutputSpec] = []
-    blacklists: dict[str, dict[str, LessonTriggerRow]] = defaultdict(dict)
+    blacklists: dict[
+        str, dict[tuple[str, str], LessonTriggerRow]
+    ] = defaultdict(dict)
     negative_tags: dict[str, dict[str, list[LessonTriggerRow]]] = defaultdict(
         lambda: defaultdict(list)
     )
@@ -269,6 +276,10 @@ def build_output_specs(
     unmatched_complaints = 0
 
     for row in lessons:
+        if row.source_region not in {"dom", "ovs"}:
+            raise LessonTriggerProjectionError(
+                "lesson source_region must be dom or ovs"
+            )
         complaint_rule_id = complaint_rule_ids.get(normalize_text(row.complaint_l3))
         decisions = evaluate_lesson(
             row.raw_payload,
@@ -285,8 +296,13 @@ def build_output_specs(
             )
         )
         if row.is_blocked:
-            blacklists[row.teacher_id].setdefault(row.student_id, row)
-        if row.has_negative_tag:
+            blacklists[row.teacher_id].setdefault(
+                (row.source_region, row.student_id),
+                row,
+            )
+        # A grading/label event is a course fact immediately, but it has no
+        # trustworthy teacher owner until the lesson freezes at ``end``.
+        if row.lifecycle_status.strip().lower() == "end" and row.has_negative_tag:
             if row.negative_tags:
                 for label in row.negative_tags:
                     negative_tags[row.teacher_id][label].append(row)
@@ -317,10 +333,20 @@ def build_output_specs(
                 evidence={
                     "distinct_student_count": len(student_rows),
                     "threshold": 2,
+                    "threshold_crossing_source_region": (
+                        threshold_row.source_region
+                    ),
                     "threshold_crossing_lesson_id": threshold_row.lesson_id,
-                    "lesson_ids": [item.lesson_id for item in ordered],
+                    "lessons": [
+                        {
+                            "source_region": item.source_region,
+                            "source_appoint_id": item.lesson_id,
+                        }
+                        for item in ordered
+                    ],
                 },
                 teacher_id=teacher_id,
+                source_region=threshold_row.source_region,
                 lesson_id=threshold_row.lesson_id,
                 complaint_rule_id=None,
                 dedupe_key=f"TR-FB-BLACKLIST:{teacher_id}",
@@ -358,8 +384,17 @@ def build_output_specs(
                         "negative_review_lesson_count": len(rows),
                         "aggregate_hit_count": len(rows),
                         "threshold": 2,
+                        "threshold_crossing_source_region": (
+                            threshold_row.source_region
+                        ),
                         "threshold_crossing_lesson_id": threshold_row.lesson_id,
-                        "lesson_ids": [item.lesson_id for item in ordered],
+                        "lessons": [
+                            {
+                                "source_region": item.source_region,
+                                "source_appoint_id": item.lesson_id,
+                            }
+                            for item in ordered
+                        ],
                         **(
                             {
                                 "teacher_execution_variant": (
@@ -371,6 +406,7 @@ def build_output_specs(
                         ),
                     },
                     teacher_id=teacher_id,
+                    source_region=threshold_row.source_region,
                     lesson_id=threshold_row.lesson_id,
                     complaint_rule_id=None,
                     dedupe_key=f"TR-FB-NEGATIVE-REPEAT:{teacher_id}:{label_key}",
@@ -406,9 +442,16 @@ def build_output_specs(
                     "negative_tag_flag_count": len(rows),
                     "threshold": 2,
                     "missing_field": "评价详情.评价标签",
-                    "lesson_ids": [item.lesson_id for item in ordered],
+                    "lessons": [
+                        {
+                            "source_region": item.source_region,
+                            "source_appoint_id": item.lesson_id,
+                        }
+                        for item in ordered
+                    ],
                 },
                 teacher_id=teacher_id,
+                source_region=threshold_row.source_region,
                 lesson_id=threshold_row.lesson_id,
                 complaint_rule_id=None,
                 dedupe_key=f"TR-FB-NEGATIVE-TAG-MISSING:{teacher_id}",
@@ -526,30 +569,47 @@ def materialize_outputs(
             raise LessonTriggerProjectionError(
                 f"task aggregation conflict for {output_dedupe_key}"
             )
-        lesson_ids = list(
-            dict.fromkeys(
-                lesson_id
-                for item in members
-                for lesson_id in (
-                    item.evidence.get("lesson_ids")
-                    if isinstance(item.evidence.get("lesson_ids"), list)
-                    else [item.lesson_id]
-                )
-                if lesson_id
-            )
-        )
+        source_lessons: list[dict[str, str]] = []
+        for item in members:
+            candidates = item.evidence.get("lessons")
+            if not isinstance(candidates, list):
+                candidates = [
+                    {
+                        "source_region": item.source_region,
+                        "source_appoint_id": item.lesson_id,
+                    }
+                ]
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                region = candidate.get("source_region")
+                appoint_id = candidate.get("source_appoint_id")
+                if region not in {"dom", "ovs"} or not appoint_id:
+                    continue
+                identity = {
+                    "source_region": str(region),
+                    "source_appoint_id": str(appoint_id),
+                }
+                if identity not in source_lessons:
+                    source_lessons.append(identity)
+        lesson_ids = [
+            f"{item['source_region']}:{item['source_appoint_id']}"
+            for item in source_lessons
+        ]
         hit_count = sum(
             int(item.evidence.get("aggregate_hit_count") or 1)
             for item in members
         )
         evidence = {
             "hit_count": hit_count,
+            "lessons": source_lessons,
             "lesson_ids": lesson_ids,
             "matched_rule_codes": list(
                 dict.fromkeys(item.rule_code for item in members)
             ),
             "signal_samples": [
                 {
+                    "source_region": item.source_region,
                     "lesson_id": item.lesson_id,
                     "why": item.why,
                     "evidence": item.evidence,
@@ -728,6 +788,7 @@ def materialize_outputs(
             "trigger_code": spec.rule_code,
             "rule_version": TRIGGER_RULE_VERSION,
             "teacher_id": spec.teacher_id,
+            "lesson_source_region": spec.source_region,
             "lesson_id": spec.lesson_id,
             "complaint_rule_id": spec.complaint_rule_id,
             "output_type": spec.output_type,

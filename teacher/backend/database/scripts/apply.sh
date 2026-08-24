@@ -428,10 +428,11 @@ if [[ "${crm_sso_logins_exists}" != "t" ]]; then
   "${PSQL[@]}" -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql"
 fi
 "${PSQL[@]}" -f "${DB_DIR}/migrations/0042_g09_set_kuozhi_course.up.sql"
+"${PSQL[@]}" -f "${DB_DIR}/migrations/0043_p_rel_execution_catalog.up.sql"
 
 "${PSQL[@]}" -f "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 "${PSQL[@]}" -f "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
 pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts
 "${PSQL[@]}" -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
-echo "迁移 0001 至 0042、共享表本地契约和当前 Seeds 已检查并执行。"
+echo "迁移 0001 至 0043、共享表本地契约和当前 Seeds 已检查并执行。"

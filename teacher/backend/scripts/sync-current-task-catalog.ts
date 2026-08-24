@@ -110,6 +110,9 @@ const personalizedEnvironmentPhotoStepKey = 'p-fb-negative-environment-photo';
 const teachingEnvironmentReviewProfile = 'TEACHING_ENVIRONMENT_V1';
 const personalizedEnvironmentContentVersion =
   '2026-08-11-personalized-environment-photo-v1';
+const lessonMemoContentVersion = '2026-07-24-lesson-memo-rules-v1';
+const lessonMemoContentHash =
+  '43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51';
 
 const g04IndependentStepKeys = [
   'g02-environment-photo',
@@ -466,32 +469,74 @@ export const currentTaskCatalog: CatalogTask[] = [
     ],
     rules: [allStepsRule('请完成设备和连接检查。')],
   },
+  {
+    code: 'P-REL-ATTENDANCE',
+    externalCode: 'attendance-reliability-refresher',
+    title: 'Be Ready and On Time',
+    why: 'A lesson record shows a reliability issue, such as an absence, late arrival, or early leave.',
+    whatToDo: 'Complete the assigned attendance training and pass its quiz.',
+    completionStandard:
+      'The teacher app marks the training and quiz as completed.',
+    benefit:
+      'This task carries no points. It addresses the specific attendance issue shown in the task reason.',
+    priority: 'P2',
+    score: 0,
+    stage: 'PERSONALIZED',
+    sequence: 2,
+    estimatedMinutes: 12,
+    contentVersion: '2026-08-22-reliability-course-595-v1',
+    contentStatus: 'READY',
+    allowRetry: true,
+    kind: 'PERSONALIZED_IMPROVEMENT',
+    steps: [],
+    rules: [],
+  },
+  {
+    code: 'P-REL-MEMO',
+    externalCode: 'lesson-memo-rules-learning',
+    title: 'Complete Your Lesson Memo',
+    why: 'A completed lesson was recorded with a blank Lesson Memo.',
+    whatToDo:
+      'Complete the Lesson Memo guidance and review how to submit an accurate memo after every lesson.',
+    completionStandard:
+      'The teacher app marks the assigned Lesson Memo learning activity as completed.',
+    benefit:
+      'This task carries no points. It helps strengthen your Lesson Memo reliability.',
+    priority: 'P2',
+    score: 0,
+    stage: 'PERSONALIZED',
+    sequence: 3,
+    estimatedMinutes: 6,
+    contentVersion: lessonMemoContentVersion,
+    contentStatus: 'READY',
+    allowRetry: true,
+    kind: 'PERSONALIZED_IMPROVEMENT',
+    steps: [
+      {
+        key: 'p-rel-memo-document',
+        type: 'DOCUMENT',
+        title: 'Read Lesson Memo Rules',
+        config: {
+          role: 'LESSON_MEMO_RULES_DOCUMENT',
+          documentCode: 'lesson-memo-rules',
+          sourceTitle: 'Lesson Memo Rules',
+          sourceNodeId: 'OG9lyrgJPzkq5xD6fvzmqRonWzN67Mw4',
+          sourceUpdatedAt: '2026-07-24T01:47:08Z',
+          contentVersion: lessonMemoContentVersion,
+          contentHash: lessonMemoContentHash,
+          readingCompletion: 'SCROLL_TO_END',
+        },
+      },
+    ],
+    rules: [
+      allStepsRule(
+        '请将当前版本的 Lesson Memo Rules 阅读到文档末尾。',
+        { requiredStepKeys: ['p-rel-memo-document'] },
+        lessonMemoContentVersion,
+      ),
+    ],
+  },
   ...[
-    {
-      code: 'P-REL-ATTENDANCE',
-      externalCode: 'attendance-reliability-refresher',
-      title: 'Be Ready and On Time',
-      why: 'A lesson record shows a reliability issue, such as an absence, late arrival, or early leave.',
-      whatToDo: 'Complete the assigned attendance training and pass its quiz.',
-      completionStandard:
-        'The teacher app marks the training and quiz as completed.',
-      benefit:
-        'This task carries no points. It addresses the specific attendance issue shown in the task reason.',
-      sequence: 2,
-    },
-    {
-      code: 'P-REL-MEMO',
-      externalCode: 'lesson-memo-rules-learning',
-      title: 'Complete Your Lesson Memo',
-      why: 'A completed lesson was recorded with a blank Lesson Memo.',
-      whatToDo:
-        'Complete the Lesson Memo guidance and review how to submit an accurate memo after every lesson.',
-      completionStandard:
-        'The teacher app marks the assigned Lesson Memo learning activity as completed.',
-      benefit:
-        'This task carries no points. It helps strengthen your Lesson Memo reliability.',
-      sequence: 3,
-    },
     {
       code: 'P-FB-COMPLAINT',
       externalCode: 'feedback-topic-learning',

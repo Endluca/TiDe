@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  courseParticipationKey,
   courseScoreSourceLabels,
   courseSourcesForDimension,
   lessonLifecycleStatusLabel,
@@ -17,7 +18,10 @@ test("maps the hardware-quality component to teacher-facing copy", () => {
 });
 
 const course = {
-  lessonId: "lesson-001",
+  lessonId: "participation:v1:compat-display-only",
+  sourceRegion: "dom",
+  sourceAppointId: "appoint-001",
+  participationSeq: 1,
   lessonSequence: 3,
   scheduledStartAt: "2026-07-21T08:00:00.000Z",
   lifecycleStatus: "end",
@@ -25,7 +29,6 @@ const course = {
   facts: {
     late: false,
     earlyLeave: false,
-    falseEarlyLeave: false,
     positiveFeedback: true,
     favorited: false,
     rebooked: false,
@@ -96,7 +99,11 @@ test("groups course sources into the matching cumulative dimension", () => {
       value: 1,
       unit: "CLASSES",
       score: 5,
-      lessonId: "lesson-001",
+      courseKey: '["dom","appoint-001",1]',
+      lessonId: "participation:v1:compat-display-only",
+      sourceRegion: "dom",
+      sourceAppointId: "appoint-001",
+      participationSeq: 1,
       lessonNumber: 3,
       lessonStartedAt: "2026-07-21T08:00:00.000Z",
     },
@@ -131,7 +138,11 @@ test("keeps Shiwen summary components when no class attribution is available", (
         value: 1,
         unit: "CLASSES",
         score: 2,
-        lessonId: "lesson-001",
+        courseKey: '["dom","appoint-001",1]',
+        lessonId: "participation:v1:compat-display-only",
+        sourceRegion: "dom",
+        sourceAppointId: "appoint-001",
+        participationSeq: 1,
         lessonNumber: 3,
         lessonStartedAt: "2026-07-21T08:00:00.000Z",
         summaryScore: 2,
@@ -171,6 +182,7 @@ test("shows only Shiwen-awarded favorite courses across the full lesson set", ()
   const favoriteCourse = (lessonSequence, awarded) => ({
     ...course,
     lessonId: `lesson-${lessonSequence}`,
+    sourceAppointId: `appoint-${lessonSequence}`,
     lessonSequence,
     facts: { ...course.facts, favorited: true },
     dimensions: [{
@@ -214,6 +226,31 @@ test("shows only Shiwen-awarded favorite courses across the full lesson set", ()
   );
 });
 
+test("uses the full participation identity instead of the compatibility lesson id", () => {
+  const substituted = {
+    ...course,
+    lessonId: course.lessonId,
+    participationSeq: 2,
+  };
+
+  assert.equal(courseParticipationKey(course), '["dom","appoint-001",1]');
+  assert.equal(
+    courseParticipationKey(substituted),
+    '["dom","appoint-001",2]',
+  );
+  assert.notEqual(
+    courseParticipationKey(course),
+    courseParticipationKey(substituted),
+  );
+});
+
+test("fails closed when a course participation identity is incomplete", () => {
+  assert.throws(
+    () => courseParticipationKey({ lessonId: "legacy-only" }),
+    /Invalid course participation identity/,
+  );
+});
+
 test("keeps a later favorite fact visible without presenting a zero score", () => {
   const laterFavorite = {
     ...course,
@@ -245,7 +282,7 @@ test("keeps a later favorite fact visible without presenting a zero score", () =
 
 test("keeps every safe course fact with a teacher-facing value", () => {
   const indicators = visibleCourseIndicators(course);
-  assert.equal(indicators.length, 8);
+  assert.equal(indicators.length, 7);
   assert.deepEqual(
     indicators.map(({ sourceKey, value, tone, score }) => ({
       sourceKey,
@@ -258,7 +295,6 @@ test("keeps every safe course fact with a teacher-facing value", () => {
       { sourceKey: "FEEDBACK_FAVORITE", value: "暂无收藏", tone: "neutral", score: null },
       { sourceKey: "ON_TIME_COMPLETED", value: "准时完成", tone: "positive", score: 2 },
       { sourceKey: "RELIABILITY_NO_EARLY_LEAVE", value: "完整完成", tone: "positive", score: null },
-      { sourceKey: "RELIABILITY_EARLY_LEAVE_CORRECTED", value: "无修正记录", tone: "neutral", score: null },
       { sourceKey: "CLASS_QUALITY_CAMERA_ON", value: "摄像头保持开启", tone: "positive", score: null },
       { sourceKey: "CLASS_QUALITY_CPU_STABLE", value: "电脑运行稳定", tone: "positive", score: null },
       { sourceKey: "CLASS_QUALITY_NETWORK_STABLE", value: "网络连接稳定", tone: "positive", score: null },
@@ -273,7 +309,7 @@ test("shows missing values as unavailable instead of treating them as negative f
       Object.keys(course.facts).map((key) => [key, null]),
     ),
   });
-  assert.equal(indicators.length, 8);
+  assert.equal(indicators.length, 7);
   assert.equal(indicators.every((indicator) => indicator.value.zh.includes("暂无") || indicator.value.zh.includes("不完整")), true);
   assert.equal(indicators.every((indicator) => indicator.tone === "missing"), true);
 });

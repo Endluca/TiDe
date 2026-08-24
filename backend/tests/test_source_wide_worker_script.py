@@ -594,6 +594,54 @@ def test_source_processing_uses_the_verified_leader_connection() -> None:
     }
 
 
+def test_source_worker_is_database_mode_standby_in_v2_primary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    leader_connection = object()
+
+    class _Leader:
+        is_leader = True
+        connection = leader_connection
+
+        @staticmethod
+        def try_acquire() -> bool:
+            raise AssertionError("held leadership must not be reacquired")
+
+        @staticmethod
+        def verify() -> bool:
+            return True
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    calls = 0
+
+    def process_once(**_kwargs) -> dict:
+        nonlocal calls
+        calls += 1
+        return {"claimed": 0, "failed": 0}
+
+    assert _run_worker(
+        _Leader(),
+        max_events=25,
+        watch=False,
+        interval_seconds=3,
+        leader_retry_seconds=10,
+        heartbeat_path=tmp_path / "v2-primary-heartbeat",
+        process_once=process_once,
+        pipeline_mode_reader=lambda connection: (
+            "V2_PRIMARY" if connection is leader_connection else "invalid"
+        ),
+    ) == 0
+    assert calls == 0
+    assert capsys.readouterr().out.splitlines() == [
+        '{"event": "v2_primary_standby", '
+        '"role": "v2_primary_standby", "worker": "source_wide"}'
+    ]
+
+
 def test_source_leader_retry_jitter_is_stable_and_pod_specific() -> None:
     first = _stable_leader_retry_seconds(10, identity="pod-a:42")
     repeated = _stable_leader_retry_seconds(10, identity="pod-a:42")

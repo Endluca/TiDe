@@ -127,6 +127,26 @@ def test_default_payloads_match_single_v1_score_contract() -> None:
         "p0_response_window_minutes": 120,
         "p0_reminder_minutes_before_response_due": 30,
     }
+    teacher_copy = DEFAULT_CONFIG_PAYLOADS[
+        ConfigKey.TEACHER_PERSONALIZED_COPY
+    ]
+    assert teacher_copy["default_negative_execution_variant"] == "GENERAL"
+    assert teacher_copy["negative_label_execution_variant"] == {
+        "灯光过暗/亮": "TEACHING_ENVIRONMENT_PHOTO",
+        "环境乱/灯光差": "TEACHING_ENVIRONMENT_PHOTO",
+    }
+
+
+def test_teacher_personalized_copy_rejects_contract_drift() -> None:
+    payload = deepcopy(
+        DEFAULT_CONFIG_PAYLOADS[ConfigKey.TEACHER_PERSONALIZED_COPY]
+    )
+    payload["negative_label_execution_variant"] = {
+        "缺少互动": "TEACHING_ENVIRONMENT_PHOTO"
+    }
+
+    with pytest.raises(ValidationError):
+        validate_config_payload(ConfigKey.TEACHER_PERSONALIZED_COPY, payload)
 
 
 def test_v1_allows_business_values_but_keeps_contract_structure() -> None:
@@ -493,21 +513,21 @@ def test_published_policy_cannot_be_removed_without_replacement(service: ConfigS
     assert service.get_published_payload(ConfigKey.AGENT_POLICY) == published["payload"]
 
 
-def test_explicit_seed_publishes_three_domains_with_separate_actors(service: ConfigService) -> None:
+def test_explicit_seed_publishes_four_domains_with_separate_actors(service: ConfigService) -> None:
     result = seed_default_configs(
         session_factory=service.session_factory,
         creator_actor_id="seed-creator",
         publisher_actor_id="seed-publisher",
     )
 
-    assert len(result["created"]) == 3
+    assert len(result["created"]) == 4
     assert result["skipped"] == []
     published = service.list_versions(status=ConfigStatus.PUBLISHED)
     assert {item["config_key"] for item in published} == {item.value for item in ConfigKey}
     assert all(item["created_by"] != item["published_by"] for item in published)
 
     with service.session_factory() as session:
-        assert session.query(ConfigVersionRecord).count() == 3
+        assert session.query(ConfigVersionRecord).count() == 4
 
 
 def test_local_score_v2_upgrade_retires_legacy_publication_and_is_idempotent(

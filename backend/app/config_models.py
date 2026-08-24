@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 from enum import Enum
+import hashlib
+import json
 from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -20,10 +22,23 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _config_payload_hash_default(context: Any) -> str:
+    payload = context.get_current_parameters().get("payload") or {}
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class ConfigKey(str, Enum):
     SCORE_GRADUATION = "SCORE_GRADUATION"
     AGENT_POLICY = "AGENT_POLICY"
     DELIVERY_POLICY = "DELIVERY_POLICY"
+    TEACHER_PERSONALIZED_COPY = "teacher_personalized_copy"
 
 
 class ConfigStatus(str, Enum):
@@ -656,10 +671,95 @@ class DeliveryPolicyConfig(BaseModel):
         return self
 
 
+class TeacherPersonalizedFallbackTitles(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    complaint: str
+    negative: str
+
+    @field_validator("complaint", "negative")
+    @classmethod
+    def validate_copy(cls, value: str) -> str:
+        return _teacher_copy_text(value)
+
+
+class TeacherPersonalizedCopyConfig(BaseModel):
+    """The single governed source for personalized English copy/variant."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    complaint_title_prefix: str
+    negative_title_prefix: str
+    fallback_titles: TeacherPersonalizedFallbackTitles
+    complaint_category_to_en: dict[str, str]
+    negative_label_to_en: dict[str, str]
+    negative_label_execution_variant: dict[
+        str,
+        Literal["GENERAL", "TEACHING_ENVIRONMENT_PHOTO"],
+    ]
+    default_negative_execution_variant: Literal["GENERAL"]
+
+    @field_validator("complaint_title_prefix", "negative_title_prefix")
+    @classmethod
+    def validate_prefix(cls, value: str) -> str:
+        return _teacher_copy_text(value)
+
+    @field_validator(
+        "complaint_category_to_en",
+        "negative_label_to_en",
+    )
+    @classmethod
+    def validate_copy_mapping(cls, value: dict[str, str]) -> dict[str, str]:
+        return _teacher_copy_mapping(value)
+
+    @field_validator("negative_label_execution_variant")
+    @classmethod
+    def validate_variant_mapping(
+        cls,
+        value: dict[str, Literal["GENERAL", "TEACHING_ENVIRONMENT_PHOTO"]],
+    ) -> dict[str, Literal["GENERAL", "TEACHING_ENVIRONMENT_PHOTO"]]:
+        for key in value:
+            _teacher_copy_text(key)
+        return value
+
+    @model_validator(mode="after")
+    def validate_v1_contract(self) -> "TeacherPersonalizedCopyConfig":
+        variants = set(self.negative_label_execution_variant)
+        required_photo_labels = {"灯光过暗/亮", "环境乱/灯光差"}
+        if variants != required_photo_labels or any(
+            value != "TEACHING_ENVIRONMENT_PHOTO"
+            for value in self.negative_label_execution_variant.values()
+        ):
+            raise ValueError("teacher personalized copy 照片变体必须精确为已确版两枚标签")
+        if not variants.issubset(self.negative_label_to_en):
+            raise ValueError("teacher personalized copy 照片变体必须具有英文映射")
+        return self
+
+
+def _teacher_copy_text(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or value == ""
+        or any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value)
+    ):
+        raise ValueError("teacher personalized copy 文案必须非空且不含控制字符")
+    return value
+
+
+def _teacher_copy_mapping(value: dict[str, str]) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError("teacher personalized copy 映射必须是对象")
+    for key, item in value.items():
+        _teacher_copy_text(key)
+        _teacher_copy_text(item)
+    return value
+
+
 CONFIG_SCHEMA_BY_KEY: dict[ConfigKey, type[BaseModel]] = {
     ConfigKey.SCORE_GRADUATION: ScoreGraduationConfig,
     ConfigKey.AGENT_POLICY: AgentPolicyConfig,
     ConfigKey.DELIVERY_POLICY: DeliveryPolicyConfig,
+    ConfigKey.TEACHER_PERSONALIZED_COPY: TeacherPersonalizedCopyConfig,
 }
 
 
@@ -848,6 +948,50 @@ SCORE_POLICY_V1_PAYLOAD: dict[str, Any] = {
 }
 
 
+TEACHER_PERSONALIZED_COPY_V1_PAYLOAD: dict[str, Any] = {
+    "complaint_title_prefix": "General Complaint - ",
+    "negative_title_prefix": "Negative Feedback - ",
+    "fallback_titles": {
+        "complaint": "General Complaint - Complaint Category",
+        "negative": "Negative Feedback - Feedback Pattern",
+    },
+    "complaint_category_to_en": {
+        "未及时回应学员问题": "Did Not Respond to the Student Promptly",
+        "过早上完教材,等待下课": "Finished Courseware Too Early and Waited for Class to End",
+        "外教向学员借钱": "Teacher Asked Student for Money",
+        "迟到": "Late Arrival",
+        "网络卡顿": "Unstable Network",
+        "麦克风没有声音/卡顿": "Microphone Audio Missing or Unstable",
+        "语速过快": "Speaking Too Fast",
+    },
+    "negative_label_to_en": {
+        "上课死板": "Rigid Teaching Style",
+        "不够耐心": "Insufficient Patience",
+        "发音不准": "Inaccurate Pronunciation",
+        "只是读课件": "Only Reading the Courseware",
+        "很少鼓励孩子": "Insufficient Student Encouragement",
+        "教的太难": "Content Too Difficult",
+        "有口音听不懂": "Accent Difficult to Understand",
+        "有噪音/老师声音小": "Background Noise or Low Teacher Volume",
+        "未讲完教材": "Courseware Not Completed",
+        "灯光过暗/亮": "Lighting Too Dark or Too Bright",
+        "环境乱/灯光差": "Distracting Environment or Poor Lighting",
+        "缺乏热情": "Lack of Enthusiasm",
+        "缺乏耐心": "Lack of Patience",
+        "缺少互动": "Insufficient Interaction",
+        "网络设备差": "Poor Network or Equipment",
+        "老师上课不专注": "Teacher Not Focused",
+        "语速太快": "Speaking Too Fast",
+        "语速过快": "Speaking Too Fast",
+    },
+    "negative_label_execution_variant": {
+        "灯光过暗/亮": "TEACHING_ENVIRONMENT_PHOTO",
+        "环境乱/灯光差": "TEACHING_ENVIRONMENT_PHOTO",
+    },
+    "default_negative_execution_variant": "GENERAL",
+}
+
+
 DEFAULT_CONFIG_PAYLOADS: dict[ConfigKey, dict[str, Any]] = {
     ConfigKey.SCORE_GRADUATION: deepcopy(SCORE_POLICY_V1_PAYLOAD),
     ConfigKey.AGENT_POLICY: {
@@ -865,12 +1009,20 @@ DEFAULT_CONFIG_PAYLOADS: dict[ConfigKey, dict[str, Any]] = {
         "p0_response_window_minutes": 120,
         "p0_reminder_minutes_before_response_due": 30,
     },
+    ConfigKey.TEACHER_PERSONALIZED_COPY: deepcopy(
+        TEACHER_PERSONALIZED_COPY_V1_PAYLOAD
+    ),
 }
 
 
 class ConfigVersionRecord(Base):
     __tablename__ = "config_versions"
     __table_args__ = (
+        UniqueConstraint(
+            "version_id",
+            "config_key",
+            name="uq_config_version_identity_key",
+        ),
         UniqueConstraint("config_key", "version_number", name="uq_config_version_number"),
         Index("ix_config_key_status", "config_key", "status"),
         Index(
@@ -885,9 +1037,21 @@ class ConfigVersionRecord(Base):
     version_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     config_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
     status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     high_impact: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default=_config_payload_hash_default,
+        server_default=text("'0000000000000000000000000000000000000000000000000000000000000000'"),
+    )
     validation_errors: Mapped[list[dict[str, Any]]] = mapped_column(JSON_VALUE, nullable=False, default=list)
     source_version_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("config_versions.version_id"), nullable=True

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import Select, select
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .config_models import (
@@ -35,6 +36,14 @@ def utcnow() -> datetime:
 def _payload_hash(payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _schema_version(config_key: ConfigKey | str) -> int:
+    # All four governed domains currently publish schema v1.  Keep the value
+    # explicit in every immutable version row; a future schema must add a new
+    # validator before this mapping can advance.
+    ConfigKey(config_key)
+    return 1
 
 
 def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -92,9 +101,11 @@ class ConfigService:
             "version_id": record.version_id,
             "config_key": record.config_key,
             "version_number": record.version_number,
+            "schema_version": record.schema_version,
             "status": record.status,
             "high_impact": record.high_impact,
             "payload": deepcopy(record.payload),
+            "payload_hash": record.payload_hash,
             "validation_errors": deepcopy(record.validation_errors),
             "source_version_id": record.source_version_id,
             "created_by": record.created_by,
@@ -200,6 +211,7 @@ class ConfigService:
         actor_id: str,
         payload: dict[str, Any] | None = None,
         from_version_id: str | None = None,
+        version_id_override: str | None = None,
     ) -> dict[str, Any]:
         key = ConfigKey(config_key)
         with self.session_factory() as session, session.begin():
@@ -243,12 +255,17 @@ class ConfigService:
             version_number = (latest.version_number if latest else 0) + 1
             now = utcnow()
             record = ConfigVersionRecord(
-                version_id=f"CFG-{key.value}-{version_number:04d}-{uuid4().hex[:8]}",
+                version_id=(
+                    version_id_override
+                    or f"CFG-{key.value}-{version_number:04d}-{uuid4().hex[:8]}"
+                ),
                 config_key=key.value,
                 version_number=version_number,
+                schema_version=_schema_version(key),
                 status=ConfigStatus.DRAFT.value,
                 high_impact=key in HIGH_IMPACT_CONFIG_KEYS,
                 payload=resolved_payload,
+                payload_hash=_payload_hash(resolved_payload),
                 validation_errors=[],
                 source_version_id=source.version_id if source else None,
                 created_by=actor_id,
@@ -289,6 +306,8 @@ class ConfigService:
                     details=_safe_validation_errors(exc),
                 ) from exc
             record.payload = normalized_payload
+            record.schema_version = _schema_version(record.config_key)
+            record.payload_hash = _payload_hash(normalized_payload)
             record.validation_errors = []
             record.updated_by = actor_id
             record.updated_at = utcnow()
@@ -328,6 +347,8 @@ class ConfigService:
                 return {"valid": False, "errors": errors, "version": self._version_dict(record)}
             now = utcnow()
             record.payload = normalized
+            record.schema_version = _schema_version(record.config_key)
+            record.payload_hash = _payload_hash(normalized)
             record.validation_errors = []
             record.status = ConfigStatus.VALIDATED.value
             record.validated_by = actor_id
@@ -352,6 +373,56 @@ class ConfigService:
                     ConfigVersionRecord.version_id == version_id
                 )
             )
+            if candidate_key is None:
+                raise ConfigDomainError(
+                    404,
+                    "CONFIG_VERSION_NOT_FOUND",
+                    "配置版本不存在",
+                )
+            if session.bind is not None and session.bind.dialect.name == "postgresql":
+                # Catalog readers take the matching shared locks in their
+                # protected functions.  Publication holds cutover shared then
+                # this one catalog key exclusively for the full switch/fanout.
+                session.execute(
+                    text(
+                        "SELECT pg_catalog.pg_advisory_xact_lock_shared("
+                        "pg_catalog.hashtextextended('tit:dts-v2-cutover',0))"
+                    )
+                )
+                catalog_locks = [(f"CONFIG:{candidate_key}", "exclusive")]
+                if candidate_key == ConfigKey.TEACHER_PERSONALIZED_COPY.value:
+                    catalog_locks.extend(
+                        (f"TEMPLATE:{task_code}", "shared")
+                        for task_code in (
+                            "P-FB-BLACKLIST",
+                            "P-FB-COMPLAINT",
+                            "P-FB-NEGATIVE",
+                            "P-REL-ATTENDANCE",
+                            "P-REL-MEMO",
+                        )
+                    )
+                for catalog_key, lock_mode in sorted(
+                    catalog_locks,
+                    key=lambda item: item[0].encode("utf-8"),
+                ):
+                    session.execute(
+                        text(
+                            "SELECT pg_catalog."
+                            + (
+                                "pg_advisory_xact_lock_shared"
+                                if lock_mode == "shared"
+                                else "pg_advisory_xact_lock"
+                            )
+                            + "(pg_catalog.hashtextextended(:catalog_key,0))"
+                        ),
+                        {"catalog_key": catalog_key},
+                    )
+                session.execute(
+                    text(
+                        "SELECT pg_catalog.set_config("
+                        "'tit.catalog_publication_v2','on',true)"
+                    )
+                )
             if candidate_key == ConfigKey.SCORE_GRADUATION.value:
                 # Every transaction that can mutate score projections takes the
                 # global score lock before row locks or DML. This prevents the
@@ -377,6 +448,8 @@ class ConfigService:
                     "配置已不符合当前校验规则",
                     details=_safe_validation_errors(exc),
                 ) from exc
+            record.schema_version = _schema_version(record.config_key)
+            record.payload_hash = _payload_hash(record.payload)
 
             now = utcnow()
             current = session.scalar(
@@ -462,9 +535,35 @@ class ConfigService:
                     score_policy_payload=record.payload,
                     score_config_version_id=record.version_id,
                 )
+            fanout: dict[str, Any] | None = None
+            if (
+                record.config_key
+                == ConfigKey.TEACHER_PERSONALIZED_COPY.value
+                and session.bind is not None
+                and session.bind.dialect.name == "postgresql"
+            ):
+                installed = session.scalar(
+                    text(
+                        "SELECT to_regprocedure("
+                        "'public.fanout_task_plans_for_copy_publication_v2(text)') "
+                        "IS NOT NULL"
+                    )
+                )
+                if installed:
+                    fanout_value = session.scalar(
+                        text(
+                            "SELECT public."
+                            "fanout_task_plans_for_copy_publication_v2(:version_id)"
+                        ),
+                        {"version_id": record.version_id},
+                    )
+                    if isinstance(fanout_value, dict):
+                        fanout = fanout_value
             response = self._version_dict(record)
             if recalculation is not None:
                 response["recalculation"] = recalculation
+            if fanout is not None:
+                response["task_plan_fanout"] = fanout
             return response
 
     def retire_version(self, version_id: str, *, actor_id: str) -> dict[str, Any]:
@@ -523,6 +622,11 @@ def seed_default_configs(
             key,
             actor_id=creator_actor_id,
             payload=deepcopy(payload),
+            version_id_override=(
+                "cfg-teacher-personalized-copy-v1"
+                if key is ConfigKey.TEACHER_PERSONALIZED_COPY
+                else None
+            ),
         )
         validation = service.validate_version(draft["version_id"], actor_id=creator_actor_id)
         if not validation["valid"]:

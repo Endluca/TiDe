@@ -86,13 +86,31 @@ RETIRED_IN_V12 = {
 }
 
 
-def test_orm_source_wide_tables_have_53_mapped_plus_2_g01_and_23_lesson_columns() -> None:
+def test_orm_source_wide_tables_have_55_business_plus_9_v2_and_23_lesson_columns() -> None:
     assert TeacherSourceWideRecord.__tablename__ == "teacher_source_wide"
     assert LessonSourceWideRecord.__tablename__ == "lesson_source_wide"
-    assert _column_names(TeacherSourceWideRecord) == TEACHER_SOURCE_FIELDS
-    assert _column_names(LessonSourceWideRecord) == LESSON_SOURCE_FIELDS
-    assert len(TeacherSourceWideRecord.__table__.columns) == 55
+    teacher_columns = _column_names(TeacherSourceWideRecord)
+    assert tuple(
+        column for column in teacher_columns if column in TEACHER_SOURCE_FIELDS
+    ) == TEACHER_SOURCE_FIELDS
+    assert set(teacher_columns) - set(TEACHER_SOURCE_FIELDS) == {
+        "first_open_slot_evidence_status",
+        "first_booked_evidence_status",
+        "first_completed_evidence_status",
+        "v2_dom_aggregate_revision",
+        "v2_ovs_aggregate_revision",
+        "v2_projection_generation",
+        "v2_materialized_event_id",
+        "v2_materialized_at",
+        "v2_row_version",
+    }
+    assert _column_names(LessonSourceWideRecord) == (
+        "source_region",
+        *LESSON_SOURCE_FIELDS,
+    )
+    assert len(TeacherSourceWideRecord.__table__.columns) == 64
     assert len(LessonSourceWideRecord.__table__.columns) == 23
+    assert "假早退" not in _column_names(LessonSourceWideRecord)
     assert "是否复约" not in _column_names(LessonSourceWideRecord)
 
     assert tuple(
@@ -100,9 +118,9 @@ def test_orm_source_wide_tables_have_53_mapped_plus_2_g01_and_23_lesson_columns(
     ) == ("tchr_id",)
     assert tuple(
         column.name for column in LessonSourceWideRecord.__table__.primary_key
-    ) == ("课程id",)
+    ) == ("source_region", "课程id")
     assert not LessonSourceWideRecord.__table__.foreign_keys
-    assert LessonSourceWideRecord.__table__.columns["老师id"].nullable is False
+    assert LessonSourceWideRecord.__table__.columns["老师id"].nullable is True
 
 
 def test_source_types_preserve_existing_date_semantics_and_unbounded_text() -> None:
@@ -146,7 +164,13 @@ def test_revision_39_preserves_the_original_csv_columns_and_types(monkeypatch) -
         field for field in revision_39_teacher_fields if field not in RETIRED_IN_V12
     ) == TEACHER_CSV_FIELDS
     assert set(revision_39_teacher_fields) - set(TEACHER_CSV_FIELDS) == RETIRED_IN_V12
-    assert tuple(column.name for column in lesson_columns) == LESSON_SOURCE_FIELDS
+    revision_39_lesson_fields = tuple(column.name for column in lesson_columns)
+    assert tuple(
+        field for field in revision_39_lesson_fields if field != "假早退"
+    ) == LESSON_SOURCE_FIELDS
+    assert set(revision_39_lesson_fields) - set(LESSON_SOURCE_FIELDS) == {
+        "假早退"
+    }
     assert "是否复约" not in {column.name for column in lesson_columns}
     assert [column.name for column in teacher_columns if column.primary_key] == [
         "tchr_id"
@@ -167,9 +191,13 @@ def test_revision_39_preserves_the_original_csv_columns_and_types(monkeypatch) -
         for column_name in TEACHER_CSV_FIELDS
     }
     assert {
-        column.name: _type_signature(column) for column in lesson_columns
+        column.name: _type_signature(column)
+        for column in lesson_columns
+        if column.name in LESSON_SOURCE_FIELDS
     } == {
-        column.name: _type_signature(column) for column in lesson_orm
+        column.name: _type_signature(column)
+        for column in lesson_orm
+        if column.name in LESSON_SOURCE_FIELDS
     }
 
 

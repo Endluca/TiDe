@@ -5,8 +5,8 @@
 - 国内与海外同步业务库是一个逻辑数据集的两部分，不把国内共享表当作海外缺失数据。
 - 国内和海外使用同一套消费、持久化与投影代码，但各自运行一个独立消费者进程；海外消费者必须部署在新加坡，国内消费者必须部署在中国大陆。两条链路通过海外目标库中的当前态和脏键队列汇合，不能共用消费组、位点、SASL 密码或学生 HMAC 密钥。
 - 海外 DTS 开始时间为 `2026-08-10 14:16:00+08:00`；国内 DTS 开始时间为 `2026-08-12 16:30:00+08:00`（北京时间）。它们是新消费状态首次解析 offset 的回放边界，不要求等于服务真正启动时间；已有数据库 checkpoint 时始终从 checkpoint 续跑。
-- 业务已确认不做教师/课程全量基线。目标人群是国内 `dom_teacher.status_on_time` 在北京时间 `2026-08-13`（含）以后入职的新教师，结束边界开放；两条订阅起点都早于人群起点。只有国内教师主记录已到达、命中地区与入职 30 天窗口的课程才可物化。
-- 课程目标契约固定为 23 列，教师目标契约固定为 55 列；字段逻辑以当前映射表和两份 OBS 脚本为准。
+- 现行 v1 曾按“不导全量基线、只消费可得增量”设计。目标 v2 不允许用七天增量证明集合完整：课程、参与、证书、缺席、评价、标签、投诉和关系在切换前必须按冻结实施规格导入受控权威快照并记录 scope 水位；没有可靠地区或完整性证据的存量进入 `PENDING_DATA`。目标人群仍以国内 `dom_teacher.status_on_time` 在北京时间 `2026-08-13`（含）以后入职为起点，结束边界开放；课程事实不以入职 30 天为准入上限，30 天只用于 `NEW→EXISTING` 和明确指定的新师观察指标。
+- 当前代码 head 的课程表为 22 列、教师表为 55 列；rev73 已物理删除假早退列并同步移除投影、触发和读取输出。数据库现场是否已执行 rev73 必须单独读回，不能从代码完成推断。字段逻辑以当前已确版文档为准，旧映射表不能覆盖后续业务决策。
 
 ## 已实现的持久化切片
 
@@ -17,19 +17,21 @@
    默认 Java transport 使用协议 v2 的有界批：官方 listener 输出 `EVENT × N` 与 `BATCH_COMPLETE`，Python 在任何 SQL 前完成结构验证与国内 HMAC；轻量事件转换为无业务字段的 NOOP，和结构化事件一起进入同一个 PostgreSQL 原子事务并连续推进数据库 checkpoint。事务成功后只返回一个 `DURABLE_ACK_BATCH`，Java 完整校验后仅对整批最后一条 ADVANCE 调用 `DefaultUserRecord.commit()`（覆盖前面连续 ADVANCE），REPLAY 永不请求 SDK checkpoint，并返回 `SDK_CHECKPOINTS_ACCEPTED`。生产批次请求 2000 条、Java 硬上限 2048 条，并受 Java 侧 8 MiB 结构化 payload 上限保护；任一协议、归一化、结构、隐私或数据库错误都不会产生 ACK。direct 模式关闭连接池额外 `pre_ping`，连接失效时仍整批失败并从数据库 checkpoint 重建；加锁、checkpoint 读取和事务内来源设置合并为一个 PostgreSQL 语句。首条官方记录在 READY 前完成一次结构化归一化，同时校验协议版本和官方 writer schema fingerprint，避免假健康。该回包只证明 SDK 接受 checkpoint 请求；SDK 后续异步提交 record offset，公开 API 没有 broker 同步成功回执。数据库 `next_offset + source_timestamp` 始终是恢复权威：SDK ASSIGN 按数据库 source timestamp 恢复，首条 offset 小于数据库 next_offset 时只允许账本已存在的幂等 replay，等于 next_offset 时正常前进，大于 next_offset 时按缺口失败关闭。DB 无 checkpoint 时才按 `TIT_DTS_START_AT` 定位。heartbeat 输出 `transport_prefiltered`、`transport_normalize_elapsed_ms` 与 `event_normalize_elapsed_ms`，用于拆分无关事件前置过滤量、Java 结构化归一化和 Python 验证/HMAC 耗时。第 16 条中 TCP、Metadata v5 cap 和两个 `TIT_DTS_KAFKA_STARTUP_*` 参数仅描述 `TIT_DTS_TRANSPORT=kafka_python` 回退模式，不传给正式 Java transport。
 2. 固定 DTS partition 0，关闭自动提交；新消费状态必须给出带时区的起始时间并按 DTS 要求转换为 epoch 秒，已有数据库 checkpoint 优先从 checkpoint 继续。
 3. SASL 使用 `PLAIN` + `SASL_PLAINTEXT`，实际用户名按 `<账号>-<消费组ID>` 生成；密码只从运行时环境读取，不进入日志或仓库。
-4. 按 `source_region + topic + partition + offset` 定义幂等键，并把已确认的 17 类国内共享/区域业务表事件路由为课程、教师、师生组合、标签或投诉分类脏键。
+4. 按 `source_region + topic + partition + offset` 定义事件幂等键。v2 同事务追加受保护的
+   `dts_source_row_versions` before/after 版本，并把 `source_region` 纳入脏键主键；否则 A→B→A 的
+   中间指派会被最新镜像吞掉，DOM/OVS 同业务 ID 也会互相覆盖。
 5. 已实现海外/国内教师筛选差异、Peak 时段差异、投诉两表各取最新一条、处罚时间差大于 30 秒的迟到/早退规则。
 6. 目标固定为 `tide_system_test.public`，数据库身份固定为 `tit_dts_ingest_runtime`。SSL 默认且正式环境固定为 `verify-full`。2026-08-13 DMS 现场值为服务端 `ssl=off` 且当前会话非 TLS；专线只限制网络路径，不加密 PostgreSQL 流量。固定 `tide-system.rwlb.singapore.rds.aliyuncs.com:5432 / tide_system_test` 的国内、海外 DTS PRE 可复用既有两项例外：`TIT_DTS_INGEST_DB_SSLMODE=disable` 与 `TIT_DTS_ALLOW_INSECURE_DB=true`。两项必须同时配置；端点、库、角色、Schema 漂移或正式环境均在连接前失败关闭。每条新建的 PostgreSQL 物理连接都以 `pg_stat_ssl` 核验当前会话 TLS，并同时核验服务端 SSL 状态；明文例外还会在每次连接池 checkout 时复核，服务端一旦启用 TLS 便立即失败关闭并要求恢复 `verify-full/false`。长期持有的投影锁会话也在每批投影前执行同一核验。
 7. 每个有界批次在一个 PostgreSQL 事务内按 offset 顺序写接入账本、字段白名单当前态和脏键，并只在批末推进数据库位点；整批事务成功后才请求 SDK checkpoint。数据库位点领先 Kafka 时从数据库续跑，Kafka 位点领先数据库时失败关闭。
-8. 脏键投影器按课程、教师、师生组合、评价标签和投诉分类重算；课程必须等待国内共享教师主数据并通过开放式新师 cohort、地区及入职 30 天窗口校验。国内教师事件晚到时，会把当前镜像中该教师的国内/海外预约重新置脏；缺主记录时重试，不把“尚未到达”解释成删除。
-9. `lesson_source_wide`、`teacher_source_wide` 采用有差异才更新的 UPSERT；源事实删除或退出范围时删除对应宽表行。宽表写入、派生教师脏键和当前脏键完成在同一事务内，失败则进入退避重试。
-10. 课程实现国内/海外 Peak 差异（海外含 `00:00–05:30` 与 `18:00–23:30`）、最新评价、评价标签、投诉最新记录、收藏/拉黑最近课程归因、摄像头/CPU/网络/假早退和处罚时间差规则；教师实现入职 30 天窗口内课程、可靠性、反馈、档期、比例、TESOL 与 `is_self_introduce=NULL`。
+8. 脏键投影器按课程、教师、师生组合、评价标签和投诉分类重算；课程必须等待国内共享教师主数据并通过开放式新师 cohort 与地区校验，不再使用入职 30 天窗口过滤课程事实。现行代码仍有 30 天过滤，属于已确定的待修正差距。国内教师事件晚到时，会把当前镜像中该教师的国内/海外预约重新置脏；缺主记录时重试，不把“尚未到达”解释成删除。
+9. 现行 `lesson_source_wide`、`teacher_source_wide` 采用有差异才更新的 UPSERT，源事实删除或退出范围时会删宽表行。目标 v2 改为来源 tombstone 和历史保留：教师 DELETE 不级联课程，首次 end 后课程 DELETE 进入完课纠错；新事实写入、脏键和 checkpoint 的事务边界以冻结实施规格为准。
+10. 现行代码实现国内/海外 Peak 差异（海外含 `00:00–05:30` 与 `18:00–23:30`）、最新评价、评价标签、投诉最新记录、收藏/拉黑最近课程归因、摄像头和处罚时间差规则。假早退已由 rev73 从物理列、投影、个性化触发、教师端契约和页面移除；`qa_ac_classroom_record` 也不再作为 CPU、网络来源，新来源接入前两字段为 `NULL`。其他已确版目标为：收藏/拉黑改为不依赖完课的独立师生关系，收藏分在课程首次 `end+24h` 时做同一师生终身唯一课程归因，取消后再收藏不新开获分周期；TESOL 只认 `certification_code='16' AND certification_status=1`；`grading_label_log` 不再过滤 `type/status`；投诉 grandson 为 `NULL` 或非 82 都可有效；`no_notice_cnt` 按同课程同教师最新 `reason_type='No Notification'` 判定；`Unfilled Lesson Memo`→`P-REL-MEMO`，其他非空原因→`P-REL-ATTENDANCE`；在营状态仅 `IN_CAMP/GRADUATED`。现行教师投影仍把课程、可靠性、反馈等统一限定在入职 30 天内，该通用限制已不是目标口径；其他在线/在营/金牌切换边界仍按各自实现与迁移验证。
 11. 稀疏 UPDATE 先合并已持久化当前态、before 与 after，再重算反向依赖；归属键变化时旧键、新键都重新投影。
 12. `TIT_DTS_PROJECTION_ENABLED` 默认关闭。国内、海外先只写账本/镜像/脏键并追平到同一激活时刻，之后只允许海外项目开启全局投影；国内项目固定为 `false`，避免回放未完成时产生暂态 `0/false`、双项目配置漂移或让国内跨境链路持有投影 owner 权限。
-    2026-08-19 源码另提供显式 `TIT_DTS_PROJECTION_MODE=direct`，但默认仍为 `queued` 且尚未发布。direct 只适用于两条 DTS 同边界重置和宽表清理/基线后的新规则：事件、宽表和 checkpoint 同事务，不写业务账本、通用源镜像或脏键，只保留投诉分类参考字典和国内 HMAC 指纹契约；教师/课程 INSERT，或当前完整镜像满足 cohort/课程范围的 UPDATE，可以创建主行，缺失主行的 DELETE、范围外 UPDATE 和子事件记为 ignored 并推进 checkpoint；DOM/OVS 各投影本地区事件。本轮选择从空宽表按“DTS 当前有什么就消费什么”运行，不导基线、不等待缺失关联；DTS 七天保留窗口之外的数据不可由 direct 补回。详细语义、清理 SQL 和不可回溯边界见 `DTS事件直接投影规则.md`。
+    2026-08-19 源码另提供显式 `TIT_DTS_PROJECTION_MODE=direct`，但默认仍为 `queued` 且尚未发布。该 direct v1 的“无账本/通用镜像/脏键、缺依赖即 ignored”只作为现行差异保留，不再是目标切换方案。目标 v2 中 direct/queued 必须复用同一来源持久化、tombstone、脏键和领域重算函数；不得清空已有事实后依赖七天窗口重建。目标见 `DTS_direct开发冻结实施规格.md`。
 13. `TIT_DTS_PROJECTION_MAX_ATTEMPTS` 默认 `8`（允许 `1–100`）。按 `10/20/40/80/160/300/300` 秒累计提供约 15 分钟跨 Topic 暂态依赖窗口；达到阈值后该脏键保留 `RETRY`、错误码和尝试次数，并以 PostgreSQL `infinity` 停放，不再被当前投影循环选择，也不终止其他键和接入进程。heartbeat 的投影计数增加 `quarantined` 以暴露本轮新隔离数；对应真实源事件到达时，接入事务会把该键重新置为 `PENDING`、清零尝试次数并恢复处理。明确带有可信课程日期且早于 cohort 的历史关系事件直接完成为忽略，不进入隔离。投影热路径按单课程一次预取复用源当前态，教师评分/投诉按最多 100 个课程依赖一组批量查询，课程宽表无变化时不再重复置脏教师；每轮只 checkout 一条数据库连接并保持每键独立事务，避免为每个键重复连接池与传输门禁。每轮最多处理 1000 键且受 20 秒预算限制，避免追平批量放大导致 heartbeat 失鲜。heartbeat 同时记录 `source_queries/cache_hits/elapsed_ms/budget_exhausted`，用于判断瓶颈是否仍在投影 SQL。
-14. 每个持久化进程绑定唯一 `source_region` 与运行区域：`ovs/sg`、`dom/cn`；订阅区域、运行区域或入库事件区域不一致时失败关闭。国内消息完成 Avro 解码后、构造任何海外 PostgreSQL SQL 参数前，必须删除 `s_id/student_id/stu_id/user_id` 原值，并使用只存在于国内容器的 `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` 生成 `dom:v1:<HMAC-SHA256>`。变量名中的 `PASSWORD` 用于触发 Gaea 敏感值掩码，不能改回会在配置页明文展示的旧名称。可能由人工录入的 `cancel_reason/reason_desc` 也不得原样出境：只保留精确业务值 `Unfilled Lesson Memo`，其他非空内容降为 `Domestic reason redacted`。海外项目与海外目标库不得持有该密钥或原始国内学生 ID。两条 PostgreSQL 连接分别使用 `tit-dts-ingest-ovs`、`tit-dts-ingest-dom` 标识，健康状态也带安全的订阅摘要。
-15. 启动时通过 PostgreSQL Catalog 精确校验教师 55 列、课程 23 列的顺序、类型、长度和可空性，以及四张 DTS 状态表的 57 列、15 个关键约束、4 个必要索引和 4 个 guard Trigger。两个 SourceWide Outbox Trigger 还会校验事件类型、绑定函数、参数、WHEN 和启用状态；任一漂移都在连接 broker 之前失败关闭。
+14. 每个持久化进程绑定唯一 `source_region` 与运行区域：`ovs/sg`、`dom/cn`；订阅区域、运行区域或入库事件区域不一致时失败关闭。国内消息完成 Avro 解码后、构造任何海外 PostgreSQL SQL 参数前，必须删除 `s_id/student_id/stu_id/user_id` 原值，并使用只存在于国内容器的 `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` 生成 `dom:v1:<HMAC-SHA256>`。变量名中的 `PASSWORD` 用于触发 Gaea 敏感值掩码，不能改回会在配置页明文展示的旧名称。目标缺席原因只消费 `dom_teacher_absent_reason.reason_type`；`appoint.cancel_reason` 和 absent `reason_desc` 应从业务白名单移除，而不是继续脱敏后入库。海外项目与海外目标库不得持有该密钥或原始国内学生 ID。两条 PostgreSQL 连接分别使用 `tit-dts-ingest-ovs`、`tit-dts-ingest-dom` 标识，健康状态也带安全的订阅摘要。
+15. 启动时通过 PostgreSQL Catalog 精确校验教师 55 列、课程 22 列的顺序、类型、长度和可空性；假早退列存在或 22 列契约缺项都会在连接 broker 前失败关闭。还要校验四张 DTS 状态表的 57 列、15 个关键约束、4 个必要索引和 4 个 guard Trigger。两个 SourceWide Outbox Trigger 还会校验事件类型、绑定函数、参数、WHEN 和启用状态；任一漂移都在连接 broker 之前失败关闭。
 16. `kafka_python` 回退模式下，每次持久化进程启动都先清除上一进程留下的 heartbeat/readiness，再依次完成目标库连接、传输、身份、Schema/ACL 校验，完成 bootstrap DNS 解析后对解析结果执行 TCP 探针，最后执行 Kafka 端到端只读探针。TCP 探针只做三次握手，解析出的多个地址共享 5 秒连接预算；DNS 解析发生在该 socket 连接预算之前，不能把“5 秒”描述为覆盖 DNS 的整轮硬超时。探针不接收账号/密码且不收发应用数据；四层失败输出 `DTS_BROKER_TCP_*` 稳定错误码。TCP 成功后立即输出不含 endpoint/IP 的安全阶段日志；Kafka 侧依次拆为 bootstrap `ApiVersions` 自动协商与 SASL、已认证 bootstrap 连接复核、目标 Topic Metadata、partition 0 校验、advertised broker SASL、FindCoordinator、coordinator SASL、OffsetFetch，并按真实位点路径继续执行按时间、最早与末端 ListOffsets。kafka-python 2.2.20 依赖继续精确锁定，但不再把“支持 2.7 客户端”误写成固定 DTS Broker/API 2.7；`consumer_open` 的协商结果只表示客户端选择的协议兼容版本，不代表服务端精确版本。Metadata 阶段是真实的、与 `kcat -L -t <topic>` 同类语义的单 Topic Metadata API 请求；它保留服务端 `ApiVersions` 自动协商，仅将 Metadata API（key 3）客户端上限收敛为 v5，以复刻已成功消费的官方 Java 1.0 诊断客户端该阶段的协议边界，其他 Kafka API 仍按各自协商结果选择。`kafka_client_config` 记录该 cap 与策略，`topic_metadata` 记录服务端声明的 Metadata 版本范围及实际选用版本。回退探针继续复用锁定的 kafka-python 客户端，不安装第二套客户端、不生成带密码配置文件。每个阶段输出 `begin/ok/fail`、耗时、固定请求类型、安全连接状态与白名单错误分类；不输出 endpoint/IP、node ID、topic、group、账号、密码、异常正文、请求对象或堆栈。kafka-python 原生日志被进程强制隔离，因为其调试报文可能包含 PLAIN 认证字节。后续 Kafka 请求超时输出 `DTS_BROKER_KAFKA_REQUEST_TIMEOUT`，由此区分 Pod 网络与 SASL/metadata/消费组/位点层。Kafka 探针使用与正式消费相同的 SASL 配置，验证 topic、partition 0 以及真实初始位点：没有数据库 checkpoint 时按 `TIT_DTS_START_AT` 解析 offset；已有 checkpoint 时验证它没有落后于 Kafka 最早可用位点、没有超过当前末端，并继续执行 Kafka 位点领先数据库的保护。消费者手工绑定 partition 0，不执行 `JoinGroup`；“DTS 侧未见加入消费组”不能替代 SASL、FindCoordinator 或 OffsetFetch 的阶段证据。整轮 Kafka 位点探针默认从自动协商前开始按同一个 15 秒 deadline 收紧剩余请求超时；仅启动门禁可分别通过 `TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` 与 `TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` 在 `1–120000ms` 内调整。共享 deadline 取两者较大值；每个请求取自身配置上限与当时剩余整轮预算的较小值，较晚阶段可能短于配置值。`kafka_client_config` 只报告三个明确的 `configured_*` 上限；每条 phase 动态报告 `remaining_probe_budget_ms` 和两个 `effective_*` 值，超时失败时可安全收敛为 `0`，不会由日志计算覆盖原始错误。该 deadline 是 kafka-python 阻塞 SASL/DNS 调用协作遵守的预算，不是可强制终止进程的绝对 wall-clock 上限；回退消费、位点续跑、commit 与 heartbeat 仍固定为 15 秒，不读取这两个诊断覆盖。关闭连接另有 1 秒上限。任一步失败都不写 `ready` 或成功 heartbeat。`--watch` 容器仅对白名单内的暂态网络、Kafka/数据库连接以及投影激活依赖未就绪进行同进程有界退避，每轮关闭失败资源并用新连接重跑完整门禁；重试期间保持 NotReady，认证/授权、配置、Schema/ACL、隐私/HMAC 和 offset 不变量错误仍非零退出。非 `--watch` 命令保持单次执行。该整套门禁在容器进程启动及每次暂态重试时执行，不在镜像构建或周期 healthcheck 中重复执行。
 注：第 16 条的“三个 `configured_*` 上限”仅指请求超时、ApiVersions 超时与整轮预算；Metadata 版本上限作为第四个独立配置读回字段。v5 cap 只对齐当前已定位的 Metadata 兼容路径，不预先声明整条 Kafka 协议链已兼容；完整结论以发布后后续阶段日志为准。
 17. 回退 TCP/Kafka 探针只读取 metadata/offset，不写接入账本/镜像/脏键/宽表，也不提交消费组 offset；它的启动成功只证明具备开始消费的条件。正式 Java 模式则以官方 SDK 的首条 `UserRecord` 到达 listener 并成功结构化归一化作为 transport 启动证据，但仍必须在 Python 整批 durable ACK 后才能请求 SDK checkpoint。成功 heartbeat 的 ingest 摘要同时记录 `batch_bytes`、`transport_prefiltered`、`transport_normalize_elapsed_ms`、`event_normalize_elapsed_ms`、`db_elapsed_ms`、`sdk_ack_elapsed_ms`、`batch_elapsed_ms` 与 `durable_next_offset`，用于区分 SDK 拉取、Java 前置路由/归一化、Python 验证/HMAC、数据库与 SDK checkpoint 阶段吞吐；全链路另看数据库 checkpoint、宽表目标变化和消费组位点，`SDK_CHECKPOINTS_ACCEPTED` 不能替代 Kafka 服务端位点读回。明确可重试的 Java 断线/超时会清除健康证据、关闭当轮 DB/Java 资源并在同一 PID 内按数据库 checkpoint 重跑完整启动门禁，永久错误仍失败关闭。
@@ -41,7 +43,7 @@
 
 ## 为什么目标宽表之外还需要接入状态
 
-CDC 事件来自多张表。一个评价、投诉或质检事件只能给出局部事实，不能凭单条消息完整重建 23 列课程宽表；重启、乱序和重复投递也要求持久状态。目标库由 revision `20260812_57_dts_state` 创建四张受限表：
+CDC 事件来自多张表。一个评价、投诉或质检事件只能给出局部事实，不能凭单条消息完整重建课程宽表；rev73 已将课程物理表从 23 列迁移为不含假早退的 22 列。重启、乱序和重复投递也要求持久状态。目标库由 revision `20260812_57_dts_state` 创建四张受限表：
 
 - 接入账本：唯一键为 `source_region + topic + partition + offset`，记录处理状态和安全的事件元数据；
 - 当前态镜像：按来源表和业务主键保存订阅期内已见过的最新行，并保存不含敏感值的反向依赖键供 GIN 索引定位；
@@ -107,7 +109,8 @@ DTS 在 `gaea.yml` 中使用同一个 `dts-ingest` 轻量构建模块，但国�
 
 ## 当前未完成的是实联与上线
 
-23/55 字段投影和国内/海外双运行配置已经进入持久化进程，不再停留在候选字段或影子输出。
+现行 22/55 字段投影和国内/海外双运行配置已经进入持久化进程，不再停留在候选字段或影子输出；
+课程 22 字段与假早退退役已进入代码和 rev73，但数据库执行、缺席原因完整投影及 CPU/网络新来源仍需分别验证。
 截至 2026-08-19，系统库已由现场读回确认为 public `20260818_62_dts_claim_idx`；启用 direct
 前必须迁移到 `20260819_63_dts_direct_privacy`。数据库到 head 不能替代应用发布、direct 模式
 切换与性能复验。

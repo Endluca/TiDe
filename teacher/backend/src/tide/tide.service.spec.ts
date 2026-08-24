@@ -34,17 +34,23 @@ function scorecard(): ShiwenTeacherScorecard {
   return {
     teacherId: 'teacher-001',
     campEnrollmentId: 'camp-001',
+    onlineStatus: 'NEW',
     rawTotalScore: 47,
     publicTotalScore: 47,
-    graduationState: 'IN_PROGRESS',
+    graduationState: 'IN_CAMP',
     graduationQualified: false,
+    graduationQualifiedAt: null,
+    graduationScoreLocked: null,
     goldQualified: false,
+    goldStatus: 'NOT_GOLD',
+    goldQualifiedAt: null,
     graduationThreshold: 100,
     goldThreshold: 200,
     mandatoryTaskCompletedCount: 2,
     mandatoryTaskTotalCount: 9,
     scoreRuleVersion: 'score-rule-v3',
     calculatedAt,
+    source: { teacherSourceStatus: 'CONFIRMED' },
     dimensions: [
       {
         code: 'USER_FEEDBACK',
@@ -100,10 +106,12 @@ function scorecard(): ShiwenTeacherScorecard {
 function lessonScore() {
   return {
     teacherId: 'teacher-001',
-    lessonId: 'lesson-001',
+    lessonId: 'participation:v1:WyJkb20iLCJhcHBvaW50LTAwMSIsMV0',
+    sourceRegion: 'dom' as const,
+    sourceAppointId: 'appoint-001',
+    participationSeq: 1,
     lessonSequence: 21,
     lessonCount: 42,
-    sourceAppointId: 'appoint-001',
     scheduledStartAt: '2026-07-27T08:00:00.000Z',
     lessonLocalDate: '2026-07-27',
     lessonLocalTime: '16:00:00',
@@ -116,7 +124,6 @@ function lessonScore() {
     facts: {
       late: false,
       earlyLeave: false,
-      falseEarlyLeave: false,
       positiveFeedback: true,
       favorited: false,
       rebooked: true,
@@ -232,7 +239,7 @@ function createFixture() {
       name: 'Teacher',
       timezone: 'Asia/Shanghai',
       campDay: 1,
-      graduationState: 'IN_PROGRESS',
+      graduationState: 'IN_CAMP',
       dataMode: 'REAL',
       sourceUpdatedAt: '2026-07-27T08:00:00.000Z',
     }),
@@ -294,9 +301,11 @@ describe('TideService', () => {
     expect(result).toMatchObject({
       rawTotalScore: 47,
       publicTotalScore: 47,
-      graduationState: 'IN_PROGRESS',
+      onlineStatus: 'NEW',
+      graduationState: 'IN_CAMP',
       mandatoryTaskCompletedCount: 2,
       mandatoryTaskTotalCount: 9,
+      source: { teacherSourceStatus: 'CONFIRMED' },
       availableScore: {
         score: 4,
         items: [
@@ -397,7 +406,10 @@ describe('TideService', () => {
       totalCount: 42,
       items: [
         {
-          lessonId: 'lesson-001',
+          lessonId: 'participation:v1:WyJkb20iLCJhcHBvaW50LTAwMSIsMV0',
+          sourceRegion: 'dom',
+          sourceAppointId: 'appoint-001',
+          participationSeq: 1,
           lessonTotalScore: 7,
         },
       ],

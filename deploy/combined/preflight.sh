@@ -3,6 +3,8 @@ set -euo pipefail
 
 combined_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 contract_probe="${combined_dir}/contract-probe.sql"
+public_previous_migration="${combined_dir}/../../backend/migrations/versions/20260822_99_blacklist_threshold_three_state.py"
+public_final_migration="${combined_dir}/../../backend/migrations/versions/20260823_100_source_scope_snapshot_diff.py"
 
 fail() {
   printf '联合部署预检失败：%s\n' "$1" >&2
@@ -301,6 +303,7 @@ teacher_g02_document_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migra
 teacher_g02_read_status_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0040_g02_document_read_status.up.sql"
 teacher_crm_sso_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0041_crm_sso_hybrid.up.sql"
 teacher_g09_set_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0042_g09_set_kuozhi_course.up.sql"
+teacher_p_rel_execution_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations/0043_p_rel_execution_catalog.up.sql"
 
 [[ -f "${teacher_service}" ]] || fail "缺少教师端任务服务"
 [[ -f "${teacher_catalog}" ]] || fail "缺少教师端任务目录同步器"
@@ -331,10 +334,34 @@ teacher_g09_set_migration="${TIDE_TEACHER_REPO_PATH}/backend/database/migrations
   || fail "缺少教师端 0041 CRM SSO 混合认证迁移"
 [[ -f "${teacher_g09_set_migration}" ]] \
   || fail "缺少教师端 0042 G09 阔知课程 658 迁移"
+[[ -f "${teacher_p_rel_execution_migration}" ]] \
+  || fail "缺少教师端 0043 P-REL 执行目录迁移"
 [[ -f "${contract_probe}" ]] \
   || fail "缺少联合部署数据库契约探针"
-grep -Fq "20260819_65_g09_set_course" "${contract_probe}" \
-  || fail "数据库契约探针未固定最终 public head 20260819_65_g09_set_course"
+[[ -f "${public_final_migration}" ]] \
+  || fail "缺少最终 public 100 source-scope snapshot diff 迁移"
+[[ -f "${public_previous_migration}" ]] \
+  || fail "缺少 public 99 拉黑三态迁移"
+grep -Fq 'revision: str = "20260822_99_blacklist_three_state"' \
+  "${public_previous_migration}" \
+  || fail "public 99 迁移 revision 漂移"
+grep -Fq 'down_revision: Union[str, None] = "20260822_98_task_v2_refresh"' \
+  "${public_previous_migration}" \
+  || fail "public 99 未从 public 98 连续升级"
+grep -Fq 'revision: str = "20260823_100_scope_snapshot_diff"' \
+  "${public_final_migration}" \
+  || fail "最终 public 迁移 revision 不是 20260823_100_scope_snapshot_diff"
+grep -Fq 'down_revision: Union[str, None] = "20260822_99_blacklist_three_state"' \
+  "${public_final_migration}" \
+  || fail "最终 public 100 未从 public 99 连续升级"
+grep -Fq "20260823_100_scope_snapshot_diff" "${contract_probe}" \
+  || fail "数据库契约探针未固定最终 public head 20260823_100_scope_snapshot_diff"
+grep -Fq "P-REL-MEMO is not the exact reviewed READY document execution" \
+  "${contract_probe}" \
+  || fail "数据库契约探针未校验 P-REL-MEMO READY execution"
+grep -Fq "P-REL-ATTENDANCE is not the exact reviewed READY Kuozhi execution" \
+  "${contract_probe}" \
+  || fail "数据库契约探针未校验 P-REL-ATTENDANCE READY execution"
 grep -q "2026-08-05-g04-three-part" "${teacher_g04_migration}" \
   || fail "教师端 0031 未发布经评审的 G04 三模块版本"
 grep -q "g02-device-2026-08-05-browser-preflight-v1" "${teacher_g04_migration}" \
@@ -388,6 +415,26 @@ grep -q "ALTER COLUMN password_hash DROP NOT NULL" "${teacher_crm_sso_migration}
   || fail "教师端 0041 未允许 SSO 账号无本地密码"
 grep -q "auth_method" "${teacher_crm_sso_migration}" \
   || fail "教师端 0041 未记录会话认证方式"
+grep -Fq "shared_template_row_id = 'P-REL-MEMO:v1'" \
+  "${teacher_p_rel_execution_migration}" \
+  || fail "教师端 0043 未固定 P-REL-MEMO 稳定模板"
+grep -Fq "shared_template_row_id = 'P-REL-ATTENDANCE:v1'" \
+  "${teacher_p_rel_execution_migration}" \
+  || fail "教师端 0043 未固定 P-REL-ATTENDANCE 稳定模板"
+grep -Fq "2026-07-24-lesson-memo-rules-v1" \
+  "${teacher_p_rel_execution_migration}" \
+  || fail "教师端 0043 未固定 Lesson Memo 文档版本"
+grep -Fq "43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51" \
+  "${teacher_p_rel_execution_migration}" \
+  || fail "教师端 0043 未固定 Lesson Memo 文档哈希"
+grep -Fq "p-rel-memo-document" "${teacher_p_rel_execution_migration}" \
+  || fail "教师端 0043 未发布 Lesson Memo 文档步骤"
+grep -Fq "2026-08-22-reliability-course-595-v1" \
+  "${teacher_p_rel_execution_migration}" \
+  || fail "教师端 0043 未固定课程 595 Reliability 执行版本"
+grep -Fq "P-REL-ATTENDANCE contains unreviewed local steps or rules" \
+  "${teacher_p_rel_execution_migration}" \
+  || fail "教师端 0043 未禁止 P-REL-ATTENDANCE 本地步骤和规则"
 
 if grep -Eq "HIDDEN_FIXED_TASK_CODES.*G02|new Set\\(\\['G02'\\]\\)" "${teacher_service}"; then
   fail "教师端仍隐藏当前 G02 平台政策任务"
@@ -455,13 +502,17 @@ if sorted(declared_codes) != sorted(expected) or duplicate_codes or actual != ex
 PY
 
 [[ -f "${teacher_migrator}" ]] || fail "缺少教师端正式生产迁移器"
-grep -Fq "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64 -> public head 65 -> teacher 0042" \
+grep -Fq 'TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0043_p_rel_execution_catalog}"' \
   "${teacher_migrator}" \
-  || fail "教师端迁移器缺少 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→release-public56→teacher0038→release-public57→teacher0040→teacher0041→public63→public64→public65→teacher0042 分阶段失败关闭门禁"
+  || fail "教师端迁移器默认目标不是 0043"
 grep -Fq "20260811_56_p_fb_negative_copy" "${teacher_migrator}" \
   || fail "教师端迁移器未固定 release public 56 切换点"
 grep -Fq "20260811_57_g02_document" "${teacher_migrator}" \
   || fail "教师端迁移器未固定 release public 57 切换点"
+grep -Fq "20260819_65_g09_set_course" "${teacher_migrator}" \
+  || fail "教师端迁移器未固定 teacher 0042 的 public 65 前置门"
+grep -Fq "reliability_public_ready" "${teacher_migrator}" \
+  || fail "教师端迁移器未固定 teacher 0043 的可靠性模板前置门"
 grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
   || fail "教师端迁移器未区分历史 0020 是否已经记录"
 [[ -f "${TIDE_TEACHER_REPO_PATH}/backend/Dockerfile" ]] \
@@ -469,7 +520,7 @@ grep -Fq "product_analytics_recorded" "${teacher_migrator}" \
 [[ -f "${TIDE_TEACHER_REPO_PATH}/frontend/Dockerfile" ]] \
   || fail "缺少教师端 Web 生产镜像"
 python3 - "${teacher_migrator}" <<'PY' \
-  || fail "教师端生产迁移器不是以 0042 结尾的 37 条完整有序生产链"
+  || fail "教师端生产迁移器不是以 0043 结尾的 38 条完整有序生产链"
 from __future__ import annotations
 
 import re
@@ -515,6 +566,7 @@ expected = [
     "0040_g02_document_read_status",
     "0041_crm_sso_hybrid",
     "0042_g09_set_kuozhi_course",
+    "0043_p_rel_execution_catalog",
 ]
 target_match = re.search(
     r'TARGET_MIGRATION="\$\{TIDE_MIGRATION_TARGET:-([^}]+)\}"',
@@ -546,4 +598,4 @@ if grep -Eq "0017_task_assignment_teacher_response|0018_remove_task_assignment_t
   fail "教师端生产迁移器仍越权修改 public.task_assignments"
 fi
 
-printf '联合部署静态预检通过；数据库必须按 public46→teacher0028→public50→teacher0032→public54→teacher0037→public55→release-public56→teacher0038→release-public57→teacher0040→teacher0041→public59→public60→public61→public62→public63→public64→public65→teacher0042 执行，最终必须通过 public 20260819_65_g09_set_course / teacher 0042 契约探针和发布门禁。\n'
+printf '联合部署静态预检通过；历史交叉迁移门完成后，先到 public 99 并执行 teacher 0043_p_rel_execution_catalog，再升级 public 100；最终必须通过 public 100 / teacher 0043（38 条）、source-scope v3 及两条 P-REL execution 契约探针。\n'

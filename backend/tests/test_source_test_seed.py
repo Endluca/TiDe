@@ -105,8 +105,8 @@ def test_apply_writes_exact_rows_and_repeated_apply_is_idempotent(
     assert attendance.is_early is True
     assert complaint.complaint_category_l3 == "TEST-COMPLAINT-L3"
     assert hardware.is_camera_off is True
-    assert hardware.is_cpu_usage_high is True
-    assert hardware.is_network_delay_high is True
+    assert hardware.is_cpu_usage_high is None
+    assert hardware.is_network_delay_high is None
 
 
 def test_seed_does_not_clean_unrelated_source_rows(source_engine: Engine) -> None:
@@ -119,6 +119,7 @@ def test_seed_does_not_clean_unrelated_source_rows(source_engine: Engine) -> Non
         )
         session.add(
             LessonSourceWideRecord(
+                source_region="ovs",
                 course_id="UNRELATED-TEST-LESSON",
                 teacher_id="UNRELATED-TEST-TEACHER",
             )

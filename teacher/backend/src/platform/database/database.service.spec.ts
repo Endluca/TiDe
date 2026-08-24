@@ -169,6 +169,14 @@ describe('DatabaseService', () => {
       expect.stringContaining('public.teacher_lesson_score_current'),
     );
     expect(query).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'source_region, source_appoint_id, participation_seq',
+      ),
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('participation_role, visible_to_teacher'),
+    );
+    expect(query).toHaveBeenCalledWith(
       expect.stringContaining('public.teachers'),
     );
   });
@@ -210,7 +218,7 @@ describe('DatabaseService', () => {
     );
   });
 
-  it('requires the exact production migration head and current core objects', async () => {
+  it('requires a complete legacy, expand, or contract lesson identity capability', async () => {
     let productionQuery = '';
     const query = jest.fn((sql: string) => {
       productionQuery = sql;
@@ -242,7 +250,7 @@ describe('DatabaseService', () => {
       expect.stringContaining('0041_crm_sso_hybrid'),
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('0042_g09_set_kuozhi_course'),
+      expect.stringContaining('0043_p_rel_execution_catalog'),
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('0032_first_login_onboarding'),
@@ -262,8 +270,28 @@ describe('DatabaseService', () => {
     expect(productionQuery).toContain('guard_dom_lesson_student_privacy_v1');
     expect(productionQuery).toContain('tit.dts_source_region');
     expect(productionQuery).toContain('tit_dts_ingest_runtime');
-    expect(productionQuery).toContain("tgenabled IN ('O', 'A')");
-    expect(productionQuery).toContain('tgtype = 23');
+    expect(productionQuery).toContain("tgenabled IN ('O','A')");
+    expect(productionQuery).toContain('tgtype=23');
+    expect(productionQuery).toContain('trg_00_lesson_source_region_expand_v1');
+    expect(productionQuery).toContain(
+      'trg_00_lesson_source_region_contract_v1',
+    );
+    expect(productionQuery).toContain(
+      'uq_lesson_source_wide_region_course_candidate',
+    );
+    expect(productionQuery).toContain('ck_lesson_source_wide_region');
+    expect(productionQuery).toContain(
+      "ARRAY['source_region','课程id']::name[]",
+    );
+    expect(productionQuery).toContain('result_has_composite_fk');
+    expect(productionQuery).toContain('match_has_composite_fk');
+    expect(productionQuery).toContain(
+      'NOT (SELECT has_contract_guard FROM lesson_region_triggers)',
+    );
+    expect(productionQuery).toContain(
+      'NOT (SELECT has_expand_guard FROM lesson_region_triggers)',
+    );
+    expect(productionQuery).not.toContain('20260822_86_ops_case_v2');
     expect(productionQuery).toContain('AS read_relation(relation_name)');
     for (const relation of [
       'public.alembic_version',

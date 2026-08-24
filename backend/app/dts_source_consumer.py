@@ -19,7 +19,7 @@ import os
 import re
 import socket
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timezone
 from functools import lru_cache
 from importlib.metadata import version as package_version
@@ -56,9 +56,7 @@ REGIONAL_TABLE_SUFFIXES = frozenset(
         "complaint",
         "grading_label",
         "grading_label_log",
-        "qa_ac_classroom_record",
         "qa_task_close_camera_record",
-        "qa_task_fake_early_leave_record",
         "teacher_blacklist",
         "teacher_favorite",
         "user_complaint",
@@ -86,7 +84,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
     "appoint": frozenset(
         {
             "id", "t_id", "s_id", "date", "time", "start_time", "end_time",
-            "week", "status", "use_point", "cancel_reason", "dt",
+            "week", "status", "use_point", "dt",
             "student_token",
         }
     ),
@@ -113,13 +111,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
             "create_time", "dt",
         }
     ),
-    "qa_ac_classroom_record": frozenset(
-        {"id", "tea_id", "new_teacher", "type", "info", "update_time"}
-    ),
     "qa_task_close_camera_record": frozenset(
-        {"id", "appoint_id", "start_time", "end_time"}
-    ),
-    "qa_task_fake_early_leave_record": frozenset(
         {"id", "appoint_id", "start_time", "end_time"}
     ),
     "teacher": frozenset(
@@ -129,7 +121,7 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
         }
     ),
     "teacher_absent_reason": frozenset(
-        {"id", "appoint_id", "t_id", "reason_type", "reason_desc", "add_time"}
+        {"id", "appoint_id", "t_id", "reason_type", "add_time"}
     ),
     "teacher_blacklist": frozenset(
         {
@@ -140,8 +132,8 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
     ),
     "teacher_certification": frozenset(
         {
-            "id", "teacher_id", "certification_type", "certification_status",
-            "status",
+            "id", "teacher_id", "certification_type", "certification_code",
+            "certification_status", "status",
         }
     ),
     "teacher_class_schedule": frozenset(
@@ -168,8 +160,9 @@ SOURCE_FIELD_WHITELIST: dict[str, frozenset[str]] = {
     ),
     "user_teacher_grading": frozenset(
         {
-            "id", "teacher_id", "appoint_id", "score", "type", "status",
-            "is_del", "update_time", "create_time", "start_time", "dt",
+            "id", "teacher_id", "appoint_id", "use_point", "score", "type",
+            "status", "is_del", "update_time", "create_time", "start_time",
+            "dt",
         }
     ),
 }
@@ -214,6 +207,8 @@ DOMESTIC_ALLOWED_REASON_DETAIL = "Unfilled Lesson Memo"
 DOMESTIC_REDACTED_REASON_DETAIL = "Domestic reason redacted"
 _DOMESTIC_STUDENT_TOKEN_PATTERN = re.compile(r"^dom:v1:[0-9a-f]{64}$")
 _DOMESTIC_STUDENT_HMAC_KEY_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SOURCE_IMAGE_COMPLETENESS_PROOF_MARKER = object()
+_DOMESTIC_PROTECTION_PROOF_MARKER = object()
 _DOMESTIC_STUDENT_HMAC_PASSWORD_ENV = (
     "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD"
 )
@@ -221,6 +216,23 @@ _DOMESTIC_STUDENT_HMAC_LEGACY_ENV = "TIT_DTS_DOM_STUDENT_HMAC_KEY"
 _KNOWN_DTS_CONSUMER_GROUP_NAME_PLACEHOLDERS = frozenset(
     {"tit-ovs-group", "tit-dom-group"}
 )
+
+
+@dataclass(frozen=True)
+class _SourceImageCompletenessProof:
+    marker: object = field(repr=False, compare=False)
+    source_region: str
+    source_table: str
+    operation: str
+    source_image_profile_id: str
+    raw_event_fingerprint: str
+    protected_event_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class _DomesticProtectionProof:
+    marker: object = field(repr=False, compare=False)
+    protected_event_fingerprint: str
 _KAFKA_STARTUP_PHASE_FAILURE_CODES = {
     "consumer_open": "DTS_BROKER_CONSUMER_OPEN_FAILED",
     "bootstrap_auth": "DTS_BROKER_BOOTSTRAP_SASL_FAILED",
@@ -622,6 +634,160 @@ def _is_domestic_student_token(value: Any) -> bool:
     )
 
 
+def _proof_json_value(value: Any) -> Any:
+    """Return a deterministic, non-logging representation for proof hashes."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _proof_json_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_proof_json_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_proof_json_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    if isinstance(value, (datetime, date, time)):
+        return {"type": type(value).__name__, "value": value.isoformat()}
+    if isinstance(value, (bytes, bytearray)):
+        return {
+            "type": type(value).__name__,
+            "sha256": hashlib.sha256(bytes(value)).hexdigest(),
+        }
+    if isinstance(value, float) and not math.isfinite(value):
+        return {"type": "float", "value": str(value)}
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    rendered = repr(value).encode("utf-8", errors="replace")
+    return {
+        "type": f"{type(value).__module__}.{type(value).__qualname__}",
+        "repr_sha256": hashlib.sha256(rendered).hexdigest(),
+    }
+
+
+def _source_event_proof_fingerprint(event: "DtsChangeEvent") -> str:
+    payload = {
+        "source_region": event.source_region,
+        "topic": event.topic,
+        "partition": event.partition,
+        "offset": event.offset,
+        "record_id": event.record_id,
+        "source_timestamp": event.source_timestamp,
+        "source_txid": event.source_txid,
+        "source_position": event.source_position,
+        "operation": event.operation,
+        "database_name": event.database_name,
+        "schema_name": event.schema_name,
+        "table_name": event.table_name,
+        "before": _proof_json_value(event.before),
+        "after": _proof_json_value(event.after),
+        "source_field_types": _proof_json_value(event.source_field_types),
+        "source_field_type_numbers": _proof_json_value(
+            event.source_field_type_numbers
+        ),
+        "source_images_complete": event.source_images_complete,
+        "source_image_profile_id": event.source_image_profile_id,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _attest_v2_source_image_completeness(
+    event: "DtsChangeEvent",
+    *,
+    source_image_profile_id: str,
+) -> "DtsChangeEvent":
+    """Attach a process-local proof after a schema adapter checks the images."""
+
+    attested = replace(
+        event,
+        source_images_complete=True,
+        source_image_profile_id=source_image_profile_id,
+        _v2_source_image_completeness_proof=None,
+        _domestic_protection_proof=None,
+    )
+    proof = _SourceImageCompletenessProof(
+        marker=_SOURCE_IMAGE_COMPLETENESS_PROOF_MARKER,
+        source_region=attested.source_region,
+        source_table=attested.table_name or "",
+        operation=attested.operation,
+        source_image_profile_id=source_image_profile_id,
+        raw_event_fingerprint=_source_event_proof_fingerprint(attested),
+    )
+    return replace(attested, _v2_source_image_completeness_proof=proof)
+
+
+def _source_image_completeness_proof_matches(
+    event: "DtsChangeEvent",
+    *,
+    expected_profile_id: str,
+    protected: bool,
+) -> bool:
+    proof = event._v2_source_image_completeness_proof
+    if (
+        not isinstance(proof, _SourceImageCompletenessProof)
+        or proof.marker is not _SOURCE_IMAGE_COMPLETENESS_PROOF_MARKER
+        or event.source_images_complete is not True
+        or event.source_image_profile_id != expected_profile_id
+        or proof.source_region != event.source_region
+        or proof.source_table != (event.table_name or "")
+        or proof.operation != event.operation
+        or proof.source_image_profile_id != expected_profile_id
+    ):
+        return False
+    expected_fingerprint = (
+        proof.protected_event_fingerprint
+        if protected
+        else proof.raw_event_fingerprint
+    )
+    return bool(
+        expected_fingerprint
+        and hmac.compare_digest(
+            expected_fingerprint,
+            _source_event_proof_fingerprint(event),
+        )
+    )
+
+
+def _has_v2_source_image_completeness_proof(
+    event: "DtsChangeEvent",
+    *,
+    expected_profile_id: str,
+) -> bool:
+    return _source_image_completeness_proof_matches(
+        event,
+        expected_profile_id=expected_profile_id,
+        protected=event.source_region == "dom",
+    )
+
+
+def _domestic_protection_proof_matches(event: "DtsChangeEvent") -> bool:
+    proof = event._domestic_protection_proof
+    return bool(
+        isinstance(proof, _DomesticProtectionProof)
+        and proof.marker is _DOMESTIC_PROTECTION_PROOF_MARKER
+        and hmac.compare_digest(
+            proof.protected_event_fingerprint,
+            _source_event_proof_fingerprint(event),
+        )
+    )
+
+
 def _protect_domestic_mapping(
     value: Mapping[str, Any],
     *,
@@ -714,7 +880,22 @@ def protect_domestic_student_ids(
         raise DtsConfigurationError(
             "TIT_DTS_DOM_STUDENT_HMAC_KEY_REQUIRED"
         )
-    return DtsChangeEvent(
+    completeness_proof = event._v2_source_image_completeness_proof
+    if (
+        event.source_images_complete
+        or event.source_image_profile_id is not None
+        or completeness_proof is not None
+    ) and (
+        event.source_image_profile_id is None
+        or not _source_image_completeness_proof_matches(
+            event,
+            expected_profile_id=event.source_image_profile_id,
+            protected=False,
+        )
+    ):
+        raise DtsRecordError("DTS_SOURCE_IMAGE_COMPLETENESS_PROOF_INVALID")
+
+    protected = DtsChangeEvent(
         source_region=event.source_region,
         topic=event.topic,
         partition=event.partition,
@@ -737,10 +918,39 @@ def protect_domestic_student_ids(
             if event.after is not None
             else None
         ),
+        source_field_types=event.source_field_types,
+        source_field_type_numbers=event.source_field_type_numbers,
+        source_images_complete=event.source_images_complete,
+        source_image_profile_id=event.source_image_profile_id,
+        _v2_source_image_completeness_proof=completeness_proof,
     )
 
+    if isinstance(completeness_proof, _SourceImageCompletenessProof):
+        completeness_proof = replace(
+            completeness_proof,
+            protected_event_fingerprint=_source_event_proof_fingerprint(
+                protected
+            ),
+        )
+        protected = replace(
+            protected,
+            _v2_source_image_completeness_proof=completeness_proof,
+        )
 
-def assert_domestic_event_protected(event: DtsChangeEvent) -> None:
+    protection_proof = _DomesticProtectionProof(
+        marker=_DOMESTIC_PROTECTION_PROOF_MARKER,
+        protected_event_fingerprint=_source_event_proof_fingerprint(
+            protected
+        ),
+    )
+    return replace(protected, _domestic_protection_proof=protection_proof)
+
+
+def assert_domestic_event_protected(
+    event: DtsChangeEvent,
+    *,
+    require_process_proof: bool = False,
+) -> None:
     """Second-line guard at the database boundary, before any row bind."""
 
     if event.source_region != "dom":
@@ -769,6 +979,8 @@ def assert_domestic_event_protected(event: DtsChangeEvent) -> None:
 
     inspect(event.before)
     inspect(event.after)
+    if require_process_proof and not _domestic_protection_proof_matches(event):
+        raise DtsRecordError("DTS_DOM_PROTECTION_PROOF_INVALID")
 
 
 def student_subject(row: Mapping[str, Any]) -> str | None:
@@ -1654,6 +1866,20 @@ class DtsChangeEvent:
     table_name: str | None
     before: Mapping[str, Any] | None
     after: Mapping[str, Any] | None
+    source_field_types: Mapping[str, str] = field(default_factory=dict)
+    source_field_type_numbers: Mapping[str, int] = field(default_factory=dict)
+    source_images_complete: bool = False
+    source_image_profile_id: str | None = None
+    _v2_source_image_completeness_proof: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _domestic_protection_proof: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def idempotency_key(self) -> tuple[str, str, int, int]:
@@ -1677,8 +1903,10 @@ def build_change_event(
         tags,
     )
     fields = _normalize_fields(record.get("fields"))
-    before = _images_to_row(fields, record.get("beforeImages"), operation)
-    after = _images_to_row(fields, record.get("afterImages"), operation)
+    before_images = record.get("beforeImages")
+    after_images = record.get("afterImages")
+    before = _images_to_row(fields, before_images, operation)
+    after = _images_to_row(fields, after_images, operation)
     if operation in DATA_OPERATIONS and not table_name:
         raise DtsRecordError("DTS_DML_TABLE_NAME_MISSING")
     return DtsChangeEvent(
@@ -1699,7 +1927,40 @@ def build_change_event(
         table_name=table_name,
         before=before,
         after=after,
+        source_field_types=_source_field_types(
+            fields,
+            before_images,
+            after_images,
+        ),
+        source_field_type_numbers=_source_field_type_numbers(
+            record.get("fields"),
+            record.get("fieldTypeNumbers"),
+        ),
+        # DTS UPDATE images may be sparse.  A future versioned adapter may set
+        # this only after checking the configured source-table schema.
+        source_images_complete=False,
+        source_image_profile_id=None,
     )
+
+
+def prepare_change_event_for_ingest(
+    event: DtsChangeEvent,
+    settings: DtsConsumerSettings,
+) -> DtsChangeEvent:
+    """Attach schema-profile evidence before irreversible DOM protection.
+
+    The v1 sinks ignore the private v2 proof, so this is safe while dual
+    capture remains disabled.  Keeping the ordering in one helper prevents a
+    future v2 writer from trying to infer a complete raw image after the
+    domestic student aliases have already been replaced by a token.
+    """
+
+    # Lazy import avoids the intentional source-contract -> consumer
+    # dependency during module initialization.
+    from .dts_source_contract_v2 import with_v2_source_image_completeness
+
+    profiled = with_v2_source_image_completeness(event)
+    return protect_domestic_student_ids(profiled, settings)
 
 
 def _required_int(value: Any, error: str) -> int:
@@ -1778,6 +2039,132 @@ def _normalize_fields(value: Any) -> tuple[str, ...]:
             raise DtsRecordError("DTS_FIELD_NAME_MISSING")
         names.append(name)
     return tuple(names)
+
+
+def _source_field_type_numbers(
+    fields_value: Any,
+    explicit_value: Any,
+) -> dict[str, int]:
+    """Preserve SDK ``Field.dataTypeNumber`` without interpreting its enum.
+
+    Kafka Avro records carry the descriptor beside each field while the Java
+    bridge sends an explicit mapping.  Keeping the opaque numeric code lets a
+    separately reviewed source profile prove physical type identity without
+    logging source values or guessing the SDK enum in the ingest path.
+    """
+
+    evidence: dict[str, int] = {}
+
+    def add(field_name: Any, raw_number: Any) -> None:
+        name = str(field_name or "").strip()
+        if not name or raw_number is None:
+            return
+        if isinstance(raw_number, bool):
+            raise DtsRecordError("DTS_SOURCE_FIELD_TYPE_NUMBER_INVALID")
+        try:
+            number = int(raw_number)
+        except (TypeError, ValueError) as exc:
+            raise DtsRecordError(
+                "DTS_SOURCE_FIELD_TYPE_NUMBER_INVALID"
+            ) from exc
+        if number < 0:
+            raise DtsRecordError("DTS_SOURCE_FIELD_TYPE_NUMBER_INVALID")
+        previous = evidence.get(name)
+        if previous is not None and previous != number:
+            raise DtsRecordError("DTS_SOURCE_FIELD_TYPE_NUMBER_DRIFT")
+        evidence[name] = number
+
+    normalized_fields_value = fields_value
+    if isinstance(normalized_fields_value, str):
+        normalized_fields_value = _json_value(normalized_fields_value)
+    if isinstance(normalized_fields_value, Sequence) and not isinstance(
+        normalized_fields_value,
+        (bytes, bytearray, str),
+    ):
+        for descriptor in normalized_fields_value:
+            if isinstance(descriptor, Mapping):
+                add(descriptor.get("name"), descriptor.get("dataTypeNumber"))
+
+    normalized_explicit = explicit_value
+    if isinstance(normalized_explicit, str):
+        normalized_explicit = _json_value(normalized_explicit)
+    if normalized_explicit is not None:
+        if not isinstance(normalized_explicit, Mapping):
+            raise DtsRecordError("DTS_SOURCE_FIELD_TYPE_NUMBERS_INVALID")
+        for field_name, raw_number in normalized_explicit.items():
+            add(field_name, raw_number)
+    return evidence
+
+
+def _source_field_types(
+    fields: tuple[str, ...],
+    before_images: Any,
+    after_images: Any,
+) -> dict[str, str]:
+    """Preserve source union-family hints before values are decoded."""
+
+    hints: dict[str, str] = {}
+    for images_value in (before_images, after_images):
+        images = _image_sequence(images_value)
+        if images is None or len(images) != len(fields):
+            continue
+        for field_name, raw_value in zip(fields, images):
+            hint = _source_image_type(raw_value)
+            previous = hints.get(field_name)
+            if hint is None:
+                continue
+            if previous is not None and previous != hint:
+                raise DtsRecordError("DTS_SOURCE_FIELD_TYPE_DRIFT")
+            hints[field_name] = hint
+    return hints
+
+
+def _image_sequence(value: Any) -> Sequence[Any] | None:
+    if isinstance(value, str):
+        value = _json_value(value)
+    if value is None or isinstance(value, str):
+        return None
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (bytes, bytearray),
+    ):
+        return None
+    return value
+
+
+def _source_image_type(value: Any) -> str | None:
+    if value is None or (
+        isinstance(value, str) and value in {"NULL", "NONE"}
+    ):
+        return None
+    if isinstance(value, bool):
+        return "BOOLEAN"
+    if isinstance(value, (int, float)):
+        return "NUMERIC"
+    if isinstance(value, (str, bytes, bytearray)):
+        return "TEXT"
+    if not isinstance(value, Mapping):
+        return None
+    keys = {str(key) for key in value}
+    if "timestamp" in keys or "year" in keys:
+        return "TEMPORAL"
+    if "charset" in keys and "value" in keys:
+        return "TEXT"
+    if "precision" in keys and "value" in keys:
+        return "NUMERIC"
+    if "value" in keys:
+        nested = value.get("value")
+        if isinstance(nested, Mapping) and "year" in {
+            str(key) for key in nested
+        }:
+            return "TEMPORAL"
+        if isinstance(nested, bool):
+            return "BOOLEAN"
+        if isinstance(nested, (int, float)):
+            return "NUMERIC"
+        if isinstance(nested, (str, bytes, bytearray)):
+            return "TEXT"
+    return None
 
 
 def _images_to_row(
@@ -2089,7 +2476,10 @@ def project_appoint_candidate(event: DtsChangeEvent) -> AppointProjectionCandida
             required_sources=(),
         )
 
-    required_fields = ("id", "t_id", "status", "use_point")
+    # ``status`` and ``use_point`` are source facts, not course-admission
+    # predicates.  A missing student subject is also retained as an explicit
+    # nullable source fact; downstream student-specific rules may wait for it.
+    required_fields = ("id", "t_id")
     missing = tuple(name for name in required_fields if row.get(name) is None)
     if missing:
         return AppointProjectionCandidate(
@@ -2099,19 +2489,6 @@ def project_appoint_candidate(event: DtsChangeEvent) -> AppointProjectionCandida
             required_sources=(),
             reason="APPOINT_FULL_IMAGE_REQUIRED:" + ",".join(missing),
         )
-    if (
-        str(row.get("use_point")) != "buy"
-        or str(row.get("status")) in {"cancel", "on"}
-        or student_subject(row) is None
-    ):
-        return AppointProjectionCandidate(
-            action="DELETE",
-            course_id=course_id,
-            target_values={},
-            required_sources=(),
-            reason="APPOINT_OUTSIDE_SCRIPT_SCOPE",
-        )
-
     start_value = row.get("start_time")
     lesson_date = _parse_date(row.get("date")) or _parse_date(start_value)
     lesson_time = _parse_time(row.get("time")) or _parse_time(start_value)
@@ -2129,10 +2506,12 @@ def project_appoint_candidate(event: DtsChangeEvent) -> AppointProjectionCandida
             ),
             "老师id": _row_id(row, "t_id"),
             "学员id": student_subject(row),
-            "课程状态": str(row.get("status")),
+            "课程状态": (
+                None if row.get("status") is None else str(row.get("status"))
+            ),
         },
         required_sources=("dom_teacher",),
-        reason="TEACHER_SCOPE_AND_ONBOARD_WINDOW_NOT_YET_VERIFIED",
+        reason="TEACHER_COMPATIBILITY_SCOPE_NOT_YET_VERIFIED",
     )
 
 
@@ -2217,10 +2596,18 @@ def _coalesce(*values: Any) -> Any:
 
 def _is_valid_complaint(row: Mapping[str, Any]) -> bool:
     complaint_type = _optional_int(row.get("complaint_type"))
-    grandson = _optional_int(row.get("complaint_type_grandson"))
+    raw_grandson = row.get("complaint_type_grandson")
+    grandson = _optional_int(raw_grandson)
     validity = _optional_int(row.get("validity"))
     return (
         complaint_type == 13
+        and (
+            raw_grandson is None
+            or (
+                not isinstance(raw_grandson, bool)
+                and grandson is not None
+            )
+        )
         and grandson != 82
         and str(row.get("approve") or "").lower() == "y"
         and validity == 1
@@ -2239,32 +2626,51 @@ def derive_penalty_flags(
     end = _parse_datetime(lesson_end)
     if start is None or end is None:
         return None, None
-    valid_rows = []
+    if not penalty_rows:
+        # This change-fed mirror cannot prove that an untouched course has no
+        # penalty record.  No observed row is missing evidence, not clean
+        # attendance evidence.
+        return None, None
+    active_rows: list[Mapping[str, Any]] = []
+    has_unknown_appeal = False
+    sentinel = datetime(1970, 1, 1, 8, 0, 0)
     for row in penalty_rows:
         appeal_status = _optional_int(row.get("appeal_status"))
-        if appeal_status is not None and appeal_status != 2:
-            valid_rows.append(row)
+        if appeal_status is None:
+            has_unknown_appeal = True
+            continue
+        if appeal_status == 2:
+            continue
+        active_rows.append(row)
+
     in_times = [
         parsed
-        for row in valid_rows
+        for row in active_rows
         if (parsed := _parse_datetime(row.get("in_time"))) is not None
     ]
     out_times = [
         parsed
-        for row in valid_rows
-        if (parsed := _parse_datetime(row.get("out_time"))) is not None
+        for row in active_rows
+        if (
+            (parsed := _parse_datetime(row.get("out_time"))) is not None
+            and parsed > sentinel
+        )
     ]
+    late_unknown = has_unknown_appeal or len(in_times) != len(active_rows)
+    early_unknown = has_unknown_appeal or len(out_times) != len(active_rows)
     latest_in = max(in_times, default=None)
     latest_out = max(out_times, default=None)
-    is_late = latest_in is not None and (latest_in - start).total_seconds() > 30
-    sentinel = datetime(1970, 1, 1, 8, 0, 0)
-    is_early = (
+    late_value = (
+        latest_in is not None and (latest_in - start).total_seconds() > 30
+    )
+    early_value = (
         latest_out is not None
-        and latest_out > sentinel
-        and latest_out < end
         and (end - latest_out).total_seconds() > 30
     )
-    return is_late, is_early
+    return (
+        True if late_value else None if late_unknown else False,
+        True if early_value else None if early_unknown else False,
+    )
 
 
 @dataclass(frozen=True)
@@ -2622,7 +3028,7 @@ class DtsKafkaConsumer:
                     partition=message.partition,
                     offset=message.offset,
                 )
-                event = protect_domestic_student_ids(event, self.settings)
+                event = prepare_change_event_for_ingest(event, self.settings)
                 result = self.processor.process(event)
                 counters["seen"] += 1
                 if result.status == "PROCESSED":
@@ -3662,6 +4068,7 @@ __all__ = [
     "derive_penalty_flags",
     "is_peak_lesson",
     "project_appoint_candidate",
+    "prepare_change_event_for_ingest",
     "protect_domestic_student_ids",
     "reduce_latest_complaints",
     "route_dirty_keys",

@@ -11,6 +11,7 @@ import pytest
 from app import dts_java_transport, dts_source_consumer
 from app.dts_java_transport import (
     DtsJavaTransportError,
+    JAVA_TRANSPORT_MAX_BATCH_MESSAGES,
     JAVA_TRANSPORT_PROTOCOL_VERSION,
     OfficialJavaDtsTransport,
     java_child_environment,
@@ -20,6 +21,20 @@ from app.dts_source_consumer import (
     DTS_SDK_1_4_AVRO_WRITER_SCHEMA_SHA256,
     DtsConsumerSettings,
 )
+
+
+@pytest.mark.parametrize("max_messages", [0, 2_049])
+def test_java_transport_rejects_batch_size_outside_protocol_limit(
+    max_messages: int,
+) -> None:
+    transport = object.__new__(OfficialJavaDtsTransport)
+    transport._started = True
+    transport._closed = False
+
+    with pytest.raises(ValueError, match="max_messages must be between"):
+        transport.run(max_messages=max_messages, commit_offsets=True)
+
+    assert JAVA_TRANSPORT_MAX_BATCH_MESSAGES == 2_048
 
 
 def _event_record(
@@ -328,7 +343,7 @@ def _patch_batch_event_decoding(
     )
     monkeypatch.setattr(
         dts_java_transport,
-        "protect_domestic_student_ids",
+        "prepare_change_event_for_ingest",
         lambda event, _settings: event,
     )
 
@@ -445,7 +460,7 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
     )
     monkeypatch.setattr(
         dts_java_transport,
-        "protect_domestic_student_ids",
+        "prepare_change_event_for_ingest",
         lambda event, settings: (
             event
             if settings.source_region == "ovs"
@@ -734,7 +749,7 @@ def test_failed_database_transaction_never_acknowledges_java(
     )
     monkeypatch.setattr(
         dts_java_transport,
-        "protect_domestic_student_ids",
+        "prepare_change_event_for_ingest",
         lambda event, _settings: event,
     )
     transport = OfficialJavaDtsTransport(
@@ -1126,7 +1141,7 @@ def test_timestamp_replay_is_durable_but_does_not_advance_sdk_checkpoint(
     )
     monkeypatch.setattr(
         dts_java_transport,
-        "protect_domestic_student_ids",
+        "prepare_change_event_for_ingest",
         lambda event, _settings: event,
     )
     transport = OfficialJavaDtsTransport(

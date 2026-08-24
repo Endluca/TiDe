@@ -1,11 +1,17 @@
 import { z } from 'zod';
+import { encodeCompatibilityLessonId } from './course-participation-identity';
 
 const identifier = z.string().min(1).max(128);
+const sourceAppointIdentifier = z.string().min(1).max(512);
 const dateTime = z.preprocess(
   (value) => (value instanceof Date ? value.toISOString() : value),
   z.string().datetime({ offset: true }),
 );
 const dataMode = z.enum(['MIXED', 'REAL', 'MOCK']);
+const graduationState = z.enum(['IN_CAMP', 'GRADUATED']);
+const teacherOnlineStatus = z.enum(['NEW', 'EXISTING', 'LEFT', 'BLOCKED']);
+const goldStatus = z.enum(['NOT_GOLD', 'GOLD']);
+const teacherSourceStatus = z.enum(['CONFIRMED', 'SOURCE_MISSING']);
 const numeric = z.preprocess(
   (value) => (typeof value === 'string' ? Number(value) : value),
   z.number().finite(),
@@ -20,7 +26,7 @@ export const teacherIdentitySchema = z
     name: z.string().min(1).max(200),
     timezone: z.string().max(100).nullable(),
     campDay: nonNegativeInteger.nullable(),
-    graduationState: z.string().max(100).nullable(),
+    graduationState: graduationState.nullable(),
     dataMode,
     sourceUpdatedAt: dateTime,
   })
@@ -82,11 +88,16 @@ export const teacherScorecardSchema = z
   .object({
     teacherId: identifier,
     campEnrollmentId: identifier,
+    onlineStatus: teacherOnlineStatus,
     rawTotalScore: nonNegativeNumeric,
     publicTotalScore: nonNegativeNumeric.pipe(z.number().max(200)),
-    graduationState: identifier,
+    graduationState,
     graduationQualified: z.boolean(),
+    graduationQualifiedAt: dateTime.nullable(),
+    graduationScoreLocked: nonNegativeNumeric.nullable(),
     goldQualified: z.boolean(),
+    goldStatus,
+    goldQualifiedAt: dateTime.nullable(),
     graduationThreshold: nonNegativeNumeric,
     goldThreshold: nonNegativeNumeric,
     mandatoryTaskCompletedCount: nonNegativeInteger,
@@ -94,8 +105,42 @@ export const teacherScorecardSchema = z
     scoreRuleVersion: identifier,
     calculatedAt: dateTime,
     dimensions: z.array(scoreDimensionSchema).length(5),
+    teacherSourceStatus,
   })
-  .strict();
+  .strict()
+  .superRefine((scorecard, context) => {
+    if (
+      scorecard.goldStatus !== (scorecard.goldQualified ? 'GOLD' : 'NOT_GOLD')
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['goldStatus'],
+        message: 'goldStatus must match goldQualified',
+      });
+    }
+    if (
+      scorecard.graduationQualified !==
+      (scorecard.graduationQualifiedAt !== null &&
+        scorecard.graduationScoreLocked !== null)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['graduationQualifiedAt'],
+        message: 'graduation qualification facts are inconsistent',
+      });
+    }
+    if (scorecard.goldQualified !== (scorecard.goldQualifiedAt !== null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['goldQualifiedAt'],
+        message: 'gold qualification facts are inconsistent',
+      });
+    }
+  })
+  .transform(({ teacherSourceStatus: sourceStatus, ...scorecard }) => ({
+    ...scorecard,
+    source: { teacherSourceStatus: sourceStatus },
+  }));
 
 const nullableBoolean = z.boolean().nullable();
 
@@ -105,14 +150,18 @@ const lessonBusinessFactsSchema = z
       .object({
         is_late: nullableBoolean,
         is_early: nullableBoolean,
-        is_false_early_leave: nullableBoolean,
       })
       .passthrough(),
     user_feedback: z
       .object({
-        has_positive_feedback_tag: nullableBoolean,
-        is_favorited: nullableBoolean,
-        is_rebooked: nullableBoolean,
+        has_positive_feedback_tag: nullableBoolean.optional(),
+        is_favorited: nullableBoolean.optional(),
+        is_rebooked: nullableBoolean.optional(),
+        grading_classification: z
+          .enum(['POSITIVE', 'NEGATIVE', 'SOURCE_MISSING'])
+          .nullable()
+          .optional(),
+        favorite_attribution_status: z.string().nullable().optional(),
       })
       .passthrough(),
     classroom_quality: z
@@ -125,18 +174,36 @@ const lessonBusinessFactsSchema = z
     capacity: z.object({ is_peak: nullableBoolean }).passthrough(),
   })
   .passthrough()
-  .transform((facts) => ({
-    late: facts.attendance.is_late,
-    earlyLeave: facts.attendance.is_early,
-    falseEarlyLeave: facts.attendance.is_false_early_leave,
-    positiveFeedback: facts.user_feedback.has_positive_feedback_tag,
-    favorited: facts.user_feedback.is_favorited,
-    rebooked: facts.user_feedback.is_rebooked,
-    cameraOff: facts.classroom_quality.is_camera_off,
-    cpuUsageHigh: facts.classroom_quality.is_cpu_usage_high,
-    networkDelayHigh: facts.classroom_quality.is_network_delay_high,
-    peak: facts.capacity.is_peak,
-  }));
+  .transform((facts) => {
+    const grading = facts.user_feedback.grading_classification;
+    const positiveFeedback =
+      facts.user_feedback.has_positive_feedback_tag !== undefined
+        ? facts.user_feedback.has_positive_feedback_tag
+        : grading === 'POSITIVE'
+          ? true
+          : grading === 'NEGATIVE'
+            ? false
+            : null;
+    const favoriteStatus = facts.user_feedback.favorite_attribution_status;
+    const favorited =
+      facts.user_feedback.is_favorited !== undefined
+        ? facts.user_feedback.is_favorited
+        : favoriteStatus === 'AWARDED' ||
+            favoriteStatus === 'AWARDED_PENDING_EVIDENCE'
+          ? true
+          : null;
+    return {
+      late: facts.attendance.is_late,
+      earlyLeave: facts.attendance.is_early,
+      positiveFeedback,
+      favorited,
+      rebooked: facts.user_feedback.is_rebooked ?? null,
+      cameraOff: facts.classroom_quality.is_camera_off,
+      cpuUsageHigh: facts.classroom_quality.is_cpu_usage_high,
+      networkDelayHigh: facts.classroom_quality.is_network_delay_high,
+      peak: facts.capacity.is_peak,
+    };
+  });
 
 const lessonScoreComponentSchema = z
   .object({
@@ -159,8 +226,8 @@ const lessonScoreDimensionSchema = z
   .object({
     code: z.enum(['USER_FEEDBACK', 'RELIABILITY', 'CLASS_QUALITY']),
     score: nonNegativeNumeric,
-    evidence_status: identifier,
-    evidence_coverage: z.string().max(100).nullable(),
+    evidence_status: identifier.optional().default('NOT_APPLICABLE'),
+    evidence_coverage: z.string().max(100).nullable().optional(),
     components: z.array(lessonScoreComponentSchema),
   })
   .passthrough()
@@ -168,7 +235,7 @@ const lessonScoreDimensionSchema = z
     code: dimension.code,
     score: dimension.score,
     evidenceStatus: dimension.evidence_status,
-    evidenceCoverage: dimension.evidence_coverage,
+    evidenceCoverage: dimension.evidence_coverage ?? null,
     components: dimension.components,
   }));
 
@@ -181,10 +248,11 @@ const localTime = z.string().max(32).nullable();
 export const lessonScoreSchema = z
   .object({
     teacherId: identifier,
-    lessonId: identifier,
+    sourceRegion: z.enum(['dom', 'ovs']),
+    sourceAppointId: sourceAppointIdentifier,
+    participationSeq: nonNegativeInteger.pipe(z.number().min(1)),
     lessonSequence: nonNegativeInteger.pipe(z.number().min(1)),
     lessonCount: nonNegativeInteger,
-    sourceAppointId: identifier,
     scheduledStartAt: dateTime.nullable(),
     lessonLocalDate: localDate,
     lessonLocalTime: localTime,
@@ -192,9 +260,13 @@ export const lessonScoreSchema = z
     validForScoring: z.boolean(),
     evidenceStatus: identifier,
     lessonTotalScore: nonNegativeNumeric,
-    scoreRuleVersion: identifier,
+    scoreRuleVersion: identifier.nullable(),
     updatedAt: dateTime,
     facts: lessonBusinessFactsSchema,
     dimensions: z.array(lessonScoreDimensionSchema).length(3),
   })
-  .strict();
+  .strict()
+  .transform((lesson) => ({
+    ...lesson,
+    lessonId: encodeCompatibilityLessonId(lesson),
+  }));

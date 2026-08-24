@@ -164,6 +164,9 @@ export default function DocumentReadingTask({ task }) {
     && policyDocumentMarkdown,
   );
   const sourceUpdatedAt = loadedContent?.sourceUpdatedAt || documentConfig.sourceUpdatedAt;
+  const documentTitle = loadedContent?.title
+    || documentConfig.sourceTitle
+    || c("Assigned document", "指定文档");
   const versionLabel = formatPolicyDocumentVersion(sourceUpdatedAt, contentVersion, language);
   const taskIdentity = `${taskInstanceId || task.taskCode || "document"}:${contentVersion}:${contentHash}`;
   const savedProgress = useMemo(
@@ -593,10 +596,10 @@ export default function DocumentReadingTask({ task }) {
       <header className="document-reading-header">
         <span><BookOpenText size={26} weight="duotone" /></span>
         <div>
-          <small>{c("POLICY DOCUMENT", "政策文档")}</small>
-          <h3>{loadedContent?.title || documentConfig.sourceTitle || "Overseas NT Policies"}</h3>
+          <small>{c("DOCUMENT", "文档")}</small>
+          <h3>{documentTitle}</h3>
           <div className="document-reading-version">
-            {c("Policy version", "政策版本")} · {versionLabel}
+            {c("Document version", "文档版本")} · {versionLabel}
           </div>
           <p>{contentCompatible
             ? c(
@@ -605,11 +608,11 @@ export default function DocumentReadingTask({ task }) {
             )
             : c(
               contentLoadFailed
-                ? "The current policy content could not be loaded. Retry shortly."
-                : "The latest policy content is loading.",
+                ? "The current document could not be loaded. Retry shortly."
+                : "The latest document is loading.",
               contentLoadFailed
-                ? "当前政策内容加载失败，请稍后重试。"
-                : "正在加载最新政策内容。",
+                ? "当前文档加载失败，请稍后重试。"
+                : "正在加载最新文档。",
             )}</p>
         </div>
         <span className={contentCompatible && documentCompleted ? "document-read-status is-complete" : "document-read-status"}>
@@ -634,7 +637,7 @@ export default function DocumentReadingTask({ task }) {
           onScroll={scheduleMeasure}
           role="region"
           tabIndex="0"
-          aria-label={c("Overseas NT Policies document", "Overseas NT Policies 文档")}
+          aria-label={documentTitle}
         >
           <article className="document-reading-markdown">
             <Markdown
@@ -655,8 +658,8 @@ export default function DocumentReadingTask({ task }) {
           <SpinnerGap className="document-reading-spinner" size={24} />
           <div>
             <strong>{contentLoadFailed
-              ? c("Policy content is unavailable", "政策内容暂不可用")
-              : c("Policy content is loading", "正在加载政策内容")}</strong>
+              ? c("Document content is unavailable", "文档内容暂不可用")
+              : c("Document content is loading", "正在加载文档内容")}</strong>
             <span>{c(
               "Reading progress stays disabled until the server returns the exact document version assigned to this task.",
               "服务端返回与本任务匹配的精确文档版本前，阅读进度不会记录。",

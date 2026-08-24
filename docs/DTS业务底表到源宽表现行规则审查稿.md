@@ -6,14 +6,14 @@
 
 > 文档状态：业务审查稿
 > 核对日期：2026-08-18
-> 核对对象：当前分支代码、23/55 字段映射 v1.5、数据库模型与投影测试
+> 核对对象：当前分支代码、现行 23/55 字段映射 v1.5、数据库模型与投影测试；已确版目标将在后续代码迁移中把课程字段收敛为 22 个
 > 目的：让业务方逐项确认“哪些教师、哪些课程进入宽表，以及每个字段如何计算”。本文描述的是**当前代码实际行为**；与映射约定不一致处单独列出，不把待修正逻辑写成已完成。
 
 ## 1. 先确认这条链路在做什么
 
 这条链路不是把一张业务表原样复制成一张宽表，而是把国内、海外多个业务底表的最新事实，按教师或课程重新组合成两张目标表：
 
-- `lesson_source_wide`：一节有效课程一行，共 23 个字段；
+- `lesson_source_wide`：当前物理表一节有效课程一行、共 23 个字段；业务取消假早退后目标为 22 个字段；
 - `teacher_source_wide`：一位目标人群教师一行，共 55 个字段；
 - 教师宽表的大部分计数、比例由课程宽表和排课、证书等当前态再次聚合得到。
 
@@ -61,7 +61,7 @@ cohort_start <= 入职日 < cohort_end_exclusive
 按 `dom_teacher.course` 判断：
 
 - 包含 `global_cn` 或 `global_pool`：海外教师，`teach_area_type='ovs'`；
-- 不包含上述两个 token：国内教师，`teach_area_type='dmo'`；
+- 不包含上述两个 token：当前代码对国内教师写入旧值 `teach_area_type='dmo'`；已确版目标值为 `teach_area_type='dom'`；
 - `course` 缺失：地区未知，不允许课程通过地区匹配。
 
 课程来源地区还必须与教师地区一致：
@@ -78,11 +78,11 @@ onboard_date = D
 onboard_30d_end_date = D + 29 天
 ```
 
-教师的课程、排课和聚合指标只统计闭区间 `[D, D+29]`，含首尾两天。
+目标口径中，30 天只用于 `NEW→EXISTING` 与被明确命名为“新师 30 天观察”的指标。课程事实跨全日期保留，评价、收藏、投诉和可计分事实不得因超过 `[D,D+29]` 被过滤。现行代码仍将该窗口用于课程准入，属于已确定差距。
 
-### 2.4 课程进入宽表的四道门
+### 2.4 课程进入宽表：现行四道门与已确版目标
 
-一节课只有同时满足以下条件才进入 `lesson_source_wide`：
+当前代码只有同时满足以下条件才让课程进入 `lesson_source_wide`：
 
 1. `use_point = 'buy'`；
 2. `status NOT IN ('cancel', 'on')`；
@@ -90,6 +90,14 @@ onboard_30d_end_date = D + 29 天
 4. 教师在 cohort 内、课程地区与教师地区一致、课程日期处于教师入职后 30 天内。
 
 不满足范围的现有课程宽表行会被删除。若预约或教师记录只是尚未到达，当前逻辑进入重试，不能把“没到”当成删除。
+
+已确版目标删除第 1、2 道门，以及第 4 道门中的“课程日期处于入职 30 天内”：课程宽表准入不判断 `appoint.use_point`、`appoint.status` 或 30 天日期上限。`buy/free`、`cancel/on`、其他状态、`NULL` 状态以及入职 30 天后的课程都要保留事实；目标准入只保留
+学员标识、教师/cohort 和地区一致性等结构与人群条件。完课、计分、预约等派生指标
+如果需要状态条件，应在各自规则中独立处理，不能反向删除课程事实。
+
+当前 direct/queued 因此存在三个确定缺口：会丢失 `free` 课程，会删除或忽略 `cancel/on` 课程，也会丢失入职 30 天后的课程。
+当 `status='on'` 且 `before.t_id != after.t_id` 时，还会在检查教师差值之前短路，导致旧教师
+`t_absent` 和新教师 `on` 两条参与事实都没有建立。
 
 ## 3. 参与计算的业务底表
 
@@ -108,14 +116,14 @@ onboard_30d_end_date = D + 29 天
 | 国内/海外 | `*_user_complaint` | 用户侧投诉分类 |
 | 国内/海外 | `*_complaint` | 投诉审批、有效性和分类 |
 | 国内/海外 | `*_teacher_favorite` | 收藏及其课程归因 |
-| 国内/海外 | `*_teacher_blacklist` | 拉黑及其课程归因 |
+| 国内/海外 | `*_teacher_blacklist` | 拉黑关系当前态；目标不强制归因课程 |
 | 国内/海外 | `*_qa_task_close_camera_record` | 未开摄像头 |
-| 国内/海外 | `*_qa_ac_classroom_record` | CPU、网络异常 |
-| 国内/海外 | `*_qa_task_fake_early_leave_record` | 假早退 |
+| 国内/海外 | `*_qa_ac_classroom_record` | 现行代码读取 CPU、网络异常；已确版目标取消该来源 |
+| 国内/海外 | `*_qa_task_fake_early_leave_record` | 现行代码遗留；目标业务已整体取消 |
 
 `*` 代表 `dom` 或 `ovs`。除白名单字段外，密码、手机号、证书 URL、无关自由文本等不会进入目标库当前态镜像。
 
-## 4. 课程宽表 23 字段规则
+## 4. 课程宽表现行 23 字段与目标 22 字段规则
 
 | # | 目标字段 | 当前代码实际规则 | 空值与异常语义 |
 |---:|---|---|---|
@@ -125,8 +133,8 @@ onboard_30d_end_date = D + 29 天
 | 4 | `是否高峰` | 国内：工作日 18:00–21:30；周末再含 09:00–11:30。海外：工作日 18:00–23:30 或 00:00–05:30；周末再含 09:00–11:30 | 周次或时间缺失为 `NULL`；明确未命中为 `false` |
 | 5 | `老师id` | `appoint.t_id`；必须能关联到 `dom_teacher` | 缺失报错并重试 |
 | 6 | `学员id` | 海外保留源学员标识；国内在离开国内应用前转为 `dom:v1:<HMAC-SHA256>` | 国内原始 ID 禁止进入海外库、日志和公开输出 |
-| 7 | `课程状态` | 保留 `appoint.status` 原值；整行先经过课程范围四道门 | 来源空为 `NULL` |
-| 8 | `缺席原因明细` | 同课程、同教师的缺席记录按 `add_time`、`id` 取最新；依次取 `reason_desc > reason_type > appoint.cancel_reason` | 都无可信值为 `NULL`；国内自由文本会被白名单化或脱敏 |
+| 7 | `课程状态` | 保留 `appoint.status` 原值；当前代码先经过含 use_point/status 的四道门，目标准入不再判断这两个字段 | 来源空为 `NULL`；目标仍保留该课程行 |
+| 8 | `缺席原因明细` | 当前代码混用 `reason_desc > reason_type > appoint.cancel_reason`；目标只取同课程、同教师最新 `dom_teacher_absent_reason.reason_type` | 目标无对应记录时为 `NULL`；不读取 `reason_desc/cancel_reason` |
 | 9 | `迟到` | 处罚记录按课程和教师筛选，取最大 `in_time`；`in_time-start_time>30秒` 为 `true` | 当前代码无有效处罚时写 `false`；与“当前态不完整应为 NULL”的约定不一致 |
 | 10 | `早退` | 取最大有效 `out_time`；`end_time-out_time>30秒` 为 `true`；1970 哨兵时间无效 | 当前代码无有效处罚时写 `false`；与不完整当前态语义存在差异 |
 | 11 | `差评分` | 取最新有效评价，但当前代码只在 score 为 1 或 2 时保存，否则写 `NULL` | 与映射表“保留最新原始 score”文字不完全一致 |
@@ -134,14 +142,14 @@ onboard_30d_end_date = D + 29 天
 | 13 | `投诉一级分类` | 见下方投诉统一规则，最后用 `dom_complaint_cate` 映射中文名 | 无有效投诉为 `NULL`；字典缺项时整课重试 |
 | 14 | `投诉二级分类` | 同上 | 同上 |
 | 15 | `投诉三级分类` | 同上 | 同上 |
-| 16 | `是否拉黑` | 同一地区、同教师、同学员的有效拉黑记录，归给 `abs(add_time-course.end_time)` 最小的有效课程 | 当前无关系记录或无候选课时直接写 `false`；未实现约定的“不完整则 NULL/异常” |
-| 17 | `收藏` | 同一地区、同教师、同学员的收藏记录，按最近 `end_time` 归给一节有效课程 | 当前无关系记录或无候选课时直接写 `false`；未实现不完整语义 |
+| 16 | `是否拉黑` | 当前代码归给最近完成课程；目标拉黑是独立师生关系，不要求完成课程，课程字段不得作为关系唯一事实源 | 无课程也必须保存关系并计入教师去重人数 |
+| 17 | `收藏` | 当前代码归给最近完成课程；目标在课程 `end_time+24h` 按关系历史状态给唯一课程做收藏加分归因 | 同师生持续收藏只允许一节课获分；当前关系另表持续更新 |
 | 18 | `好评标签` | 最新有效评价 score 为 4/5，或 `type='satisfactory'` 时为 `true` | 无评价为 `NULL`；有评价未命中为 `false` |
-| 19 | `评价详情` | `grading_label_log` 中 `type=1 AND status='normal'`；按 `label_id` 去重、排序，拼接 `label_name` | 无标签为 `NULL`；当前只读日志内名称，标签字典改名不会真正替换展示名 |
+| 19 | `评价详情` | 当前代码要求 `type=1 AND status='normal'`；目标取消两个条件，所有日志按 `appoint_id+label_id+label_name` 建关联 | 无标签为 `NULL`；删除一条 log 时不能误删其他未删除关联 |
 | 20 | `未开摄像头` | 存在对应 `qa_task_close_camera_record` 即 `true` | 当前查不到记录直接 `false`；未区分“完整无记录”和“历史未同步” |
-| 21 | `cpu占用过高` | `qa_ac_classroom_record.type='CPU'` 且 `info.cpu[*].appoint_id` 命中课程 | JSON 非法/结构错误为 `NULL`；结构正常但未命中为 `false` |
-| 22 | `网络延迟过高` | `type='NETWORK_DELAY'` 且 `info.network_delay[*].appoint_id` 命中课程 | JSON 非法/结构错误为 `NULL`；结构正常但未命中为 `false` |
-| 23 | `假早退` | 存在对应 `qa_task_fake_early_leave_record` 即 `true` | 当前查不到记录直接 `false`；未区分源表是否完整 |
+| 21 | `cpu占用过高` | 当前代码读取 `qa_ac_classroom_record`；该来源已取消，替换来源待定 | 新来源接入前目标值为 `NULL`，不能由旧表或无事件推断 `false` |
+| 22 | `网络延迟过高` | 当前代码读取 `qa_ac_classroom_record`；该来源已取消，替换来源待定 | 新来源接入前目标值为 `NULL`，不能由旧表或无事件推断 `false` |
+| 23 | `假早退` | 现行物理字段和代码遗留；业务已决定移除 | 目标 22 字段契约中不存在，后续通过 Alembic 与代码迁移删除 |
 
 ### 4.1 最新有效评价
 
@@ -163,7 +171,7 @@ AND status ∈ {NULL, 0}
 
 ```text
 complaint_type = 13
-AND complaint_type_grandson != 82
+AND (complaint_type_grandson IS NULL OR complaint_type_grandson != 82)
 AND lower(approve) = 'y'
 AND validity = 1
 ```
@@ -190,7 +198,7 @@ AND validity = 1
 | 1 | `tchr_id` | `dom_teacher.id` 转字符串，主键 |
 | 2 | `real_name` | `dom_teacher.real_name` |
 | 3 | `center_type_id` | `dom_teacher.center_type` 转字符串 |
-| 4 | `center_type_desc` | 0/6→HBT，1→CBT，5→TBT，其他→`NULL` |
+| 4 | `center_type_desc` | 当前代码：0/6→HBT，1→CBT，5→TBT，其他/空→`NULL`；已确版目标：1→CBT，5→TBT，其他所有值（含 `NULL`）→HBT |
 | 5 | `bu` | 5/6/7/11/19/20/21/22/503→HBT；8/10/201→OBT；其他→`NULL` |
 | 6 | `status` | 保留 `dom_teacher.status` 原值 |
 | 7 | `status_on_date` | `status_on_time::date` |
@@ -198,14 +206,14 @@ AND validity = 1
 | 9 | `last_on_date` | `last_on_time::date` |
 | 10 | `job_days` | `(status_off_date 或数据库 current_date) - status_on_date` |
 | 11 | `job_month` | `job_days>=0` 时 `floor(job_days/30)+1`，否则 `NULL` |
-| 12 | `teach_area_type` | `course` 包含 `global_cn/global_pool`→`ovs`，否则→`dmo` |
+| 12 | `teach_area_type` | 当前代码：`course` 包含 `global_cn/global_pool`→`ovs`，否则→旧值 `dmo`；已确版目标：国内改为 `dom` |
 | 13 | `onboard_date` | `status_on_time::date` |
 | 14 | `onboard_30d_end_date` | `onboard_date+29天` |
 | 15 | `first_open_slot_dt` | 30 天内 `status='on'` 排课的最早日期 |
 | 16 | `first_booked_dt` | 30 天内进入课程宽表课程的最早日期 |
 | 17 | `first_completed_dt` | 30 天内 `课程状态='end'` 的最早日期 |
 
-当前代码对未知 `center_type`、`is_full_time`、地区值只写 `NULL`，没有实现映射表约定的告警队列。
+当前代码对未列出的 `center_type` 和 `NULL` 写入 `center_type_desc=NULL`，与已确版的默认 HBT 口径不符。对未知 `is_full_time`、地区值也只写 `NULL`，没有实现映射表约定的告警队列。
 
 ### 5.2 计数（18–40）
 
@@ -220,15 +228,15 @@ AND validity = 1
 | 24 | `early_cnt` | 完课且 `早退=true` 的去重课程数 |
 | 25 | `anomaly_cnt` | 缺席、迟到、早退三类课程 ID 的并集数 |
 | 26 | `perfect_cnt` | 当前代码：完课且 `迟到 is not true`、`早退 is not true`、非课中缺席；这会把 `NULL` 当作“没有异常” |
-| 27 | `no_notice_cnt` | 30 天课程中任一缺席记录 `reason_type='No Notification'` 的去重课程数；不是只看最新缺席记录 |
+| 27 | `no_notice_cnt` | 现行代码只要历史任一缺席记录 `reason_type='No Notification'` 就计数；目标改为同课程、同教师最新缺席原因精确等于 `No Notification` 的去重课程数 |
 | 28 | `first_completed_student_cnt` | 30 天内完课课程的去重学员数 |
 | 29 | `feedback_total_eval_cnt` | 30 天课程中存在最新有效评价的去重课程数 |
 | 30 | `feedback_praise_cnt` | 30 天课程中 `好评标签=true` 数 |
 | 31 | `feedback_negative_cnt` | 30 天课程中 `差评标签=true` 数 |
 | 32 | `feedback_complaint_cnt` | `user_complaint` 或 `complaint` 任一表出现记录的去重课程数，不要求最终有效 |
 | 33 | `feedback_valid_complaint_cnt` | 通过第 4.2 节完整有效投诉规则的去重课程数 |
-| 34 | `feedback_favorite_cnt` | 课程宽表中 `收藏=true` 的去重学员数 |
-| 35 | `feedback_block_cnt` | 课程宽表中 `是否拉黑=true` 的去重学员数 |
+| 34 | `feedback_favorite_cnt` | 目标按当前师生收藏关系中的学员去重，不要求完成课程；课程收藏加分另按 end+24h 唯一归因 |
+| 35 | `feedback_block_cnt` | 目标按当前有效师生拉黑关系中的学员去重，不要求完成课程 |
 | 36 | `total_slot_cnt` | 30 天内 `status='on'` 排课，按 `date_slot`，缺失时按 `id` 去重 |
 | 37 | `reg_slot_cnt` | 上述排课中 `project_code='1v1'` 的去重 slot 数 |
 | 38 | `peak_slot_cnt` | 上述排课中命中教师地区 Peak 规则的去重 slot 数 |
@@ -248,13 +256,13 @@ AND validity = 1
 | 45 | `feedback_praise_rate` | `feedback_praise_cnt / feedback_total_eval_cnt` |
 | 46 | `feedback_negative_rate` | `feedback_negative_cnt / feedback_total_eval_cnt` |
 | 47 | `feedback_complaint_rate` | `feedback_complaint_cnt / total_completed_cnt` |
-| 48 | `feedback_favorite_rate` | `feedback_favorite_cnt / first_completed_student_cnt` |
-| 49 | `feedback_block_rate` | `feedback_block_cnt / first_completed_student_cnt` |
+| 48 | `feedback_favorite_rate` | 当前为 `feedback_favorite_cnt / first_completed_student_cnt`；目标关系不要求完课，该分母已不再自洽，需独立确版 |
+| 49 | `feedback_block_rate` | 当前为 `feedback_block_cnt / first_completed_student_cnt`；目标关系不要求完课，该分母已不再自洽，需独立确版 |
 | 50 | `feedback_eval_rate` | `feedback_total_eval_cnt / total_completed_cnt` |
 | 51 | `capacity_avg_completed_per_day` | `total_completed_cnt / 30` |
 | 52 | `capacity_peak_slot_rate` | `peak_slot_cnt / total_slot_cnt` |
 | 53 | `capacity_key_slot_day_rate` | `peak_slot_days / slot_days` |
-| 54 | `is_cpl_tesol` | 存在 `certification_type='tesol' AND certification_status=1`→`true`；见过 TESOL 但无有效证书或已删除→`false`；增量期从未见过→`NULL` |
+| 54 | `is_cpl_tesol` | 当前代码使用 `certification_type='tesol'`；目标为存在 `certification_code='16' AND certification_status=1`→`true`，按教师全部当前证书重算 |
 | 55 | `is_self_introduce` | 当前无可信来源，固定 `NULL` |
 
 ## 6. UPDATE、DELETE 与乱序到达
@@ -302,17 +310,21 @@ DTS 可能只发送部分列。当前态落库时会把：
 
 | 优先级 | 差异 | 可能影响 |
 |---|---|---|
-| P0 | 当前镜像只包含订阅后见过的变更；收藏、拉黑、摄像头、假早退等在“没查到”时直接写 `false` | 把历史未同步误判为明确没有，教师反馈和课堂质量被低估/高估 |
+| P0 | 当前镜像只包含订阅后见过的变更；收藏、拉黑、摄像头等在“没查到”时直接写 `false` | 把历史未同步误判为明确没有，教师反馈和课堂质量被低估/高估 |
+| P0 | 假早退业务已取消但现行列、白名单、投影、触发、API 和测试仍存在 | 继续产生已经废弃的业务事实与任务证据 |
+| P0 | CPU、网络仍读取已取消的 `qa_ac_classroom_record` 来源，且旧值可能留在宽表 | 新来源接入前仍可能触发提醒或发放课堂质量分 |
 | P0 | `perfect_cnt` 使用 `迟到/早退 is not true`，所以 `NULL` 也会被当成无异常 | 数据缺失课程可能被算作完美课并影响可靠性积分 |
 | P0 | `absent_cnt` 只统计 `status='t_absent'`，没有实现“缺席证据或状态”的合并口径 | 缺席数、异常数、缺席率和资格门槛可能偏低 |
 | P1 | `差评分` 只保留 1/2；映射表文字写的是保留最新有效原始 score | 如果业务期待看到 3/4/5，当前数据会丢失 |
 | P1 | `appoint.date` 与 `start_time::date` 不一致时没有报警，代码直接优先 date | 日期异常会静默进入 30 天窗口和 Peak 计算 |
 | P1 | 处罚的 `appeal_status=NULL` 当前被排除，而“仅排除 2”的文字意味着 NULL 应保留 | 迟到、早退可能漏算 |
 | P1 | 标签字典变更虽然会触发课程重算，但展示仍取日志内旧 `label_name` | 标签改名后宽表可能仍是旧名称 |
-| P1 | 收藏/拉黑无候选课程时返回 `false`，没有实现 `NULL + 异常` | 关系事实可能无声丢失 |
+| P0 | 收藏/拉黑仍依赖最近完成课程，且没有独立关系当前态/时间线 | 无课程关系丢失，无法做 end+24h 历史快照，持续收藏可能重复或错课加分 |
+| P1 | grading_label_log 仍过滤 `type=1/status=normal` | 合法标签被丢弃 |
+| P1 | TESOL 仍读取 `certification_type='tesol'`，未读取 code 16，也不按证书集合重算 | TESOL 状态可能错误 |
 | P1 | 拉黑有效性只识别永久、无结束时间或 2999 年哨兵，不按当前时间判断一般有效区间 | 有期限拉黑可能被忽略 |
 | P2 | 未知 Center、BU、地区值只写 `NULL`，没有业务告警 | 新代码值漂移不易被及时发现 |
-| P2 | `no_notice_cnt` 只要历史任一缺席记录是 No Notification 就计数，不限定最新记录 | 修正后的缺席原因仍可能保留旧计数 |
+| P2 | `no_notice_cnt` 现行只要历史任一缺席记录是 No Notification 就计数，没有按同课程、同教师最新原因重算 | 修正原因后仍可能保留旧计数 |
 
 ## 9. 请业务方逐项确认
 
@@ -321,16 +333,28 @@ DTS 可能只发送部分列。当前态落库时会把：
 - [ ] cohort 起始日最终是 2026-08-13，还是 2026-08-19？是否保持开放结束边界？
 - [ ] 所有教师（国内和海外）的权威身份、入职日都以 `dom_teacher` 为准。
 - [ ] `course` 含 `global_cn/global_pool` 即海外，否则国内；不存在第三类或冲突组合。
-- [ ] 观察窗口固定为入职日起含首尾共 30 天。
-- [ ] 有效预约固定为 `buy` 且状态不为 `cancel/on`、学员非空。
+- [x] 30 天只用于 `NEW→EXISTING` 和明确指定的新师观察指标；不是课程事实准入上限。
+- [x] 课程宽表准入不判断 `appoint.use_point` 或 `appoint.status`；`free/cancel/on/其他状态/NULL` 均保留课程事实。
+- [x] 源课程数与教师参与次数分开；A→B 时前者为 1、后者为 2；`total_booked_cnt/peak_booked_cnt` 不得同时承担两个语义。旧字段兼容映射在聚合实现批次单独处理。
+- [x] 缺席任务映射：`Unfilled Lesson Memo`→`P-REL-MEMO`；其他非空 `reason_type`（包括 `No Notification`）→`P-REL-ATTENDANCE`；空值不创建缺席任务。仅 `No Notification` 计入 `no_notice_cnt`。
 - [ ] 国内/海外 Peak 时间段与第 4 节一致，边界时刻包含在内。
 - [ ] `差评分` 是只保留 1/2，还是保留最新评价的任意 score？
 - [ ] 处罚记录只排除 `appeal_status=2`；`NULL` 是否应参与计算？
 - [ ] `absent_cnt` 是否应为 `t_absent` 或存在有效缺席证据的课程并集？
 - [ ] `perfect_cnt` 要求迟到、早退均明确为 `false`；任一 `NULL` 都不能算完美课。
-- [ ] No Notification 按最新缺席原因，还是历史任一记录命中即计数？
-- [ ] 投诉有效条件与第 4.2 节完全一致。
-- [ ] 收藏/拉黑最近课程归因及并列规则完全一致。
+- [x] `no_notice_cnt` 只按同课程、同教师最新缺席原因判定；最新 `reason_type='No Notification'` 才计数，历史旧原因不继续贡献。
+- [x] 投诉 grandson 为 `NULL` 或非 82 均可有效；82 无效，其余条件与第 4.2 节一致。
+- [x] 收藏/拉黑关系不要求已有完成课程；无课程时也必须保存关系并更新教师去重人数。
+- [x] 收藏在课程 end+24h 按当时关系状态归因并加分，同一师生只允许一节课获收藏分。
+- [x] 收藏 24 小时以 `appoint.end_time` 记录的完课时间起算；不使用 `status=end` 事件的 DTS 到达时间。
+- [x] 同一师生终身只允许一节课获收藏分；取消后重新收藏继续更新关系当前态和时间线，但不开启新获分周期。
+- [x] 例如 10:00 做 24 小时判定时未看到收藏，12:00 才收到一条业务生效时间为 09:00 的收藏事件：按真实生效时间补加 5 分；反向纠错扣回 5 分并重选唯一课程。普通的 24 小时之后才发生的关系变化不回溯。
+- [ ] 关系不再要求完课后，`feedback_favorite_rate/feedback_block_rate` 的新分母是什么？
+- [x] grading_label_log 不再判断 `type/status`，所有具备 appoint_id、label_id、label_name 的记录均建立标签关联。
+- [x] TESOL 只认 `certification_code='16' AND certification_status=1`，并按教师当前证书集合重算。
+- [x] 在线状态映射：`on+入职 0–29 天→NEW`、`on+入职满 30 天→EXISTING`、`off→LEFT`、`hei→BLOCKED`；`NEW→EXISTING` 需要日更或定时重算。
+- [x] 教师变为 `LEFT/BLOCKED` 后不停止新积分；在线状态不得作为计分事实过滤条件，已获得的出营/金牌资格不回退。
+- [x] 出营分数永久为 100；实际累计分不封顶，出营后和金牌后都继续累计；首次达到 200 获得金牌，教师端分数最高显示 200。
 - [ ] 一般有起止日期的拉黑记录如何判断有效？
 - [ ] 当前态不完整时，未发现收藏/拉黑/质检/处罚记录必须为 `NULL`，不能为 `false/0`。
 - [ ] `first_completed_student_cnt` 表示“窗口内有完课的去重学员数”，不要求判断该学员与该教师的全历史首次完课。

@@ -77,7 +77,6 @@ export function lessonSignalLabel(signal: string | LessonSignalEvidence, locale:
       ABSENT: 'Attendance issue',
       LATE: 'Late arrival',
       EARLY: 'Early leave',
-      FAKE_EARLY: 'False early-leave signal',
       NEGATIVE_FEEDBACK: 'Negative feedback',
       COMPLAINT: 'Complaint',
       BLACKLISTED: 'Student blacklist',

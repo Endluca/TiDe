@@ -32,7 +32,7 @@ def template_matches_signal(template: dict, teacher: dict, signal: dict) -> bool
         return False
 
     scope = rule.get("scope") or {}
-    graduation_states = scope.get("graduation_states") or ["IN_PROGRESS"]
+    graduation_states = scope.get("graduation_states") or ["IN_CAMP"]
     if teacher.get("graduation_state") not in graduation_states:
         return False
     countries = {str(country).casefold() for country in scope.get("countries") or []}

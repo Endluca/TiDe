@@ -45,6 +45,7 @@
 | `0040_g02_document_read_status` | 为 G02 文档步骤新增阅读到底状态，并由数据库约束保证该状态只能作用于 G02 文档任务 |
 | `0041_crm_sso_hybrid` | 保留现有账号、密码和引导事实；新增账号来源、会话认证方式与 CRM 一次性登录兑换表，允许 SSO 新账号不设置本地密码；down 在存在无密码 SSO 账号时失败关闭 |
 | `0042_g09_set_kuozhi_course` | 保留稳定 G09 execution、assignment 和进度事实；把课程 658 的执行配置从待发布原位切换为 READY，不创建本地步骤或规则 |
+| `0043_p_rel_execution_catalog` | 保留两类可靠性 assignment 和进度事实；将 `P-REL-MEMO` 发布为带版本/哈希校验的内嵌 Lesson Memo 文档，将 `P-REL-ATTENDANCE` 发布为课程 595 的阔知入口；595 仍按已知 `PARTIAL` 映射关闭自动完成，等待考试 ID |
 
 `0008` 在删除前会阻断任何未映射的过程数据或非 Mock 个性化任务，不会静默丢弃真实数据。
 
@@ -61,11 +62,11 @@
 | `seed/0004_mock_faq_knowledge.sql` | 已确认规则的 FAQ Mock 知识 |
 | `content/faq/51Talk Teacher FAQ - Canonical.md` | 全量 Canonical FAQ 的唯一版本化内容源；运行时不直接读取该文件 |
 | `scripts/import-company-test-faq.sh` | 校验并将 124 条全量 Canonical FAQ 与语义匹配／回答 Prompt 版本导入公司测试库 |
-| `scripts/apply.sh` | 本地幂等升级至 0042，并应用当前 Seed/本地权限 |
-| `scripts/apply-company-test.sh` | 只接受 public 65、canonical Tide 0042 与精确 37 条账本；只读核对账本/checksum/实存结构后，初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
+| `scripts/apply.sh` | 本地幂等升级至 0043，并应用当前 Seed/本地权限 |
+| `scripts/apply-company-test.sh` | 只接受 public 100、canonical Tide 0043 与精确 38 条账本；只读核对账本/checksum/实存结构、DTS v2 及两条 P-REL execution 后，初始化 G01–G09 与 5 个已发布个性化任务码族 execution 和受限应用账号；不执行 Schema 迁移、Mock Seed 或共享模板写入 |
 | `scripts/publish-company-test-g03.sh` | 仅在明确需要发布 G03 内容时，受限地将 G03 共享模板与执行配置同步到 `tit_growth_test_v2`；必须提供工作区外、权限 600 的配置文件并显式传入 `--apply` |
-| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；公司 TEST 特例只放行 0037、0038、0040、0041、0042 五个跨 Schema 切换点；先校验运营端权威目录，在 0038 前精确验证 public rev56，在 0039/0040 前精确验证 public rev57，在 0042 前精确验证 public rev65，再使用账本、SHA-256、PostgreSQL advisory lock 和最终角色守卫升级至 0042 |
-| `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 显式构造共享目录，验证 fresh、managed upgrade、跨 Schema 分阶段顺序门禁、完整 37 条账本、0022–0042、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、G09 阔知课程 658、个性化拍照、首次登录引导、CRM SSO、最终 ACL/Trigger、checksum、工单函数 owner 和生产连接保护 |
+| `scripts/apply-production.sh` | 仅执行生产结构／已评审的向前内容迁移；公司 TEST 特例放行 0037、0038、0040、0041、0042、0043 六个跨 Schema 切换点；先校验运营端权威目录，在 0038 前验证 public rev56，在 0039/0040 前验证 rev57，在 0042 前验证 rev65，0043 则必须精确位于 public 99 或 100 且两条可靠性模板已发布，再使用账本、SHA-256、PostgreSQL advisory lock 和最终角色守卫升级至 0043 |
+| `scripts/test-production-migrator.sh` | 在隔离 PostgreSQL 显式构造共享目录，验证 fresh、managed upgrade、跨 Schema 分阶段顺序门禁、完整 38 条账本、0022–0043、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、G09 课程 658、P-REL-MEMO 文档、P-REL-ATTENDANCE 课程 595、个性化拍照、首次登录引导、CRM SSO、最终 ACL/Trigger、checksum、工单函数 owner 和生产连接保护 |
 | `scripts/verify.sh` | 验证共享表、过程关联、角色权限、乐观锁、审计/Outbox 和消息回写 |
 | `scripts/rollback-test.sh` | 在临时库验证空库升级和逐级回滚 |
 | `scripts/grant-tit-teacher-crud.sql` | 由 DBA 执行最终表级 ACL；业务写边界由 Trigger/约束保护 |
@@ -82,7 +83,7 @@ bash database/scripts/rollback-test.sh
 ```
 
 `.env` 不进入 Git。`apply.sh` 仅接受数据库名 `tide_dev`，且必须显式设置
-`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0042`，但仍是本地
+`ALLOW_MOCK_SEED=true` 才会执行。`apply.sh` 当前升级至 `0043`，但仍是本地
 Mock 入口，不能用于公司或生产库。
 
 ## 生产迁移
@@ -112,7 +113,8 @@ Mock 入口，不能用于公司或生产库。
 ```text
 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032
 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038
--> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64 -> public head 65 -> teacher 0042
+-> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64
+-> public head 65 -> teacher 0042 -> public head 99/100 -> teacher 0043 -> public head 100
 ```
 
 若旧快照已经不存在且 0020 尚未记录，生产迁移器会在任何 DDL 前失败关闭。已有完整
@@ -130,7 +132,7 @@ head 56 与 P-FB-NEGATIVE rev56 新文案。历史 `0020` 文件和 checksum 保
 - `tide_sys_admin` 可登录但不是 superuser，且不允许复制或绕过 RLS；
 - `current_database()` 精确等于 `TIDE_MIGRATION_EXPECTED_DATABASE`。
 
-生产迁移清单明确包含 `0022–0041`，并永久排除历史
+生产迁移清单明确包含 `0022–0043`，并永久排除历史
 `0017/0018`，因为这两项会修改世文持有的 `public.task_assignments`。迁移器不创建
 角色、不设置角色密码、不导入 Mock、不执行题库／FAQ／任务内容 Seed。DBA 必须事先
 创建 `tit_teacher_crud`、`tit_growth_app`、`tide_sys_admin` 与
@@ -207,9 +209,9 @@ bash database/scripts/test-production-migrator.sh
 ## 公司测试库
 
 - 迁移配置必须放在 Git/镜像工作区之外，权限精确为 `600`；不要使用仓库内的 `database/.env.company-test` 作为迁移入口。
-- 代码侧初始化门禁面向完整 release 内容链、最终 ACL merge、国内学生隐私边界、审核后教师文案、DTS 脏键领取索引、direct 隐私门禁和 G05/G08/G09 课程映射；fresh、旧前缀、无账本或合并前旧编号账本均不能交给初始化脚本自动认领。最终目标必须同时达到 public 65 / teacher 0042；仅有旧升级记录不代表权限、隐私、文案、索引或课程映射迁移已完成。
-- 从仓库根目录运行 `backend/scripts/upgrade_company_test_database.py`。省略 `--apply` 时只读检查并输出计划；提交时必须同时给出 `--backup-confirmed --maintenance-window-confirmed`。脚本按 public 54（含 rev51）→ teacher 0037（含 0033）→ public 55 → public 56 → teacher 0038 → public 57 → teacher 0040（含 0039）→ teacher 0041 → public 59 → public 60 → public 61 → public 62 → public 63 → public 64 → public 65 → teacher 0042 逐段执行和读回。未知组合、错序、账本/checksum 漂移均失败关闭。
-- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260819_65_g09_set_course` 与精确 37 条 canonical Tide 0042 账本。它逐项核对顺序、文件名、SHA-256、最终实存结构和 rev60/rev63 隐私 Trigger 后，以只读模式读取已发布的 G01–G09 与 5 个个性化任务码族写入 execution，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL、Mock Seed 或共享模板写入。
+- 代码侧初始化门禁面向完整 release 内容链、最终 ACL、DTS v2、国内学生隐私边界、课程映射和两条 P-REL execution；fresh、旧前缀、无账本或旧编号账本均不能由初始化脚本自动认领。最终目标必须同时达到 public 100 / teacher 0043；public 65 / teacher 0042 与 public 99 / teacher 0043 都只是必经历史切换点。
+- 从仓库根目录运行 `backend/scripts/upgrade_company_test_database.py`。省略 `--apply` 时只读检查并输出计划；提交时必须同时给出 `--backup-confirmed --maintenance-window-confirmed`。脚本按 public 54（含 rev51）→ teacher 0037（含 0033）→ public 55–57 → teacher 0040（含 0039）→ teacher 0041 → public 59–65 → teacher 0042 → public 66–99 → teacher 0043 逐段执行和读回。未知组合、错序、账本/checksum 漂移均失败关闭。
+- `apply-company-test.sh` 硬限制已批准测试实例中的 `tit_growth_test_v2` 与 `postgres` owner，只接受 public `20260823_100_scope_snapshot_diff` 与精确 38 条 canonical Tide 0043 账本。它逐项核对顺序、文件名、SHA-256、最终实存结构、DTS v2、隐私 Trigger 和两条 P-REL execution 后，再配置并验收 `tit_teacher_crud`；它不打开或执行任何迁移 SQL、Mock Seed 或共享模板写入。
 - 初始化器不得与 public/Tide migrator 并发运行；受控部署必须先完成迁移并释放迁移窗口，再执行初始化器。
 - 日常应用账号固定为 `tit_teacher_crud`，对 public 使用最终文档列出的 6 个只读对象和 4 张 CRUD 表，对普通 `tide.*` 表使用表级 CRUD；`tide.crm_sso_logins` 只保留 `SELECT / INSERT / UPDATE`，禁止删除一次性兑换事实。不读取原始积分、课程事实或评分配置表，越权业务写入由 Trigger/约束拒绝。
 - 内部测试后端的 `TIDE_DATABASE_URL` 和 `SHIWEN_READ_DATABASE_URL` 均由该配置生成并指向同一公司测试库；运行时不再使用本地 PostgreSQL 或本地数据回退。

@@ -15,8 +15,9 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import Engine, literal_column, select
+from sqlalchemy import Engine, literal_column, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -42,6 +43,7 @@ from .db_models import (
     TeacherRecord,
     TeacherSourceWideRecord,
 )
+from .dts_business_rules_v2 import classify_teacher_online_state
 from .fixed_growth_baseline import ensure_fixed_growth_assignments
 from .personalized_trigger_projection import (
     TRIGGER_RULE_VERSION,
@@ -72,8 +74,10 @@ SOURCE_AGGREGATE_TYPES = frozenset(
 )
 SOURCE_SNAPSHOT_LABEL = "SOURCE_WIDE_CURRENT"
 SOURCE_WORKER_ACTOR = "TRIGGER_CENTER:SOURCE_WIDE_WORKER"
+TEACHER_ONLINE_STATUS_TIMEZONE = ZoneInfo("Asia/Shanghai")
 CAPACITY_MILESTONE_ID = "CAPACITY_PEAK_SLOT_40"
 CAPACITY_MILESTONE_REASON_CODE = "CAPACITY_PEAK_SLOT_40_ACHIEVED"
+FAVORITE_ATTRIBUTION_SOURCE_METRIC = "course_favorite_attributions.status"
 
 _COMPLETED_LESSON_STATUSES = frozenset(
     {"已完课", "完课", "ended", "end", "completed", "complete", "finished"}
@@ -139,6 +143,7 @@ class SourceWideEventDataError(SourceWideProjectionError):
 
 @dataclass(frozen=True)
 class _LessonProjection:
+    source_region: str
     lesson_id: str
     user_feedback_score: float
     reliability_score: float
@@ -223,6 +228,7 @@ def _nonnegative_source_count(
 def _teacher_profile_payload(source: TeacherSourceWideRecord) -> dict[str, Any]:
     return {
         "employment_status": source.status,
+        "online_status_onboard_date": _iso(source.status_on_date),
         "bu": source.bu,
         "teach_area_type": source.teach_area_type,
         "onboard_date": _iso(source.onboard_date),
@@ -236,6 +242,26 @@ def _teacher_profile_payload(source: TeacherSourceWideRecord) -> dict[str, Any]:
             "status": "CURRENT",
         },
     }
+
+
+def _teacher_online_projection(
+    source: TeacherSourceWideRecord,
+    *,
+    occurred_at: datetime,
+) -> tuple[str | None, str, date]:
+    if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+        raise SourceWideProjectionError(
+            "TEACHER_ONLINE_STATUS_OCCURRED_AT_MUST_BE_TIMEZONE_AWARE"
+        )
+    business_date = occurred_at.astimezone(
+        TEACHER_ONLINE_STATUS_TIMEZONE
+    ).date()
+    projected = classify_teacher_online_state(
+        status=source.status,
+        status_on_time=source.status_on_date,
+        business_date=business_date,
+    )
+    return projected.state, projected.evidence_status, business_date
 
 
 def _project_teacher_identity(
@@ -256,8 +282,16 @@ def _project_teacher_identity(
             status="SOURCE_MISSING",
         )
         source_state.setdefault("observed_missing_at", occurred_at.isoformat())
-        if payload.get("profile_source") != source_state:
+        payload_changed = payload.get("profile_source") != source_state
+        if payload_changed:
             payload["profile_source"] = source_state
+        if payload.get("online_status_evidence_status") != "SOURCE_MISSING":
+            payload["online_status_evidence_status"] = "SOURCE_MISSING"
+            payload_changed = True
+        if teacher.online_status is not None:
+            teacher.online_status = None
+            payload_changed = True
+        if payload_changed:
             teacher.payload = payload
             teacher.updated_at = occurred_at
         return teacher, False
@@ -265,6 +299,17 @@ def _project_teacher_identity(
     created = teacher is None
     name = str(source.real_name or source.tchr_id).strip() or source.tchr_id
     camp_day = min(max(int(source.job_days or 0), 0), 30)
+    online_status, online_evidence, business_date = _teacher_online_projection(
+        source,
+        occurred_at=occurred_at,
+    )
+    profile_payload = _teacher_profile_payload(source)
+    profile_payload.update(
+        {
+            "online_status_evidence_status": online_evidence,
+            "online_status_business_date": business_date.isoformat(),
+        }
+    )
     if teacher is None:
         teacher = TeacherRecord(
             teacher_id=source.tchr_id,
@@ -273,7 +318,8 @@ def _project_teacher_identity(
             country=None,
             timezone="UTC",
             camp_day=camp_day,
-            graduation_state="IN_PROGRESS",
+            online_status=online_status,
+            graduation_state="IN_CAMP",
             gold_qualified=False,
             total_score=0,
             graduation_threshold=0,
@@ -284,7 +330,8 @@ def _project_teacher_identity(
                 "country": None,
                 "timezone": None,
                 "timezone_source_mode": "SOURCE_MISSING",
-                **_teacher_profile_payload(source),
+                "graduation_state": "IN_CAMP",
+                **profile_payload,
             },
             created_at=occurred_at,
             updated_at=occurred_at,
@@ -305,7 +352,7 @@ def _project_teacher_identity(
         session.flush()
     else:
         payload = deepcopy(teacher.payload or {})
-        payload.update(_teacher_profile_payload(source))
+        payload.update(profile_payload)
         payload.setdefault("teacher_id", teacher.teacher_id)
         payload.setdefault("country", None)
         payload.setdefault("timezone", None)
@@ -314,6 +361,7 @@ def _project_teacher_identity(
             (
                 teacher.name != name,
                 teacher.camp_day != camp_day,
+                teacher.online_status != online_status,
                 teacher.data_mode != "REAL",
                 teacher.source_snapshot_label != SOURCE_SNAPSHOT_LABEL,
                 teacher.payload != payload,
@@ -321,6 +369,7 @@ def _project_teacher_identity(
         )
         teacher.name = name
         teacher.camp_day = camp_day
+        teacher.online_status = online_status
         teacher.data_mode = "REAL"
         teacher.source_snapshot_label = SOURCE_SNAPSHOT_LABEL
         teacher.payload = payload
@@ -329,8 +378,58 @@ def _project_teacher_identity(
     return teacher, created
 
 
+def _refresh_time_driven_teacher_online_statuses(
+    session: Session,
+    *,
+    occurred_at: datetime,
+) -> int:
+    """Advance only the clock-driven ``NEW -> EXISTING`` transition.
+
+    Status changes and source corrections remain owned by their source-wide
+    events.  Restricting this sweep to an already-materialized ``NEW`` row
+    prevents a pending or failed source event from being projected partially.
+    """
+
+    candidates = session.scalars(
+        select(TeacherRecord)
+        .where(
+            TeacherRecord.source_snapshot_label == SOURCE_SNAPSHOT_LABEL,
+            TeacherRecord.online_status == "NEW",
+        )
+        .order_by(TeacherRecord.teacher_id)
+        .with_for_update(of=TeacherRecord, skip_locked=True)
+    ).all()
+    changed = 0
+    if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+        raise SourceWideProjectionError(
+            "TEACHER_ONLINE_STATUS_OCCURRED_AT_MUST_BE_TIMEZONE_AWARE"
+        )
+    business_date = occurred_at.astimezone(
+        TEACHER_ONLINE_STATUS_TIMEZONE
+    ).date()
+    for teacher in candidates:
+        payload = deepcopy(teacher.payload or {})
+        projected = classify_teacher_online_state(
+            status=payload.get("employment_status"),
+            status_on_time=payload.get("online_status_onboard_date"),
+            business_date=business_date,
+        )
+        online_status = projected.state
+        evidence = projected.evidence_status
+        if online_status != "EXISTING":
+            continue
+        payload["online_status_evidence_status"] = evidence
+        payload["online_status_business_date"] = business_date.isoformat()
+        teacher.online_status = online_status
+        teacher.payload = payload
+        teacher.updated_at = occurred_at
+        changed += 1
+    return changed
+
+
 def _lesson_raw_payload(source: LessonSourceWideRecord) -> dict[str, Any]:
     return {
+        "source_region": source.source_region,
         "课程id": source.course_id,
         "上课日期": source.lesson_date,
         "上课时间": source.lesson_time,
@@ -353,17 +452,22 @@ def _lesson_raw_payload(source: LessonSourceWideRecord) -> dict[str, Any]:
         "未开摄像头": source.is_camera_off,
         "cpu占用过高": source.is_cpu_usage_high,
         "网络延迟过高": source.is_network_delay_high,
-        "假早退": source.is_false_early_leave,
     }
 
 
 def _trigger_lesson_row(source: LessonSourceWideRecord) -> LessonTriggerRow:
     local_date = source.lesson_date or date.max
     local_time = source.lesson_time or time.max
-    row_token = int(hashlib.sha256(source.course_id.encode("utf-8")).hexdigest()[:8], 16)
+    row_token = int(
+        hashlib.sha256(
+            f"{source.source_region}\x00{source.course_id}".encode("utf-8")
+        ).hexdigest()[:8],
+        16,
+    )
     return LessonTriggerRow(
         row_number=row_token,
         raw_payload=_lesson_raw_payload(source),
+        source_region=source.source_region,
         lesson_id=source.course_id,
         teacher_id=source.teacher_id,
         student_id=str(source.student_id or ""),
@@ -376,7 +480,6 @@ def _trigger_lesson_row(source: LessonSourceWideRecord) -> LessonTriggerRow:
         is_peak=source.is_peak,
         is_late=source.is_late,
         is_early=source.is_early,
-        is_false_early_leave=source.is_false_early_leave,
         negative_score=source.negative_score,
         has_negative_tag=source.has_negative_feedback_tag,
         feedback_detail=source.feedback_detail,
@@ -407,14 +510,6 @@ def _lesson_projections(
     quality_rule = getattr(scoring, "classroom_quality", None)
     quality_points = float(getattr(quality_rule, "points_per_unit", 0) or 0)
 
-    unresolved_favorite_pairs = {
-        (lesson.teacher_id, lesson.student_id)
-        for lesson in lessons
-        if _completed_lesson(lesson.lesson_status)
-        and lesson.is_favorited is True
-        and lesson.student_id
-        and (lesson.lesson_date is None or lesson.lesson_time is None)
-    }
     ordered = sorted(
         lessons,
         key=lambda item: (
@@ -422,10 +517,10 @@ def _lesson_projections(
             item.lesson_date or date.max,
             item.lesson_time is None,
             item.lesson_time or time.max,
+            item.source_region,
             item.course_id,
         ),
     )
-    credited_favorites: set[tuple[str, str]] = set()
     attributed: dict[str, dict[str, float]] = defaultdict(
         lambda: {"count": 0.0, "score": 0.0}
     )
@@ -435,35 +530,6 @@ def _lesson_projections(
         status_known = bool(str(lesson.lesson_status or "").strip())
         praise_known = status_known and lesson.has_positive_feedback_tag is not None
         praise = completed and lesson.has_positive_feedback_tag is True
-
-        favorite_pair = (
-            (lesson.teacher_id, lesson.student_id)
-            if lesson.student_id
-            else None
-        )
-        favorite_source_hit = completed and lesson.is_favorited is True
-        favorite_order_known = (
-            lesson.lesson_date is not None and lesson.lesson_time is not None
-        )
-        favorite_attribution_known = bool(
-            lesson.is_favorited is not None
-            and status_known
-            and (
-                not favorite_source_hit
-                or (
-                    favorite_pair is not None
-                    and favorite_order_known
-                    and favorite_pair not in unresolved_favorite_pairs
-                )
-            )
-        )
-        favorite = bool(
-            favorite_source_hit
-            and favorite_attribution_known
-            and favorite_pair not in credited_favorites
-        )
-        if favorite and favorite_pair is not None:
-            credited_favorites.add(favorite_pair)
 
         perfect_known = (
             status_known
@@ -482,6 +548,7 @@ def _lesson_projections(
             is_cpu_usage_high=lesson.is_cpu_usage_high,
             is_network_delay_high=lesson.is_network_delay_high,
         )
+        hardware_awarded = completed and hardware is True
 
         component_values = {
             "FEEDBACK_PRAISE": (
@@ -490,11 +557,9 @@ def _lesson_projections(
                 "CONFIRMED" if praise_known else "SOURCE_MISSING",
             ),
             "FEEDBACK_FAVORITE": (
-                favorite,
+                False,
                 favorite_points,
-                "CONFIRMED"
-                if favorite_attribution_known
-                else "SOURCE_MISSING",
+                "SOURCE_MISSING",
             ),
             "PERFECT_COMPLETED": (
                 perfect,
@@ -507,9 +572,13 @@ def _lesson_projections(
                 "CONFIRMED" if peak_known else "SOURCE_MISSING",
             ),
             "CLASS_QUALITY_HARDWARE": (
-                hardware is True,
+                hardware_awarded,
                 quality_points,
-                "CONFIRMED" if hardware is not None else "SOURCE_MISSING",
+                (
+                    "CONFIRMED"
+                    if status_known and hardware is not None
+                    else "SOURCE_MISSING"
+                ),
             ),
         }
         components: dict[str, dict[str, Any]] = {}
@@ -564,6 +633,7 @@ def _lesson_projections(
         }
         results.append(
             _LessonProjection(
+                source_region=lesson.source_region,
                 lesson_id=lesson.course_id,
                 user_feedback_score=user_feedback_score,
                 reliability_score=reliability_score,
@@ -589,13 +659,17 @@ def _upsert_lesson_results(
 ) -> int:
     if not projections:
         return 0
+    identities = [
+        (item.source_region, item.lesson_id) for item in projections
+    ]
     existing = {
-        item.lesson_id: item
+        (item.lesson_source_region, item.lesson_id): item
         for item in session.scalars(
             select(LessonScoreResultRecord).where(
-                LessonScoreResultRecord.lesson_id.in_(
-                    [item.lesson_id for item in projections]
-                )
+                tuple_(
+                    LessonScoreResultRecord.lesson_source_region,
+                    LessonScoreResultRecord.lesson_id,
+                ).in_(identities)
             )
         ).all()
     }
@@ -609,10 +683,12 @@ def _upsert_lesson_results(
             "dimensions": deepcopy(projection.dimensions),
             "score_rule_version": policy_version,
         }
-        record = existing.get(projection.lesson_id)
+        identity = (projection.source_region, projection.lesson_id)
+        record = existing.get(identity)
         if record is None:
             session.add(
                 LessonScoreResultRecord(
+                    lesson_source_region=projection.source_region,
                     lesson_id=projection.lesson_id,
                     projection_revision=1,
                     calculated_at=calculated_at,
@@ -665,6 +741,9 @@ def _capacity_milestone_achieved(
             score_entry_id=_capacity_milestone_id(teacher.teacher_id),
             camp_enrollment_id=teacher.camp_enrollment_id,
             lesson_id=None,
+            source_region=None,
+            source_appoint_id=None,
+            participation_seq=None,
             teacher_id=teacher.teacher_id,
             dimension="CAPACITY",
             entry_type="MILESTONE_ACHIEVEMENT",
@@ -676,6 +755,9 @@ def _capacity_milestone_achieved(
             recorded_at=occurred_at,
             reversal_of_score_entry_id=None,
             task_assignment_id=None,
+            projection_origin="V1_COMPAT_LIVE",
+            materialized_by_run_id=None,
+            projection_generation=None,
             idempotency_key=key,
             payload={
                 "milestone_id": CAPACITY_MILESTONE_ID,
@@ -726,6 +808,8 @@ def _l0_complaint_summary(
 ) -> tuple[int, str]:
     count = 0
     for lesson in lessons:
+        if str(lesson.lesson_status or "").strip().casefold() != "end":
+            continue
         categories = (
             lesson.complaint_category_l1,
             lesson.complaint_category_l2,
@@ -872,8 +956,8 @@ def _component_payloads(
         (
             "FEEDBACK_FAVORITE",
             "USER_FEEDBACK",
-            "teacher_source_wide.feedback_favorite_cnt",
-            source_counts["feedback_favorite_cnt"],
+            FAVORITE_ATTRIBUTION_SOURCE_METRIC,
+            (0, "SOURCE_MISSING"),
             float(scoring.feedback_favorite.points_per_unit),
         ),
         (
@@ -931,7 +1015,12 @@ def _component_payloads(
                 "dimension": dimension,
                 "source_scope": (
                     "LESSON"
-                    if code in {"PERFECT_COMPLETED", "CLASS_QUALITY_HARDWARE"}
+                    if code
+                    in {
+                        "FEEDBACK_FAVORITE",
+                        "PERFECT_COMPLETED",
+                        "CLASS_QUALITY_HARDWARE",
+                    }
                     else "TEACHER"
                 ),
                 "source_metric": metric,
@@ -996,6 +1085,10 @@ def _component_payloads(
         "late_count": late_count,
         "early_count": early_count,
         "absent_count": absent_count,
+        "feedback_favorite_count": source_counts["feedback_favorite_cnt"][0],
+        "feedback_favorite_evidence_status": source_counts[
+            "feedback_favorite_cnt"
+        ][1],
         "attendance_evidence_status": (
             "CONFIRMED" if attendance_confirmed else "SOURCE_MISSING"
         ),
@@ -1252,10 +1345,12 @@ def refresh_source_wide_score_read_models(
             LessonSourceWideRecord.teacher_id,
             LessonSourceWideRecord.lesson_date,
             LessonSourceWideRecord.lesson_time,
+            LessonSourceWideRecord.source_region,
             LessonSourceWideRecord.course_id,
         )
     ).all():
-        lessons_by_teacher[lesson.teacher_id].append(lesson)
+        if lesson.teacher_id is not None:
+            lessons_by_teacher[lesson.teacher_id].append(lesson)
 
     complaint_rules, _ = _complaint_rule_maps(session)
     policy_context = _policy_context(
@@ -1331,11 +1426,18 @@ def _update_qualifications(
         if qualification is not None
         else None
     )
+    graduation_score_locked = (
+        qualification.graduation_score_locked
+        if qualification is not None
+        else None
+    )
     gold_qualified_at = (
         qualification.gold_qualified_at if qualification is not None else None
     )
     if not previous_graduation_earned and graduation_earned:
         graduation_qualified_at = occurred_at
+    if graduation_earned and graduation_score_locked is None:
+        graduation_score_locked = 100.0
     if not previous_gold_earned and gold_earned:
         gold_qualified_at = occurred_at
 
@@ -1367,6 +1469,7 @@ def _update_qualifications(
         "graduation_criteria_met": graduation_current,
         "graduation_qualified": graduation_earned,
         "graduation_qualified_at": graduation_qualified_at,
+        "graduation_score_locked": graduation_score_locked,
         "gold_criteria_met": gold_current,
         "gold_qualified": gold_earned,
         "gold_qualified_at": gold_qualified_at,
@@ -1390,7 +1493,7 @@ def _update_qualifications(
         qualification.calculated_at = occurred_at
         changed = 1
 
-    teacher.graduation_state = "GRADUATED" if graduation_earned else "IN_PROGRESS"
+    teacher.graduation_state = "GRADUATED" if graduation_earned else "IN_CAMP"
     teacher.gold_qualified = gold_earned
     return changed
 
@@ -1459,6 +1562,10 @@ def _refresh_teacher(
                 "late_cnt": state["late_count"],
                 "early_cnt": state["early_count"],
                 "absent_cnt": state["absent_count"],
+                "feedback_favorite_cnt": state["feedback_favorite_count"],
+                "feedback_favorite_evidence_status": state[
+                    "feedback_favorite_evidence_status"
+                ],
                 "capacity_milestone_achieved": state[
                     "capacity_milestone_achieved"
                 ],
@@ -1484,6 +1591,7 @@ def _refresh_teacher(
             "graduation_criteria_met": state[
                 "graduation_current_criteria_met"
             ],
+            "graduation_state": teacher.graduation_state,
             "gold_criteria_met": state["gold_current_criteria_met"],
             "graduation_qualified": teacher.graduation_state == "GRADUATED",
             "gold_qualified": bool(teacher.gold_qualified),
@@ -1614,7 +1722,12 @@ class SourceWideWorker:
         if (
             event.event_type != EVENT_TYPE
             or event.aggregate_type != expected_aggregate
-            or event.aggregate_id != route.source_id
+            or event.aggregate_id
+            != (
+                route.source_id
+                if route.source_region is None
+                else f"{route.source_region}:{route.source_id}"
+            )
         ):
             raise self._event_error(event, "OUTBOX_AGGREGATE_MISMATCH")
         return route
@@ -1693,24 +1806,30 @@ class SourceWideWorker:
             for _, route in grouped
             for teacher_id in route.affected_teacher_ids
         }
-        lesson_ids = {
-            route.source_id
+        lesson_identities = {
+            (route.source_region, route.source_id)
             for _, route in grouped
             if route.source_table == "lesson_source_wide"
+            and route.source_region is not None
         }
         current_event_lessons = (
             list(
                 session.scalars(
                     select(LessonSourceWideRecord).where(
-                        LessonSourceWideRecord.course_id.in_(lesson_ids)
+                        tuple_(
+                            LessonSourceWideRecord.source_region,
+                            LessonSourceWideRecord.course_id,
+                        ).in_(lesson_identities)
                     )
                 ).all()
             )
-            if lesson_ids
+            if lesson_identities
             else []
         )
         affected_teacher_ids.update(
-            item.teacher_id for item in current_event_lessons
+            item.teacher_id
+            for item in current_event_lessons
+            if item.teacher_id is not None
         )
         normalized_teacher_ids = sorted(affected_teacher_ids)
 
@@ -1736,7 +1855,7 @@ class SourceWideWorker:
                 created_count += int(created)
 
         for lesson in current_event_lessons:
-            if lesson.teacher_id not in teachers:
+            if lesson.teacher_id is not None and lesson.teacher_id not in teachers:
                 raise SourceWideProjectionError(
                     f"LESSON_SOURCE_TEACHER_NOT_FOUND:{lesson.teacher_id}"
                 )
@@ -1761,6 +1880,7 @@ class SourceWideWorker:
                         LessonSourceWideRecord.teacher_id,
                         LessonSourceWideRecord.lesson_date,
                         LessonSourceWideRecord.lesson_time,
+                        LessonSourceWideRecord.source_region,
                         LessonSourceWideRecord.course_id,
                     )
                 ).all()
@@ -1770,7 +1890,8 @@ class SourceWideWorker:
         )
         lessons_by_teacher: dict[str, list[LessonSourceWideRecord]] = defaultdict(list)
         for lesson in lessons:
-            lessons_by_teacher[lesson.teacher_id].append(lesson)
+            if lesson.teacher_id is not None:
+                lessons_by_teacher[lesson.teacher_id].append(lesson)
 
         complaint_rules, complaint_rule_ids = (
             _complaint_rule_maps(session)
@@ -1908,6 +2029,7 @@ class SourceWideWorker:
             "dead_lettered": 0,
             "coalesced": 0,
             "teachers_created": 0,
+            "online_status_changes": 0,
             "teacher_refreshes": 0,
             "lesson_result_changes": 0,
             "component_changes": 0,
@@ -1915,6 +2037,13 @@ class SourceWideWorker:
             "qualification_changes": 0,
             "trigger_matches_created": 0,
         }
+        with self._sessions() as session, session.begin():
+            result["online_status_changes"] = (
+                _refresh_time_driven_teacher_online_statuses(
+                    session,
+                    occurred_at=_utcnow(),
+                )
+            )
         attempted = 0
         excluded_outbox_ids: set[str] = set()
         while attempted < max_events:

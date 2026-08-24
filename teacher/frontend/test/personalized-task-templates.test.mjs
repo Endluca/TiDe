@@ -31,6 +31,10 @@ test("publishes exactly the confirmed 13 teacher-facing personalized task types"
     personalizedTaskTemplates.some((task) => "mockAssigned" in task),
     false,
   );
+  assert.equal(
+    JSON.stringify(personalizedTaskTemplates).includes("假早退"),
+    false,
+  );
 });
 
 test("keeps feedback and complaint sources on the same matched learning tasks", () => {
@@ -63,6 +67,10 @@ test("keeps classroom quality as one reminder and separates the two reliability 
   assert.deepEqual(
     reliabilityTasks.map((task) => task.id),
     ["attendance-reliability-refresher", "lesson-memo-rules-learning"],
+  );
+  assert.deepEqual(
+    reliabilityTasks.map((task) => task.method),
+    ["external_course", "document_reading"],
   );
 });
 

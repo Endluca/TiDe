@@ -26,7 +26,7 @@ describe('KuozhiService', () => {
   it('keeps every confirmed formal course, task, and testpaper id', async () => {
     const service = serviceFor();
     const mappings = await Promise.all(
-      ['G01', 'G03', 'G05', 'G06', 'G07', 'G08', 'G09'].map(
+      ['G01', 'G03', 'G05', 'G06', 'G07', 'G08', 'G09', 'P-REL-ATTENDANCE'].map(
         async (taskCode) =>
           [
             taskCode,
@@ -192,6 +192,22 @@ describe('KuozhiService', () => {
           },
         ],
       },
+      'P-REL-ATTENDANCE': {
+        mappingVersion: 1,
+        integrationStatus: 'PARTIAL',
+        launchEnabled: true,
+        completionEnabled: false,
+        autoCompleteAssignment: false,
+        courses: [
+          {
+            courseId: '595',
+            tasks: [
+              { courseTaskId: '3164', testpaperId: null },
+              { courseTaskId: '3163', testpaperId: null },
+            ],
+          },
+        ],
+      },
     });
   });
 
@@ -245,6 +261,19 @@ describe('KuozhiService', () => {
       integrationStatus: 'ACTIVE',
       mappingVersion: 8,
       courses: [{ courseId: '658', embedMode: 'IFRAME' }],
+    });
+  });
+
+  it('opens personalized attendance training on course 595 without enabling incomplete completion evidence', async () => {
+    const response = await serviceFor().createLaunch(
+      'P-REL-ATTENDANCE',
+      'TEACHER-001',
+    );
+
+    expect(response).toMatchObject({
+      integrationStatus: 'PARTIAL',
+      mappingVersion: 1,
+      courses: [{ courseId: '595', embedMode: 'IFRAME' }],
     });
   });
 });

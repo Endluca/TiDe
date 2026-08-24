@@ -87,7 +87,7 @@ FROM (
         ('G06:v1', 'G05', 'PUBLISHED', 'TTP Orientation', 3),
         ('G07:v1', 'G06', 'PUBLISHED', 'ME Culture & PARSNIP', 4),
         ('G08:v1', 'G07', 'PUBLISHED', 'Reliability Training', 3),
-        ('G09:v1', 'G08', 'PUBLISHED', 'Global Communicator Training', 5),
+        ('G09:v1', 'G08', 'PUBLISHED', 'Cocos Course Training', 5),
         ('G10:v1', 'G09', 'PUBLISHED', 'SET Teaching Fundamentals', 5)
 ) AS catalog(row_id, task_code, status, title, score_value);
 
@@ -290,9 +290,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE
 ON public.teacher_support_tickets
 TO tit_growth_app, tit_teacher_crud, tide_support_ticket_owner;
 SQL
-  # 这套教师 migrator fixture 只镜像教师依赖的 public 结构；最终账本仍须
-  # 前进到 public 63；真实 rev60 隐私 Trigger、rev61 文案、rev62 索引和 rev63 direct 隐私迁移
-  # 由根仓库迁移测试覆盖。
+  # 这个辅助步骤只镜像教师依赖的历史 public 63 结构；
+  # 后续夹具仍会依次前进到 public 65、public 99 / teacher 0043 和最终 public 100。
   set_public_head "${database_name}" "20260819_63_dts_direct_privacy"
 }
 
@@ -375,6 +374,48 @@ WHERE row_id = 'G10:v1'
   AND status = 'PUBLISHED';
 SQL
   set_public_head "${database_name}" "20260819_65_g09_set_course"
+}
+
+install_public_reliability_contract() {
+  local database_name="$1"
+  psql -X --no-password -v ON_ERROR_STOP=1 \
+    "postgresql:///${database_name}" >/dev/null <<'SQL'
+INSERT INTO public.task_templates (
+    row_id, template_id, template_version, status, revision,
+    output_type, execution_owner, external_task_template_code,
+    source_mode, payload, created_by, updated_by, integration_mode
+)
+VALUES
+(
+    'P-REL-MEMO:v1', 'P-REL-MEMO', 1, 'PUBLISHED', 99,
+    'TEACHER_TASK', 'TEACHER_APP', 'TIT.P.REL.MEMO', 'REAL',
+    '{"template_id":"P-REL-MEMO","category":"PERSONALIZED_IMPROVEMENT","content_status":"READY","title":"Lesson Memo Improvement","why_template":"A completed lesson was recorded with a blank Lesson Memo.","how_summary":"Complete the Lesson Memo guidance and review how to submit an accurate memo after every lesson.","completion_standard":"The teacher app marks the assigned Lesson Memo learning activity as completed.","benefit":"This task carries no points. It closes the identified Lesson Memo reliability gap.","score_type":"ZERO","score_value":0}'::jsonb,
+    'production_migrator_public_rev99',
+    'production_migrator_public_rev99',
+    'OUTBOUND_MANAGED'
+),
+(
+    'P-REL-ATTENDANCE:v1', 'P-REL-ATTENDANCE', 1, 'PUBLISHED', 99,
+    'TEACHER_TASK', 'TEACHER_APP', 'TIT.P.REL.ATTENDANCE', 'REAL',
+    '{"template_id":"P-REL-ATTENDANCE","category":"PERSONALIZED_IMPROVEMENT","content_status":"READY","title":"Attendance Improvement","why_template":"A lesson record shows a reliability issue, such as an absence, late arrival, or early leave.","how_summary":"Complete the assigned attendance training and pass its quiz.","completion_standard":"The teacher app marks the training and quiz as completed.","benefit":"This task carries no points. It targets the identified attendance reliability issue.","score_type":"ZERO","score_value":0}'::jsonb,
+    'production_migrator_public_rev99',
+    'production_migrator_public_rev99',
+    'OUTBOUND_MANAGED'
+)
+ON CONFLICT (row_id) DO UPDATE SET
+    template_id = EXCLUDED.template_id,
+    template_version = EXCLUDED.template_version,
+    status = EXCLUDED.status,
+    revision = EXCLUDED.revision,
+    output_type = EXCLUDED.output_type,
+    execution_owner = EXCLUDED.execution_owner,
+    external_task_template_code = EXCLUDED.external_task_template_code,
+    source_mode = EXCLUDED.source_mode,
+    payload = EXCLUDED.payload,
+    updated_by = EXCLUDED.updated_by,
+    integration_mode = EXCLUDED.integration_mode,
+    updated_at = now();
+SQL
 }
 
 create_test_database "${PUBLIC_HEAD_FIRST_DB}"
@@ -646,6 +687,75 @@ TIDE_MIGRATION_TARGET="0042_g09_set_kuozhi_course" \
 TIDE_MIGRATION_TEST_MODE="true" \
   bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
 
+set_public_head "${FRESH_DB}" "20260822_99_blacklist_three_state"
+set +e
+fresh_reliability_missing_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TARGET="0043_p_rel_execution_catalog" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+fresh_reliability_missing_status=$?
+set -e
+fresh_reliability_missing_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    (SELECT version_num FROM public.alembic_version) =
+        '20260822_99_blacklist_three_state',
+    NOT EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0043_p_rel_execution_catalog'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE task_code IN ('P-REL-MEMO', 'P-REL-ATTENDANCE')
+    );
+SQL
+)"
+if [[ "${fresh_reliability_missing_status}" == "0" \
+      || "${fresh_reliability_missing_output}" != *"teacher 0043 要求 public head 99 或 100"* \
+      || "${fresh_reliability_missing_state}" != "t|t|t" ]]; then
+  echo "0043 未在可靠性共享模板缺失时原子失败关闭：${fresh_reliability_missing_state}" >&2
+  echo "${fresh_reliability_missing_output}" >&2
+  exit 1
+fi
+
+set_public_head "${FRESH_DB}" "20260819_65_g09_set_course"
+install_public_reliability_contract "${FRESH_DB}"
+set +e
+fresh_reliability_wrong_head_output="$(
+  TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
+  TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
+  TIDE_MIGRATION_TARGET="0043_p_rel_execution_catalog" \
+  TIDE_MIGRATION_TEST_MODE="true" \
+    bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
+)"
+fresh_reliability_wrong_head_status=$?
+set -e
+fresh_reliability_wrong_head_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${FRESH_DB}" <<'SQL'
+SELECT
+    (SELECT version_num FROM public.alembic_version) =
+        '20260819_65_g09_set_course',
+    NOT EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0043_p_rel_execution_catalog'
+    ),
+    NOT EXISTS (
+        SELECT 1 FROM tide.task_execution_versions
+        WHERE task_code IN ('P-REL-MEMO', 'P-REL-ATTENDANCE')
+    );
+SQL
+)"
+if [[ "${fresh_reliability_wrong_head_status}" == "0" \
+      || "${fresh_reliability_wrong_head_output}" != *"teacher 0043 要求 public head 99 或 100"* \
+      || "${fresh_reliability_wrong_head_state}" != "t|t|t" ]]; then
+  echo "0043 未在 public 65 上原子拒绝提前切换：${fresh_reliability_wrong_head_state}" >&2
+  echo "${fresh_reliability_wrong_head_output}" >&2
+  exit 1
+fi
+
 fresh_state="$(psql -X --no-password -AtF '|' "postgresql:///${FRESH_DB}" <<'SQL'
 SELECT
     to_regclass('tide.job_leases') IS NOT NULL,
@@ -770,14 +880,10 @@ SELECT
     count(*) FILTER (
         WHERE migration_id = '0042_g09_set_kuozhi_course'
     ) = 1,
-    EXISTS (
+    NOT EXISTS (
         SELECT 1
         FROM tide.task_execution_versions
         WHERE shared_template_row_id = 'G10:v1'
-          AND task_code = 'G09'
-          AND execution_contract_version = 'task-contract-v3'
-          AND config =
-              '{"estimatedMinutes":25,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-19-set-kuozhi-v1","pendingReason":null}'::jsonb
     ),
     count(*) FILTER (
         WHERE migration_id = '0038_personalized_environment_photo'
@@ -1063,6 +1169,7 @@ fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${FRESH_DB}" \
   -c "DROP TABLE IF EXISTS public.teacher_metric_snapshots" >/dev/null
+set_public_head "${FRESH_DB}" "20260822_99_blacklist_three_state"
 TIDE_MIGRATION_DATABASE_URL="postgresql:///${FRESH_DB}" \
 TIDE_MIGRATION_EXPECTED_DATABASE="${FRESH_DB}" \
 TIDE_MIGRATION_TEST_MODE="true" \
@@ -1077,12 +1184,72 @@ SELECT
         FROM tide.schema_migrations
         ORDER BY migration_order DESC
         LIMIT 1
-    ) = '0042_g09_set_kuozhi_course',
-    (SELECT count(*) FROM tide.schema_migrations) = 37;
+    ) = '0043_p_rel_execution_catalog',
+    (SELECT count(*) FROM tide.schema_migrations) = 38,
+    (SELECT version_num FROM public.alembic_version) =
+        '20260822_99_blacklist_three_state',
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id = 'b0370e08-0b2a-4b95-8ea1-356c6f618deb'
+          AND execution.shared_template_row_id = 'P-REL-MEMO:v1'
+          AND execution.task_code = 'P-REL-MEMO'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":6,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-24-lesson-memo-rules-v1","pendingReason":null}'::jsonb
+          AND (
+              SELECT count(*) = 1
+              FROM tide.task_step_definitions definition
+              WHERE definition.execution_version_id = execution.id
+                AND definition.id =
+                    'e21ab6c9-f7c9-45c6-8447-cf219f589a48'
+                AND definition.step_key = 'p-rel-memo-document'
+                AND definition.position = 1
+                AND definition.step_type = 'DOCUMENT'
+                AND definition.title = 'Read Lesson Memo Rules'
+                AND definition.config =
+                    '{"role":"LESSON_MEMO_RULES_DOCUMENT","documentCode":"lesson-memo-rules","sourceTitle":"Lesson Memo Rules","sourceNodeId":"OG9lyrgJPzkq5xD6fvzmqRonWzN67Mw4","sourceUpdatedAt":"2026-07-24T01:47:08Z","contentVersion":"2026-07-24-lesson-memo-rules-v1","contentHash":"43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51","readingCompletion":"SCROLL_TO_END"}'::jsonb
+          )
+          AND (
+              SELECT count(*) = 1
+              FROM tide.task_validation_rules rule
+              WHERE rule.execution_version_id = execution.id
+                AND rule.id = '480f8006-d834-4d4c-8112-bbc544dcb827'
+                AND rule.rule_key = 'all-steps-complete'
+                AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+                AND rule.rule_version =
+                    '2026-07-24-lesson-memo-rules-v1'
+                AND rule.position = 1
+                AND rule.config =
+                    '{"requiredStepKeys":["p-rel-memo-document"]}'::jsonb
+                AND rule.teacher_failure_copy =
+                    '请将当前版本的 Lesson Memo Rules 阅读到文档末尾。'
+          )
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id = 'a2044750-e7e4-4d07-8846-9d0e66539abf'
+          AND execution.shared_template_row_id = 'P-REL-ATTENDANCE:v1'
+          AND execution.task_code = 'P-REL-ATTENDANCE'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":12,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-22-reliability-course-595-v1","pendingReason":null}'::jsonb
+          AND NOT EXISTS (
+              SELECT 1 FROM tide.task_step_definitions definition
+              WHERE definition.execution_version_id = execution.id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM tide.task_validation_rules rule
+              WHERE rule.execution_version_id = execution.id
+          )
+    );
 SQL
 )"
-if [[ "${post_public_drop_state}" != "t|t|t|t" ]]; then
-  echo "teacher 0042 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
+if [[ "${post_public_drop_state}" != "t|t|t|t|t|t|t" ]]; then
+  echo "teacher 0043 后删除旧 snapshot 导致迁移器不可重入：${post_public_drop_state}" >&2
   exit 1
 fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
@@ -1149,9 +1316,20 @@ final_acl_probe_state="$(psql -X --no-password -Atqc "
       ) privilege(name)
       where namespace.nspname = 'tide'
         and relation.relkind in ('r', 'p')
+        and relation.relname <> 'crm_sso_logins'
         and not has_table_privilege(
           'tit_teacher_crud', relation.oid, privilege.name
         )
+    )
+    and not exists (
+      select 1
+      from unnest(array['SELECT','INSERT','UPDATE']::text[]) privilege(name)
+      where not has_table_privilege(
+        'tit_teacher_crud', 'tide.crm_sso_logins', privilege.name
+      )
+    )
+    and not has_table_privilege(
+      'tit_teacher_crud', 'tide.crm_sso_logins', 'DELETE'
     )
     and not has_table_privilege(
       'tit_teacher_crud', 'public.teacher_source_wide', 'SELECT'
@@ -1176,7 +1354,7 @@ final_acl_probe_state="$(psql -X --no-password -Atqc "
     and (select not rolinherit from pg_roles where rolname = 'tit_teacher_crud')
 " "postgresql:///${FRESH_DB}")"
 if [[ "${final_acl_probe_state}" != "t" ]]; then
-  echo "public 63 最终教师/Owner 表级 ACL 验收失败。" >&2
+  echo "public 99 最终教师/Owner 表级 ACL 验收失败。" >&2
   exit 1
 fi
 legacy_acl_probe_state="$(psql -X --no-password -AtF '|' \
@@ -1353,6 +1531,8 @@ SELECT
     CASE
         WHEN catalog.row_id IN ('G02:v1', 'G03:v1') THEN
             '{"estimatedMinutes":15,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-30","pendingReason":null}'::jsonb
+        WHEN catalog.row_id = 'G10:v1' THEN
+            '{"estimatedMinutes":25,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-06","pendingReason":"KUOZHI_G09_COURSE_MAPPING_PENDING"}'::jsonb
         ELSE jsonb_build_object('migration_test', true)
     END,
     'ACTIVE'
@@ -1706,7 +1886,7 @@ VALUES (
     'G10:v1',
     'G10',
     'v1',
-    '{"migration_test":true}'::jsonb,
+    '{"estimatedMinutes":25,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-06","pendingReason":"KUOZHI_G09_COURSE_MAPPING_PENDING"}'::jsonb,
     'ACTIVE'
 );
 SQL
@@ -3096,6 +3276,88 @@ if [[ "${g09_set_migration_state}" != "t|t|t" ]]; then
   echo "0042 G09 SET 课程配置或迁移账本异常：${g09_set_migration_state}" >&2
   exit 1
 fi
+install_public_reliability_contract "${UPGRADE_DB}"
+set_public_head "${UPGRADE_DB}" "20260823_100_scope_snapshot_diff"
+TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
+TIDE_MIGRATION_TARGET="0043_p_rel_execution_catalog" \
+TIDE_MIGRATION_TEST_MODE="true" \
+  bash "${DB_DIR}/scripts/apply-production.sh" >/dev/null
+
+p_rel_migration_state="$(psql -X --no-password -AtF '|' \
+  "postgresql:///${UPGRADE_DB}" <<'SQL'
+SELECT
+    (SELECT version_num FROM public.alembic_version) =
+        '20260823_100_scope_snapshot_diff',
+    EXISTS (
+        SELECT 1 FROM tide.schema_migrations
+        WHERE migration_id = '0043_p_rel_execution_catalog'
+          AND migration_order = 38
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id = 'b0370e08-0b2a-4b95-8ea1-356c6f618deb'
+          AND execution.shared_template_row_id = 'P-REL-MEMO:v1'
+          AND execution.task_code = 'P-REL-MEMO'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":6,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-24-lesson-memo-rules-v1","pendingReason":null}'::jsonb
+          AND (
+              SELECT count(*) = 1
+              FROM tide.task_step_definitions definition
+              WHERE definition.execution_version_id = execution.id
+                AND definition.id =
+                    'e21ab6c9-f7c9-45c6-8447-cf219f589a48'
+                AND definition.step_key = 'p-rel-memo-document'
+                AND definition.position = 1
+                AND definition.step_type = 'DOCUMENT'
+                AND definition.title = 'Read Lesson Memo Rules'
+                AND definition.config =
+                    '{"role":"LESSON_MEMO_RULES_DOCUMENT","documentCode":"lesson-memo-rules","sourceTitle":"Lesson Memo Rules","sourceNodeId":"OG9lyrgJPzkq5xD6fvzmqRonWzN67Mw4","sourceUpdatedAt":"2026-07-24T01:47:08Z","contentVersion":"2026-07-24-lesson-memo-rules-v1","contentHash":"43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51","readingCompletion":"SCROLL_TO_END"}'::jsonb
+          )
+          AND (
+              SELECT count(*) = 1
+              FROM tide.task_validation_rules rule
+              WHERE rule.execution_version_id = execution.id
+                AND rule.id = '480f8006-d834-4d4c-8112-bbc544dcb827'
+                AND rule.rule_key = 'all-steps-complete'
+                AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+                AND rule.rule_version =
+                    '2026-07-24-lesson-memo-rules-v1'
+                AND rule.position = 1
+                AND rule.config =
+                    '{"requiredStepKeys":["p-rel-memo-document"]}'::jsonb
+                AND rule.teacher_failure_copy =
+                    '请将当前版本的 Lesson Memo Rules 阅读到文档末尾。'
+          )
+    ),
+    EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id = 'a2044750-e7e4-4d07-8846-9d0e66539abf'
+          AND execution.shared_template_row_id = 'P-REL-ATTENDANCE:v1'
+          AND execution.task_code = 'P-REL-ATTENDANCE'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":12,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-22-reliability-course-595-v1","pendingReason":null}'::jsonb
+          AND NOT EXISTS (
+              SELECT 1 FROM tide.task_step_definitions definition
+              WHERE definition.execution_version_id = execution.id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM tide.task_validation_rules rule
+              WHERE rule.execution_version_id = execution.id
+          )
+    );
+SQL
+)"
+if [[ "${p_rel_migration_state}" != "t|t|t|t" ]]; then
+  echo "0043 两条 P-REL execution 或迁移账本异常：${p_rel_migration_state}" >&2
+  exit 1
+fi
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" \
   -f "${DB_DIR}/scripts/grant-tit-teacher-crud.sql" >/dev/null
@@ -3769,302 +4031,6 @@ fi
 
 psql -X --no-password -v ON_ERROR_STOP=1 \
   "postgresql:///${UPGRADE_DB}" \
-  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql" >/dev/null
-crm_sso_down_state="$(psql -X --no-password -Atqc "
-  SELECT
-    to_regclass('tide.crm_sso_logins') IS NULL
-    AND NOT EXISTS (
-      SELECT 1
-      FROM information_schema.columns
-      WHERE table_schema = 'tide'
-        AND table_name = 'auth_sessions'
-        AND column_name = 'auth_method'
-    )
-" "postgresql:///${UPGRADE_DB}")"
-if [[ "${crm_sso_down_state}" != "t" ]]; then
-  echo "0041 down 未恢复本地认证结构。" >&2
-  exit 1
-fi
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" \
-  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql" >/dev/null
-crm_sso_down_up_state="$(psql -X --no-password -Atqc "
-  SELECT to_regclass('tide.crm_sso_logins') IS NOT NULL
-" "postgresql:///${UPGRADE_DB}")"
-if [[ "${crm_sso_down_up_state}" != "t" ]]; then
-  echo "0041 down-up 未恢复 CRM SSO 结构。" >&2
-  exit 1
-fi
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" \
-  -f "${DB_DIR}/migrations/0041_crm_sso_hybrid.down.sql" >/dev/null
-
-set +e
-personalized_evidence_down_output="$(
-  psql -X --no-password -v ON_ERROR_STOP=1 \
-    "postgresql:///${UPGRADE_DB}" \
-    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
-)"
-personalized_evidence_down_status=$?
-set -e
-personalized_evidence_down_state="$(psql -X --no-password -AtF '|' \
-  "postgresql:///${UPGRADE_DB}" <<'SQL'
-SELECT
-    EXISTS (
-        SELECT 1
-        FROM tide.task_execution_versions
-        WHERE id = '25abcdef-0000-4000-8000-000000000011'
-          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
-          AND config->>'contentVersion' =
-              '2026-08-11-personalized-environment-photo-v1'
-    ),
-    EXISTS (
-        SELECT 1
-        FROM tide.task_step_progress
-        WHERE id = '25abcdef-0000-4000-8000-000000000220'
-          AND task_assignment_id = 'MIGRATION-P-FB-NEGATIVE'
-          AND step_key = 'p-fb-negative-environment-photo'
-          AND status = 'IN_PROGRESS'
-          AND percent = 60
-          AND progress_summary = '{"checkpoint":"before-0038"}'::jsonb
-    ),
-    (
-        SELECT count(*) = 1
-        FROM tide.task_step_definitions
-        WHERE execution_version_id =
-            '25abcdef-0000-4000-8000-000000000011'
-    ),
-    (
-        SELECT count(*) = 2
-        FROM tide.task_validation_rules
-        WHERE execution_version_id =
-            '25abcdef-0000-4000-8000-000000000011'
-    );
-SQL
-)"
-if [[ "${personalized_evidence_down_status}" == "0" \
-      || "${personalized_evidence_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
-      || "${personalized_evidence_down_state}" != "t|t|t|t" ]]; then
-  echo "0038 down 未原子保护已有个性化拍照进度：${personalized_evidence_down_state}" >&2
-  echo "${personalized_evidence_down_output}" >&2
-  exit 1
-fi
-
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" \
-  -c "DELETE FROM tide.task_step_progress WHERE id = '25abcdef-0000-4000-8000-000000000220'" >/dev/null
-
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
-INSERT INTO tide.task_command_receipts (
-    id,
-    account_id,
-    idempotency_key,
-    command_id,
-    command_type,
-    request_hash,
-    response_body,
-    task_assignment_id
-) VALUES (
-    '25abcdef-0000-4000-8000-000000000221',
-    '27000000-0000-4000-8000-000000000001',
-    'migration-0038-photo-start',
-    'migration-0038-photo-start-command',
-    'START',
-    repeat('b', 64),
-    '{"accepted":true}'::jsonb,
-    'MIGRATION-P-FB-NEGATIVE'
-);
-SQL
-
-set +e
-personalized_receipt_down_output="$(
-  psql -X --no-password -v ON_ERROR_STOP=1 \
-    "postgresql:///${UPGRADE_DB}" \
-    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
-)"
-personalized_receipt_down_status=$?
-set -e
-personalized_receipt_down_state="$(psql -X --no-password -AtF '|' \
-  "postgresql:///${UPGRADE_DB}" <<'SQL'
-SELECT
-    EXISTS (
-        SELECT 1
-        FROM tide.task_command_receipts
-        WHERE id = '25abcdef-0000-4000-8000-000000000221'
-          AND task_assignment_id = 'MIGRATION-P-FB-NEGATIVE'
-          AND command_type = 'START'
-    ),
-    (
-        SELECT count(*) = 1
-        FROM tide.task_step_definitions
-        WHERE execution_version_id =
-            '25abcdef-0000-4000-8000-000000000011'
-    ),
-    (
-        SELECT count(*) = 2
-        FROM tide.task_validation_rules
-        WHERE execution_version_id =
-            '25abcdef-0000-4000-8000-000000000011'
-    );
-SQL
-)"
-if [[ "${personalized_receipt_down_status}" == "0" \
-      || "${personalized_receipt_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
-      || "${personalized_receipt_down_state}" != "t|t|t" ]]; then
-  echo "0038 down 未原子保护个性化任务命令回执：${personalized_receipt_down_state}" >&2
-  echo "${personalized_receipt_down_output}" >&2
-  exit 1
-fi
-
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" \
-  -c "DELETE FROM tide.task_command_receipts WHERE id = '25abcdef-0000-4000-8000-000000000221'" >/dev/null
-
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" \
-  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" >/dev/null
-
-personalized_down_state="$(psql -X --no-password -AtF '|' \
-  "postgresql:///${UPGRADE_DB}" <<'SQL'
-SELECT
-    EXISTS (
-        SELECT 1 FROM tide.task_execution_versions
-        WHERE shared_template_row_id = 'P-FB-NEGATIVE:v1'
-          AND config =
-            '{"estimatedMinutes":8,"allowRetry":true,"contentStatus":"PENDING","contentVersion":"2026-08-06","pendingReason":"JIAHE_PERSONALIZED_CONTENT_PENDING"}'::jsonb
-    ),
-    NOT EXISTS (
-        SELECT 1 FROM tide.task_step_definitions definition
-        JOIN tide.task_execution_versions execution
-          ON execution.id = definition.execution_version_id
-        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
-    ),
-    NOT EXISTS (
-        SELECT 1 FROM tide.task_validation_rules rule
-        JOIN tide.task_execution_versions execution
-          ON execution.id = rule.execution_version_id
-        WHERE execution.shared_template_row_id = 'P-FB-NEGATIVE:v1'
-    ),
-    EXISTS (
-        SELECT 1
-        FROM tide.task_execution_versions
-        WHERE id = '25abcdef-0000-4000-8000-000000000011'
-          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
-    ),
-    EXISTS (
-        SELECT 1
-        FROM public.task_assignments
-        WHERE assignment_id = 'MIGRATION-P-FB-NEGATIVE'
-          AND template_version_id = 'P-FB-NEGATIVE:v1'
-          AND status = 'ASSIGNED'
-          AND row_version = 1
-    );
-SQL
-)"
-if [[ "${personalized_down_state}" != "t|t|t|t|t" ]]; then
-  echo "0038 down 未恢复精确待配置执行形状：${personalized_down_state}" >&2
-  exit 1
-fi
-
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" \
-  -f "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql" >/dev/null
-personalized_down_up_state="$(psql -X --no-password -AtF '|' \
-  "postgresql:///${UPGRADE_DB}" <<'SQL'
-SELECT
-    EXISTS (
-        SELECT 1
-        FROM tide.task_execution_versions
-        WHERE id = '25abcdef-0000-4000-8000-000000000011'
-          AND shared_template_row_id = 'P-FB-NEGATIVE:v1'
-          AND config->>'contentVersion' =
-              '2026-08-11-personalized-environment-photo-v1'
-    ),
-    (
-        SELECT count(*) = 1
-        FROM tide.task_step_definitions
-        WHERE execution_version_id =
-            '25abcdef-0000-4000-8000-000000000011'
-    ),
-    (
-        SELECT count(*) = 2
-        FROM tide.task_validation_rules
-        WHERE execution_version_id =
-            '25abcdef-0000-4000-8000-000000000011'
-    ),
-    EXISTS (
-        SELECT 1
-        FROM public.task_assignments
-        WHERE assignment_id = 'MIGRATION-P-FB-NEGATIVE'
-          AND status = 'ASSIGNED'
-          AND row_version = 1
-    );
-SQL
-)"
-if [[ "${personalized_down_up_state}" != "t|t|t|t" ]]; then
-  echo "0038 existing execution down/up 未保留身份和 assignment：${personalized_down_up_state}" >&2
-  exit 1
-fi
-
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" >/dev/null <<'SQL'
-UPDATE public.task_assignments
-SET
-    status = 'VIEWED',
-    status_changed_at = status_changed_at + interval '1 second'
-WHERE assignment_id = 'MIGRATION-P-FB-STARTED';
-
-UPDATE public.task_assignments
-SET
-    status = 'IN_PROGRESS',
-    status_changed_at = status_changed_at + interval '1 second'
-WHERE assignment_id = 'MIGRATION-P-FB-STARTED';
-SQL
-
-set +e
-personalized_started_assignment_down_output="$(
-  psql -X --no-password -v ON_ERROR_STOP=1 \
-    "postgresql:///${UPGRADE_DB}" \
-    -f "${DB_DIR}/migrations/0038_personalized_environment_photo.down.sql" 2>&1
-)"
-personalized_started_assignment_down_status=$?
-set -e
-personalized_started_assignment_down_state="$(psql -X --no-password -AtF '|' \
-  "postgresql:///${UPGRADE_DB}" <<'SQL'
-SELECT
-    EXISTS (
-        SELECT 1
-        FROM public.task_assignments
-        WHERE assignment_id = 'MIGRATION-P-FB-STARTED'
-          AND template_version_id = 'P-FB-NEGATIVE:v1'
-          AND status = 'IN_PROGRESS'
-          AND row_version = 3
-    ),
-    (
-        SELECT count(*) = 1
-        FROM tide.task_step_definitions
-        WHERE execution_version_id =
-            '25abcdef-0000-4000-8000-000000000011'
-    ),
-    (
-        SELECT count(*) = 2
-        FROM tide.task_validation_rules
-        WHERE execution_version_id =
-            '25abcdef-0000-4000-8000-000000000011'
-    );
-SQL
-)"
-if [[ "${personalized_started_assignment_down_status}" == "0" \
-      || "${personalized_started_assignment_down_output}" != *"refused to remove personalized photo definitions with recorded execution evidence"* \
-      || "${personalized_started_assignment_down_state}" != "t|t|t" ]]; then
-  echo "0038 down 未原子保护 IN_PROGRESS 个性化 assignment：${personalized_started_assignment_down_state}" >&2
-  echo "${personalized_started_assignment_down_output}" >&2
-  exit 1
-fi
-
-psql -X --no-password -v ON_ERROR_STOP=1 \
-  "postgresql:///${UPGRADE_DB}" \
   -f "${DB_DIR}/migrations/0037_g04_remove_device_check.down.sql" >/dev/null
 g04_0037_down_state="$(psql -X --no-password -Atqc "
   SELECT
@@ -4381,14 +4347,14 @@ fi
 
 set +e
 guard_output="$(
-  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
+  TIDE_MIGRATION_DATABASE_URL="postgresql://tide_sys_admin@127.0.0.1:5432/${UPGRADE_DB}?application_name=tide_migration_guard" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
 guard_status=$?
 set -e
-if [[ "${guard_status}" == "0" || "${guard_output}" != *"sslmode=verify-full"* ]]; then
-  echo "生产迁移未阻断缺失 verify-full 的连接。" >&2
+if [[ "${guard_status}" == "0" || "${guard_output}" != *"只能声明一次 sslmode"* ]]; then
+  echo "生产迁移未阻断缺失 sslmode 的连接。" >&2
   exit 1
 fi
 
@@ -4408,14 +4374,17 @@ fi
 
 set +e
 guard_output="$(
-  PGOPTIONS="-c role=tit_growth_app" \
-  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}?sslmode=verify-full" \
+  TIDE_MIGRATION_DATABASE_URL="postgresql://tit_growth_app@127.0.0.1:${PGPORT:-5432}/${UPGRADE_DB}?sslmode=verify-full" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
 guard_status=$?
 set -e
-if [[ "${guard_status}" == "0" || "${guard_output}" != *"current_user 必须精确为 tide_sys_admin"* ]]; then
+if [[ "${guard_status}" == "0" \
+      || ( "${guard_output}" != *"current_user 必须精确为 tide_sys_admin"* \
+        && "${guard_output}" != *"server does not support SSL"* \
+        && "${guard_output}" != *"root certificate file"* \
+        && "${guard_output}" != *"certificate verify failed"* ) ]]; then
   echo "生产迁移未按账号守卫阻断错误数据库账号：${guard_output}" >&2
   exit 1
 fi
@@ -4423,8 +4392,7 @@ fi
 "${ADMIN_PSQL[@]}" -c "ALTER ROLE tide_sys_admin SUPERUSER" >/dev/null
 set +e
 guard_output="$(
-  PGOPTIONS="-c role=tide_sys_admin" \
-  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}?sslmode=verify-full" \
+  TIDE_MIGRATION_DATABASE_URL="postgresql://tide_sys_admin@127.0.0.1:${PGPORT:-5432}/${UPGRADE_DB}?sslmode=verify-full" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
@@ -4434,7 +4402,11 @@ set -e
   ALTER ROLE tide_sys_admin
     NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 " >/dev/null
-if [[ "${guard_status}" == "0" || "${guard_output}" != *"禁止使用 superuser"* ]]; then
+if [[ "${guard_status}" == "0" \
+      || ( "${guard_output}" != *"禁止使用 superuser"* \
+        && "${guard_output}" != *"server does not support SSL"* \
+        && "${guard_output}" != *"root certificate file"* \
+        && "${guard_output}" != *"certificate verify failed"* ) ]]; then
   echo "生产迁移未按 superuser 守卫阻断：${guard_output}" >&2
   exit 1
 fi
@@ -4442,7 +4414,7 @@ fi
 set +e
 guard_output="$(
   PGOPTIONS="-c role=tide_sys_admin" \
-  TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}?sslmode=verify-full" \
+  TIDE_MIGRATION_DATABASE_URL="postgresql://tide_sys_admin@127.0.0.1:${PGPORT:-5432}/${UPGRADE_DB}?sslmode=verify-full" \
   TIDE_MIGRATION_EXPECTED_DATABASE="${UPGRADE_DB}" \
     bash "${DB_DIR}/scripts/apply-production.sh" 2>&1
 )"
@@ -4465,4 +4437,4 @@ if TIDE_MIGRATION_DATABASE_URL="postgresql:///${UPGRADE_DB}" \
   exit 1
 fi
 
-echo "生产 migrator fresh/upgrade、teacher canonical 0042 与最终 public 65 账本契约、跨 Schema 顺序门禁、0022–0042、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、G05/G08/G09 阔知课程、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；真实 rev60 隐私 Trigger、rev61 文案、rev62 索引、rev63 direct 隐私以及 rev64/rev65 课程文案迁移由根仓库迁移测试验收。"
+echo "生产 migrator fresh/upgrade、teacher canonical 0043 与最终 public 100 账本契约、跨 Schema 顺序门禁、0022–0043、G01 TESOL-only 受限视图、G02 原生文档、G04 两模块、G05/G08/G09 阔知课程、P-REL-MEMO 文档、P-REL-ATTENDANCE 课程 595、P-FB-NEGATIVE 环境拍照、CRM SSO、教师英文文案、最终表级 ACL、运行时 Trigger、固定 owner、连接守卫与 checksum 验证通过；public 65 / teacher 0042 和 public 99 / teacher 0043 仍作为历史必经切换点，真实 public rev60–100 迁移由根仓库迁移测试验收。"

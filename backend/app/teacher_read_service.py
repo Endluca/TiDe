@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Engine, and_, case, func, or_, select
+from sqlalchemy import Engine, and_, case, func, literal, or_, select
 
 from .config_models import (
     DEFAULT_CONFIG_PAYLOADS,
@@ -41,6 +41,7 @@ DIMENSION_ORDER = {
     "CAPACITY": 3,
     "NEW_TEACHER_TASK": 4,
 }
+_TEACHER_DISPLAY_SCORE_CAP = 200.0
 ACTIVE_TASK_STATUSES = {
     "ASSIGNED",
     "VIEWED",
@@ -85,7 +86,10 @@ def _employment_status(teacher: TeacherRecord) -> str | None:
 def _teacher_projection(teacher: TeacherRecord) -> dict[str, Any]:
     payload = deepcopy(teacher.payload or {})
     raw_total = float(teacher.total_score)
-    public_total = float(payload.get("external_display_score", raw_total))
+    public_total = min(
+        float(payload.get("external_display_score", raw_total)),
+        _TEACHER_DISPLAY_SCORE_CAP,
+    )
     graduation_threshold = float(
         payload.get("graduation_threshold", teacher.graduation_threshold)
         or 0
@@ -412,7 +416,7 @@ class TeacherReadService:
             result: list[dict[str, Any]] = []
             for row in rows:
                 blockers: list[str] = []
-                if row.graduation_state != "IN_PROGRESS":
+                if row.graduation_state != "IN_CAMP":
                     blockers.append("GRADUATED")
                 timezone_source = str(
                     row.timezone_source or ""
@@ -566,23 +570,14 @@ class DashboardReadService:
                                 and_(
                                     employment_expression == "on",
                                     TeacherRecord.graduation_state
-                                    != "GRADUATED",
+                                    == "IN_CAMP",
                                 ),
                                 1,
                             ),
                             else_=0,
                         )
                     ).label("active_teacher_count"),
-                    func.sum(
-                        case(
-                            (
-                                TeacherRecord.graduation_state
-                                == "SETTLEMENT_PENDING",
-                                1,
-                            ),
-                            else_=0,
-                        )
-                    ).label("settlement_pending_count"),
+                    literal(0).label("settlement_pending_count"),
                     func.sum(
                         case(
                             (

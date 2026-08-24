@@ -622,7 +622,11 @@ runDatabaseIntegration('shared database backend flow (e2e)', () => {
       .expect(200);
     const courseList = courseResponse.body as CourseListResponse;
     expect(courseList.items[0]).toMatchObject({
-      lessonId: 'INTEGRATION-LESSON-001',
+      lessonId:
+        'participation:v1:WyJkb20iLCJJTlRFR1JBVElPTi1BUFBPSU5UTUVOVC0wMDEiLDFd',
+      sourceRegion: 'dom',
+      sourceAppointId: 'INTEGRATION-APPOINTMENT-001',
+      participationSeq: 1,
       lifecycleStatus: 'end',
       scoreRuleVersion: 'integration-rule-v1',
     });
@@ -946,19 +950,20 @@ async function prepareSharedTeacher(database: Pool): Promise<void> {
   await database.query(
     `
       INSERT INTO public.lesson_facts (
-        lesson_id, source_appoint_id, camp_enrollment_id, teacher_id,
+        lesson_id, source_region, source_appoint_id, participation_seq,
+        camp_enrollment_id, teacher_id,
         scheduled_start_at, scheduled_end_at, lesson_local_date,
         lesson_local_time, lesson_lifecycle_status, valid_for_scoring,
         evidence_status, data_mode, is_late, is_early,
-        is_false_early_leave, has_positive_feedback_tag, is_favorited,
+        has_positive_feedback_tag, is_favorited,
         is_rebooked, is_camera_off, is_cpu_usage_high,
         is_network_delay_high, payload
       ) VALUES (
-        'INTEGRATION-LESSON-001', 'INTEGRATION-APPOINTMENT-001',
+        'INTEGRATION-LESSON-001', 'dom', 'INTEGRATION-APPOINTMENT-001', 1,
         'SHARED-TASK-INTEGRATION-CAMP', $1,
         '2026-07-21T10:00:00Z', '2026-07-21T10:25:00Z',
         '2026-07-21', '10:00:00', 'end', true, 'CONFIRMED', 'REAL',
-        false, false, false, true, false, false, false, false, false,
+        false, false, true, false, false, false, false, false,
         '{}'::jsonb
       )
     `,
@@ -1001,7 +1006,7 @@ async function createSafeViews(database: Pool): Promise<void> {
     SELECT '${TEST_TEACHER_ID}'::text AS teacher_id,
       'SHARED-TASK-INTEGRATION-CAMP'::text AS camp_enrollment_id,
       'Integration Teacher'::text AS name, 'Asia/Shanghai'::text AS timezone,
-      30::integer AS camp_day, 'IN_PROGRESS'::text AS graduation_state,
+      30::integer AS camp_day, 'IN_CAMP'::text AS graduation_state,
       'REAL'::text AS data_mode, now() AS source_updated_at
   `);
 }

@@ -397,7 +397,8 @@ lesson_source AS (
         lesson.*,
         row_number() OVER (
             PARTITION BY lesson.teacher_id
-            ORDER BY lesson.scheduled_start_at, lesson.lesson_id
+            ORDER BY lesson.scheduled_start_at, lesson.source_region,
+                lesson.source_appoint_id, lesson.participation_seq
         )::integer AS lesson_sequence,
         count(*) OVER (
             PARTITION BY lesson.teacher_id
@@ -477,7 +478,6 @@ lesson_points AS (
              AND lower(lesson.lesson_lifecycle_status) = 'end'
              AND lesson.is_late IS FALSE
              AND lesson.is_early IS FALSE
-             AND lesson.is_false_early_leave IS FALSE
                 THEN COALESCE(
                     NULLIF(lesson.score_policy #>> '{scoring_items,reliability_on_time,points_per_unit}', '')::numeric,
                     2
@@ -510,10 +510,13 @@ lesson_points AS (
 )
 SELECT
     lesson.teacher_id,
-    lesson.lesson_id,
+    lesson.source_region,
+    lesson.source_appoint_id,
+    lesson.participation_seq,
+    'NORMAL'::text AS participation_role,
+    true AS visible_to_teacher,
     lesson.lesson_sequence,
     lesson.lesson_count,
-    lesson.source_appoint_id,
     lesson.scheduled_start_at,
     lesson.lesson_local_date,
     lesson.lesson_local_time,
@@ -532,8 +535,7 @@ SELECT
     jsonb_build_object(
         'attendance', jsonb_build_object(
             'is_late', lesson.is_late,
-            'is_early', lesson.is_early,
-            'is_false_early_leave', lesson.is_false_early_leave
+            'is_early', lesson.is_early
         ),
         'user_feedback', jsonb_build_object(
             'has_positive_feedback_tag', lesson.has_positive_feedback_tag,

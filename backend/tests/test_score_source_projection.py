@@ -30,7 +30,7 @@ def _add_teacher(teacher_id: str) -> None:
                 country="PH",
                 timezone="Asia/Manila",
                 camp_day=10,
-                graduation_state="IN_PROGRESS",
+                graduation_state="IN_CAMP",
                 total_score=0,
                 graduation_threshold=100,
                 data_mode="REAL",
@@ -89,6 +89,7 @@ def _add_lesson(
     teacher_id: str,
     sequence: int,
     *,
+    lesson_status: str = "end",
     complaint_l1: str | None = None,
     complaint_l2: str | None = None,
     complaint_l3: str | None = None,
@@ -134,9 +135,10 @@ def _add_lesson(
             )
         session.add(
             LessonSourceWideRecord(
+                source_region="ovs",
                 course_id=lesson_id,
                 teacher_id=teacher_id,
-                lesson_status="COMPLETED",
+                lesson_status=lesson_status,
                 complaint_category_l1=complaint_l1,
                 complaint_category_l2=complaint_l2,
                 complaint_category_l3=complaint_l3,
@@ -267,6 +269,40 @@ def test_l0_complaints_are_aggregated_from_current_lesson_source_and_rules() -> 
         "lesson_count": 4,
         "unmapped_complaint_count": 0,
     }
+
+
+def test_pre_end_complaints_do_not_enter_legacy_l0_projection() -> None:
+    teacher_id = "PROJECTION-PRE-END-L0"
+    _add_teacher(teacher_id)
+    _add_lesson(
+        teacher_id,
+        1,
+        complaint_l3="Completed L0 category",
+        complaint_level_rank=0,
+    )
+    _add_lesson(
+        teacher_id,
+        2,
+        lesson_status="on",
+        complaint_l3="Pre-end L0 category",
+        complaint_level_rank=0,
+    )
+    _add_lesson(
+        teacher_id,
+        3,
+        lesson_status="on",
+        complaint_l1="Pre-end teacher issue",
+        complaint_l2="Pre-end attendance issue",
+    )
+
+    complaint = DatabaseStore(engine).score_account_values({teacher_id})[
+        teacher_id
+    ]["L0_COMPLAINT"]
+
+    assert complaint["count"] == 1
+    assert complaint["source_mode"] == "DERIVED_REAL"
+    assert complaint["lesson_count"] == 1
+    assert complaint["unmapped_complaint_count"] == 0
 
 
 def test_unmapped_complaint_fails_closed_even_when_level_three_is_missing() -> None:

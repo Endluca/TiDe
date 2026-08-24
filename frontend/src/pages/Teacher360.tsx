@@ -34,13 +34,11 @@ const { Text, Title } = Typography
 export const TEACHER_PAGE_SIZE = 24
 
 const graduationLabel: Record<string, string> = {
-  IN_PROGRESS: '试用期进行中',
-  SETTLEMENT_PENDING: '出营待结算',
+  IN_CAMP: '在营',
   GRADUATED: '已出营',
 }
 const graduationLabelEn: Record<string, string> = {
-  IN_PROGRESS: 'Trial in progress',
-  SETTLEMENT_PENDING: 'Graduation settlement pending',
+  IN_CAMP: 'In camp',
   GRADUATED: 'Graduated',
 }
 
@@ -705,7 +703,7 @@ export default function Teacher360({
                     </Flex>
                     <Space direction="vertical" size={3} align="end">
                       {dataModeTag(teacher.data_mode)}
-                      <Badge status={teacher.graduation_state === 'SETTLEMENT_PENDING' ? 'warning' : 'processing'} text={(locale === 'en-US' ? graduationLabelEn : graduationLabel)[teacher.graduation_state ?? ''] ?? teacher.graduation_state ?? t('状态待确认', 'Status pending')} />
+                      <Badge status={teacher.graduation_state === 'GRADUATED' ? 'success' : 'processing'} text={(locale === 'en-US' ? graduationLabelEn : graduationLabel)[teacher.graduation_state ?? ''] ?? teacher.graduation_state ?? t('状态待确认', 'Status pending')} />
                     </Space>
                   </Flex>
 

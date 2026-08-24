@@ -550,12 +550,18 @@ export class TaskService {
       principal.accountId,
       taskInstanceId,
     );
-    if (!task || task.taskCode !== 'G02') {
+    if (!task) {
       throw this.notFound();
     }
+    const expectedStepKey = (
+      {
+        G02: 'g02-policy-document',
+        'P-REL-MEMO': 'p-rel-memo-document',
+      } as Record<string, string>
+    )[task.taskCode];
+    if (!expectedStepKey) throw this.notFound();
     const documentSteps = task.steps.filter(
-      (step) =>
-        step.type === 'DOCUMENT' && step.stepKey === 'g02-policy-document',
+      (step) => step.type === 'DOCUMENT' && step.stepKey === expectedStepKey,
     );
     if (documentSteps.length !== 1) {
       throw this.documentContentUnavailable();

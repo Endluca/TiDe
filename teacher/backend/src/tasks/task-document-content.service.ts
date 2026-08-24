@@ -12,6 +12,15 @@ const G02_IMAGE_HASH =
   '960dfdde25ba3b4b7362694714cd498f069482bfa4b09a97df8f3cc06a829fc9';
 const G02_IMAGE_SOURCE =
   '/core/api/resources/img/5eecdaf48460cde5986ec04012a93ff33f0191d60d929d9e75b8339e1c4c2483621fc1e46d5affd58a3a5b4275315d43a156a98577f418d5c7ae4899c7d4a3a87fbd89d8848cf1a0fefaea1882610f6dbea6c0a0bd3c816291dbda664cf7fee3';
+const LESSON_MEMO_CONTENT_VERSION = '2026-07-24-lesson-memo-rules-v1';
+const LESSON_MEMO_CONTENT_HASH =
+  '43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51';
+const LESSON_MEMO_TRANSLATION_HASH =
+  'ea513dac3e4c483211f61a9229602530acf9ddddcacfffe803a875f39edd58bf';
+const LESSON_MEMO_EN_START = '# **Lesson Memo (LM):**';
+const LESSON_MEMO_EN_END = '<u>**FEES**</u>';
+const LESSON_MEMO_ZH_START = '# **课后反馈（Lesson Memo，LM）：**';
+const LESSON_MEMO_ZH_END = '<u>**费用（FEES）**</u>';
 
 interface DocumentStepConfig {
   documentCode?: unknown;
@@ -54,13 +63,20 @@ export class TaskDocumentContentUnavailableError extends Error {
 
 @Injectable()
 export class TaskDocumentContentService {
-  private contentCache: TaskDocumentContentResponse | null = null;
+  private readonly contentCache = new Map<
+    string,
+    TaskDocumentContentResponse
+  >();
   private imageCache: Buffer | null = null;
 
   getContent(config: DocumentStepConfig): TaskDocumentContentResponse {
     try {
-      this.assertCurrentConfig(config);
-      if (!this.contentCache) {
+      const documentCode = this.assertCurrentConfig(config);
+      const cached = this.contentCache.get(documentCode);
+      if (cached) return cached;
+
+      let content: TaskDocumentContentResponse;
+      if (documentCode === 'overseas-nt-policies') {
         const contentDirectory = this.contentDirectory();
         const english = this.readVerifiedText(
           resolve(contentDirectory, 'en.md'),
@@ -70,7 +86,7 @@ export class TaskDocumentContentService {
           resolve(contentDirectory, 'zh.md'),
           G02_TRANSLATION_HASH,
         );
-        this.contentCache = {
+        content = {
           documentCode: 'overseas-nt-policies',
           title: 'Overseas NT Policies',
           sourceUpdatedAt: '2026-07-24T01:47:08Z',
@@ -88,8 +104,42 @@ export class TaskDocumentContentService {
             },
           ],
         };
+      } else {
+        const contentDirectory = this.contentDirectory();
+        const englishSource = this.readVerifiedText(
+          resolve(contentDirectory, 'en.md'),
+          G02_CONTENT_HASH,
+        );
+        const chineseSource = this.readVerifiedText(
+          resolve(contentDirectory, 'zh.md'),
+          G02_TRANSLATION_HASH,
+        );
+        const english = this.extractVerifiedSection(
+          englishSource,
+          LESSON_MEMO_EN_START,
+          LESSON_MEMO_EN_END,
+          LESSON_MEMO_CONTENT_HASH,
+        );
+        const chinese = this.extractVerifiedSection(
+          chineseSource,
+          LESSON_MEMO_ZH_START,
+          LESSON_MEMO_ZH_END,
+          LESSON_MEMO_TRANSLATION_HASH,
+        );
+        content = {
+          documentCode: 'lesson-memo-rules',
+          title: 'Lesson Memo Rules',
+          sourceUpdatedAt: '2026-07-24T01:47:08Z',
+          contentVersion: LESSON_MEMO_CONTENT_VERSION,
+          contentHash: LESSON_MEMO_CONTENT_HASH,
+          completionMode: 'SCROLL_TO_END',
+          markdown: { en: english, zh: chinese },
+          translationHashes: { zh: LESSON_MEMO_TRANSLATION_HASH },
+          images: [],
+        };
       }
-      return this.contentCache;
+      this.contentCache.set(documentCode, content);
+      return content;
     } catch (error) {
       if (error instanceof TaskDocumentContentUnavailableError) throw error;
       throw new TaskDocumentContentUnavailableError();
@@ -98,8 +148,11 @@ export class TaskDocumentContentService {
 
   getAsset(config: DocumentStepConfig, assetKey: string): TaskDocumentAsset {
     try {
-      this.assertCurrentConfig(config);
-      if (assetKey !== 'updated-unlocking-process') {
+      const documentCode = this.assertCurrentConfig(config);
+      if (
+        documentCode !== 'overseas-nt-policies' ||
+        assetKey !== 'updated-unlocking-process'
+      ) {
         throw new TaskDocumentContentUnavailableError();
       }
       if (!this.imageCache) {
@@ -122,15 +175,26 @@ export class TaskDocumentContentService {
     }
   }
 
-  private assertCurrentConfig(config: DocumentStepConfig): void {
+  private assertCurrentConfig(
+    config: DocumentStepConfig,
+  ): 'overseas-nt-policies' | 'lesson-memo-rules' {
     if (
-      config.documentCode !== 'overseas-nt-policies' ||
-      config.contentVersion !== G02_CONTENT_VERSION ||
-      config.contentHash !== G02_CONTENT_HASH ||
-      config.readingCompletion !== 'SCROLL_TO_END'
+      config.documentCode === 'overseas-nt-policies' &&
+      config.contentVersion === G02_CONTENT_VERSION &&
+      config.contentHash === G02_CONTENT_HASH &&
+      config.readingCompletion === 'SCROLL_TO_END'
     ) {
-      throw new TaskDocumentContentUnavailableError();
+      return 'overseas-nt-policies';
     }
+    if (
+      config.documentCode === 'lesson-memo-rules' &&
+      config.contentVersion === LESSON_MEMO_CONTENT_VERSION &&
+      config.contentHash === LESSON_MEMO_CONTENT_HASH &&
+      config.readingCompletion === 'SCROLL_TO_END'
+    ) {
+      return 'lesson-memo-rules';
+    }
+    throw new TaskDocumentContentUnavailableError();
   }
 
   private contentDirectory(): string {
@@ -143,6 +207,24 @@ export class TaskDocumentContentService {
       throw new TaskDocumentContentUnavailableError();
     }
     return bytes.toString('utf8');
+  }
+
+  private extractVerifiedSection(
+    source: string,
+    startMarker: string,
+    endMarker: string,
+    expectedHash: string,
+  ): string {
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start + startMarker.length);
+    if (start < 0 || end <= start) {
+      throw new TaskDocumentContentUnavailableError();
+    }
+    const section = source.slice(start, end).trim();
+    if (this.sha256(Buffer.from(section, 'utf8')) !== expectedHash) {
+      throw new TaskDocumentContentUnavailableError();
+    }
+    return section;
   }
 
   private sha256(value: Buffer): string {

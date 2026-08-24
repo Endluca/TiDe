@@ -1,12 +1,12 @@
-# DTS 事件直接投影规则（v1）
+# DTS 事件直接投影规则（现行 v1 差异说明）
 
-> 状态：代码已提供显式 `direct` 模式，默认仍为 `queued`，尚未发布或切换运行环境。
+> 状态：现行代码说明，不是目标开发契约。目标 v2 以 `DTS_direct开发冻结实施规格.md` 为唯一输入。
 >
-> 适用前提：国内、海外 DTS 在同一个干净边界重置；两张宽表先按发布方案清理或导入基线；边界之前的事实不要求由增量事件恢复。若不导入基线，边界后的教师/课程主记录 INSERT，或当前完整镜像已经满足范围的 UPDATE，可以首次创建宽表主行；缺失主行的 DELETE、范围外 UPDATE 及子事件忽略。
+> 现行 v1 前提：国内、海外 DTS 在同一个干净边界重置；两张宽表先按发布方案清理或导入基线；边界之前的事实不要求由增量事件恢复。该前提已被目标 v2 废止，不能用于清空已有事实后依赖七天增量重建。
 >
-> 本轮固定采用“DTS 当前有什么就消费什么”：不补历史基线、不等待缺失关联事件、不要求从七天保留窗口恢复完整现状。能命中已有宽表主行的事件直接修改；目标缺失时，仅满足范围的教师/课程主事件创建主行，其余事件 ignored 并推进 checkpoint。DTS 事件只保留最近七天，因此 `TIT_DTS_START_AT` 只是期望起点，不是历史归档；若该时刻已经早于 DTS 最早可用位点，启动门禁必须失败，不能悄悄假装从原边界完整重放。
+> 现行 v1 采用“DTS 当前有什么就消费什么”，会永久丢失乱序子事实；目标 v2 必须先持久化来源当前态/tombstone 和脏键，缺依赖时等待重算。DTS 七天窗口不能替代权威基线。
 
-## 1. 链路
+## 1. 现行 v1 链路
 
 ```text
 DTS INSERT / UPDATE / DELETE
@@ -24,9 +24,10 @@ DTS INSERT / UPDATE / DELETE
 → 事务提交后 ACK
 ```
 
-直接模式不写业务事件账本、通用 `dts_source_rows` 业务镜像或 `dts_dirty_keys`。现有
+现行直接模式不写业务事件账本、通用 `dts_source_rows` 业务镜像或 `dts_dirty_keys`。现有
 `dts_source_rows` 只保留 `dom_complaint_cate` 小型参考字典和国内 HMAC 指纹契约；它们都不保存
-教师、课程或学生业务事实。
+教师、课程或学生业务事实。目标 v2 必须写入这三层耐久状态，并与 checkpoint 同事务；direct 与
+queued 复用同一领域重算服务。
 
 由于 direct 不再保存每节课的来源镜像，启动检查也不再用 `dts_source_rows` 反推课程
 provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中格式错误的 `dom:` token。基线
@@ -39,6 +40,9 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
 但 checkpoint 正常前进并 ACK。重放先用 checkpoint 判重，因此不会重复累加 slot。
 
 ## 2. 总体语义
+
+本节先记录现行 direct 实现；与业务新确版冲突的地方，在后续表格和段落中以
+“目标”明确标出，不得把现行行为当作验收标准。
 
 - 消费订阅在保留窗口内实际提供的所有白名单事件；事件是否“完整”不作为 ACK 前提。
 - 教师、课程的 INSERT 和当前完整镜像满足 cohort/课程范围的 UPDATE 都可创建宽表主行；
@@ -67,10 +71,12 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
   DELETE 及范围外 UPDATE ignored。
 - `status_on_time` 必须处于 cohort；否则删除该教师及其课程宽表行。
 - `onboard_date = status_on_time::date`。
-- `onboard_30d_end_date = onboard_date + 29`，课程和排课只接受闭区间 `[D,D+29]`。
-- `course` 包含 `global_cn/global_pool` 时 `teach_area_type='ovs'`，否则为现行契约值 `dmo`。
+- `onboard_30d_end_date = onboard_date + 29`，仅用于 `NEW→EXISTING` 和被明确定义为新师 30 天观察的指标；不作为通用课程事实准入门槛。
+- `center_type_desc` 已确版目标：`center_type=1`→`CBT`、`center_type=5`→`TBT`，其他任意值（含 `NULL`）→`HBT`。当前 direct/queued 对未列出值和 `NULL` 仍写 `NULL`，属于待修复差异。
+- 已确版目标：`course` 包含 `global_cn/global_pool` 时 `teach_area_type='ovs'`，否则 `teach_area_type='dom'`。
+- 当前 direct/queued 代码仍在国内分支写入旧值 `dmo`；这是待代码与存量数据一起迁移的已知差异，不再是目标契约值。
 - 身份、组织、状态字段由本次 `after` 覆盖；课程和 slot 聚合字段保留并由对应消息增量更新。
-- 教师 DELETE 先删课程宽表，再删教师宽表。
+- 现行教师 DELETE 先删课程宽表，再删教师宽表；目标 v2 只写教师来源 tombstone，课程、参与、积分和资格历史不得级联删除。
 
 ## 4. 课程主记录
 
@@ -79,16 +85,21 @@ provenance；它只检查旧状态残留中的原始国内 ID，以及宽表中�
 INSERT，或当前 `after` 同时满足下列范围条件的 UPDATE，可以创建课程宽表行；缺失课程的
 DELETE 及范围外 UPDATE ignored。
 
-进入课程宽表必须同时满足：
+已确版的目标准入条件为：
 
-1. `use_point='buy'`；
-2. `status NOT IN ('cancel','on')`；
-3. 学员标识非空；
-4. 教师宽表已存在；
-5. 来源地区与教师 `teach_area_type` 一致；
-6. 上课日期在教师 `[D,D+29]` 内。
+1. 学员标识非空；
+2. 教师宽表已存在；
+3. 目标契约中来源地区与教师 `teach_area_type` 直接使用 `dom/ovs` 一致性匹配；当前代码对国内仍使用 `dom → dmo` 旧映射；
 
-不满足时删除已有课程行。基础字段来自 appoint；已有评价、投诉、收藏、拉黑和 QA 字段在 appoint 更新时保留。
+课程准入完全不判断 `appoint.use_point` 和 `appoint.status`。`buy/free`、`cancel/on`、其他状态及
+`NULL` 状态都应保留课程事实并原样保存 `status`；入职 30 天后的课程事实也照常保留。完课、计分、预约等派生指标另按各自规则判断。
+不满足上述结构和人群范围条件时才删除已有课程行。基础字段来自 appoint；已有评价、投诉、收藏、
+拉黑和 QA 字段在 appoint 更新时保留。
+
+当前 direct/queued 代码仍额外要求 `use_point='buy'`、
+`status NOT IN ('cancel','on')` 且课程日期在入职 30 天内，与上述目标不符。这三项都必须从课程准入中完整删除，不能只放开
+`on`。当 `before.t_id != after.t_id` 时，无论状态为何，都先保留/创建旧教师 `t_absent` 参与，再
+新增新教师参与并保存 `after.status` 原值。
 
 Peak：
 
@@ -99,13 +110,15 @@ Peak：
 
 来源：`dom_teacher_class_schedule`，一行代表一个 slot。
 
-只在以下转换发生时计数一次：
+现行 v1 只在以下转换发生时累计一次：
 
 ```text
 before.status != 'on' AND after.status = 'on'
 ```
 
-INSERT 且 `after.status='on'` 同样计一次；`on→on`、`on→off` 和 DELETE 均不处理。因此这里明确采用“重置边界后的首次开启次数”，不表示任意时点的源表当前开启量。
+INSERT 且 `after.status='on'` 同样计一次；`on→on`、`on→off` 和 DELETE 均不处理。目标 v2 已改为
+“当前有效槽集合”：最新未删除且 status=on 才计数，off/DELETE 回减，slot 按来源行 ID 去重，
+slot_days 按日期去重；只统计入职 0–29 天观察窗口。
 
 一次有效开启执行：
 
@@ -132,32 +145,53 @@ INSERT 且 `after.status='on'` 同样计一次；`on→on`、`on→off` 和 DELE
 
 | 来源表 | 直接规则 |
 |---|---|
-| `dom_teacher_absent_reason` | after 写入缺席原因；DELETE 清空 |
+| `dom_teacher_absent_reason` | 目标仅保存 `reason_type`，按 `appoint_id+t_id` 归属；多记录取最新，UPDATE/DELETE 后重算剩余记录 |
 | `dom_teacher_penalty` | `appeal_status=2` 清零；迟到为 `in_time-start>30s`；早退按本版 30 分钟标准课长计算 |
-| `*_user_teacher_grading` | 有效 after 写分数和好/差评标记；删除或失效清空；1/2 为差评、4/5 为好评 |
-| `*_grading_label_log` | `type=1,status='normal'` 把标签加入课程当前名称集合；UPDATE/DELETE 用 before 移除旧名称，再用 after 加入新名称 |
+| `dom_teacher_certification` | 目标以 `certification_code='16' AND certification_status=1` 判断 TESOL；按教师当前证书集合重算 |
+| `dom_user_teacher_grading` | 当前集合取最新记录；buy 只按 score 1/2 差评、4/5 好评，free 只按 type；删除最新后恢复次新 |
+| `ovs_user_teacher_grading` | 本轮只持久化，不套用 DOM 规则、不产生新 OVS 评价积分 |
+| `*_grading_label_log` | 不判断 `type/status`；按 `appoint_id+label_id+label_name` 保存关联，UPDATE/DELETE 精确移除 before 关联 |
 | `*_grading_label` | 名称变更时直接替换课程宽表中完全相同的旧标签名称；不保存标签字典状态 |
-| `*_teacher_favorite` | 归因到事件时间以前同师生最近一节已完成课程；DELETE 将该课程收藏置 false |
-| `*_teacher_blacklist` | 永久有效记录按同样规则归因；DELETE/失效将该课程拉黑置 false |
-| `*_complaint` | 只处理 `type=13,grandson!=82,approve='y',validity=1`；其他事件清空 |
+| `*_teacher_favorite` | 独立维护师生收藏关系和时间线；不要求已有完课，课程 end+24h 时做唯一课程加分归因 |
+| `*_teacher_blacklist` | 独立维护师生当前有效拉黑关系；不要求已有完课，也不强制归因课程 |
+| `*_complaint` | 只处理 `type=13 AND (grandson IS NULL OR grandson!=82) AND approve='y' AND validity=1`；其他事件清空 |
 | `*_user_complaint` | v1 不单独投影，因为缺少 approve/validity；等待同一投诉的 authoritative complaint 事件 |
 | `*_qa_task_close_camera_record` | INSERT/UPDATE=true，DELETE=false |
-| `*_qa_task_fake_early_leave_record` | INSERT/UPDATE=true，DELETE=false |
-| `*_qa_ac_classroom_record` | 从 `info.cpu/network_delay[].appoint_id` 定位课程并按操作置 true/false |
 
-上述子事件只能修改已有课程；找不到课程时不补建、不重试，直接 ignored。排课和 TESOL 证书
-同样只能修改已有教师。
+缺席原因触发教师任务的目标映射已确版：`reason_type='Unfilled Lesson Memo'`
+幂等创建 `P-REL-MEMO`；其他任意非空 `reason_type`（包括 `No Notification`）幂等创建
+`P-REL-ATTENDANCE`；空值不创建缺席任务。仅 `No Notification` 额外贡献 `no_notice_cnt`。
+
+现行 v1 的评价、标签、处罚、投诉和摄像头只修改已有课程，找不到就永久 ignored。目标 v2 对所有
+业务子表先写 `dts_source_rows` 和脏键；课程/教师/字典晚到后自动重建。收藏、拉黑还要独立维护
+关系当前态和时间线；排课、证书同样不得因教师晚到而丢失。
+
+同一师生的收藏课程积分只允许一节课获得：按课程首次 `end` 后第 24 小时的关系历史状态判断，
+最早满足的课程获分，相同时间按课程 ID 决胜；持续收藏或取消后再收藏都不让后续课程重复获分。当前 direct/queued
+仍使用“事件前最近完课”存储策略，不满足该目标。
+
+课程主记录不得从 `appoint.cancel_reason` 初始化 `缺席原因明细`，缺席事件也不得读取
+`reason_desc`；没有对应 `dom_teacher_absent_reason.reason_type` 时写 `NULL`。
+
+业务已取消假早退，目标字段契约、白名单、投影、触发和输出都不再包含它。
+`*_qa_ac_classroom_record` 也不再作为 CPU、网络来源；该表事件在目标消费者中 ignored 并推进
+checkpoint。`cpu占用过高`、`网络延迟过高` 字段保留等待新来源，在新来源确版并接入前必须为
+`NULL`，不能用旧表无匹配或事件未出现推断为 `false`。切换时还必须清空旧来源写入的存量值并重算
+受影响课程，否则历史课堂质量分会继续生效。
 
 投诉事件只有分类 ID，没有中文名称。`dom_complaint_cate` 事件直接维护系统库里现有
 `dts_source_rows` 的小型参考字典；投诉事件按 ID 查询该字典后写入中文名。字典缺项时该投诉
-事件 ignored 并推进 checkpoint，不写半条课程记录，也不会等待补齐后自动重放。分类改名事件会同时更新
-字典，并把课程宽表中完全相同的旧名称替换成新名称。若验收要求投诉分类完整，切换 direct 前应保留
-字典或导入一次基线；本轮“DTS 有什么就消费什么”的全新重跑明确接受字典事件未出现时对应投诉被
-ignored，因此允许从空字典启动，不把历史字典作为发布门禁。
+现行事件 ignored 并推进 checkpoint，不写半条课程记录，也不会等待补齐。目标 v2 在字典缺失时保留
+投诉源行并保持课程/分类脏键待重算；分类到达、改名或删除后按分类 ID 重建，不得永久保留旧名称或
+丢失投诉。完整字典/权威基线是对应 scope 写 COMPLETE 的门禁。
 
 ## 7. 教师字段差值
 
 课程写入前后分别生成一组 0/1 贡献，教师字段只应用差值：
+
+以下是当前代码的增量聚合动作。目标模型将“源课程数”与“教师参与次数”分开：A→B 时前者是 1、
+后者是 2；`total_booked_cnt` 固定为教师普通参与次数，所有源 status 都计；`peak_booked_cnt` 为其中
+Peak 参与。下表其余内容只说明当前代码差距，完整目标见冻结实施规格第 7 节。
 
 | 课程当前事实 | 教师字段动作 |
 |---|---|
@@ -169,7 +203,7 @@ ignored，因此允许从空字典启动，不把历史字典作为发布门禁�
 | 完课且迟到、早退均不为 true | `perfect_cnt ±1` |
 | 有明确好评/差评 | 评价总数及好评/差评数应用差值 |
 | 有有效投诉分类 | 投诉数与有效投诉数应用差值 |
-| 完课/收藏/拉黑的师生关系首次出现或最后消失 | 三个去重学员数字段 `±1` |
+| 完课/收藏/拉黑的师生关系首次出现或最后消失 | 现行三个去重学员数字段 `±1`；目标中收藏/拉黑人数改由独立关系当前态聚合，收藏分另读取 end+24h 锁定归因 |
 
 应用计数后，仅使用教师当前标量重新计算比例字段。排课按第 5 节直接累加；TESOL 证书
 `after` 有效时置 true，无效或 DELETE 时根据 `before` 置 false，不保存证书成员状态。

@@ -22,7 +22,7 @@ def seed_teachers() -> list[dict]:
             "lessons_completed": 0,
             "total_score": 21,
             "graduation_threshold": 80,
-            "graduation_state": "IN_PROGRESS",
+            "graduation_state": "IN_CAMP",
             "dimensions": _dimensions(0, 0, 10, 6, 5),
             "gates": [{"code": "POLICY", "status": "PASSED"}, {"code": "DEVICE", "status": "PASSED"}],
             "signals": [
@@ -61,7 +61,7 @@ def seed_teachers() -> list[dict]:
             "lessons_completed": 6,
             "total_score": 57,
             "graduation_threshold": 80,
-            "graduation_state": "IN_PROGRESS",
+            "graduation_state": "IN_CAMP",
             "dimensions": _dimensions(20, 8, 11, 10, 8),
             "gates": [{"code": "POLICY", "status": "PASSED"}, {"code": "DEVICE", "status": "RECHECK_REQUIRED"}],
             "signals": [
@@ -104,7 +104,7 @@ def seed_teachers() -> list[dict]:
             "lessons_completed": 0,
             "total_score": 40,
             "graduation_threshold": 80,
-            "graduation_state": "IN_PROGRESS",
+            "graduation_state": "IN_CAMP",
             "dimensions": _dimensions(18, 0, 15, 4, 3),
             "gates": [{"code": "POLICY", "status": "PENDING"}, {"code": "DEVICE", "status": "PASSED"}],
             "signals": [
@@ -139,7 +139,7 @@ def seed_teachers() -> list[dict]:
             "lessons_completed": 18,
             "total_score": 86,
             "graduation_threshold": 80,
-            "graduation_state": "IN_PROGRESS",
+            "graduation_state": "IN_CAMP",
             "dimensions": _dimensions(26, 14, 22, 14, 10),
             "gates": [{"code": "POLICY", "status": "PASSED"}, {"code": "DEVICE", "status": "PASSED"}],
             "signals": [],

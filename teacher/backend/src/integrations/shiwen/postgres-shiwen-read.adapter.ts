@@ -94,18 +94,24 @@ export class PostgresShiwenReadAdapter implements ShiwenTeacherReadAdapter {
         SELECT
           teacher_id AS "teacherId",
           camp_enrollment_id AS "campEnrollmentId",
+          online_status AS "onlineStatus",
           raw_total_score AS "rawTotalScore",
           public_total_score AS "publicTotalScore",
           graduation_state AS "graduationState",
           graduation_qualified AS "graduationQualified",
+          graduation_qualified_at AS "graduationQualifiedAt",
+          graduation_score_locked AS "graduationScoreLocked",
           gold_qualified AS "goldQualified",
+          gold_status AS "goldStatus",
+          gold_qualified_at AS "goldQualifiedAt",
           graduation_threshold AS "graduationThreshold",
           gold_threshold AS "goldThreshold",
           mandatory_task_completed_count AS "mandatoryTaskCompletedCount",
           mandatory_task_total_count AS "mandatoryTaskTotalCount",
           score_rule_version AS "scoreRuleVersion",
           calculated_at AS "calculatedAt",
-          dimensions
+          dimensions,
+          teacher_source_status AS "teacherSourceStatus"
         FROM public.teacher_scorecard_current
         WHERE teacher_id = $1
         LIMIT 1
@@ -125,10 +131,11 @@ export class PostgresShiwenReadAdapter implements ShiwenTeacherReadAdapter {
       `
         SELECT
           teacher_id AS "teacherId",
-          lesson_id AS "lessonId",
+          source_region AS "sourceRegion",
+          source_appoint_id AS "sourceAppointId",
+          participation_seq AS "participationSeq",
           lesson_sequence AS "lessonSequence",
           count(*) OVER() AS "lessonCount",
-          source_appoint_id AS "sourceAppointId",
           scheduled_start_at AS "scheduledStartAt",
           lesson_local_date::text AS "lessonLocalDate",
           lesson_local_time::text AS "lessonLocalTime",
@@ -142,15 +149,19 @@ export class PostgresShiwenReadAdapter implements ShiwenTeacherReadAdapter {
           dimensions
         FROM public.teacher_lesson_score_current
         WHERE teacher_id = $1
+          AND participation_role IN ('NORMAL', 'COMPLETION')
+          AND visible_to_teacher IS TRUE
           AND (
             $4::text IS NULL
-            OR lesson_id ILIKE '%' || $4 || '%'
+            OR source_region ILIKE '%' || $4 || '%'
             OR source_appoint_id ILIKE '%' || $4 || '%'
+            OR participation_seq::text ILIKE '%' || $4 || '%'
             OR lesson_sequence::text ILIKE '%' || $4 || '%'
             OR lesson_local_date::text ILIKE '%' || $4 || '%'
             OR lesson_local_time::text ILIKE '%' || $4 || '%'
           )
-        ORDER BY lesson_sequence
+        ORDER BY lesson_sequence, source_region, source_appoint_id,
+          participation_seq
         LIMIT $2 OFFSET $3
       `,
       [teacherId, options.limit, options.offset, search],

@@ -38,10 +38,15 @@ public final class TitDtsTransportBridgeAvroSelfTest {
             throw new AssertionError("structured record identity changed");
         }
         JSONArray normalizedFields = normalized.getJSONArray("fields");
+        JSONObject normalizedFieldTypes = normalized.getJSONObject(
+                "fieldTypeNumbers");
         JSONArray normalizedImages = normalized.getJSONArray("afterImages");
         if (normalizedFields == null
                 || normalizedFields.size() != 13
                 || !"f0".equals(normalizedFields.getString(0))
+                || normalizedFieldTypes == null
+                || normalizedFieldTypes.size() != 13
+                || !normalizedFieldTypes.containsKey("f0")
                 || normalizedImages == null
                 || normalizedImages.size() != 14
                 || !"8".equals(
@@ -78,9 +83,15 @@ public final class TitDtsTransportBridgeAvroSelfTest {
         JSONObject filtered = TitDtsTransportBridge.normalizeOfficialRecord(
                 alignedRecord, allowedFields);
         JSONArray filteredFields = filtered.getJSONArray("fields");
+        JSONObject filteredFieldTypes = filtered.getJSONObject(
+                "fieldTypeNumbers");
         if (filteredFields.size() != 2
                 || !"f0".equals(filteredFields.getString(0))
                 || !"f4".equals(filteredFields.getString(1))
+                || filteredFieldTypes == null
+                || filteredFieldTypes.size() != 2
+                || !filteredFieldTypes.containsKey("f0")
+                || !filteredFieldTypes.containsKey("f4")
                 || filtered.getJSONArray("afterImages").size() != 2) {
             throw new AssertionError("source field whitelist changed");
         }

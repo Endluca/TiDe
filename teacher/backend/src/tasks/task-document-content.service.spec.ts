@@ -11,6 +11,14 @@ const config = {
   readingCompletion: 'SCROLL_TO_END',
 };
 
+const lessonMemoConfig = {
+  documentCode: 'lesson-memo-rules',
+  contentVersion: '2026-07-24-lesson-memo-rules-v1',
+  contentHash:
+    '43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51',
+  readingCompletion: 'SCROLL_TO_END',
+};
+
 describe('TaskDocumentContentService', () => {
   it('loads the execution-selected bilingual document and verified asset', () => {
     const service = new TaskDocumentContentService();
@@ -41,6 +49,36 @@ describe('TaskDocumentContentService', () => {
 
     expect(() =>
       service.getContent({ ...config, contentVersion: 'future-version' }),
+    ).toThrow(TaskDocumentContentUnavailableError);
+  });
+
+  it('serves the verified Lesson Memo section from the published policy asset', () => {
+    const service = new TaskDocumentContentService();
+
+    const content = service.getContent(lessonMemoConfig);
+
+    expect(content).toMatchObject({
+      documentCode: 'lesson-memo-rules',
+      title: 'Lesson Memo Rules',
+      contentVersion: lessonMemoConfig.contentVersion,
+      contentHash: lessonMemoConfig.contentHash,
+      completionMode: 'SCROLL_TO_END',
+      translationHashes: {
+        zh: 'ea513dac3e4c483211f61a9229602530acf9ddddcacfffe803a875f39edd58bf',
+      },
+      images: [],
+    });
+    expect(content.markdown.en).toMatch(/^# \*\*Lesson Memo \(LM\):\*\*/u);
+    expect(content.markdown.en).toContain('Timing & Deadlines');
+    expect(content.markdown.en).not.toContain('FEES');
+    expect(content.markdown.zh).toContain('时间与截止期限');
+  });
+
+  it('does not expose unrelated policy assets to the Lesson Memo document', () => {
+    const service = new TaskDocumentContentService();
+
+    expect(() =>
+      service.getAsset(lessonMemoConfig, 'updated-unlocking-process'),
     ).toThrow(TaskDocumentContentUnavailableError);
   });
 });

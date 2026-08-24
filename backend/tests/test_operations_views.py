@@ -61,6 +61,7 @@ def _seed_operations_evidence() -> None:
         session.add_all(
             [
                 LessonSourceWideRecord(
+                    source_region="ovs",
                     course_id=lesson_id,
                     teacher_id=teacher_id,
                     lesson_status="end",
@@ -140,6 +141,7 @@ def _seed_operations_evidence() -> None:
                     trigger_code="TR-REL-ATTENDANCE",
                     rule_version="2026-07-22",
                     teacher_id=teacher_id,
+                    lesson_source_region="ovs",
                     lesson_id=lesson_id,
                     complaint_rule_id=None,
                     dedupe_key="match:attendance:1",
@@ -161,6 +163,7 @@ def _seed_operations_evidence() -> None:
                     trigger_code="TR-FB-SEVERE-COMPLAINT",
                     rule_version="2026-07-22",
                     teacher_id=teacher_id,
+                    lesson_source_region="ovs",
                     lesson_id=lesson_id,
                     complaint_rule_id=None,
                     dedupe_key="match:case:1",
@@ -306,6 +309,7 @@ def test_intervention_evidence_is_bounded_per_output() -> None:
                     trigger_code="TR-REL-ATTENDANCE",
                     rule_version="2026-07-22",
                     teacher_id="T-1001",
+                    lesson_source_region="ovs",
                     lesson_id="LESSON-REAL-1",
                     complaint_rule_id=None,
                     dedupe_key=f"match:attendance:sample:{index}",
@@ -381,6 +385,7 @@ def test_notification_copy_is_read_directly_from_database() -> None:
                 trigger_code="TR-QUALITY-IN-CLASS",
                 rule_version="2026-07-22",
                 teacher_id="T-1001",
+                lesson_source_region="ovs",
                 lesson_id="LESSON-REAL-1",
                 complaint_rule_id=None,
                 dedupe_key="match:notification:legacy",
@@ -422,6 +427,7 @@ def test_missing_materialized_output_keeps_trigger_copy_and_is_not_open() -> Non
                 trigger_code="TR-REL-MISSING-TASK",
                 rule_version="2026-07-22",
                 teacher_id="T-1001",
+                lesson_source_region="ovs",
                 lesson_id="LESSON-REAL-1",
                 complaint_rule_id=None,
                 dedupe_key="match:missing-task",
@@ -485,6 +491,7 @@ def test_current_ops_todo_excludes_terminal_case_statuses() -> None:
                 trigger_code="TR-QUALITY-OTHER",
                 rule_version="2026-07-22",
                 teacher_id="T-1001",
+                lesson_source_region="ovs",
                 lesson_id="LESSON-REAL-1",
                 complaint_rule_id=None,
                 dedupe_key="match:other-open",
@@ -523,6 +530,7 @@ def test_current_ops_todo_excludes_terminal_case_statuses() -> None:
                     trigger_code="TR-FB-SEVERE-COMPLAINT",
                     rule_version="2026-07-22",
                     teacher_id="T-1001",
+                    lesson_source_region="ovs",
                     lesson_id="LESSON-REAL-1",
                     complaint_rule_id=None,
                     dedupe_key=f"match:terminal:{index}",
@@ -667,6 +675,42 @@ def test_lesson_evidence_excludes_suppressed_matches() -> None:
     assert all_lessons.status_code == 200
     assert all_lessons.json()["items"][0]["risk_domains"] == []
     assert all_lessons.json()["items"][0]["signals"] == []
+
+
+def test_unqualified_duplicate_lesson_id_is_rejected_as_ambiguous() -> None:
+    with session_scope(engine) as session:
+        session.add_all(
+            [
+                LessonSourceWideRecord(
+                    source_region="dom",
+                    course_id="LESSON-CROSS-REGION",
+                    teacher_id=None,
+                ),
+                LessonSourceWideRecord(
+                    source_region="ovs",
+                    course_id="LESSON-CROSS-REGION",
+                    teacher_id=None,
+                ),
+            ]
+        )
+
+    ambiguous = client.get(
+        "/api/lessons",
+        params={"lesson_id": "LESSON-CROSS-REGION"},
+    )
+    assert ambiguous.status_code == 409
+    assert "LESSON_IDENTITY_AMBIGUOUS" in ambiguous.json()["detail"]
+
+    qualified = client.get(
+        "/api/lessons",
+        params={
+            "source_region": "dom",
+            "lesson_id": "LESSON-CROSS-REGION",
+        },
+    )
+    assert qualified.status_code == 200
+    assert qualified.json()["total"] == 1
+    assert qualified.json()["items"][0]["source_region"] == "dom"
 
 
 def test_severe_complaint_case_can_be_processed_and_resolved() -> None:

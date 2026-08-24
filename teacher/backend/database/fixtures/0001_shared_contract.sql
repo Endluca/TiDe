@@ -14,6 +14,13 @@ BEGIN
         CREATE ROLE tit_growth_app NOLOGIN;
     END IF;
     IF NOT EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname = 'tit_dts_ingest_runtime'
+    ) THEN
+        CREATE ROLE tit_dts_ingest_runtime
+            LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
+            NOREPLICATION NOBYPASSRLS;
+    END IF;
+    IF NOT EXISTS (
         SELECT 1 FROM pg_roles
         WHERE rolname = 'tide_support_ticket_owner'
     ) THEN
@@ -38,14 +45,20 @@ CREATE TABLE IF NOT EXISTS public.teachers (
     country varchar,
     timezone varchar NOT NULL DEFAULT 'Asia/Shanghai',
     camp_day integer NOT NULL DEFAULT 1,
-    graduation_state varchar NOT NULL DEFAULT 'IN_PROGRESS',
+    graduation_state varchar NOT NULL DEFAULT 'IN_CAMP',
     total_score double precision NOT NULL DEFAULT 0,
     graduation_threshold double precision NOT NULL DEFAULT 100,
     data_mode varchar NOT NULL DEFAULT 'MOCK',
     source_snapshot_label varchar,
-    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    payload jsonb NOT NULL DEFAULT '{"graduation_state":"IN_CAMP"}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_teachers_graduation_state_v2 CHECK (
+        graduation_state IN ('IN_CAMP', 'GRADUATED')
+        AND jsonb_typeof(payload) = 'object'
+        AND payload ? 'graduation_state'
+        AND payload ->> 'graduation_state' = graduation_state
+    )
 );
 
 CREATE TABLE IF NOT EXISTS public.teacher_metric_snapshots (
@@ -79,7 +92,9 @@ REVOKE ALL ON public.teacher_g01_status_current FROM PUBLIC;
 
 CREATE TABLE IF NOT EXISTS public.lesson_facts (
     lesson_id varchar PRIMARY KEY,
-    source_appoint_id varchar NOT NULL UNIQUE,
+    source_region varchar NOT NULL DEFAULT 'dom',
+    source_appoint_id varchar NOT NULL,
+    participation_seq integer NOT NULL DEFAULT 1,
     camp_enrollment_id varchar NOT NULL,
     teacher_id varchar NOT NULL REFERENCES public.teachers(teacher_id),
     scheduled_start_at timestamptz,
@@ -93,7 +108,6 @@ CREATE TABLE IF NOT EXISTS public.lesson_facts (
     student_id_hash varchar,
     is_late boolean,
     is_early boolean,
-    is_false_early_leave boolean,
     has_positive_feedback_tag boolean,
     is_favorited boolean,
     is_rebooked boolean,
@@ -102,7 +116,12 @@ CREATE TABLE IF NOT EXISTS public.lesson_facts (
     is_network_delay_high boolean,
     payload jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_lesson_facts_participation_identity UNIQUE (
+        source_region, source_appoint_id, participation_seq
+    ),
+    CONSTRAINT ck_lesson_facts_source_region CHECK (source_region IN ('dom', 'ovs')),
+    CONSTRAINT ck_lesson_facts_participation_seq CHECK (participation_seq >= 1)
 );
 
 CREATE TABLE IF NOT EXISTS public.lesson_dimension_scores (

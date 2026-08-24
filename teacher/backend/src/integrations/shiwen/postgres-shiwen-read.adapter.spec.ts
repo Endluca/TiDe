@@ -62,17 +62,23 @@ function scorecardRow(): QueryResultRow {
   return {
     teacherId: 'TEACHER-001',
     campEnrollmentId: 'CAMP-001',
+    onlineStatus: 'NEW',
     rawTotalScore: '43',
     publicTotalScore: '43',
-    graduationState: 'IN_PROGRESS',
+    graduationState: 'IN_CAMP',
     graduationQualified: false,
+    graduationQualifiedAt: null,
+    graduationScoreLocked: null,
     goldQualified: false,
+    goldStatus: 'NOT_GOLD',
+    goldQualifiedAt: null,
     graduationThreshold: '100',
     goldThreshold: '200',
     mandatoryTaskCompletedCount: 1,
     mandatoryTaskTotalCount: 10,
     scoreRuleVersion: 'score-rule-v3',
     calculatedAt: new Date('2026-07-27T08:00:00Z'),
+    teacherSourceStatus: 'CONFIRMED',
     dimensions: [
       {
         code: 'USER_FEEDBACK',
@@ -121,10 +127,11 @@ function scorecardRow(): QueryResultRow {
 function lessonRow(): QueryResultRow {
   return {
     teacherId: 'TEACHER-001',
-    lessonId: 'LESSON-001',
+    sourceRegion: 'dom',
+    sourceAppointId: 'APPOINT-001',
+    participationSeq: 2,
     lessonSequence: 1,
     lessonCount: 42,
-    sourceAppointId: 'APPOINT-001',
     scheduledStartAt: new Date('2026-07-27T08:00:00Z'),
     lessonLocalDate: '2026-07-27',
     lessonLocalTime: '16:00:00',
@@ -138,7 +145,6 @@ function lessonRow(): QueryResultRow {
       attendance: {
         is_late: false,
         is_early: false,
-        is_false_early_leave: false,
         is_absence: true,
       },
       user_feedback: {
@@ -215,7 +221,7 @@ describe('PostgresShiwenReadAdapter', () => {
         name: 'Teacher',
         timezone: 'Asia/Shanghai',
         campDay: 3,
-        graduationState: 'IN_PROGRESS',
+        graduationState: 'IN_CAMP',
         dataMode: 'REAL',
         sourceUpdatedAt: new Date('2026-07-27T08:00:00Z'),
       },
@@ -276,7 +282,10 @@ describe('PostgresShiwenReadAdapter', () => {
       ['TEACHER-001', 20, 40, '2026-07'],
     );
     expect(result[0]).toMatchObject({
-      lessonId: 'LESSON-001',
+      lessonId: 'participation:v1:WyJkb20iLCJBUFBPSU5ULTAwMSIsMl0',
+      sourceRegion: 'dom',
+      sourceAppointId: 'APPOINT-001',
+      participationSeq: 2,
       lessonCount: 42,
       facts: {
         positiveFeedback: true,
@@ -295,8 +304,15 @@ describe('PostgresShiwenReadAdapter', () => {
     );
     const sql = String(queryShiwen.mock.calls[0][0]);
     expect(sql).toContain('WHERE teacher_id = $1');
+    expect(sql).toContain("participation_role IN ('NORMAL', 'COMPLETION')");
+    expect(sql).toContain('visible_to_teacher IS TRUE');
     expect(sql).toContain('count(*) OVER() AS "lessonCount"');
-    expect(sql).toContain("lesson_id ILIKE '%' || $4 || '%'");
+    expect(sql).not.toContain('lesson_id');
+    expect(sql).toContain("source_appoint_id ILIKE '%' || $4 || '%'");
+    expect(sql).toContain("participation_seq::text ILIKE '%' || $4 || '%'");
+    expect(sql).toContain(
+      'ORDER BY lesson_sequence, source_region, source_appoint_id',
+    );
     expect(sql).toContain('LIMIT $2 OFFSET $3');
   });
 

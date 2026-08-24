@@ -9,7 +9,7 @@ else
   DATABASE_URL="${DATABASE_URL:-}"
 fi
 EXPECTED_DATABASE="${TIDE_MIGRATION_EXPECTED_DATABASE:-}"
-TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0042_g09_set_kuozhi_course}"
+TARGET_MIGRATION="${TIDE_MIGRATION_TARGET:-0043_p_rel_execution_catalog}"
 MIGRATION_TEST_MODE="${TIDE_MIGRATION_TEST_MODE:-false}"
 COMPANY_TEST_MIGRATION_MODE="${TIDE_COMPANY_TEST_MIGRATION_MODE:-false}"
 
@@ -30,6 +30,7 @@ APPROVED_COMPANY_TEST_TARGETS=(
   0040_g02_document_read_status
   0041_crm_sso_hybrid
   0042_g09_set_kuozhi_course
+  0043_p_rel_execution_catalog
 )
 
 if [[ "${MIGRATION_TEST_MODE}" != "true" && "${MIGRATION_TEST_MODE}" != "false" ]]; then
@@ -111,7 +112,7 @@ if [[ "${COMPANY_TEST_MIGRATION_MODE}" == "true" ]]; then
         || "${COMPANY_TEST_DB_SSLMODE}" != "${APPROVED_COMPANY_TEST_SSLMODE}" \
         || "${EXPECTED_DATABASE}" != "${APPROVED_COMPANY_TEST_DB_NAME}" \
         || "${approved_company_test_target}" != "true" ]]; then
-    echo "公司 TEST 增量迁移只允许已批准的 tit_growth_test_v2 / postgres，以及 0037、0038、0040、0041、0042 切换点。" >&2
+    echo "公司 TEST 增量迁移只允许已批准的 tit_growth_test_v2 / postgres，以及 0037、0038、0040、0041、0042、0043 切换点。" >&2
     exit 1
   fi
   if [[ -z "${PGPASSWORD:-}" ]]; then
@@ -242,6 +243,7 @@ PRODUCTION_MIGRATIONS=(
   0040_g02_document_read_status
   0041_crm_sso_hybrid
   0042_g09_set_kuozhi_course
+  0043_p_rel_execution_catalog
 )
 
 target_found=false
@@ -276,8 +278,9 @@ if [[ "${TARGET_MIGRATION}" != "0028_retire_task_business_change_view" \
       && "${TARGET_MIGRATION}" != "0040_g02_document_read_status" \
       && "${TARGET_MIGRATION}" != "0041_crm_sso_hybrid" \
       && "${TARGET_MIGRATION}" != "0042_g09_set_kuozhi_course" \
+      && "${TARGET_MIGRATION}" != "0043_p_rel_execution_catalog" \
       && "${MIGRATION_TEST_MODE}" != "true" ]]; then
-  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037、0038、0040、0041 或最终版本 0042；完整顺序为 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64 -> public head 65 -> teacher 0042。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
+  echo "生产只允许停在跨 Schema 切换点 0028、0032、0037、0038、0040、0041、0042 或最终版本 0043。其他 TIDE_MIGRATION_TARGET 仅供隔离迁移测试。" >&2
   exit 1
 fi
 
@@ -813,6 +816,61 @@ elif [[ "${TARGET_MIGRATION}" == "0042_g09_set_kuozhi_course" ]]; then
   fi
   if [[ "${g09_public_ready}" != "t" ]]; then
     echo "teacher 0042 要求 public head 65 已发布稳定 G10:v1 / G09 的课程 658 文案。本次未写入任何 Tide 迁移。" >&2
+    exit 1
+  fi
+elif [[ "${TARGET_MIGRATION}" == "0043_p_rel_execution_catalog" ]]; then
+  reliability_public_ready="$("${PSQL[@]}" -Atqc "
+    select
+      to_regclass('public.alembic_version') is not null
+      and (
+        select count(*) = 1
+          and min(version_num) in (
+            '20260822_99_blacklist_three_state',
+            '20260823_100_scope_snapshot_diff'
+          )
+        from public.alembic_version
+      )
+      and (
+        select count(*)
+        from public.task_templates
+        where row_id in ('P-REL-MEMO:v1', 'P-REL-ATTENDANCE:v1')
+          and template_version = 1
+          and status = 'PUBLISHED'
+          and output_type = 'TEACHER_TASK'
+          and execution_owner = 'TEACHER_APP'
+          and integration_mode = 'OUTBOUND_MANAGED'
+          and source_mode = 'REAL'
+          and payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
+          and payload->>'content_status' = 'READY'
+          and payload->>'score_type' = 'ZERO'
+          and payload->'score_value' = '0'::jsonb
+      ) = 2
+      and (
+        select count(*)
+        from public.task_templates
+        where row_id = 'P-REL-MEMO:v1'
+          and template_id = 'P-REL-MEMO'
+          and payload->>'title' = 'Lesson Memo Improvement'
+          and payload->>'how_summary' =
+            'Complete the Lesson Memo guidance and review how to submit an accurate memo after every lesson.'
+      ) = 1
+      and (
+        select count(*)
+        from public.task_templates
+        where row_id = 'P-REL-ATTENDANCE:v1'
+          and template_id = 'P-REL-ATTENDANCE'
+          and payload->>'title' = 'Attendance Improvement'
+          and payload->>'how_summary' =
+            'Complete the assigned attendance training and pass its quiz.'
+      ) = 1
+  ")"
+  if [[ "${current_tide_head}" != "0042_g09_set_kuozhi_course" \
+        && "${current_tide_head}" != "0043_p_rel_execution_catalog" ]]; then
+    echo "teacher 0043 只能从 teacher 0042 连续执行；当前 Tide head 为 ${current_tide_head:-空}。本次未写入任何迁移。" >&2
+    exit 1
+  fi
+  if [[ "${reliability_public_ready}" != "t" ]]; then
+    echo "teacher 0043 要求 public head 99 或 100 已发布两条稳定、零分、REAL 的可靠性任务模板。本次未写入任何 Tide 迁移。" >&2
     exit 1
   fi
 fi

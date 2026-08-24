@@ -37,6 +37,13 @@ def test_runtime_orm_contains_only_the_specialized_import_store() -> None:
         "source_filename",
         "raw_rows",
         "imported_at",
+        "status",
+        "publication_revision",
+        "activation_generation",
+        "row_count",
+        "content_hash",
+        "published_at",
+        "retired_at",
     }
     for model_name in (
         "DataImportBatchRecord",

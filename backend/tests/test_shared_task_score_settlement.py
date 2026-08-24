@@ -112,6 +112,52 @@ def test_worker_never_requests_update_locks_on_shared_assignments() -> None:
     assert violating_statements == []
 
 
+def test_v2_primary_keeps_fixed_task_ledger_but_defers_teacher_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _prepare_config()
+    teacher_id = "REAL-SCORE-V2-PRIMARY"
+    _teacher(teacher_id)
+    assignments = _assignments(teacher_id, completed={"G01"})
+    worker = SharedTaskScoreSettlementWorker(engine)
+    refreshes: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        worker,
+        "_dts_pipeline_mode",
+        lambda _session: "V2_PRIMARY",
+    )
+    monkeypatch.setattr(
+        worker,
+        "_enqueue_v2_teacher_refresh",
+        lambda _session, **values: refreshes.append(values),
+    )
+
+    result = worker.run_once(max_events=1)
+
+    assert result["settled"] == 1
+    assert result["score_entries_created"] == 1
+    assert refreshes == [
+        {
+            "teacher_id": teacher_id,
+            "assignment_id": assignments["G01"],
+            "triggering_outbox_id": (
+                f"OUTBOX-{assignments['G01']}-initial"
+            ),
+        }
+    ]
+    with session_scope(engine) as session:
+        account = session.get(
+            ScoreAccountRecord,
+            (teacher_id, "NEW_TEACHER_TASK"),
+        )
+        teacher = session.get(TeacherRecord, teacher_id)
+        qualification = session.get(TeacherQualificationRecord, teacher_id)
+        assert account is not None and account.current_score == 3
+        assert teacher is not None and teacher.total_score == 0
+        assert qualification is not None
+        assert qualification.graduation_qualified is False
+
+
 def _teacher(
     teacher_id: str,
     *,
@@ -144,7 +190,7 @@ def _teacher(
                 country="PH",
                 timezone="Asia/Manila",
                 camp_day=5,
-                graduation_state="IN_PROGRESS",
+                graduation_state="IN_CAMP",
                 total_score=initial_total_score,
                 graduation_threshold=100,
                 data_mode="REAL",
@@ -603,6 +649,7 @@ def test_task_events_are_coalesced_without_rebuilding_lesson_scores() -> None:
     with session_scope(engine) as session:
         session.add(
             LessonSourceWideRecord(
+                source_region="ovs",
                 course_id="LESSON-KEEP",
                 teacher_id=teacher_id,
                 lesson_status="COMPLETED",
@@ -610,6 +657,7 @@ def test_task_events_are_coalesced_without_rebuilding_lesson_scores() -> None:
         )
         session.add(
             LessonScoreResultRecord(
+                lesson_source_region="ovs",
                 lesson_id="LESSON-KEEP",
                 reliability_score=4,
                 user_feedback_score=0,
@@ -629,7 +677,7 @@ def test_task_events_are_coalesced_without_rebuilding_lesson_scores() -> None:
     with session_scope(engine) as session:
         lesson_score = session.get(
             LessonScoreResultRecord,
-            "LESSON-KEEP",
+            ("ovs", "LESSON-KEEP"),
         )
         assert lesson_score is not None
         assert lesson_score.projection_revision == 41
@@ -759,8 +807,9 @@ def test_incremental_task_projection_respects_irreversible_qualification_gate(
         assert teacher is not None
         assert teacher.total_score == 100
         assert teacher.graduation_state == (
-            "GRADUATED" if expected_qualified else "IN_PROGRESS"
+            "GRADUATED" if expected_qualified else "IN_CAMP"
         )
+        assert teacher.payload["graduation_state"] == teacher.graduation_state
         assert teacher.payload["graduation_criteria_met"] is True
         assert teacher.payload["graduation_qualified"] is expected_qualified
         assert teacher.payload[
@@ -784,7 +833,7 @@ def test_source_wide_task_settlement_is_targeted_and_survives_source_refresh() -
                 job_days=1,
                 total_completed_cnt=0,
                 peak_completed_cnt=5,
-                feedback_praise_cnt=7,
+                feedback_praise_cnt=11,
                 feedback_favorite_cnt=4,
                 peak_slot_cnt=0,
                 late_cnt=0,
@@ -822,6 +871,16 @@ def test_source_wide_task_settlement_is_targeted_and_survives_source_refresh() -
         teacher = session.get(TeacherRecord, teacher_id)
         qualification = session.get(TeacherQualificationRecord, teacher_id)
         assert teacher is not None and teacher.total_score == 65
+        favorite_component = session.scalar(
+            select(ScoreComponentAccountRecord).where(
+                ScoreComponentAccountRecord.teacher_id == teacher_id,
+                ScoreComponentAccountRecord.component_code
+                == "FEEDBACK_FAVORITE",
+            )
+        )
+        assert favorite_component is not None
+        assert favorite_component.current_score == 0
+        assert favorite_component.reconciliation_status == "SOURCE_MISSING"
         assert qualification is not None
         assert qualification.graduation_criteria_met is False
         assert qualification.graduation_qualified is False
@@ -868,7 +927,7 @@ def test_source_wide_task_settlement_is_targeted_and_survives_source_refresh() -
 
         source = session.get(TeacherSourceWideRecord, teacher_id)
         assert source is not None
-        source.feedback_praise_cnt = 8
+        source.feedback_praise_cnt = 12
         session.add(
             OutboxEventRecord(
                 outbox_id=f"OUT-SOURCE-{teacher_id}-PRAISE",
@@ -935,6 +994,7 @@ def test_source_wide_task_settlement_is_targeted_and_survives_source_refresh() -
         assert qualification is not None
         assert qualification.graduation_criteria_met is True
         assert qualification.graduation_qualified is True
+        assert qualification.graduation_score_locked == 100
         assert qualification.gate_results[
             "mandatory_task_completed_count"
         ] == 9

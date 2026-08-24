@@ -142,6 +142,15 @@ ALLOWED_FILE_KEYS = frozenset(
         "TIT_SOURCE_WORKER_EXPECTED_DATABASE",
         "TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS",
         "TIT_TRUSTED_PROXY_IPS",
+        "TIT_V2_CUTOVER_RUN_ID_SHA256",
+        "TIT_V2_DOMAIN_LEASE_SECONDS",
+        "TIT_V2_TIME_RECHECK_LEASE_SECONDS",
+        "TIT_V2_EXPECTED_DATABASE",
+        "TIT_V2_INITIAL_H0_VECTOR_SHA256",
+        "TIT_V2_RUNTIME_BATCH_SIZE",
+        "TIT_V2_RUNTIME_ENABLED",
+        "TIT_V2_SOURCE_PARTITION_EPOCH_SHA256",
+        "TIT_V2_SOURCE_PROFILE_MANIFEST_SHA256",
         "TRUST_PROXY_HOPS",
     }
 )
@@ -281,6 +290,7 @@ def _load_configuration(
 
     merged = dict(file_values)
     merged.update(environ)
+    merged.setdefault("TIT_V2_RUNTIME_ENABLED", "false")
     required_exact = {
         "APP_ENV": "production",
         "TASK_CATALOG_PUBLIC_WRITE": "false",
@@ -292,6 +302,7 @@ def _load_configuration(
     for key in (
         "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED",
         "TIT_SOURCE_WIDE_ENABLED",
+        "TIT_V2_RUNTIME_ENABLED",
     ):
         if merged.get(key) not in {"true", "false"}:
             raise RuntimeEnvError(f"effective {key} must be exactly true or false")

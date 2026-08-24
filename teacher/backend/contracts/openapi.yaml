@@ -1074,7 +1074,7 @@ components:
         timezone: { type: [string, 'null'] }
         campDay: { type: [integer, 'null'], minimum: 0 }
         totalCampDays: { type: integer, minimum: 1 }
-        graduationState: { type: [string, 'null'] }
+        graduationState: { type: [string, 'null'], enum: [IN_CAMP, GRADUATED, null] }
         freshness: { $ref: '#/components/schemas/SourceFreshness' }
     OnboardingGuideCode:
       type: string
@@ -1541,14 +1541,19 @@ components:
     TideSummary:
       type: object
       additionalProperties: false
-      required: [available, rawTotalScore, publicTotalScore, graduationState, graduationQualified, goldQualified, graduationThreshold, goldThreshold, mandatoryTaskCompletedCount, mandatoryTaskTotalCount, scoreRuleVersion, calculatedAt, dimensions, availableScore, freshness]
+      required: [available, onlineStatus, rawTotalScore, publicTotalScore, graduationState, graduationQualified, graduationQualifiedAt, graduationScoreLocked, goldQualified, goldStatus, goldQualifiedAt, graduationThreshold, goldThreshold, mandatoryTaskCompletedCount, mandatoryTaskTotalCount, scoreRuleVersion, calculatedAt, dimensions, availableScore, source, freshness]
       properties:
         available: { type: boolean, const: true }
+        onlineStatus: { type: string, enum: [NEW, EXISTING, LEFT, BLOCKED] }
         rawTotalScore: { type: number, minimum: 0 }
         publicTotalScore: { type: number, minimum: 0, maximum: 200 }
-        graduationState: { type: string }
+        graduationState: { type: string, enum: [IN_CAMP, GRADUATED] }
         graduationQualified: { type: boolean }
+        graduationQualifiedAt: { type: [string, 'null'], format: date-time }
+        graduationScoreLocked: { type: [number, 'null'], minimum: 0 }
         goldQualified: { type: boolean }
+        goldStatus: { type: string, enum: [NOT_GOLD, GOLD] }
+        goldQualifiedAt: { type: [string, 'null'], format: date-time }
         graduationThreshold: { type: number, minimum: 0 }
         goldThreshold: { type: number, minimum: 0 }
         mandatoryTaskCompletedCount:
@@ -1570,6 +1575,14 @@ components:
           oneOf:
             - { $ref: '#/components/schemas/AvailableScore' }
             - { type: 'null' }
+        source:
+          type: object
+          additionalProperties: false
+          required: [teacherSourceStatus]
+          properties:
+            teacherSourceStatus:
+              type: string
+              enum: [CONFIRMED, SOURCE_MISSING]
         freshness: { $ref: '#/components/schemas/SourceFreshness' }
     ScoreDimension:
       type: object
@@ -1632,9 +1645,25 @@ components:
     CourseFact:
       type: object
       additionalProperties: false
-      required: [lessonId, lessonSequence, lessonCount, scheduledStartAt, lessonLocalDate, lessonLocalTime, lifecycleStatus, validForScoring, evidenceStatus, lessonTotalScore, scoreRuleVersion, updatedAt, facts, dimensions]
+      required: [lessonId, sourceRegion, sourceAppointId, participationSeq, lessonSequence, lessonCount, scheduledStartAt, lessonLocalDate, lessonLocalTime, lifecycleStatus, validForScoring, evidenceStatus, lessonTotalScore, scoreRuleVersion, updatedAt, facts, dimensions]
       properties:
-        lessonId: { type: string }
+        lessonId:
+          type: string
+          readOnly: true
+          deprecated: true
+          description: Opaque compatibility display key derived from the participation identity; not a source lesson ID and never used for database lookup.
+        sourceRegion:
+          type: string
+          enum: [dom, ovs]
+          description: Source region and the first part of the stable course-participation identity.
+        sourceAppointId:
+          type: string
+          maxLength: 512
+          description: Source appointment ID; unique only together with sourceRegion and participationSeq.
+        participationSeq:
+          type: integer
+          minimum: 1
+          description: Teacher participation sequence within the source appointment.
         lessonSequence: { type: integer, minimum: 1 }
         lessonCount: { type: integer, minimum: 0 }
         scheduledStartAt: { type: [string, 'null'], format: date-time }
@@ -1644,16 +1673,15 @@ components:
         validForScoring: { type: boolean }
         evidenceStatus: { type: string }
         lessonTotalScore: { type: number, minimum: 0 }
-        scoreRuleVersion: { type: string }
+        scoreRuleVersion: { type: [string, 'null'] }
         updatedAt: { type: string, format: date-time }
         facts:
           type: object
           additionalProperties: false
-          required: [late, earlyLeave, falseEarlyLeave, positiveFeedback, favorited, rebooked, cameraOff, cpuUsageHigh, networkDelayHigh, peak]
+          required: [late, earlyLeave, positiveFeedback, favorited, rebooked, cameraOff, cpuUsageHigh, networkDelayHigh, peak]
           properties:
             late: { type: [boolean, 'null'] }
             earlyLeave: { type: [boolean, 'null'] }
-            falseEarlyLeave: { type: [boolean, 'null'] }
             positiveFeedback: { type: [boolean, 'null'] }
             favorited: { type: [boolean, 'null'] }
             rebooked: { type: [boolean, 'null'] }

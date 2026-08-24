@@ -105,6 +105,7 @@ _TEACHER_ROWS: tuple[dict[str, Any], ...] = (
 
 _LESSON_ROWS: tuple[dict[str, Any], ...] = (
     {
+        "source_region": "ovs",
         "course_id": "TEST-SOURCE-LESSON-001",
         "lesson_date": date(2099, 1, 3),
         "lesson_time": time(10, 0),
@@ -121,11 +122,11 @@ _LESSON_ROWS: tuple[dict[str, Any], ...] = (
         "has_positive_feedback_tag": True,
         "feedback_detail": "TEST ONLY: synthetic positive lesson",
         "is_camera_off": False,
-        "is_cpu_usage_high": False,
-        "is_network_delay_high": False,
-        "is_false_early_leave": False,
+        "is_cpu_usage_high": None,
+        "is_network_delay_high": None,
     },
     {
+        "source_region": "ovs",
         "course_id": "TEST-SOURCE-LESSON-002",
         "lesson_date": date(2099, 1, 4),
         "lesson_time": time(11, 0),
@@ -142,11 +143,11 @@ _LESSON_ROWS: tuple[dict[str, Any], ...] = (
         "has_positive_feedback_tag": False,
         "feedback_detail": "TEST ONLY: synthetic late and early lesson",
         "is_camera_off": False,
-        "is_cpu_usage_high": False,
-        "is_network_delay_high": False,
-        "is_false_early_leave": False,
+        "is_cpu_usage_high": None,
+        "is_network_delay_high": None,
     },
     {
+        "source_region": "ovs",
         "course_id": "TEST-SOURCE-LESSON-003",
         "lesson_date": date(2099, 2, 3),
         "lesson_time": time(12, 0),
@@ -166,11 +167,11 @@ _LESSON_ROWS: tuple[dict[str, Any], ...] = (
         "has_positive_feedback_tag": False,
         "feedback_detail": "TEST ONLY: synthetic complaint evidence",
         "is_camera_off": False,
-        "is_cpu_usage_high": False,
-        "is_network_delay_high": False,
-        "is_false_early_leave": False,
+        "is_cpu_usage_high": None,
+        "is_network_delay_high": None,
     },
     {
+        "source_region": "ovs",
         "course_id": "TEST-SOURCE-LESSON-004",
         "lesson_date": date(2099, 2, 4),
         "lesson_time": time(13, 0),
@@ -187,9 +188,8 @@ _LESSON_ROWS: tuple[dict[str, Any], ...] = (
         "has_positive_feedback_tag": False,
         "feedback_detail": "TEST ONLY: synthetic device and network anomaly",
         "is_camera_off": True,
-        "is_cpu_usage_high": True,
-        "is_network_delay_high": True,
-        "is_false_early_leave": False,
+        "is_cpu_usage_high": None,
+        "is_network_delay_high": None,
     },
 )
 
@@ -214,7 +214,7 @@ def _same_record(actual: _RecordT, expected: _RecordT) -> bool:
 def _add_or_validate(
     session: Session,
     model: type[_RecordT],
-    primary_key: str,
+    primary_key: Any,
     values: Mapping[str, Any],
 ) -> None:
     expected = model(**dict(values))
@@ -254,7 +254,10 @@ def seed_source_test_data(
                 _add_or_validate(
                     session,
                     LessonSourceWideRecord,
-                    str(values["course_id"]),
+                    (
+                        str(values["source_region"]),
+                        str(values["course_id"]),
+                    ),
                     values,
                 )
             session.flush()

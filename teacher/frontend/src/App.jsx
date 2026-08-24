@@ -118,6 +118,7 @@ import {
   getAiHelpBounds,
 } from "./ai-help-position";
 import {
+  courseParticipationKey,
   courseScoreDimensionGroups,
   courseScoreSourceLabels,
   mergeScorecardCourseSources,
@@ -295,7 +296,7 @@ const workspaceMeta = {
   readiness_photo: ["Two-part lesson preparation", "首课两项准备", "Use one photo for the four AI checks and confirm courseware preparation in either order.", "任意顺序完成照片四项 AI 检测和课件准备确认。"],
   upload_review: ["Submit for review", "上传材料", "Follow the steps below to submit your material for review.", "按照下方要求提交材料并查看审核结果。"],
   embedded_course: ["In-platform course", "站内课程", "Complete every learning section inside this task page.", "在当前任务页内完成全部学习内容。"],
-  document_reading: ["Policy document", "政策文档", "Read the document to the end. Progress is saved automatically.", "请将文档阅读到底，进度会自动保存。"],
+  document_reading: ["Document", "文档", "Read the document to the end. Progress is saved automatically.", "请将文档阅读到底，进度会自动保存。"],
   guidance_acknowledgement: ["Result and next step", "结果与下一步", "Review the affected classes, complete the AC/ACE check and record the result.", "查看触发课程，完成 AC／ACE 检测并记录结果。"],
   factual_response: ["Factual response", "事实说明", "Describe the verifiable classroom facts, save a draft if needed, then submit it for operational review.", "填写可核实的课堂事实；需要时先保存草稿，再提交运营复核。"],
   content_pending: ["Content pending", "内容待补充", "This required task is confirmed; its official content and completion method are still being prepared.", "这项必修任务已经确认，正式内容和完成方式仍在准备中。"],
@@ -2730,7 +2731,7 @@ function DimensionDetails({
     CAPACITY_PEAK_SLOT_40: { en: "Peak-time bookable slots", zh: "高峰时段可约课时数" },
   };
   const sourceMeta = (source) => {
-    if (source.lessonId) {
+    if (source.courseKey) {
       const date = new Date(source.lessonStartedAt);
       const localizedDate = Number.isNaN(date.getTime())
         ? ""
@@ -2763,7 +2764,7 @@ function DimensionDetails({
         : null;
     if (
       isCourseScoreDimension
-      && !source.lessonId
+      && !source.courseKey
       && Number.isFinite(pointsPerUnit)
       && pointsPerUnit > 0
     ) {
@@ -2799,7 +2800,7 @@ function DimensionDetails({
       current.sources.push(source);
       if (Number.isFinite(Number(source.score))) {
         current.totalScore += Number(source.score);
-        if (source.lessonId) {
+        if (source.courseKey) {
           current.attributedScore += Number(source.score);
         }
       }
@@ -2830,22 +2831,23 @@ function DimensionDetails({
         group.hasUnattributed || totalScore > attributedScore + 0.001,
       scoringLessonCount: new Set(
         group.sources
-          .filter((source) => source.lessonId)
-          .map((source) => source.lessonId),
+          .filter((source) => source.courseKey)
+          .map((source) => source.courseKey),
       ).size,
       scoreByLesson: group.sources.reduce((scores, source) => {
-        if (!source.lessonId) return scores;
+        if (!source.courseKey) return scores;
         const score = Number(source.score);
         if (!Number.isFinite(score)) return scores;
-        scores.set(source.lessonId, (scores.get(source.lessonId) || 0) + score);
+        scores.set(source.courseKey, (scores.get(source.courseKey) || 0) + score);
         return scores;
       }, new Map()),
     };
   });
   const courseColumns = Array.from(
     (dimension.sources || []).reduce((lessons, source) => {
-      if (source.lessonId && !lessons.has(source.lessonId)) {
-        lessons.set(source.lessonId, {
+      if (source.courseKey && !lessons.has(source.courseKey)) {
+        lessons.set(source.courseKey, {
+          courseKey: source.courseKey,
           lessonId: source.lessonId,
           lessonNumber: source.lessonNumber,
           lessonStartedAt: source.lessonStartedAt,
@@ -2977,7 +2979,7 @@ function DimensionDetails({
                   <tr>
                     <th scope="col">{copy(language, "Indicator", "指标")}</th>
                     {visibleCourseColumns.map((lesson) => (
-                      <th scope="col" key={lesson.lessonId}>
+                      <th scope="col" key={lesson.courseKey}>
                         <strong>{lessonLabel(lesson)}</strong>
                         <small>{lessonDate(lesson)}</small>
                       </th>
@@ -3011,11 +3013,11 @@ function DimensionDetails({
                         </small>
                       </th>
                       {visibleCourseColumns.map((lesson) => {
-                        const score = group.scoreByLesson.get(lesson.lessonId);
+                        const score = group.scoreByLesson.get(lesson.courseKey);
                         return (
                           <td
                             className={score === undefined ? "" : "has-score"}
-                            key={lesson.lessonId}
+                            key={lesson.courseKey}
                             aria-label={score === undefined
                               ? copy(language, "No points added for this indicator in this class", "本课该指标没有加分")
                               : undefined}
@@ -3045,7 +3047,7 @@ function DimensionDetails({
               </div>
               <div className="dimension-course-mobile-list">
                 {visibleCourseColumns.map((lesson) => (
-                  <article key={lesson.lessonId}>
+                  <article key={lesson.courseKey}>
                     <header>
                       <span>{String(lesson.lessonNumber).padStart(2, "0")}</span>
                       <div>
@@ -3055,7 +3057,7 @@ function DimensionDetails({
                     </header>
                     <dl>
                       {indicatorGroups.map((group) => {
-                        const score = group.scoreByLesson.get(lesson.lessonId);
+                        const score = group.scoreByLesson.get(lesson.courseKey);
                         if (score === undefined) return null;
                         return (
                           <div key={group.key}>
@@ -3851,7 +3853,9 @@ function MyTitPage({
   const teacher = useTeacher();
   const [activeDimension, setActiveDimension] = useState("");
   const [growthView, setGrowthView] = useState("dimensions");
-  const [activeLessonId, setActiveLessonId] = useState(courses[0]?.lessonId || "");
+  const [activeLessonId, setActiveLessonId] = useState(() => (
+    courses[0] ? courseParticipationKey(courses[0]) : ""
+  ));
   const [scoreDetailsOpen, setScoreDetailsOpen] = useState(false);
   const handledScoreGuideRequestRef = useRef(scoreGuideRequestKey);
   const scoreDetailsGuideNotifiedRef = useRef(false);
@@ -3966,7 +3970,7 @@ function MyTitPage({
           }
         : null;
       const scoringLessonCount = new Set(
-        sources.map((source) => source.lessonId).filter(Boolean),
+        sources.map((source) => source.courseKey).filter(Boolean),
       ).size;
       const reportedLessonCount = Math.max(
         0,
@@ -4089,7 +4093,11 @@ function MyTitPage({
         }))
         .filter((group) => group.metrics.length > 0);
       return {
-        id: course.lessonId,
+        id: courseParticipationKey(course),
+        lessonId: course.lessonId,
+        sourceRegion: course.sourceRegion,
+        sourceAppointId: course.sourceAppointId,
+        participationSeq: course.participationSeq,
         label: {
           en: `Class ${course.lessonSequence || index + 1}`,
           zh: `第 ${course.lessonSequence || index + 1} 节课`,
@@ -5789,7 +5797,11 @@ function AppShell() {
                   displayName: localizeTask(task, language).name,
                 }))}
               lessonOptions={courses.map((course) => ({
-                id: course.lessonId,
+                id: courseParticipationKey(course),
+                lessonId: course.lessonId,
+                sourceRegion: course.sourceRegion,
+                sourceAppointId: course.sourceAppointId,
+                participationSeq: course.participationSeq,
                 sequence: course.lessonSequence,
                 scheduledStartAt: course.scheduledStartAt,
                 localDate: course.lessonLocalDate,

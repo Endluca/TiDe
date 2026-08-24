@@ -179,6 +179,8 @@ export interface MetricProvenance {
   description?: string | null
 }
 
+export type TeacherCampState = 'IN_CAMP' | 'GRADUATED'
+
 export interface Teacher {
   teacher_id: string
   name: string
@@ -202,7 +204,7 @@ export interface Teacher {
   gold_score_threshold_met?: boolean
   gold_criteria_met?: boolean
   gold_qualified?: boolean
-  graduation_state?: string
+  graduation_state?: TeacherCampState
   data_mode?: TeacherDataMode | string
   employment_status?: string | null
   source_snapshot_label?: string | null
@@ -239,7 +241,7 @@ export interface TeacherOption {
   name: string
   data_mode: TeacherDataMode | string
   employment_status: string | null
-  graduation_state: string
+  graduation_state: TeacherCampState
   task_issuance_blockers: Array<'GRADUATED' | 'TIMEZONE_UNAVAILABLE' | string>
 }
 
@@ -334,7 +336,7 @@ export interface TriggerRule {
     minimum_reference_count: number
   }
   scope: {
-    graduation_states: Array<'IN_PROGRESS'>
+    graduation_states: Array<'IN_CAMP'>
     countries: string[]
     minimum_camp_day: number
     maximum_camp_day: number

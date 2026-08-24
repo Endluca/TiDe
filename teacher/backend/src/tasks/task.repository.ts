@@ -447,9 +447,11 @@ export class TaskRepository {
         evaluated,
       );
       const automaticCompletion =
-        task.taskCode === 'G02' &&
         step.rows[0].stepType === 'DOCUMENT' &&
-        step.rows[0].stepKey === 'g02-policy-document' &&
+        ((task.taskCode === 'G02' &&
+          step.rows[0].stepKey === 'g02-policy-document') ||
+          (task.taskCode === 'P-REL-MEMO' &&
+            step.rows[0].stepKey === 'p-rel-memo-document')) &&
         evaluated.reachedEnd === true
           ? await this.submitLockedTask(client, task, {
               ...input,

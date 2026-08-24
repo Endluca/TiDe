@@ -150,7 +150,7 @@ if [[ "${authoritative_fixed_catalog_ready}" != "t" ]]; then
   exit 1
 fi
 
-EXPECTED_PUBLIC_HEAD="20260819_65_g09_set_course"
+EXPECTED_PUBLIC_HEAD="20260823_100_scope_snapshot_diff"
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('public.alembic_version') is not null")" != "t" ]]; then
   echo "公司测试库缺少 public Alembic 账本。请先执行受控分阶段迁移；初始化未执行任何写入。" >&2
   exit 1
@@ -202,10 +202,11 @@ CANONICAL_TIDE_MIGRATIONS=(
   0040_g02_document_read_status
   0041_crm_sso_hybrid
   0042_g09_set_kuozhi_course
+  0043_p_rel_execution_catalog
 )
 
 if [[ "$("${ADMIN_PSQL[@]}" -Atqc "select to_regclass('tide.schema_migrations') is not null")" != "t" ]]; then
-  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64 -> public head 65 -> teacher 0042 执行正式分阶段迁移；本脚本不创建或补迁移。" >&2
+  echo "公司测试库缺少 canonical Tide 迁移账本。请先按 public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 -> public head 54 -> teacher 0037 -> public head 55 -> public head 56 -> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 -> public head 63 -> public head 64 -> public head 65 -> teacher 0042 -> public head 99/100 -> teacher 0043，并最终迁移到 public head 100；本脚本不创建或补迁移。" >&2
   exit 1
 fi
 
@@ -217,10 +218,10 @@ actual_tide_migration_ids="$("${ADMIN_PSQL[@]}" -Atqc "
 ")"
 tide_ledger_shape_ready="$("${ADMIN_PSQL[@]}" -Atqc "
   select
-    count(*) = 37
+    count(*) = 38
     and min(migration_order) = 1
-    and max(migration_order) = 37
-    and count(distinct migration_order) = 37
+    and max(migration_order) = 38
+    and count(distinct migration_order) = 38
     and bool_and(filename = migration_id || '.up.sql')
   from tide.schema_migrations
 ")"
@@ -232,7 +233,7 @@ if [[ "${actual_tide_migration_ids}" != "${expected_tide_migration_ids}" \
       '未记账'
     )
   ")"
-  echo "公司测试库 Tide 账本不是精确 canonical 0042（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
+  echo "公司测试库 Tide 账本不是精确 canonical 0043（当前 Head：${current_tide_head}）。请使用正式分阶段迁移器处理；禁止由初始化脚本重放或认领迁移。" >&2
   exit 1
 fi
 
@@ -710,7 +711,7 @@ canonical_schema_ready="$("${ADMIN_PSQL[@]}" -Atq <<'SQL'
 SQL
 )"
 if [[ "${canonical_schema_ready}" != "t" ]]; then
-  echo "公司测试库虽已记账到 canonical 0042，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
+  echo "公司测试库虽已记账到 canonical 0043，但实存结构与最终契约不一致。初始化未执行任何写入。" >&2
   exit 1
 fi
 
@@ -1236,9 +1237,9 @@ verification="$("${APP_PSQL[@]}" -Atq <<'SQL'
   )
 SQL
 )"
-if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|f|f|f|f|14|t|t|t|t|t|f|t" ]]; then
+if [[ "${verification}" != "tit_teacher_crud|tide|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|f|f|f|f|16|t|t|t|t|t|f|t" ]]; then
   echo "应用账号验收失败：${verification}" >&2
   exit 1
 fi
 
-echo "公司测试库初始化完成：public 65 与 canonical Tide 0042 账本/checksum/实存结构只读门禁、DTS 脏键领取索引、direct 隐私门禁、G05/G08/G09 阔知课程映射、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、教师英文文案、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、国内学生隐私边界与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"
+echo "公司测试库初始化完成：public 99 与 canonical Tide 0043 账本/checksum/实存结构只读门禁、DTS v2 Schema、G05/G08/G09 阔知课程映射、G01 TESOL-only 受限视图、G02 原生政策文档、G04 两模块、教师英文文案、P-REL-MEMO/P-REL-ATTENDANCE 执行目录、P-FB-NEGATIVE 环境拍照、CRM SSO、最终表级 ACL、国内学生隐私边界与运行时 Trigger 均已验证；未执行任何 Schema 迁移或 Mock Seed。"

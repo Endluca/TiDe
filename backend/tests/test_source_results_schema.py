@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import sqlalchemy as sa
+
 from app.db_models import (
     LessonScoreResultRecord,
     PersonalizedTriggerMatchRecord,
@@ -30,9 +32,9 @@ def _migration_module() -> ModuleType:
     return module
 
 
-def test_derived_result_orm_is_minimal_and_source_linked() -> None:
+def test_derived_result_orm_preserves_rev43_and_adds_inert_v2_ownership() -> None:
     lesson_table = LessonScoreResultRecord.__table__
-    assert tuple(column.name for column in lesson_table.columns) == (
+    rev43_columns = (
         "lesson_id",
         "user_feedback_score",
         "reliability_score",
@@ -43,12 +45,78 @@ def test_derived_result_orm_is_minimal_and_source_linked() -> None:
         "projection_revision",
         "calculated_at",
     )
+    v2_ownership_columns = (
+        "v2_source_region",
+        "v2_source_appoint_id",
+        "v2_completion_participation_seq",
+        "v2_teacher_id",
+        "v2_projection_generation",
+    )
+    assert tuple(column.name for column in lesson_table.columns) == (
+        "lesson_source_region",
+        *rev43_columns,
+        *v2_ownership_columns,
+    )
+    assert all(lesson_table.c[name].nullable for name in v2_ownership_columns)
     assert "teacher_id" not in lesson_table.columns
     assert lesson_table.columns["dimensions"].default.arg(None) == {}
     assert str(lesson_table.columns["dimensions"].server_default.arg) == "'{}'"
-    lesson_fk = next(iter(lesson_table.foreign_keys))
-    assert lesson_fk.target_fullname == "lesson_source_wide.课程id"
+    lesson_fk = next(
+        constraint
+        for constraint in lesson_table.foreign_key_constraints
+        if constraint.name == "fk_lesson_score_result_source_lesson_region"
+    )
+    assert tuple(element.target_fullname for element in lesson_fk.elements) == (
+        "lesson_source_wide.source_region",
+        "lesson_source_wide.课程id",
+    )
     assert lesson_fk.ondelete == "CASCADE"
+
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in lesson_table.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+        and constraint.name is not None
+    }
+    assert checks["ck_lesson_score_result_v2_ownership"] == (
+        "(v2_source_region IS NULL "
+        "AND v2_source_appoint_id IS NULL "
+        "AND v2_completion_participation_seq IS NULL "
+        "AND v2_teacher_id IS NULL "
+        "AND v2_projection_generation IS NULL) "
+        "OR (v2_source_region IN ('dom', 'ovs') "
+        "AND v2_source_appoint_id IS NOT NULL "
+        "AND v2_completion_participation_seq >= 1 "
+        "AND v2_teacher_id IS NOT NULL "
+        "AND btrim(v2_teacher_id) <> '' "
+        "AND v2_projection_generation >= 1)"
+    )
+    v2_foreign_keys = {
+        constraint.name: constraint
+        for constraint in lesson_table.constraints
+        if isinstance(constraint, sa.ForeignKeyConstraint)
+        and constraint.name is not None
+        and constraint.name.startswith("fk_lesson_score_result_v2_")
+    }
+    assert set(v2_foreign_keys) == {
+        "fk_lesson_score_result_v2_course",
+        "fk_lesson_score_result_v2_score_owner",
+    }
+    assert all(
+        constraint.ondelete == "RESTRICT"
+        and constraint.deferrable is True
+        and constraint.initially == "DEFERRED"
+        for constraint in v2_foreign_keys.values()
+    )
+    ownership_index = next(
+        index
+        for index in lesson_table.indexes
+        if index.name == "uq_lesson_score_result_v2_course"
+    )
+    assert ownership_index.unique is True
+    assert str(ownership_index.dialect_options["postgresql"]["where"]) == (
+        "v2_source_region IS NOT NULL"
+    )
 
     qualification_table = TeacherQualificationRecord.__table__
     assert tuple(column.name for column in qualification_table.primary_key) == (
@@ -69,9 +137,15 @@ def test_derived_result_orm_is_minimal_and_source_linked() -> None:
 
 
 def test_trigger_match_orm_points_to_current_lesson_source() -> None:
-    lesson_id = PersonalizedTriggerMatchRecord.__table__.columns["lesson_id"]
-    lesson_fk = next(iter(lesson_id.foreign_keys))
-    assert lesson_fk.target_fullname == "lesson_source_wide.课程id"
+    lesson_fk = next(
+        constraint
+        for constraint in PersonalizedTriggerMatchRecord.__table__.foreign_key_constraints
+        if constraint.name == "fk_personalized_trigger_match_lesson_region"
+    )
+    assert tuple(element.target_fullname for element in lesson_fk.elements) == (
+        "lesson_source_wide.source_region",
+        "lesson_source_wide.课程id",
+    )
     assert lesson_fk.ondelete == "SET NULL"
 
 

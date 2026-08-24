@@ -167,6 +167,7 @@ class DatabaseStore:
     def _merge_teacher_graph(self, session: Any, teacher: dict[str, Any]) -> int:
         teacher_id = teacher["teacher_id"]
         camp_id = teacher.get("camp_enrollment_id") or _camp_enrollment_id(teacher_id)
+        graduation_state = teacher.get("graduation_state", "IN_CAMP")
         session.merge(
             TeacherRecord(
                 teacher_id=teacher_id,
@@ -175,13 +176,16 @@ class DatabaseStore:
                 country=teacher.get("country"),
                 timezone=teacher.get("timezone") or "UTC",
                 camp_day=int(teacher.get("camp_day", 0)),
-                graduation_state=teacher.get("graduation_state", "IN_PROGRESS"),
+                graduation_state=graduation_state,
                 gold_qualified=bool(teacher.get("gold_qualified", False)),
                 total_score=float(teacher.get("total_score", 0)),
                 graduation_threshold=float(teacher.get("graduation_threshold", 0)),
                 data_mode=teacher.get("data_mode", "MOCK"),
                 source_snapshot_label=teacher.get("source_snapshot_label"),
-                payload=deepcopy(teacher),
+                payload={
+                    **deepcopy(teacher),
+                    "graduation_state": graduation_state,
+                },
                 updated_at=_parse_datetime(teacher.get("updated_at")) or _now(),
             )
         )
@@ -211,6 +215,9 @@ class DatabaseStore:
                     score_entry_id=entry_id,
                     camp_enrollment_id=camp_id,
                     lesson_id=entry.get("lesson_id"),
+                    source_region=entry.get("source_region"),
+                    source_appoint_id=entry.get("source_appoint_id"),
+                    participation_seq=entry.get("participation_seq"),
                     teacher_id=teacher_id,
                     dimension=entry["dimension"],
                     entry_type=entry.get("entry_type", "INITIAL"),
@@ -223,6 +230,11 @@ class DatabaseStore:
                     occurred_at=_parse_datetime(entry.get("occurred_at")),
                     reversal_of_score_entry_id=entry.get("reversal_of_score_entry_id"),
                     task_assignment_id=entry.get("task_assignment_id"),
+                    projection_origin=entry.get(
+                        "projection_origin", "V1_COMPAT_LIVE"
+                    ),
+                    materialized_by_run_id=entry.get("materialized_by_run_id"),
+                    projection_generation=entry.get("projection_generation"),
                     idempotency_key=entry.get("idempotency_key", entry_id),
                     payload=deepcopy(entry),
                 )
@@ -446,7 +458,8 @@ class DatabaseStore:
             lessons = list(
                 session.scalars(
                     select(LessonSourceWideRecord).where(
-                        LessonSourceWideRecord.teacher_id.in_(normalized_ids)
+                        LessonSourceWideRecord.teacher_id.in_(normalized_ids),
+                        LessonSourceWideRecord.lesson_status == "end",
                     )
                 ).all()
             )
@@ -546,6 +559,7 @@ class DatabaseStore:
                 teacher = self.teachers[teacher_id]
                 teacher_id = teacher["teacher_id"]
                 camp_id = teacher.get("camp_enrollment_id") or _camp_enrollment_id(teacher_id)
+                graduation_state = teacher.get("graduation_state", "IN_CAMP")
                 session.merge(
                     TeacherRecord(
                         teacher_id=teacher_id,
@@ -554,13 +568,16 @@ class DatabaseStore:
                         country=teacher.get("country"),
                         timezone=teacher.get("timezone") or "UTC",
                         camp_day=int(teacher.get("camp_day", 0)),
-                        graduation_state=teacher.get("graduation_state", "IN_PROGRESS"),
+                        graduation_state=graduation_state,
                         gold_qualified=bool(teacher.get("gold_qualified", False)),
                         total_score=float(teacher.get("total_score", 0)),
                         graduation_threshold=float(teacher.get("graduation_threshold", 0)),
                         data_mode=teacher.get("data_mode", "MOCK"),
                         source_snapshot_label=teacher.get("source_snapshot_label"),
-                        payload=deepcopy(teacher),
+                        payload={
+                            **deepcopy(teacher),
+                            "graduation_state": graduation_state,
+                        },
                         updated_at=_parse_datetime(teacher.get("updated_at")) or _now(),
                     )
                 )
@@ -588,6 +605,9 @@ class DatabaseStore:
                             score_entry_id=entry_id,
                             camp_enrollment_id=camp_id,
                             lesson_id=entry.get("lesson_id"),
+                            source_region=entry.get("source_region"),
+                            source_appoint_id=entry.get("source_appoint_id"),
+                            participation_seq=entry.get("participation_seq"),
                             teacher_id=teacher_id,
                             dimension=entry["dimension"],
                             entry_type=entry.get("entry_type", "INITIAL"),
@@ -598,6 +618,11 @@ class DatabaseStore:
                             occurred_at=_parse_datetime(entry.get("occurred_at")),
                             reversal_of_score_entry_id=entry.get("reversal_of_score_entry_id"),
                             task_assignment_id=entry.get("task_assignment_id"),
+                            projection_origin=entry.get(
+                                "projection_origin", "V1_COMPAT_LIVE"
+                            ),
+                            materialized_by_run_id=entry.get("materialized_by_run_id"),
+                            projection_generation=entry.get("projection_generation"),
                             idempotency_key=entry.get("idempotency_key", entry_id),
                             payload=deepcopy(entry),
                         )

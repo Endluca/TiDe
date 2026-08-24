@@ -11,7 +11,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .source_contracts import SOURCE_FIELD_DEPENDENCIES, TEACHER_SOURCE_TABLE
+from .source_contracts import (
+    LESSON_SOURCE_TABLE,
+    SOURCE_FIELD_DEPENDENCIES,
+    TEACHER_SOURCE_TABLE,
+)
 
 
 ALLOWED_OPERATIONS = frozenset({"INSERT", "UPDATE", "DELETE"})
@@ -26,6 +30,7 @@ class SourceChangeRoute:
     """Deterministic downstream work selected for one source change."""
 
     source_table: str
+    source_region: str | None
     source_id: str
     operation: str
     changed_fields: tuple[str, ...]
@@ -52,6 +57,25 @@ def _optional_teacher_id(payload: Mapping[str, Any], key: str) -> str | None:
     return value.strip()
 
 
+def _source_region(
+    payload: Mapping[str, Any],
+    *,
+    source_table: str,
+) -> str | None:
+    value = payload.get("source_region")
+    if source_table == LESSON_SOURCE_TABLE:
+        if value not in {"dom", "ovs"}:
+            raise SourceChangeRoutingError(
+                "source_region must be dom or ovs for lesson_source_wide"
+            )
+        return str(value)
+    if value is not None:
+        raise SourceChangeRoutingError(
+            "source_region must be null for teacher_source_wide"
+        )
+    return None
+
+
 def _changed_fields(payload: Mapping[str, Any]) -> tuple[str, ...]:
     value = payload.get("changed_fields")
     if (
@@ -73,25 +97,34 @@ def _affected_teacher_ids(
     operation: str,
     old_teacher_id: str | None,
     new_teacher_id: str | None,
+    *,
+    allow_missing: bool,
 ) -> tuple[str, ...]:
     if operation == "INSERT":
-        if new_teacher_id is None:
+        if new_teacher_id is None and not allow_missing:
             raise SourceChangeRoutingError(
                 "new_teacher_id is required for INSERT"
             )
-        affected = {new_teacher_id}
+        affected = {new_teacher_id} if new_teacher_id is not None else set()
     elif operation == "DELETE":
-        if old_teacher_id is None:
+        if old_teacher_id is None and not allow_missing:
             raise SourceChangeRoutingError(
                 "old_teacher_id is required for DELETE"
             )
-        affected = {old_teacher_id}
+        affected = {old_teacher_id} if old_teacher_id is not None else set()
     else:
-        if old_teacher_id is None or new_teacher_id is None:
+        if (
+            (old_teacher_id is None or new_teacher_id is None)
+            and not allow_missing
+        ):
             raise SourceChangeRoutingError(
                 "old_teacher_id and new_teacher_id are required for UPDATE"
             )
-        affected = {old_teacher_id, new_teacher_id}
+        affected = {
+            value
+            for value in (old_teacher_id, new_teacher_id)
+            if value is not None
+        }
     return tuple(sorted(affected))
 
 
@@ -109,6 +142,7 @@ def route_source_change(payload: Mapping[str, Any]) -> SourceChangeRoute:
         raise SourceChangeRoutingError(
             f"unknown source_table: {source_table}"
         )
+    source_region = _source_region(payload, source_table=source_table)
 
     operation = _required_text(payload, "operation")
     if operation not in ALLOWED_OPERATIONS:
@@ -127,6 +161,7 @@ def route_source_change(payload: Mapping[str, Any]) -> SourceChangeRoute:
         operation,
         old_teacher_id,
         new_teacher_id,
+        allow_missing=source_table == LESSON_SOURCE_TABLE,
     )
 
     handlers: set[str] = set()
@@ -149,6 +184,7 @@ def route_source_change(payload: Mapping[str, Any]) -> SourceChangeRoute:
 
     return SourceChangeRoute(
         source_table=source_table,
+        source_region=source_region,
         source_id=source_id,
         operation=operation,
         changed_fields=changed_fields,

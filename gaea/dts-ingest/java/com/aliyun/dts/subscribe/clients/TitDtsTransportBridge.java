@@ -617,6 +617,7 @@ public final class TitDtsTransportBridge {
         Object rawBeforeImages = sourceRecord.getBeforeImages();
         Object rawAfterImages = sourceRecord.getAfterImages();
         JSONArray fieldNames = normalizedFieldNames(rawFields);
+        JSONObject fieldTypeNumbers = normalizedFieldTypeNumbers(rawFields);
         if (allowedFields != null
                 && fieldNames != null
                 && imagesMatchFields(rawBeforeImages, fieldNames.size())
@@ -632,6 +633,9 @@ public final class TitDtsTransportBridge {
             }
             result.put("fields", selectedFields);
             result.put(
+                    "fieldTypeNumbers",
+                    selectFieldTypeNumbers(fieldTypeNumbers, selectedFields));
+            result.put(
                     "beforeImages",
                     normalizeSelectedImages(rawBeforeImages, selectedIndexes));
             result.put(
@@ -643,12 +647,63 @@ public final class TitDtsTransportBridge {
                     fieldNames == null
                             ? normalizeAvroValue(rawFields, 0)
                             : fieldNames);
+            result.put("fieldTypeNumbers", fieldTypeNumbers);
             result.put(
                     "beforeImages",
                     normalizeAvroValue(rawBeforeImages, 0));
             result.put(
                     "afterImages",
                     normalizeAvroValue(rawAfterImages, 0));
+        }
+        return result;
+    }
+
+    private static JSONObject selectFieldTypeNumbers(
+            JSONObject allTypeNumbers, JSONArray selectedFields) {
+        JSONObject selected = new JSONObject();
+        if (allTypeNumbers == null) {
+            return selected;
+        }
+        for (Object rawName : selectedFields) {
+            String fieldName = rawName == null ? null : rawName.toString();
+            if (fieldName != null && allTypeNumbers.containsKey(fieldName)) {
+                selected.put(fieldName, allTypeNumbers.get(fieldName));
+            }
+        }
+        return selected;
+    }
+
+    private static JSONObject normalizedFieldTypeNumbers(Object rawFields) {
+        if (!(rawFields instanceof List<?>)) {
+            return null;
+        }
+        JSONObject result = new JSONObject();
+        for (Object rawField : (List<?>) rawFields) {
+            String name = fieldName(rawField);
+            Object rawTypeNumber;
+            if (rawField instanceof GenericRecord) {
+                rawTypeNumber = ((GenericRecord) rawField).get(
+                        "dataTypeNumber");
+            } else if (rawField instanceof Map<?, ?>) {
+                rawTypeNumber = ((Map<?, ?>) rawField).get(
+                        "dataTypeNumber");
+            } else {
+                rawTypeNumber = null;
+            }
+            if (name == null || name.isEmpty() || rawTypeNumber == null) {
+                continue;
+            }
+            Object normalized = normalizeAvroValue(rawTypeNumber, 0);
+            if (normalized instanceof Number) {
+                result.put(name, ((Number) normalized).intValue());
+            } else {
+                try {
+                    result.put(name, Integer.valueOf(normalized.toString()));
+                } catch (NumberFormatException exception) {
+                    throw new ProtocolException(
+                            "DTS_OFFICIAL_JAVA_FIELD_TYPE_INVALID");
+                }
+            }
         }
         return result;
     }

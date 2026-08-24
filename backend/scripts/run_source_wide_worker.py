@@ -24,6 +24,7 @@ from app.qualification_award_gate import (
     QualificationAwardGateConfigurationError,
     irreversible_qualification_grants_enabled,
 )
+from app.dts_pipeline_mode import read_optional_dts_pipeline_mode
 from app.runtime_settings import source_worker_database_transport_mode
 
 
@@ -109,6 +110,7 @@ _SOURCE_OUTBOX_HEALTH = text(
 )
 _DEFAULT_LEADER_RETRY_SECONDS = 10.0
 _DEFAULT_MAX_PENDING_AGE_SECONDS = 900.0
+_V2_PRIMARY_STANDBY = object()
 
 
 def _is_production() -> bool:
@@ -337,6 +339,8 @@ def _source_outbox_database_health_issue(
                     connection,
                     expected_database=expected_database,
                 )
+            if read_optional_dts_pipeline_mode(connection) == "V2_PRIMARY":
+                return None
             return _source_outbox_health_issue(
                 connection,
                 max_pending_age_seconds=max_pending_age_seconds,
@@ -366,7 +370,8 @@ def _poll_source_once(
     max_events: int,
     process_once: Callable[..., dict[str, Any]],
     attempt_leadership: bool = True,
-) -> dict[str, Any] | None:
+    pipeline_mode_reader: Callable[[Connection], str | None] | None = None,
+) -> dict[str, Any] | object | None:
     if not leadership.is_leader:
         if not attempt_leadership or not leadership.try_acquire():
             return None
@@ -375,6 +380,11 @@ def _poll_source_once(
     connection = leadership.connection
     if connection is None:
         return None
+    if (
+        pipeline_mode_reader is not None
+        and pipeline_mode_reader(connection) == "V2_PRIMARY"
+    ):
+        return _V2_PRIMARY_STANDBY
     # Consume on the session holding leadership. This closes the gap between
     # verifying the leader and opening an unrelated work connection.
     return process_once(bind=connection, max_events=max_events)
@@ -408,6 +418,7 @@ def _run_worker(
     heartbeat_path: Path,
     readiness_path: Path | None = None,
     process_once: Callable[..., dict[str, Any]],
+    pipeline_mode_reader: Callable[[Connection], str | None] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     stop_requested: Callable[[], bool] = lambda: False,
@@ -433,6 +444,7 @@ def _run_worker(
                 max_events=max_events,
                 process_once=process_once,
                 attempt_leadership=attempt_leadership,
+                pipeline_mode_reader=pipeline_mode_reader,
             )
             if attempt_leadership:
                 # A leader ping or a standby lock attempt both prove that this
@@ -441,7 +453,13 @@ def _run_worker(
                 _write_readiness(resolved_readiness_path)
             if attempt_leadership and not leadership.is_leader:
                 next_leadership_attempt_at = now + leader_retry_seconds
-            if leadership.is_leader:
+            if result is _V2_PRIMARY_STANDBY:
+                reported_role = _log_role_transition(
+                    reported_role,
+                    event="v2_primary_standby",
+                    role="v2_primary_standby",
+                )
+            elif leadership.is_leader:
                 reported_role = _log_role_transition(
                     reported_role,
                     event="leader_acquired",
@@ -473,7 +491,10 @@ def _run_worker(
             return 2
 
         _write_heartbeat(heartbeat_path)
-        if result is not None:
+        if result is _V2_PRIMARY_STANDBY:
+            if not watch:
+                return 0
+        elif result is not None:
             if not watch or result["claimed"] or result["failed"]:
                 print(
                     json.dumps(result, ensure_ascii=False, sort_keys=True),
@@ -656,6 +677,7 @@ def main() -> int:
             heartbeat_path=args.heartbeat_path,
             readiness_path=args.readiness_path,
             process_once=process_source_wide_events_once,
+            pipeline_mode_reader=read_optional_dts_pipeline_mode,
             stop_requested=lambda: stop_state["requested"],
         )
     finally:

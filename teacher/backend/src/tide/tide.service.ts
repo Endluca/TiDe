@@ -174,11 +174,16 @@ export class TideService {
       );
       return {
         available: true,
+        onlineStatus: scorecard.onlineStatus,
         rawTotalScore: scorecard.rawTotalScore,
         publicTotalScore: scorecard.publicTotalScore,
         graduationState: scorecard.graduationState,
         graduationQualified: scorecard.graduationQualified,
+        graduationQualifiedAt: scorecard.graduationQualifiedAt,
+        graduationScoreLocked: scorecard.graduationScoreLocked,
         goldQualified: scorecard.goldQualified,
+        goldStatus: scorecard.goldStatus,
+        goldQualifiedAt: scorecard.goldQualifiedAt,
         graduationThreshold: scorecard.graduationThreshold,
         goldThreshold: scorecard.goldThreshold,
         mandatoryTaskCompletedCount: scorecard.mandatoryTaskCompletedCount,
@@ -204,6 +209,7 @@ export class TideService {
           availableScore > 0
             ? { score: availableScore, items: availableItems }
             : null,
+        source: scorecard.source,
         freshness: {
           source: 'LIVE',
           sourceUpdatedAt: scorecard.calculatedAt,
@@ -251,6 +257,9 @@ export class TideService {
       return {
         items: safeCourses.map((course) => ({
           lessonId: course.lessonId,
+          sourceRegion: course.sourceRegion,
+          sourceAppointId: course.sourceAppointId,
+          participationSeq: course.participationSeq,
           lessonSequence: course.lessonSequence,
           lessonCount: course.lessonCount,
           scheduledStartAt: course.scheduledStartAt,

@@ -75,7 +75,8 @@ deployment_heads_ready="$("${PSQL[@]}" -Atqc "
       '0039_g02_policy_document',
       '0040_g02_document_read_status',
       '0041_crm_sso_hybrid',
-      '0042_g09_set_kuozhi_course'
+      '0042_g09_set_kuozhi_course',
+      '0043_p_rel_execution_catalog'
     ]::text[]
 ")"
 
@@ -348,6 +349,51 @@ personalized_environment_photo_ready="$("${PSQL[@]}" -Atqc "
             '已保留你完成的内容，请根据提示更新这份材料。'
       )
   )
+")"
+reliability_execution_ready="$("${PSQL[@]}" -Atqc "
+  select
+    exists (
+      select 1
+      from tide.task_execution_versions execution
+      where execution.shared_template_row_id = 'P-REL-ATTENDANCE:v1'
+        and execution.task_code = 'P-REL-ATTENDANCE'
+        and execution.status = 'ACTIVE'
+        and execution.execution_contract_version = 'task-contract-v3'
+        and execution.config =
+          '{\"estimatedMinutes\":12,\"allowRetry\":true,\"contentStatus\":\"READY\",\"contentVersion\":\"2026-08-22-reliability-course-595-v1\",\"pendingReason\":null}'::jsonb
+        and not exists (
+          select 1 from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+        )
+        and not exists (
+          select 1 from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+        )
+    )
+    and exists (
+      select 1
+      from tide.task_execution_versions execution
+      where execution.shared_template_row_id = 'P-REL-MEMO:v1'
+        and execution.task_code = 'P-REL-MEMO'
+        and execution.status = 'ACTIVE'
+        and execution.execution_contract_version = 'task-contract-v3'
+        and execution.config =
+          '{\"estimatedMinutes\":6,\"allowRetry\":true,\"contentStatus\":\"READY\",\"contentVersion\":\"2026-07-24-lesson-memo-rules-v1\",\"pendingReason\":null}'::jsonb
+        and (
+          select count(*) from tide.task_step_definitions definition
+          where definition.execution_version_id = execution.id
+            and definition.step_key = 'p-rel-memo-document'
+            and definition.step_type = 'DOCUMENT'
+            and definition.config->>'contentHash' =
+              '43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51'
+        ) = 1
+        and (
+          select count(*) from tide.task_validation_rules rule
+          where rule.execution_version_id = execution.id
+            and rule.rule_key = 'all-steps-complete'
+            and rule.rule_version = '2026-07-24-lesson-memo-rules-v1'
+        ) = 1
+    )
 ")"
 faq_count="$("${PSQL[@]}" -Atqc "select count(*) from tide.knowledge_chunks chunk join tide.knowledge_documents document on document.id = chunk.document_id where document.document_key = 'mock-tide-confirmed-rules' and document.status = 'ACTIVE'")"
 unused_tide_objects_removed="$("${PSQL[@]}" -Atqc "
@@ -713,28 +759,29 @@ final_acl_ready="$("${PSQL[@]}" -Atqc "
         and not tgisinternal
     )
 ")"
-assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 65 + Tide canonical 0042"
+assert_equals "${deployment_heads_ready}" "t" "数据库账本不是 public 65 + Tide canonical 0043"
 assert_equals "${template_count}" "9" "共享 G01-G09 任务模板数异常"
 assert_equals "${score_total}" "30" "G01-G09 分值合计异常"
 assert_equals "${assignment_count}" "9" "Mock 当前固定任务数异常"
 assert_equals "${personalized_count}" "0" "Mock 环境不应自行创建个性化任务"
 assert_equals "${personalized_template_count}" "6" "已发布个性化任务码族数异常"
 assert_equals "${execution_count}" "15" "本地启用执行版本数异常"
-assert_equals "${personalized_ready_count}" "1" "当前可执行个性化任务数异常"
-assert_equals "${personalized_pending_count}" "5" "待嘉荷配置的个性化任务码族数异常"
+assert_equals "${personalized_ready_count}" "3" "当前可执行个性化任务数异常"
+assert_equals "${personalized_pending_count}" "3" "待嘉荷配置的个性化任务码族数异常"
 assert_equals "${authoritative_fixed_catalog_ready}" "t" "运营端 rev38 固定任务稳定映射异常"
 assert_equals "${fixed_execution_semantic_ready}" "t" "教师端固定任务执行语义未按稳定模板行对齐"
 assert_equals "${legacy_personalized_count}" "0" "旧个性化执行配置仍处于启用状态"
-assert_equals "${step_count}" "7" "当前可执行任务步骤总数异常"
+assert_equals "${step_count}" "8" "当前可执行任务步骤总数异常"
 assert_equals "${fixed_step_count}" "5" "G01-G09 步骤总数异常"
-assert_equals "${personalized_step_count}" "2" "已配置个性化任务步骤总数异常"
-assert_equals "${step_distribution}" "G01:2,G02:1,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:1,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务步骤数量异常"
+assert_equals "${personalized_step_count}" "3" "已配置个性化任务步骤总数异常"
+assert_equals "${step_distribution}" "G01:2,G02:1,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:1,P-REL-ATTENDANCE:0,P-REL-MEMO:1" "各任务步骤数量异常"
 assert_equals "${local_quiz_runtime_absent}" "t" "TIDE 本地考试表或步骤仍然存在"
-assert_equals "${rule_count}" "9" "当前验证规则总数异常"
-assert_equals "${rule_distribution}" "G01:3,G02:1,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:2,P-REL-ATTENDANCE:0,P-REL-MEMO:0" "各任务验证规则数量异常"
+assert_equals "${rule_count}" "10" "当前验证规则总数异常"
+assert_equals "${rule_distribution}" "G01:3,G02:1,G03:0,G04:2,G05:0,G06:0,G07:0,G08:0,G09:0,NT-Q03:1,P-FB-BLACKLIST:0,P-FB-COMPLAINT:0,P-FB-NEGATIVE:2,P-REL-ATTENDANCE:0,P-REL-MEMO:1" "各任务验证规则数量异常"
 assert_equals "${g01_tesol_rule_ready}" "t" "G01 外部状态规则未收窄为 TESOL-only"
 assert_equals "${g02_policy_document_ready}" "t" "G02 原生文档及阅读完成约束未就绪"
 assert_equals "${personalized_environment_photo_ready}" "t" "P-FB-NEGATIVE 授课环境拍照执行配置异常"
+assert_equals "${reliability_execution_ready}" "t" "P-REL 两条可靠性任务执行配置异常"
 assert_equals "${faq_count}" "3" "FAQ Mock 知识数异常"
 assert_equals "${unused_tide_objects_removed}" "t" "0029 无用 tide 表或 v1 分析视图仍然存在"
 assert_equals "${unused_file_metadata_removed}" "t" "0030 无用文件可见性字段或孤儿函数仍然存在"
@@ -1308,7 +1355,7 @@ BEGIN
   BEGIN
     UPDATE tide.schema_migrations
     SET filename = filename
-    WHERE migration_id = '0042_g09_set_kuozhi_course';
+    WHERE migration_id = '0043_p_rel_execution_catalog';
   EXCEPTION WHEN insufficient_privilege THEN
     failed := true;
   END;
@@ -1432,4 +1479,4 @@ $verify$;
 ROLLBACK;
 SQL
 
-echo "PostgreSQL ${server_version}：public 65、Tide 0042、DTS 脏键领取索引、direct 隐私门禁、G05/G08/G09 阔知课程映射、教师英文文案、最终表级 ACL、国内学生隐私边界、运行时 Trigger、审计/Outbox 和消息回写验证通过。"
+echo "PostgreSQL ${server_version}：public 65、Tide 0043、可靠性任务执行目录、DTS 脏键领取索引、direct 隐私门禁、G05/G08/G09 阔知课程映射、教师英文文案、最终表级 ACL、国内学生隐私边界、运行时 Trigger、审计/Outbox 和消息回写验证通过。"

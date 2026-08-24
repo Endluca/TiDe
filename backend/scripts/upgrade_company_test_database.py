@@ -85,6 +85,8 @@ PUBLIC_62 = "20260818_62_dts_claim_idx"
 PUBLIC_63 = "20260819_63_dts_direct_privacy"
 PUBLIC_64 = "20260819_64_g05_g08_courses"
 PUBLIC_65 = "20260819_65_g09_set_course"
+PUBLIC_99 = "20260822_99_blacklist_three_state"
+PUBLIC_100 = "20260823_100_scope_snapshot_diff"
 TEACHER_32 = "0032_first_login_onboarding"
 TEACHER_33 = "0033_g01_tesol_only"
 TEACHER_37 = "0037_g04_remove_device_check"
@@ -93,6 +95,7 @@ TEACHER_39 = "0039_g02_policy_document"
 TEACHER_40 = "0040_g02_document_read_status"
 TEACHER_41 = "0041_crm_sso_hybrid"
 TEACHER_42 = "0042_g09_set_kuozhi_course"
+TEACHER_43 = "0043_p_rel_execution_catalog"
 
 PUBLIC_REVISION_CHAIN = (
     (
@@ -111,6 +114,202 @@ PUBLIC_REVISION_CHAIN = (
     ("20260819_63_dts_direct_privacy.py", PUBLIC_63, PUBLIC_62),
     ("20260819_64_g05_g08_courses.py", PUBLIC_64, PUBLIC_63),
     ("20260819_65_g09_set_course.py", PUBLIC_65, PUBLIC_64),
+    (
+        "20260822_65a_lesson_region_expand.py",
+        "20260822_65a_lesson_region_exp",
+        PUBLIC_65,
+    ),
+    (
+        "20260822_66_dts_v2_shadow_source.py",
+        "20260822_66_dts_v2_shadow",
+        "20260822_65a_lesson_region_exp",
+    ),
+    (
+        "20260822_67_course_participation.py",
+        "20260822_67_course_part",
+        "20260822_66_dts_v2_shadow",
+    ),
+    (
+        "20260822_68_course_participation_guards.py",
+        "20260822_68_course_part_guards",
+        "20260822_67_course_part",
+    ),
+    (
+        "20260822_69_dts_v2_source_current_guards.py",
+        "20260822_69_dts_v2_source_guard",
+        "20260822_68_course_part_guards",
+    ),
+    (
+        "20260822_70_qualification_schema.py",
+        "20260822_70_qualification_schema",
+        "20260822_69_dts_v2_source_guard",
+    ),
+    (
+        "20260822_71_dom_teacher_area.py",
+        "20260822_71_dom_teacher_area",
+        "20260822_70_qualification_schema",
+    ),
+    (
+        "20260822_72_teacher_online_lock_contract.py",
+        "20260822_72_teacher_online_lock",
+        "20260822_71_dom_teacher_area",
+    ),
+    (
+        "20260822_73_retire_false_early_contract.py",
+        "20260822_73_retire_false_early",
+        "20260822_72_teacher_online_lock",
+    ),
+    (
+        "20260822_74_relationship_favorite_schema.py",
+        "20260822_74_favorite_schema",
+        "20260822_73_retire_false_early",
+    ),
+    (
+        "20260822_75_camp_state_contract.py",
+        "20260822_75_camp_state_contract",
+        "20260822_74_favorite_schema",
+    ),
+    (
+        "20260822_76_lesson_score_components.py",
+        "20260822_76_lesson_score_components",
+        "20260822_75_camp_state_contract",
+    ),
+    (
+        "20260822_77_retire_cpu_network.py",
+        "20260822_77_retire_cpu_network",
+        "20260822_76_lesson_score_components",
+    ),
+    (
+        "20260822_78_pending_completion_score_guard.py",
+        "20260822_78_pending_score_guard",
+        "20260822_77_retire_cpu_network",
+    ),
+    (
+        "20260822_79_dts_v2_epoch_control.py",
+        "20260822_79_dts_v2_epoch_control",
+        "20260822_78_pending_score_guard",
+    ),
+    (
+        "20260822_80_dts_v2_dirty_queue.py",
+        "20260822_80_dts_v2_dirty_queue",
+        "20260822_79_dts_v2_epoch_control",
+    ),
+    (
+        "20260822_81_dts_v2_domain_facts.py",
+        "20260822_81_dts_v2_domain_facts",
+        "20260822_80_dts_v2_dirty_queue",
+    ),
+    (
+        "20260822_82_v2_runtime_acl.py",
+        "20260822_82_v2_runtime_acl",
+        "20260822_81_dts_v2_domain_facts",
+    ),
+    (
+        "20260822_83_dts_v2_scope_coordinator.py",
+        "20260822_83_dts_v2_scope",
+        "20260822_82_v2_runtime_acl",
+    ),
+    (
+        "20260822_84_dts_v2_domain_outbox.py",
+        "20260822_84_dts_v2_domain_outbox",
+        "20260822_83_dts_v2_scope",
+    ),
+    (
+        "20260822_84a_lesson_region_contract.py",
+        "20260822_84a_lesson_region_contract",
+        "20260822_84_dts_v2_domain_outbox",
+    ),
+    (
+        "20260822_85_outbox_three_state.py",
+        "20260822_85_outbox_three_state",
+        "20260822_84a_lesson_region_contract",
+    ),
+    (
+        "20260822_86_ops_case_v2.py",
+        "20260822_86_ops_case_v2",
+        "20260822_85_outbox_three_state",
+    ),
+    (
+        "20260822_87_favorite_runtime.py",
+        "20260822_87_favorite_runtime",
+        "20260822_86_ops_case_v2",
+    ),
+    (
+        "20260822_88_dts_v2_score_projection.py",
+        "20260822_88_v2_score_projection",
+        "20260822_87_favorite_runtime",
+    ),
+    (
+        "20260822_88a_runtime_primary_guard.py",
+        "20260822_88a_runtime_primary_guard",
+        "20260822_88_v2_score_projection",
+    ),
+    (
+        "20260822_89_teacher_materializer.py",
+        "20260822_89_teacher_materializer",
+        "20260822_88a_runtime_primary_guard",
+    ),
+    (
+        "20260822_90_completion_correction.py",
+        "20260822_90_completion_correction",
+        "20260822_89_teacher_materializer",
+    ),
+    (
+        "20260822_91_task_output_contract.py",
+        "20260822_91_task_output_contract",
+        "20260822_90_completion_correction",
+    ),
+    (
+        "20260822_92_runtime_course_health.py",
+        "20260822_92_runtime_course_health",
+        "20260822_91_task_output_contract",
+    ),
+    (
+        "20260822_93_non_task_outputs.py",
+        "20260822_93_non_task_outputs",
+        "20260822_92_runtime_course_health",
+    ),
+    (
+        "20260822_94_complaint_catalog_fanout.py",
+        "20260822_94_complaint_catalog_fanout",
+        "20260822_93_non_task_outputs",
+    ),
+    (
+        "20260822_95_projection_cutover.py",
+        "20260822_95_projection_cutover",
+        "20260822_94_complaint_catalog_fanout",
+    ),
+    (
+        "20260822_96_compat_queue_qualification_gate.py",
+        "20260822_96_compat_queue_gate",
+        "20260822_95_projection_cutover",
+    ),
+    (
+        "20260822_97_teacher_time_recheck.py",
+        "20260822_97_teacher_time_recheck",
+        "20260822_96_compat_queue_gate",
+    ),
+    (
+        "20260822_98_shared_task_v2_refresh.py",
+        "20260822_98_task_v2_refresh",
+        "20260822_97_teacher_time_recheck",
+    ),
+    (
+        "20260822_99_blacklist_threshold_three_state.py",
+        PUBLIC_99,
+        "20260822_98_task_v2_refresh",
+    ),
+    (
+        "20260823_100_source_scope_snapshot_diff.py",
+        PUBLIC_100,
+        PUBLIC_99,
+    ),
+)
+
+PUBLIC_POST_65_REVISION_CHAIN = tuple(
+    revision
+    for _filename, revision, _down_revision in PUBLIC_REVISION_CHAIN
+    if revision.startswith("20260822_")
 )
 
 
@@ -127,8 +326,8 @@ class UpgradeAction:
     expected_state: DatabaseState
 
 
-FINAL_STATE = DatabaseState(PUBLIC_65, TEACHER_42)
-TRANSITIONS: Mapping[DatabaseState, UpgradeAction] = {
+FINAL_STATE = DatabaseState(PUBLIC_100, TEACHER_43)
+TRANSITIONS: dict[DatabaseState, UpgradeAction] = {
     DatabaseState(PUBLIC_50, TEACHER_32): UpgradeAction(
         "public", PUBLIC_54, DatabaseState(PUBLIC_54, TEACHER_32)
     ),
@@ -184,9 +383,31 @@ TRANSITIONS: Mapping[DatabaseState, UpgradeAction] = {
         "public", PUBLIC_65, DatabaseState(PUBLIC_65, TEACHER_41)
     ),
     DatabaseState(PUBLIC_65, TEACHER_41): UpgradeAction(
-        "teacher", TEACHER_42, FINAL_STATE
+        "teacher",
+        TEACHER_42,
+        DatabaseState(PUBLIC_65, TEACHER_42),
     ),
 }
+
+for _current_public, _next_public in zip(
+    (PUBLIC_65, *PUBLIC_POST_65_REVISION_CHAIN),
+    PUBLIC_POST_65_REVISION_CHAIN,
+):
+    TRANSITIONS[DatabaseState(_current_public, TEACHER_42)] = UpgradeAction(
+        "public",
+        _next_public,
+        DatabaseState(_next_public, TEACHER_42),
+    )
+TRANSITIONS[DatabaseState(PUBLIC_99, TEACHER_42)] = UpgradeAction(
+    "teacher",
+    TEACHER_43,
+    DatabaseState(PUBLIC_99, TEACHER_43),
+)
+TRANSITIONS[DatabaseState(PUBLIC_99, TEACHER_43)] = UpgradeAction(
+    "public",
+    PUBLIC_100,
+    FINAL_STATE,
+)
 
 
 def _fail(message: str) -> RuntimeError:
@@ -301,8 +522,8 @@ def _canonical_teacher_ledger() -> tuple[tuple[int, str, str, str], ...]:
         for line in match.group("body").splitlines()
         if re.fullmatch(r"[0-9]{4}_[a-z0-9_]+", line.strip())
     )
-    if not migration_ids or migration_ids[-1] != TEACHER_42:
-        raise _fail("canonical teacher 迁移清单未精确结束于 0042。")
+    if not migration_ids or migration_ids[-1] != TEACHER_43:
+        raise _fail("canonical teacher 迁移清单未精确结束于 0043。")
 
     ledger: list[tuple[int, str, str, str]] = []
     for order, migration_id in enumerate(migration_ids, start=1):
@@ -646,7 +867,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"阶段读回通过：{_format_state(observed)}")
 
     print(
-        "公司 TEST 分阶段迁移完成并读回到 public 65 / teacher 0042。"
+        "公司 TEST 分阶段迁移完成并读回到 public 100 / teacher 0043。"
         "尚未执行 apply-company-test.sh 初始化，也未发布或重启应用。"
     )
     return 0

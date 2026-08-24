@@ -107,6 +107,22 @@ def test_teacher_reads_use_current_teacher_projection_without_snapshot_join() ->
     )
 
 
+def test_teacher_facing_score_never_exceeds_200_while_raw_keeps_accumulating() -> None:
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, "T-1001")
+        assert teacher is not None
+        teacher.total_score = 275
+        teacher.payload = {
+            **teacher.payload,
+            "external_display_score": 275,
+        }
+
+    detail = TeacherReadService(engine).teacher_detail("T-1001")
+
+    assert detail["raw_total_score"] == 275
+    assert detail["external_display_score"] == 200
+
+
 def test_teacher_list_is_paged_filtered_and_lightweight() -> None:
     response = client.get("/api/teachers?page=1&page_size=2&data_mode=MOCK")
 
@@ -179,7 +195,7 @@ def test_1069_teacher_list_projects_only_24_and_avoids_megabyte_response() -> No
                     country=None,
                     timezone="UTC",
                     camp_day=1,
-                    graduation_state="IN_PROGRESS",
+                    graduation_state="IN_CAMP",
                     gold_qualified=False,
                     total_score=0,
                     graduation_threshold=100,

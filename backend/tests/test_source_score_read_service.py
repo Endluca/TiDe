@@ -94,7 +94,7 @@ def _teacher(teacher_id: str, *, source_snapshot_label: str) -> TeacherRecord:
         country=None,
         timezone="UTC",
         camp_day=1,
-        graduation_state="IN_PROGRESS",
+        graduation_state="IN_CAMP",
         gold_qualified=False,
         total_score=16,
         graduation_threshold=60,
@@ -118,6 +118,7 @@ def _source_lesson(
     lesson_date: date,
 ) -> LessonSourceWideRecord:
     return LessonSourceWideRecord(
+        source_region="ovs",
         course_id=lesson_id,
         lesson_date=lesson_date,
         lesson_time=time(10, 30),
@@ -138,9 +139,8 @@ def _source_lesson(
         has_positive_feedback_tag=True,
         feedback_detail="Good class",
         is_camera_off=False,
-        is_cpu_usage_high=False,
-        is_network_delay_high=False,
-        is_false_early_leave=False,
+        is_cpu_usage_high=None,
+        is_network_delay_high=None,
     )
 
 
@@ -150,11 +150,12 @@ def _source_teacher(teacher_id: str) -> TeacherSourceWideRecord:
 
 def _lesson_result(lesson_id: str) -> LessonScoreResultRecord:
     return LessonScoreResultRecord(
+        lesson_source_region="ovs",
         lesson_id=lesson_id,
-        user_feedback_score=10,
+        user_feedback_score=5,
         reliability_score=4,
         class_quality_score=2,
-        lesson_total_score=16,
+        lesson_total_score=11,
         dimensions={
             "USER_FEEDBACK": {
                 "components": [
@@ -164,9 +165,9 @@ def _lesson_result(lesson_id: str) -> LessonScoreResultRecord:
                         "evidence_status": "CONFIRMED",
                     },
                     {
-                        "awarded": True,
-                        "score": 5,
-                        "evidence_status": "CONFIRMED",
+                        "awarded": False,
+                        "score": 0,
+                        "evidence_status": "SOURCE_MISSING",
                     },
                 ]
             },
@@ -262,6 +263,7 @@ def test_source_wide_teacher_reads_only_current_source_lesson_results() -> None:
     lesson = scorecard["lessons"]["items"][0]
     assert set(lesson) == {
         "lesson_id",
+        "source_region",
         "source_appoint_id",
         "scheduled_start_at",
         "lesson_local_date",
@@ -272,6 +274,7 @@ def test_source_wide_teacher_reads_only_current_source_lesson_results() -> None:
         "business_facts",
         "dimensions",
     }
+    assert lesson["source_region"] == "ovs"
     assert lesson["lesson_id"] == "SOURCE-LESSON-NEW"
     assert lesson["source_appoint_id"] == "SOURCE-LESSON-NEW"
     assert lesson["scheduled_start_at"] == "2026-08-05T10:30:00+00:00"
@@ -281,9 +284,9 @@ def test_source_wide_teacher_reads_only_current_source_lesson_results() -> None:
     assert lesson["business_facts"]["user_feedback"]["is_rebooked"] is None
     assert lesson["business_facts"]["classroom_quality"] == {
         "is_camera_off": False,
-        "is_cpu_usage_high": False,
-        "is_network_delay_high": False,
-        "hardware_quality_passed": True,
+        "is_cpu_usage_high": None,
+        "is_network_delay_high": None,
+        "hardware_quality_passed": None,
         "is_perfect": True,
     }
     assert [item["code"] for item in lesson["dimensions"]] == [
@@ -292,18 +295,26 @@ def test_source_wide_teacher_reads_only_current_source_lesson_results() -> None:
         "CLASS_QUALITY",
     ]
     assert [item["evidence_status"] for item in lesson["dimensions"]] == [
-        "CONFIRMED",
+        "PARTIAL",
         "PARTIAL",
         "CONFIRMED",
     ]
     assert [item["evidence_coverage"] for item in lesson["dimensions"]] == [
-        "2/2",
+        "1/2",
         "1/2",
         "1/1",
     ]
     assert [
         item["code"] for item in lesson["dimensions"][0]["business_facts"]
     ] == ["FEEDBACK_PRAISE", "FEEDBACK_FAVORITE"]
+    assert lesson["business_facts"]["user_feedback"]["is_favorited"] is True
+    favorite_fact = lesson["dimensions"][0]["business_facts"][1]
+    assert favorite_fact == {
+        "awarded": False,
+        "score": 0,
+        "evidence_status": "SOURCE_MISSING",
+        "code": "FEEDBACK_FAVORITE",
+    }
 
 
 def test_non_source_teacher_never_uses_a_legacy_read_branch() -> None:

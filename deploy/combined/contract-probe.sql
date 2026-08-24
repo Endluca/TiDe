@@ -74,7 +74,18 @@ BEGIN
        OR to_regclass('public.dts_ingest_checkpoints') IS NULL
        OR to_regclass('public.dts_ingest_events') IS NULL
        OR to_regclass('public.dts_source_rows') IS NULL
+       OR to_regclass('public.dts_source_partition_epochs') IS NULL
+       OR to_regclass('public.dts_source_row_versions') IS NULL
        OR to_regclass('public.dts_dirty_keys') IS NULL
+       OR to_regclass('public.dts_dirty_key_inputs') IS NULL
+       OR to_regclass('public.dts_dirty_key_dependencies') IS NULL
+       OR to_regclass('public.dts_dirty_key_state_audits') IS NULL
+       OR to_regclass('public.dts_source_snapshot_desired_rows') IS NULL
+       OR to_regprocedure('public.bind_source_snapshot_profile_v3(text,text,text,text,jsonb,text)') IS NULL
+       OR to_regprocedure('public.stage_source_snapshot_row_v3(text,text,text,jsonb,jsonb,jsonb,text)') IS NULL
+       OR to_regprocedure('public.verify_source_snapshot_candidate_v3(text,text,text,text,bigint,bigint,bigint,text,text,text)') IS NULL
+       OR to_regprocedure('public.publish_source_snapshot_candidate_v3(text,text,text,text,bigint,bigint,text,text)') IS NULL
+       OR to_regprocedure('public.scope_membership_apply_cdc_v3(text,text,text,bigint,jsonb,jsonb,boolean)') IS NULL
        OR to_regclass('tide.task_execution_versions') IS NULL
        OR to_regclass('tide.file_objects') IS NULL
        OR to_regclass('tide.task_step_definitions') IS NULL
@@ -87,16 +98,13 @@ BEGIN
         RAISE EXCEPTION 'required shared or teacher-side objects are missing';
     END IF;
 
-    -- Final public 65 must include the reviewed release content through
-    -- 20260811_57_g02_document, the public 59 ACL/DTS merge, and the
-    -- domestic-student privacy boundary, reviewed teacher-copy update, and
-    -- index-aligned DTS dirty-key claim path, direct-write privacy guard, and
-    -- reviewed G05/G08/G09 Kuozhi course mappings;
-    -- concrete rows and guards are checked below.
+    -- The combined deployment is pinned to the current public v2 migration
+    -- head. Concrete shared rows, teacher executions and runtime guards are
+    -- checked below rather than inferred from the Alembic ledger alone.
     IF (
         SELECT version_num
         FROM public.alembic_version
-    ) IS DISTINCT FROM '20260819_65_g09_set_course' THEN
+    ) IS DISTINCT FROM '20260823_100_scope_snapshot_diff' THEN
         RAISE EXCEPTION 'ops Alembic head is not the reviewed combined-deployment head';
     END IF;
 
@@ -140,10 +148,11 @@ BEGIN
             '0039_g02_policy_document',
             '0040_g02_document_read_status',
             '0041_crm_sso_hybrid',
-            '0042_g09_set_kuozhi_course'
+            '0042_g09_set_kuozhi_course',
+            '0043_p_rel_execution_catalog'
         ]::text[] THEN
         RAISE EXCEPTION
-            'teacher production migration ledger is not the exact reviewed chain ending at 0042';
+            'teacher production migration ledger is not the exact reviewed chain ending at 0043';
     END IF;
 
     IF NOT EXISTS (
@@ -337,8 +346,18 @@ BEGIN
           AND template_id = 'P-REL-MEMO'
           AND template_version = 1
           AND status = 'PUBLISHED'
+          AND output_type = 'TEACHER_TASK'
+          AND execution_owner = 'TEACHER_APP'
+          AND integration_mode = 'OUTBOUND_MANAGED'
+          AND source_mode = 'REAL'
+          AND payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
+          AND payload->>'content_status' = 'READY'
           AND payload->>'why_template' =
               'A completed lesson was recorded with a blank Lesson Memo.'
+          AND payload->>'how_summary' =
+              'Complete the Lesson Memo guidance and review how to submit an accurate memo after every lesson.'
+          AND payload->>'completion_standard' =
+              'The teacher app marks the assigned Lesson Memo learning activity as completed.'
           AND payload->>'benefit' =
               'This task carries no points. It helps strengthen your Lesson Memo reliability.'
           AND payload->>'score_type' = 'ZERO'
@@ -350,8 +369,18 @@ BEGIN
           AND template_id = 'P-REL-ATTENDANCE'
           AND template_version = 1
           AND status = 'PUBLISHED'
+          AND output_type = 'TEACHER_TASK'
+          AND execution_owner = 'TEACHER_APP'
+          AND integration_mode = 'OUTBOUND_MANAGED'
+          AND source_mode = 'REAL'
+          AND payload->>'category' = 'PERSONALIZED_IMPROVEMENT'
+          AND payload->>'content_status' = 'READY'
           AND payload->>'why_template' =
               'A lesson record shows a reliability issue, such as an absence, late arrival, or early leave.'
+          AND payload->>'how_summary' =
+              'Complete the assigned attendance training and pass its quiz.'
+          AND payload->>'completion_standard' =
+              'The teacher app marks the training and quiz as completed.'
           AND payload->>'score_type' = 'ZERO'
           AND (payload->>'score_value')::numeric = 0
     ) THEN
@@ -486,6 +515,87 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'G09 SET course 658 execution is not the reviewed READY shape';
+    END IF;
+
+    IF (
+        SELECT count(*)
+        FROM tide.task_execution_versions
+        WHERE task_code = 'P-REL-MEMO'
+    ) <> 1 OR NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        WHERE execution.shared_template_row_id = 'P-REL-MEMO:v1'
+          AND execution.task_code = 'P-REL-MEMO'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":6,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-07-24-lesson-memo-rules-v1","pendingReason":null}'::jsonb
+          AND (
+              SELECT count(*)
+              FROM tide.task_step_definitions AS definition
+              WHERE definition.execution_version_id = execution.id
+          ) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM tide.task_step_definitions AS definition
+              WHERE definition.execution_version_id = execution.id
+                AND definition.step_key = 'p-rel-memo-document'
+                AND definition.position = 1
+                AND definition.step_type = 'DOCUMENT'
+                AND definition.title = 'Read Lesson Memo Rules'
+                AND definition.config =
+                    '{"role":"LESSON_MEMO_RULES_DOCUMENT","documentCode":"lesson-memo-rules","sourceTitle":"Lesson Memo Rules","sourceNodeId":"OG9lyrgJPzkq5xD6fvzmqRonWzN67Mw4","sourceUpdatedAt":"2026-07-24T01:47:08Z","contentVersion":"2026-07-24-lesson-memo-rules-v1","contentHash":"43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51","readingCompletion":"SCROLL_TO_END"}'::jsonb
+          )
+          AND (
+              SELECT count(*)
+              FROM tide.task_validation_rules AS rule
+              WHERE rule.execution_version_id = execution.id
+          ) = 1
+          AND EXISTS (
+              SELECT 1
+              FROM tide.task_validation_rules AS rule
+              WHERE rule.execution_version_id = execution.id
+                AND rule.rule_key = 'all-steps-complete'
+                AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+                AND rule.rule_version =
+                    '2026-07-24-lesson-memo-rules-v1'
+                AND rule.position = 1
+                AND rule.config =
+                    '{"requiredStepKeys":["p-rel-memo-document"]}'::jsonb
+                AND rule.teacher_failure_copy =
+                    '请将当前版本的 Lesson Memo Rules 阅读到文档末尾。'
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'P-REL-MEMO is not the exact reviewed READY document execution';
+    END IF;
+
+    IF (
+        SELECT count(*)
+        FROM tide.task_execution_versions
+        WHERE task_code = 'P-REL-ATTENDANCE'
+    ) <> 1 OR NOT EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions AS execution
+        WHERE execution.shared_template_row_id = 'P-REL-ATTENDANCE:v1'
+          AND execution.task_code = 'P-REL-ATTENDANCE'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+              '{"estimatedMinutes":12,"allowRetry":true,"contentStatus":"READY","contentVersion":"2026-08-22-reliability-course-595-v1","pendingReason":null}'::jsonb
+          AND NOT EXISTS (
+              SELECT 1
+              FROM tide.task_step_definitions AS definition
+              WHERE definition.execution_version_id = execution.id
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM tide.task_validation_rules AS rule
+              WHERE rule.execution_version_id = execution.id
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'P-REL-ATTENDANCE is not the exact reviewed READY Kuozhi execution';
     END IF;
 
     IF (
@@ -921,45 +1031,49 @@ BEGIN
         RAISE EXCEPTION 'teacher runtime tide-table CRUD is incomplete';
     END IF;
 
+    -- public 99 keeps raw DTS ingestion least-privileged: immutable source
+    -- versions are append-only, current source rows are upsertable, checkpoint
+    -- state is update-only, and dirty queues are reached through reviewed
+    -- SECURITY DEFINER functions rather than direct table grants.
     IF EXISTS (
         SELECT 1
-        FROM unnest(ARRAY[
-            'public.teacher_source_wide',
-            'public.lesson_source_wide',
-            'public.dts_ingest_checkpoints',
-            'public.dts_ingest_events',
-            'public.dts_source_rows',
-            'public.dts_dirty_keys'
-        ]::text[]) AS dts_table(name),
-        unnest(ARRAY[
-            'SELECT', 'INSERT', 'UPDATE', 'DELETE'
-        ]::text[]) AS required_privilege(name)
-        WHERE NOT has_table_privilege(
-            'tit_dts_ingest_runtime',
-            dts_table.name,
-            required_privilege.name
-        )
-    ) THEN
-        RAISE EXCEPTION 'DTS runtime does not have exact six-table CRUD';
-    END IF;
-
-    IF EXISTS (
-        SELECT 1
-        FROM unnest(ARRAY[
-            'public.teacher_source_wide',
-            'public.lesson_source_wide',
-            'public.dts_ingest_checkpoints',
-            'public.dts_ingest_events',
-            'public.dts_source_rows',
-            'public.dts_dirty_keys'
-        ]::text[]) AS dts_table(name),
-        unnest(ARRAY['TRUNCATE', 'TRIGGER']::text[]) AS forbidden_privilege(name)
+        FROM (
+            VALUES
+                ('public.teacher_source_wide'::text,
+                    ARRAY['SELECT']::text[]),
+                ('public.lesson_source_wide'::text,
+                    ARRAY['SELECT']::text[]),
+                ('public.dts_source_partition_epochs'::text,
+                    ARRAY['SELECT']::text[]),
+                ('public.dts_source_row_versions'::text,
+                    ARRAY['SELECT', 'INSERT']::text[]),
+                ('public.dts_source_rows'::text,
+                    ARRAY['SELECT', 'INSERT', 'UPDATE']::text[]),
+                ('public.dts_ingest_events'::text,
+                    ARRAY['SELECT', 'INSERT']::text[]),
+                ('public.dts_ingest_checkpoints'::text,
+                    ARRAY['SELECT', 'UPDATE']::text[]),
+                ('public.dts_dirty_keys'::text, ARRAY[]::text[]),
+                ('public.dts_dirty_key_inputs'::text, ARRAY[]::text[]),
+                ('public.dts_dirty_key_dependencies'::text, ARRAY[]::text[]),
+                ('public.dts_dirty_key_state_audits'::text, ARRAY[]::text[])
+        ) AS dts_table(name, expected_privileges)
+        CROSS JOIN LATERAL unnest(ARRAY[
+            'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER'
+        ]::text[]) AS checked_privilege(name)
         WHERE has_table_privilege(
             'tit_dts_ingest_runtime',
             dts_table.name,
-            forbidden_privilege.name
+            checked_privilege.name
+        ) IS DISTINCT FROM (
+            checked_privilege.name = ANY(dts_table.expected_privileges)
         )
-    ) OR EXISTS (
+    ) THEN
+        RAISE EXCEPTION
+            'DTS runtime table ACL is not the exact public 99 ingest matrix';
+    END IF;
+
+    IF EXISTS (
         SELECT 1
         FROM pg_class AS relation
         JOIN pg_namespace AS namespace
@@ -972,12 +1086,10 @@ BEGIN
         WHERE namespace.nspname IN ('public', 'tide')
           AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
           AND relation.oid NOT IN (
-              'public.teacher_source_wide'::regclass,
-              'public.lesson_source_wide'::regclass,
-              'public.dts_ingest_checkpoints'::regclass,
-              'public.dts_ingest_events'::regclass,
+              'public.dts_source_row_versions'::regclass,
               'public.dts_source_rows'::regclass,
-              'public.dts_dirty_keys'::regclass
+              'public.dts_ingest_events'::regclass,
+              'public.dts_ingest_checkpoints'::regclass
           )
           AND has_table_privilege(
               'tit_dts_ingest_runtime',
@@ -986,7 +1098,7 @@ BEGIN
           )
     ) THEN
         RAISE EXCEPTION
-            'DTS runtime can mutate a relation outside its six-table boundary';
+            'DTS runtime can mutate a relation outside its public 99 ingest boundary';
     END IF;
 
     IF EXISTS (

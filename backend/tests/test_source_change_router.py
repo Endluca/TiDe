@@ -35,6 +35,7 @@ def test_teacher_fields_route_to_deduplicated_stably_sorted_work() -> None:
 
     assert route == SourceChangeRoute(
         source_table="teacher_source_wide",
+        source_region=None,
         source_id="T-001",
         operation="UPDATE",
         changed_fields=("feedback_praise_cnt", "perfect_cnt"),
@@ -72,6 +73,7 @@ def test_lesson_teacher_change_affects_both_old_and_new_teacher() -> None:
     route = route_source_change(
         _payload(
             source_table="lesson_source_wide",
+            source_region="ovs",
             source_id="L-001",
             changed_fields=["老师id", "迟到"],
             old_teacher_id="T-OLD",
@@ -96,6 +98,28 @@ def test_lesson_teacher_change_affects_both_old_and_new_teacher() -> None:
         "SINGLE_LESSON_AND_TEACHER_RELIABILITY",
     )
     assert route.affected_teacher_ids == ("T-NEW", "T-OLD")
+
+
+def test_retired_cpu_network_nullification_still_routes_score_reconciliation() -> None:
+    route = route_source_change(
+        _payload(
+            source_table="lesson_source_wide",
+            source_region="ovs",
+            source_id="L-CPU-NETWORK-RETIRED",
+            changed_fields=["cpu占用过高", "网络延迟过高"],
+            old_teacher_id="T-001",
+            new_teacher_id="T-001",
+        )
+    )
+
+    assert route.handlers == (
+        "LESSON_SCORE",
+        "TEACHER_CLASS_QUALITY",
+        "TEACHER_QUALIFICATION",
+        "TEACHER_TOTAL",
+    )
+    assert route.scopes == ("SINGLE_LESSON_AND_TEACHER_CLASS_QUALITY",)
+    assert route.affected_teacher_ids == ("T-001",)
 
 
 def test_changed_field_order_does_not_change_the_route() -> None:

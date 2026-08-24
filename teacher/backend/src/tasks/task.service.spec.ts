@@ -3,6 +3,7 @@ import type { AppEventService } from '../app-events/app-event.service';
 import type { KuozhiProgressRepository } from '../integrations/kuozhi/kuozhi-progress.repository';
 import type { KuozhiService } from '../integrations/kuozhi/kuozhi.service';
 import type { TaskRepository } from './task.repository';
+import type { TaskDocumentContentService } from './task-document-content.service';
 import { TaskService } from './task.service';
 
 function createFixture() {
@@ -83,6 +84,47 @@ function createFixture() {
 }
 
 describe('TaskService', () => {
+  it('serves the configured embedded document for a P-REL-MEMO assignment', async () => {
+    const config = {
+      documentCode: 'lesson-memo-rules',
+      contentVersion: '2026-07-24-lesson-memo-rules-v1',
+      contentHash:
+        '43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51',
+      readingCompletion: 'SCROLL_TO_END',
+    };
+    const repository = {
+      findTask: jest.fn().mockResolvedValue({
+        taskCode: 'P-REL-MEMO',
+        steps: [
+          {
+            stepKey: 'p-rel-memo-document',
+            type: 'DOCUMENT',
+            config,
+          },
+        ],
+      }),
+    } as unknown as TaskRepository;
+    const getContent = jest.fn().mockReturnValue({
+      documentCode: 'lesson-memo-rules',
+      contentVersion: config.contentVersion,
+    });
+    const service = new TaskService(
+      repository,
+      undefined,
+      undefined,
+      undefined,
+      { getContent } as unknown as TaskDocumentContentService,
+    );
+
+    await expect(
+      service.getDocumentContent(
+        { accountId: 'account-001', sessionId: 'session-001' },
+        'assignment-memo',
+      ),
+    ).resolves.toMatchObject({ documentCode: 'lesson-memo-rules' });
+    expect(getContent).toHaveBeenCalledWith(config);
+  });
+
   it('lists assignments created in the shared database', async () => {
     const fixture = createFixture();
 

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, NoReturn, Sequence
 
 from openpyxl import load_workbook
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
 from .database import engine as default_engine
@@ -236,8 +236,8 @@ def _read_complaint_workbook(
         workbook.close()
 
 
-def _complaint_rule_id(batch_id: str, row_number: int) -> str:
-    return f"CR-{batch_id}-{row_number}"
+def _complaint_rule_id(source_sha256: str, row_number: int) -> str:
+    return f"complaint-rule:{source_sha256.lower()}:{row_number}"
 
 
 def _add_complaint_batch(
@@ -250,22 +250,29 @@ def _add_complaint_batch(
     raw_rows: Sequence[dict[str, Any]],
     imported_at: datetime,
 ) -> None:
-    session.add(
-        ComplaintRuleImportRecord(
-            source_sha256=source_sha256,
-            source_filename=source.name,
-            raw_rows=[
-                {"source_row_number": row_number, **raw}
-                for row_number, raw in enumerate(raw_rows, start=3)
-            ],
-            imported_at=imported_at,
-        )
+    stored_raw_rows = [
+        {"source_row_number": row_number, **raw}
+        for row_number, raw in enumerate(raw_rows, start=3)
+    ]
+    imported = ComplaintRuleImportRecord(
+        source_sha256=source_sha256,
+        source_filename=source.name,
+        raw_rows=stored_raw_rows,
+        imported_at=imported_at,
+        status="DRAFT",
+        publication_revision=1,
+        activation_generation=None,
+        row_count=len(stored_raw_rows),
+        content_hash="0" * 64,
+        published_at=None,
+        retired_at=None,
     )
+    session.add(imported)
     session.flush()
     for item in rules:
         session.add(
             ComplaintCategoryRuleRecord(
-                rule_id=_complaint_rule_id(batch_id, item.row_number),
+                rule_id=_complaint_rule_id(source_sha256, item.row_number),
                 source_sha256=source_sha256,
                 source_row_number=item.row_number,
                 category_l1=item.category_l1,
@@ -279,6 +286,15 @@ def _add_complaint_batch(
             )
         )
     session.flush()
+    if session.get_bind().dialect.name == "postgresql":
+        imported.content_hash = session.scalar(
+            text(
+                "SELECT public.complaint_rule_catalog_content_hash_v1("
+                ":source_sha256)"
+            ),
+            {"source_sha256": source_sha256},
+        )
+        session.flush()
 
 
 def import_lesson_baseline(

@@ -16,16 +16,23 @@ from app.dts_ingest_store import (
     EXPECTED_DTS_STATE_CONSTRAINTS,
     EXPECTED_DTS_STATE_GUARD_TRIGGERS,
     EXPECTED_DTS_STATE_INDEXES,
+    EXPANDED_DOMESTIC_PRIVACY_FUNCTIONS,
+    EXPANDED_SOURCE_WIDE_TRIGGER_DEFINITIONS,
+    LEGACY_EXPECTED_DTS_STATE_GUARD_TRIGGERS,
+    LEGACY_EXPECTED_DTS_STATE_COLUMNS,
     EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS,
     EXPECTED_SOURCE_WIDE_COLUMNS,
     EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS,
     MUTABLE_RELATIONS,
+    PRE96_EXPECTED_DTS_STATE_COLUMNS,
     PROJECTION_ADVISORY_LOCK_NAME,
+    SOURCE_WIDE_CONTRACT_FUNCTION_NAMES,
     PostgresDtsEventSink,
     _validate_projection_activation_state,
     _validate_dts_physical_connection_transport,
     build_dts_ingest_engine,
     _dependency_keys,
+    _DTS_DIRTY_GUARD_V96_PROSRC_SHA256,
     _dirty_key_rows,
     _source_row_state,
 )
@@ -505,6 +512,7 @@ def _validation_sink(
     state_constraints: list[tuple[object, ...]] | None = None,
     state_indexes: list[tuple[object, ...]] | None = None,
     state_triggers: list[tuple[object, ...]] | None = None,
+    state_guard_functions: list[tuple[object, ...]] | None = None,
     columns: list[tuple[object, ...]] | None = None,
     triggers: list[tuple[object, ...]] | None = None,
     privacy_functions: list[tuple[object, ...]] | None = None,
@@ -571,6 +579,23 @@ def _validation_sink(
                 )
             ),
             _ValidationResult(
+                all_rows=(
+                    [
+                        (
+                            "plpgsql",
+                            "v",
+                            False,
+                            False,
+                            ("search_path=pg_catalog, public",),
+                            _DTS_DIRTY_GUARD_V96_PROSRC_SHA256,
+                            False,
+                        )
+                    ]
+                    if state_guard_functions is None
+                    else state_guard_functions
+                )
+            ),
+            _ValidationResult(
                 all_rows=expected_columns if columns is None else columns
             ),
             _ValidationResult(
@@ -607,7 +632,7 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
     sink._validate_runtime()
 
     assert sink._validated is True
-    assert len(connection.statements) == 11
+    assert len(connection.statements) == 12
     assert "pg_stat_ssl" in connection.statements[0][0]
     assert "current_setting('ssl')" in connection.statements[0][0]
     required_sql, required_parameters = connection.statements[1]
@@ -661,7 +686,11 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
     assert "functions.prosecdef" in guards_sql
     assert "triggers.tgattr::text" in guards_sql
     assert guards_parameters == state_columns_parameters
-    columns_sql, columns_parameters = connection.statements[8]
+    guard_function_sql, guard_function_parameters = connection.statements[8]
+    assert "guard_dts_dirty_key_state_write_v96" in guard_function_sql
+    assert "functions.prosrc" in guard_function_sql
+    assert guard_function_parameters == {"schema_name": "public"}
+    columns_sql, columns_parameters = connection.statements[9]
     assert "pg_catalog.pg_attribute" in columns_sql
     assert "pg_catalog.format_type" in columns_sql
     assert "attributes.attnotnull" in columns_sql
@@ -669,7 +698,7 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
         "schema_name": "public",
         "table_names": ["teacher_source_wide", "lesson_source_wide"],
     }
-    triggers_sql, triggers_parameters = connection.statements[9]
+    triggers_sql, triggers_parameters = connection.statements[10]
     assert "pg_catalog.pg_trigger" in triggers_sql
     assert "triggers.tgenabled" in triggers_sql
     assert "triggers.tgtype" in triggers_sql
@@ -679,7 +708,7 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
         "schema_name": "public",
         "table_names": ["teacher_source_wide", "lesson_source_wide"],
     }
-    functions_sql, functions_parameters = connection.statements[10]
+    functions_sql, functions_parameters = connection.statements[11]
     assert "functions.prosrc" in functions_sql
     assert "pg_catalog.sha256" in functions_sql
     assert "functions.proconfig" in functions_sql
@@ -687,10 +716,7 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
     assert "functions.proisstrict" in functions_sql
     assert functions_parameters == {
         "schema_name": "public",
-        "function_names": [
-            definition[0]
-            for definition in EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS
-        ],
+        "function_names": list(SOURCE_WIDE_CONTRACT_FUNCTION_NAMES),
     }
     assert all(
         "alembic_version" not in sql
@@ -717,6 +743,21 @@ def test_domestic_database_privacy_triggers_are_part_of_the_exact_contract(
         "",
         True,
     ) in EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS
+
+
+def test_dts_runtime_accepts_complete_lesson_region_expand_contract() -> None:
+    trigger_rows = [
+        (*definition[:2], "O", *definition[2:])
+        for definition in EXPANDED_SOURCE_WIDE_TRIGGER_DEFINITIONS
+    ]
+    sink, _connection = _validation_sink(
+        triggers=trigger_rows,
+        privacy_functions=list(EXPANDED_DOMESTIC_PRIVACY_FUNCTIONS),
+    )
+
+    sink._validate_runtime()
+
+    assert sink._validated is True
 
 
 def test_dts_runtime_rejects_domestic_privacy_function_body_drift() -> None:
@@ -863,6 +904,50 @@ def test_dts_runtime_rejects_state_column_drift(drift: str) -> None:
         sink._validate_runtime()
 
 
+def test_dts_runtime_accepts_only_complete_legacy_or_v2_state_columns() -> None:
+    legacy_triggers = [
+        (*definition[:2], "O", *definition[2:])
+        for definition in LEGACY_EXPECTED_DTS_STATE_GUARD_TRIGGERS
+    ]
+    legacy_sink, _connection = _validation_sink(
+        state_columns=list(LEGACY_EXPECTED_DTS_STATE_COLUMNS),
+        state_triggers=legacy_triggers,
+        state_guard_functions=[],
+    )
+    legacy_sink._validate_runtime()
+    assert legacy_sink._validated is True
+
+    legacy_keys = {
+        (table_name, column_name)
+        for table_name, column_name, _data_type, _not_null
+        in LEGACY_EXPECTED_DTS_STATE_COLUMNS
+    }
+    first_transition = next(
+        column
+        for column in EXPECTED_DTS_STATE_COLUMNS
+        if (column[0], column[1]) not in legacy_keys
+    )
+    partial_columns = list(LEGACY_EXPECTED_DTS_STATE_COLUMNS)
+    insertion_index = next(
+        index
+        for index, column in enumerate(partial_columns)
+        if column[0] == first_transition[0]
+    )
+    while (
+        insertion_index < len(partial_columns)
+        and partial_columns[insertion_index][0] == first_transition[0]
+    ):
+        insertion_index += 1
+    partial_columns.insert(insertion_index, first_transition)
+    partial_sink, _connection = _validation_sink(state_columns=partial_columns)
+
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="DTS_TARGET_STATE_SCHEMA_MISMATCH",
+    ):
+        partial_sink._validate_runtime()
+
+
 @pytest.mark.parametrize("drift", ["missing", "definition", "unvalidated"])
 def test_dts_runtime_rejects_state_constraint_drift(drift: str) -> None:
     constraints = list(EXPECTED_DTS_STATE_CONSTRAINTS)
@@ -938,11 +1023,53 @@ def test_dts_runtime_rejects_state_guard_trigger_drift(drift: str) -> None:
         sink._validate_runtime()
 
 
-def test_source_wide_runtime_contract_is_exactly_55_and_23_columns() -> None:
+def test_dts_runtime_accepts_complete_pre_v96_state_guard_shape() -> None:
+    rows = [
+        (*definition[:2], "O", *definition[2:])
+        for definition in LEGACY_EXPECTED_DTS_STATE_GUARD_TRIGGERS
+    ]
+    sink, _connection = _validation_sink(
+        state_columns=list(PRE96_EXPECTED_DTS_STATE_COLUMNS),
+        state_triggers=rows,
+        state_guard_functions=[],
+    )
+
+    sink._validate_runtime()
+
+
+@pytest.mark.parametrize("current_columns", [False, True])
+def test_dts_runtime_rejects_mixed_state_guard_versions(
+    current_columns: bool,
+) -> None:
+    legacy_rows = [
+        (*definition[:2], "O", *definition[2:])
+        for definition in LEGACY_EXPECTED_DTS_STATE_GUARD_TRIGGERS
+    ]
+    current_rows = [
+        (*definition[:2], "O", *definition[2:])
+        for definition in EXPECTED_DTS_STATE_GUARD_TRIGGERS
+    ]
+    sink, _connection = _validation_sink(
+        state_columns=(
+            list(EXPECTED_DTS_STATE_COLUMNS)
+            if current_columns
+            else list(PRE96_EXPECTED_DTS_STATE_COLUMNS)
+        ),
+        state_triggers=(legacy_rows if current_columns else current_rows),
+    )
+
+    with pytest.raises(
+        DtsIngestStoreError,
+        match="DTS_TARGET_STATE_GUARD_TRIGGER_MISMATCH",
+    ):
+        sink._validate_runtime()
+
+
+def test_source_wide_runtime_contract_is_55_business_plus_9_v2_and_23_lesson_columns() -> None:
     assert sum(
         row[0] == "teacher_source_wide"
         for row in EXPECTED_SOURCE_WIDE_COLUMNS
-    ) == 55
+    ) == 64
     assert sum(
         row[0] == "lesson_source_wide"
         for row in EXPECTED_SOURCE_WIDE_COLUMNS
@@ -951,6 +1078,12 @@ def test_source_wide_runtime_contract_is_exactly_55_and_23_columns() -> None:
         "teacher_source_wide",
         "tchr_id",
         "character varying(64)",
+        True,
+    ) in EXPECTED_SOURCE_WIDE_COLUMNS
+    assert (
+        "lesson_source_wide",
+        "source_region",
+        "character varying(8)",
         True,
     ) in EXPECTED_SOURCE_WIDE_COLUMNS
     assert (
@@ -1364,9 +1497,11 @@ def test_domestic_privacy_state_gate_is_count_only_and_fail_closed(
         sql = str(connection.statements[0])
         assert "student_subjects" in sql
         assert "lessons.\"学员id\"" in sql
-        assert "LESSON_PROVENANCE" in sql
-        assert "provenance.dom_sources > 0" in sql
-        assert "provenance.ovs_sources > 0" in sql
+        assert "lessons.source_region='dom'" in sql
+        assert "lessons.source_region='ovs'" in sql
+        assert "LESSON_PROVENANCE" not in sql
+        assert "provenance.dom_sources" not in sql
+        assert "provenance.ovs_sources" not in sql
         assert "dirty.key_part_2 <> ''" not in sql
         assert connection.parameters[0] == {
             "raw_fields": ["s_id", "stu_id", "student_id", "user_id"],

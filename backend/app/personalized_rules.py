@@ -79,12 +79,15 @@ def evaluate_lesson(
 
     decisions: list[TriggerDecision] = []
     lesson_id = normalize_text(row.get("课程id"))
+    completion_frozen = normalize_text(row.get("课程状态")).lower() == "end"
 
     absence_reason = normalize_text(row.get("缺席原因明细"))
-    if absence_reason == UNFILLED_LESSON_MEMO:
+    is_absent_lesson = normalize_text(row.get("课程状态")).lower() == "t_absent"
+    applicable_absence_reason = absence_reason if is_absent_lesson else ""
+    if applicable_absence_reason == UNFILLED_LESSON_MEMO:
         concurrent_attendance = [
             label
-            for field, label in (("迟到", "迟到"), ("早退", "早退"), ("假早退", "假早退"))
+            for field, label in (("迟到", "迟到"), ("早退", "早退"))
             if is_true_flag(row.get(field))
         ]
         concurrent_attendance_en = [
@@ -92,7 +95,6 @@ def evaluate_lesson(
             for field, label in (
                 ("迟到", "late arrival"),
                 ("早退", "early departure"),
-                ("假早退", "a possible false early-departure signal"),
             )
             if is_true_flag(row.get(field))
         ]
@@ -111,7 +113,7 @@ def evaluate_lesson(
                 title=personalized_task_title("P-REL-MEMO"),
                 priority="P1",
                 why=(
-                    "This completed lesson was recorded with a blank Lesson Memo. "
+                    "This lesson was recorded with a blank Lesson Memo. "
                     "Complete the Lesson Memo learning activity."
                     + concurrent_note
                 ),
@@ -124,13 +126,16 @@ def evaluate_lesson(
         )
 
     attendance_reasons: list[str] = []
-    if absence_reason and absence_reason != UNFILLED_LESSON_MEMO:
+    # Penalty facts do not own a task match.  They can only enrich a task that
+    # is already justified by this absent participation's non-Memo reason.
+    if (
+        applicable_absence_reason
+        and applicable_absence_reason != UNFILLED_LESSON_MEMO
+    ):
         attendance_reasons.append("an attendance-related absence reason was recorded")
-    if absence_reason != UNFILLED_LESSON_MEMO:
         for field, label in (
             ("迟到", "late arrival was recorded"),
             ("早退", "early departure was recorded"),
-            ("假早退", "a possible false early-departure signal was recorded"),
         ):
             if is_true_flag(row.get(field)):
                 attendance_reasons.append(label)
@@ -140,10 +145,9 @@ def evaluate_lesson(
                 reasons=attendance_reasons,
                 evidence={
                     "lesson_id": lesson_id,
-                    "absence_reason_detail": absence_reason or None,
+                    "absence_reason_detail": applicable_absence_reason or None,
                     "is_late": is_true_flag(row.get("迟到")),
                     "is_early": is_true_flag(row.get("早退")),
-                    "is_fake_early": is_true_flag(row.get("假早退")),
                 },
             )
         )
@@ -154,7 +158,34 @@ def evaluate_lesson(
         normalize_text(row.get(field))
         for field in ("投诉一级分类", "投诉二级分类", "投诉三级分类")
     )
-    if has_complaint and complaint_l2 == ATTENDANCE_COMPLAINT_CATEGORY:
+    # Complaint/QA rows are persisted before completion, but neither source
+    # identifies the final teacher.  Compatibility projection therefore waits
+    # for ``end`` instead of guessing from the mutable current appoint.t_id.
+    if completion_frozen and has_complaint and not complaint_l3:
+        decisions.append(
+            TriggerDecision(
+                rule_code="TR-FB-COMPLAINT-CATEGORY-MISSING",
+                domain="USER_FEEDBACK",
+                output_type="PENDING_DATA",
+                title="投诉三级分类待补齐",
+                priority="P1",
+                why=(
+                    "The complaint is missing its level-3 category, so no "
+                    "personalized action was created."
+                ),
+                evidence={
+                    "lesson_id": lesson_id,
+                    "complaint_level2": complaint_l2 or None,
+                    "complaint_level3": None,
+                    "missing_field": "投诉三级分类",
+                },
+            )
+        )
+    elif (
+        completion_frozen
+        and has_complaint
+        and complaint_l2 == ATTENDANCE_COMPLAINT_CATEGORY
+    ):
         decisions.append(
             _attendance_decision(
                 reasons=["an attendance-related complaint was recorded"],
@@ -165,7 +196,11 @@ def evaluate_lesson(
                 },
             )
         )
-    elif has_complaint and complaint_l2 == QUALITY_COMPLAINT_CATEGORY:
+    elif (
+        completion_frozen
+        and has_complaint
+        and complaint_l2 == QUALITY_COMPLAINT_CATEGORY
+    ):
         decisions.append(
             TriggerDecision(
                 rule_code="TR-QUALITY-COMPLAINT",
@@ -184,7 +219,7 @@ def evaluate_lesson(
                 },
             )
         )
-    elif has_complaint:
+    elif completion_frozen and has_complaint:
         complaint_rule = complaint_rules.get(normalize_text(complaint_l3))
         if complaint_rule is None:
             decisions.append(
@@ -262,7 +297,7 @@ def evaluate_lesson(
         )
         if is_true_flag(row.get(field))
     ]
-    if quality_signals:
+    if completion_frozen and quality_signals:
         quality_reasons = [item[0] for item in quality_signals]
         quality_reasons_en = [item[1] for item in quality_signals]
         decisions.append(

@@ -8,6 +8,7 @@
 !.env.dts-ingest.production.example
 !.env.dts-ingest.ovs.production.example
 !.env.dts-ingest.dom.production.example
+!.env.dts-source-metadata.production.example
 __pycache__/
 *.py[cod]
 .pytest_cache/

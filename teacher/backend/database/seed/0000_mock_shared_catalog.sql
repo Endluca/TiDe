@@ -2,7 +2,7 @@ BEGIN;
 
 INSERT INTO public.teachers (
     teacher_id, camp_enrollment_id, name, timezone, data_mode,
-    source_snapshot_label, payload
+    source_snapshot_label, graduation_state, payload
 ) VALUES (
     'MOCK-TEACHER-001',
     'MOCK-CAMP-001',
@@ -10,13 +10,29 @@ INSERT INTO public.teachers (
     'Asia/Shanghai',
     'MOCK',
     '[Mock] local shared contract',
-    '{"mock":true}'::jsonb
+    'IN_CAMP',
+    '{"mock":true,"graduation_state":"IN_CAMP"}'::jsonb
 )
 ON CONFLICT (teacher_id) DO UPDATE SET
     timezone = EXCLUDED.timezone,
     data_mode = EXCLUDED.data_mode,
     source_snapshot_label = EXCLUDED.source_snapshot_label,
-    payload = EXCLUDED.payload,
+    graduation_state = CASE
+        WHEN teachers.graduation_state = 'GRADUATED' THEN 'GRADUATED'
+        ELSE 'IN_CAMP'
+    END,
+    payload = jsonb_set(
+        EXCLUDED.payload,
+        '{graduation_state}',
+        to_jsonb(
+            CASE
+                WHEN teachers.graduation_state = 'GRADUATED'
+                    THEN 'GRADUATED'
+                ELSE 'IN_CAMP'
+            END
+        ),
+        true
+    ),
     updated_at = now();
 
 -- Keep the operations-owned row IDs stable while upgrading an existing local

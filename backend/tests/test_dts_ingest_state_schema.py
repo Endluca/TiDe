@@ -85,6 +85,7 @@ def test_runtime_orm_matches_the_four_dts_state_tables() -> None:
         for column in db_models.DtsIngestEventRecord.__table__.primary_key.columns
     }
     assert {
+        "source_region",
         "key_type",
         "key_part_1",
         "key_part_2",

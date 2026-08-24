@@ -75,6 +75,7 @@ ENV TZ=Asia/Shanghai \
     JAVA_TOOL_OPTIONS="-Xms64m -Xmx256m -Xss512k -Dlog4j.configuration=file:/deployments/config/log4j.properties" \
     TIT_PROCESS_PROFILE=dts-ingest \
     TIT_DTS_TRANSPORT=official_java \
+    TIT_DTS_PIPELINE_MODE=V1 \
     TIT_DTS_STARTUP_RETRY_SECONDS=15 \
     TIT_DTS_INGEST_HEARTBEAT=/tmp/tit-dts-ingest-heartbeat \
     TIT_DTS_INGEST_READINESS=/tmp/tit-dts-ingest-readiness

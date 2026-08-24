@@ -185,6 +185,48 @@ describe('current task catalog locale fields', () => {
     });
   });
 
+  it('publishes the two confirmed reliability actions with executable content', () => {
+    const attendance = currentTaskCatalog.find(
+      (task) => task.code === 'P-REL-ATTENDANCE',
+    );
+    const memo = currentTaskCatalog.find((task) => task.code === 'P-REL-MEMO');
+
+    expect(attendance).toMatchObject({
+      contentStatus: 'READY',
+      contentVersion: '2026-08-22-reliability-course-595-v1',
+      score: 0,
+      estimatedMinutes: 12,
+      steps: [],
+      rules: [],
+    });
+    expect(memo).toMatchObject({
+      contentStatus: 'READY',
+      contentVersion: '2026-07-24-lesson-memo-rules-v1',
+      score: 0,
+      estimatedMinutes: 6,
+      steps: [
+        {
+          key: 'p-rel-memo-document',
+          type: 'DOCUMENT',
+          config: {
+            documentCode: 'lesson-memo-rules',
+            contentVersion: '2026-07-24-lesson-memo-rules-v1',
+            contentHash:
+              '43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51',
+            readingCompletion: 'SCROLL_TO_END',
+          },
+        },
+      ],
+      rules: [
+        {
+          type: 'ALL_STEPS_COMPLETE',
+          version: '2026-07-24-lesson-memo-rules-v1',
+          config: { requiredStepKeys: ['p-rel-memo-document'] },
+        },
+      ],
+    });
+  });
+
   it('keeps G05 and G08 copy aligned with their current Kuozhi mappings', () => {
     const g05 = currentTaskCatalog.find((task) => task.code === 'G05');
     const g08 = currentTaskCatalog.find((task) => task.code === 'G08');

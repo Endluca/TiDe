@@ -1,0 +1,22 @@
+#!/bin/sh
+
+set -eu
+if [ "${TIT_PROCESS_PROFILE:-application}" != "application" ]; then
+  exec sleep infinity
+fi
+enabled="$(/app/bin/dts-v2-runtime-enabled.sh)"
+if [ "${enabled}" = "false" ]; then
+  printf '%s\n' 'DTS v2 Outbox paused by TIT_V2_RUNTIME_ENABLED=false' >&2
+  exec sleep infinity
+fi
+: "${TIT_V2_OUTBOX_DATABASE_URL:?TIT_V2_OUTBOX_DATABASE_URL is required}"
+: "${TIT_V2_EXPECTED_DATABASE:?TIT_V2_EXPECTED_DATABASE is required}"
+
+cd /app/operations
+exec s6-setuidgid gaea env \
+  TIT_DB_POOL_SIZE=1 TIT_DB_MAX_OVERFLOW=0 \
+  TIT_DB_APPLICATION_NAME=tit-growth-dts-v2-outbox \
+  /opt/venv/bin/python scripts/run_dts_v2_runtime.py \
+  --component outbox --watch --interval-seconds 3 \
+  --heartbeat-path /tmp/tit-v2-outbox-heartbeat \
+  --readiness-path /tmp/tit-v2-outbox-readiness

@@ -668,100 +668,117 @@ describe('TaskRepository versioned document reading progress', () => {
     });
   });
 
-  it('completes G02 in the same transaction that persists the end-of-document state', async () => {
-    const client = {
-      query: jest.fn().mockResolvedValue({ rowCount: 1, rows: [step] }),
-    };
-    const withTideTransaction = jest.fn(
-      async (operation: (transaction: typeof client) => Promise<unknown>) =>
-        operation(client),
-    );
-    const repository = new TaskRepository(
-      { withTideTransaction } as never,
-      {} as never,
-    );
-    const persistStepProgress = jest.fn().mockResolvedValue(undefined);
-    const submitLockedTask = jest.fn().mockResolvedValue({
-      accepted: true,
+  it.each([
+    {
+      taskCode: 'G02',
       taskInstanceId: 'assignment-g02',
-      status: 'COMPLETED',
-      stateVersion: 8,
-      validation: {
-        status: 'PASSED',
-        resultCode: 'ALL_STEPS_COMPLETE',
-        teacherMessage: null,
-      },
-    });
-    const saveCommandReceipt = jest.fn().mockResolvedValue(undefined);
-    Object.assign(repository as object, {
-      findCommandReplay: jest.fn().mockResolvedValue(null),
-      lockOwnedTask: jest.fn().mockResolvedValue({
-        taskCode: 'G02',
+      stepKey: 'g02-policy-document',
+    },
+    {
+      taskCode: 'P-REL-MEMO',
+      taskInstanceId: 'assignment-p-rel-memo',
+      stepKey: 'p-rel-memo-document',
+    },
+  ])(
+    'completes $taskCode in the same transaction that persists the end-of-document state',
+    async ({ taskCode, taskInstanceId, stepKey }) => {
+      const documentStep = { ...step, stepKey };
+      const client = {
+        query: jest
+          .fn()
+          .mockResolvedValue({ rowCount: 1, rows: [documentStep] }),
+      };
+      const withTideTransaction = jest.fn(
+        async (operation: (transaction: typeof client) => Promise<unknown>) =>
+          operation(client),
+      );
+      const repository = new TaskRepository(
+        { withTideTransaction } as never,
+        {} as never,
+      );
+      const persistStepProgress = jest.fn().mockResolvedValue(undefined);
+      const submitLockedTask = jest.fn().mockResolvedValue({
+        accepted: true,
         taskInstanceId: 'assignment-g02',
-        executionVersionId: 'execution-g02',
-        stateVersion: '7',
-      }),
-      assertStateVersion: jest.fn(),
-      assertStatus: jest.fn(),
-      assertPreviousStepsComplete: jest.fn().mockResolvedValue(undefined),
-      evaluateStepProgress: jest.fn().mockResolvedValue({
         status: 'COMPLETED',
+        stateVersion: 8,
+        validation: {
+          status: 'PASSED',
+          resultCode: 'ALL_STEPS_COMPLETE',
+          teacherMessage: null,
+        },
+      });
+      const saveCommandReceipt = jest.fn().mockResolvedValue(undefined);
+      Object.assign(repository as object, {
+        findCommandReplay: jest.fn().mockResolvedValue(null),
+        lockOwnedTask: jest.fn().mockResolvedValue({
+          taskCode,
+          taskInstanceId,
+          executionVersionId: `execution-${taskCode.toLowerCase()}`,
+          stateVersion: '7',
+        }),
+        assertStateVersion: jest.fn(),
+        assertStatus: jest.fn(),
+        assertPreviousStepsComplete: jest.fn().mockResolvedValue(undefined),
+        evaluateStepProgress: jest.fn().mockResolvedValue({
+          status: 'COMPLETED',
+          percent: 100,
+          summary: progress(100, true),
+          result: { reachedEnd: true },
+          reachedEnd: true,
+        }),
+        persistStepProgress,
+        submitLockedTask,
+        saveCommandReceipt,
+      });
+
+      const response = await repository.saveProgress({
+        accountId: 'account-document',
+        taskInstanceId,
+        idempotencyKey: `progress-${taskCode}-100`,
+        commandId: `command-${taskCode}-100`,
+        requestHash: 'request-hash',
+        expectedStateVersion: 7,
+        stepKey,
         percent: 100,
-        summary: progress(100, true),
-        result: { reachedEnd: true },
-        reachedEnd: true,
-      }),
-      persistStepProgress,
-      submitLockedTask,
-      saveCommandReceipt,
-    });
+        progress: progress(100, true),
+      });
 
-    const response = await repository.saveProgress({
-      accountId: 'account-g02',
-      taskInstanceId: 'assignment-g02',
-      idempotencyKey: 'progress-g02-100',
-      commandId: 'command-g02-100',
-      requestHash: 'request-hash',
-      expectedStateVersion: 7,
-      stepKey: step.stepKey,
-      percent: 100,
-      progress: progress(100, true),
-    });
-
-    expect(withTideTransaction).toHaveBeenCalledTimes(1);
-    expect(persistStepProgress).toHaveBeenCalledTimes(1);
-    expect(submitLockedTask).toHaveBeenCalledWith(
-      client,
-      expect.objectContaining({ taskCode: 'G02' }),
-      expect.objectContaining({
-        taskInstanceId: 'assignment-g02',
-        outputs: [
-          {
-            stepKey: 'g02-policy-document',
-            outputType: 'DOCUMENT',
-            value: progress(100, true),
-          },
-        ],
-      }),
-    );
-    expect(response).toMatchObject({
-      status: 'COMPLETED',
-      stateVersion: 8,
-      step: {
-        stepKey: 'g02-policy-document',
+      expect(withTideTransaction).toHaveBeenCalledTimes(1);
+      expect(persistStepProgress).toHaveBeenCalledTimes(1);
+      expect(submitLockedTask).toHaveBeenCalledWith(
+        client,
+        expect.objectContaining({ taskCode }),
+        expect.objectContaining({
+          taskInstanceId,
+          outputs: [
+            {
+              stepKey,
+              outputType: 'DOCUMENT',
+              value: progress(100, true),
+            },
+          ],
+        }),
+      );
+      expect(response).toMatchObject({
         status: 'COMPLETED',
-        percent: 100,
-        details: { reachedEnd: true },
-      },
-      validation: { status: 'PASSED' },
-    });
-    expect(saveCommandReceipt).toHaveBeenCalledWith(
-      client,
-      expect.any(Object),
-      'PROGRESS',
-      response,
-    );
-  });
+        stateVersion: 8,
+        step: {
+          stepKey,
+          status: 'COMPLETED',
+          percent: 100,
+          details: { reachedEnd: true },
+        },
+        validation: { status: 'PASSED' },
+      });
+      expect(saveCommandReceipt).toHaveBeenCalledWith(
+        client,
+        expect.any(Object),
+        'PROGRESS',
+        response,
+      );
+    },
+  );
 
   it('keeps the highest server-side percentage when a later report is lower', async () => {
     const repository = new TaskRepository({} as never, {} as never);

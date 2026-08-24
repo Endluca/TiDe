@@ -71,6 +71,9 @@ test("G02 renders a safe native document and accepts atomic completion from save
   assert.match(component, /URL\.revokeObjectURL\(objectUrl\)/);
   assert.match(taskApi, /responseType: "blob"/);
   assert.match(component, /language === "zh" \? loadedContent\?\.markdown\?\.zh/);
+  assert.match(component, /const documentTitle = loadedContent\?\.title/);
+  assert.match(component, /aria-label=\{documentTitle\}/);
+  assert.doesNotMatch(component, /aria-label=\{c\("Overseas NT Policies document"/);
   assert.match(component, /loadedContent\.contentVersion === contentVersion/);
   assert.match(component, /loadedContent\.contentHash === contentHash/);
   assert.match(backendController, /document-content/);

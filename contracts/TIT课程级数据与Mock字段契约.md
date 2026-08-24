@@ -1,54 +1,55 @@
 # TIT 课程级数据与 Mock 字段契约
 
-日期：2026-08-06
-状态：唯一当前课程数据契约
+日期：2026-08-21
+状态：v1 兼容字段契约；v2 结构与事件语义以 `docs/DTS_direct开发冻结实施规格.md` 为准
 
 ## 1. 当前用途
 
 课程明细用于个性化任务触发、运营提醒、逐课计分归因和证据下钻。教师宽表仍提供明确的教师聚合字段；但 `perfect_cnt` 只用于对账，当前完美完课数由课程状态、迟到和早退派生。
 
-历史测试库已导入 37,317 节课程基线；新数据入口改为：
+历史测试库已导入 37,317 节课程基线；现行 v1 数据入口为：
 
-- `lesson_source_wide`：只保存当前 CSV 的 23 个源字段；
+- `lesson_source_wide`：现行一课一师兼容表；rev73 已物理删除假早退列，当前契约为 22 列，但它不再是 v2 权威写模型；
 - `outbox_events`：只记录真实变化字段和受影响教师，不复制整行；
 - `lesson_score_results`：保存一课一行的当前派生分数与证据状态；
 - `complaint_category_rules`：保存投诉三级分类的精确匹配规则；
 - `personalized_trigger_matches`：保存每次规则命中、证据和最终输出。
 
-详细物理字段以 [数据库表结构](../docs/数据库表结构.md) 为准，触发口径以 [数据与积分规则](../docs/数据与积分规则.md) 为准。
+v2 权威写模型是 `source_courses + source_course_participations`，课程级积分按源课程一行、教师端课程按参与行展示。详细物理字段以 [开发冻结实施规格](../docs/DTS_direct开发冻结实施规格.md) 和 [数据库表结构](../docs/数据库表结构.md) 为准，触发口径以 [数据与积分规则](../docs/数据与积分规则.md) 为准。
 
 ## 2. 第一批课程字段
 
-当前物理源表的列集合固定为以下 23 列；除主键和老师 ID 外，业务空值保留为 `NULL`。监控服务在写入边界校验字段集；过渡 CSV 导入器还会拒绝缺失、改名、增列或换序。命名 SQL 写入不依赖列顺序。
+以下 22 列只定义现行 v1 兼容字段如何映射，不再定义 v2 主键或数据粒度。v2 中源课程使用
+`(source_region,source_appoint_id)`，教师参与使用
+`(source_region,source_appoint_id,participation_seq)`；不得把一课多师压回一行，也不得拼接伪造源课程 ID。
 
 本节的国内学生隐私边界覆盖此前字段映射工作簿中“学员id 原值”的旧说明；旧工作簿不能作为把
 国内原始学生 ID 写入海外库的授权依据。
 
 | 源字段 | 类型化字段 / 用途 | 说明 |
 |---|---|---|
-| 课程id | `lesson_id` | 课程稳定业务键，必填且全表唯一，作为当前态主键 |
+| 课程id | `source_appoint_id` | 源课程稳定业务键；仅与 `source_region` 组成源课程唯一键，不能单独标识教师参与 |
 | 上课日期 | `lesson_local_date` | 来源本地日期，不猜时区 |
 | 上课时间 | `lesson_local_time` | 来源本地时间，不转成 UTC |
 | 是否高峰 | `is_peak` | 0/1/空；保存课程级高峰事实，不直接替代教师维度 `peak_slot_cnt` |
-| 老师id | `teacher_id` | 必填；不建源表 FK，允许教师/课程乱序到达；消费时如教师事实尚未到达则失败关闭并待重试 |
+| 老师id | `teacher_id` | 在教师参与行中必填；同一源课程可以出现多位教师，乱序时先持久化来源事实并待重算 |
 | 学员id | `student_id` | 海外课程可保存受限海外源 ID；国内课程在国内容器内先转为 `dom:v1:<HMAC-SHA256>`，海外表只保存该稳定伪名 token，禁止保存原始国内学生 ID |
 | 课程状态 | `lesson_lifecycle_status` | 原值保留，不自行改写枚举含义 |
 | 迟到 | `is_late` | 0/1/空；触发可靠性任务 |
 | 早退 | `is_early` | 0/1/空；触发可靠性任务 |
 | 差评分 | `negative_score` | 数值/空；保留事实，本轮不单独触发 |
 | 差评标签 | `has_negative_feedback_tag` | 1 表示差评，0 表示不是差评；只有值为 1 时才解析评价详情 |
-| 缺席原因明细 | `absence_reason_detail` | 国内自由文本在出境前只保留精确值 `Unfilled Lesson Memo`；其他非空内容统一为 `Domestic reason redacted`，两者均保留“存在缺席原因”的路由语义 |
+| 缺席原因明细 | `absence_reason_detail` | 唯一来源为同一课程、同一教师最新 `dom_teacher_absent_reason.reason_type`；无记录为 `NULL`，不读取 `reason_desc` 或 `appoint.cancel_reason` |
 | 投诉一级分类 | `complaint_category_l1` | 原样保存 |
 | 投诉二级分类 | `complaint_category_l2` | 出席/网络设备投诉用于改路由 |
 | 投诉三级分类 | `complaint_category_l3` | 与处罚规则三级分类精确匹配 |
-| 是否拉黑 | `is_blocked` | 0/1/空；按不同学员数聚合 |
-| 收藏 | `is_favorited` | 0/1/空；保存收藏事实。同一教师与学员仅上课时间最早的有效完课收藏可归因加分，后续收藏课事实仍为 1、收藏加分为 0 |
+| 是否拉黑 | `is_blocked` | 课程侧派生展示字段，不是拉黑关系权威；师生拉黑关系及教师去重人数不要求已有完成课程 |
+| 收藏 | `is_favorited` | 表示该课程是否获得 end+24h 收藏归因；同一教师与学员终身只允许一节课为 1 并加分，取消后再收藏不开启新获分周期，关系当前态另行持续维护 |
 | 好评标签 | `has_positive_feedback_tag` | 当前只保存是否存在 |
-| 评价详情 | `feedback_detail` / `negative_tag_values` | 原文完整保存；差评课按英文逗号拆分、去空格并单课去重，形成标签数组 |
+| 评价详情 | `feedback_detail` / 标签展示 | 标签身份必须来自规范化 `label_id` 关联，`label_name` 只用于展示；不得再用逗号字符串作为唯一标签事实 |
 | 未开摄像头 | `is_camera_off` | 0/1/空；触发课中质量提醒 |
-| cpu占用过高 | `is_cpu_usage_high` | 0/1/空；触发课中质量提醒 |
-| 网络延迟过高 | `is_network_delay_high` | 0/1/空；触发课中质量提醒 |
-| 假早退 | `is_false_early_leave` | 0/1/空；触发可靠性任务 |
+| cpu占用过高 | `is_cpu_usage_high` | 字段保留、来源待替换；新来源接入前必须为 `NULL`，不得由旧 `qa_ac_classroom_record` 赋值 |
+| 网络延迟过高 | `is_network_delay_high` | 字段保留、来源待替换；新来源接入前必须为 `NULL`，不得由旧 `qa_ac_classroom_record` 赋值 |
 
 `0` 表示来源明确给出 0；空值表示来源未提供。两者不能混为一谈。
 
@@ -79,8 +80,9 @@
 
 ## 5. 每日外部接口目标
 
-正式运行由独立监控服务定时获取数据并幂等写入
-`lesson_source_wide`。同步批次、水位和重试属于监控服务，不作为源表额外字段。
+正式运行由受限接入服务先写来源当前态/tombstone，再幂等重建
+`source_courses + source_course_participations`。`lesson_source_wide` 只允许在切换期作为只读兼容投影，
+不得与 v2 双向写形成两个事实源。
 
 每个接口接入前必须确认：
 
@@ -105,11 +107,14 @@ lesson_lifecycle_status = 'end'
 
 `is_perfect` 随依赖课程事实更新而变化，不写入任何源表。正式日更接口仍需保证
 这三个来源字段的 0、1、空值和修正语义稳定。逐课 `is_perfect = true` 时可靠性加 4 分；
-教师维度 `perfect_cnt` 按去重 `source_appoint_id` 汇总。课堂质量硬件项直接读取
+教师维度 `perfect_cnt` 按去重 `(source_region,source_appoint_id)` 复合课程键汇总。课堂质量硬件项直接读取
 `is_camera_off / is_cpu_usage_high / is_network_delay_high`；三项均明确为 0 时
 逐课加 2 分，任一字段为 1 时不加分，任一字段为空时不加分并标记
-`SOURCE_MISSING`。
+`SOURCE_MISSING`。由于 CPU、网络来源已取消且替换来源尚未接入，过渡期这两个字段必须为
+`NULL`，因此不得产生新的硬件质量加分。
 
 ## 6. Mock 边界
 
-当前真实课程字段可支持出席、投诉、拉黑、重复差评标签和三项课中质量触发。完整课堂环境、设备检测、连续在场和独立 Lesson Memo 提交事实仍缺来源；需要展示时只能使用明确标记的 Mock，不能用于正式触发、扣分或资格结论。
+当前真实课程字段可支持出席、投诉、拉黑、重复差评标签和未开摄像头触发。CPU、网络的新来源、
+完整课堂环境、设备检测、连续在场和独立 Lesson Memo 提交事实仍缺来源；需要展示时只能使用明确
+标记的 Mock，不能用于正式触发、扣分或资格结论。假早退业务已取消，不得再用真实或 Mock 数据恢复。

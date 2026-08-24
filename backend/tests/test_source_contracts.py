@@ -103,7 +103,6 @@ EXPECTED_LESSON_SOURCE_FIELDS = (
     "未开摄像头",
     "cpu占用过高",
     "网络延迟过高",
-    "假早退",
 )
 
 EXPECTED_TEACHER_NO_DOWNSTREAM_FIELDS = {
@@ -153,15 +152,16 @@ def test_source_field_contracts_match_v12_and_append_only_g01_facts() -> None:
     assert LESSON_SOURCE_FIELDS == EXPECTED_LESSON_SOURCE_FIELDS
     assert len(TEACHER_CSV_FIELDS) == 53
     assert len(TEACHER_SOURCE_FIELDS) == 55
-    assert len(LESSON_SOURCE_FIELDS) == 23
+    assert len(LESSON_SOURCE_FIELDS) == 22
+    assert "假早退" not in LESSON_SOURCE_FIELDS
     assert "是否复约" not in LESSON_SOURCE_FIELDS
 
 
-def test_dependency_registry_covers_all_78_fields_without_extras() -> None:
+def test_dependency_registry_covers_all_77_fields_without_extras() -> None:
     assert tuple(TEACHER_FIELD_DEPENDENCIES) == TEACHER_SOURCE_FIELDS
     assert set(TEACHER_FIELD_DEPENDENCIES) == set(TEACHER_SOURCE_FIELDS)
     assert set(LESSON_FIELD_DEPENDENCIES) == set(LESSON_SOURCE_FIELDS)
-    assert len(TEACHER_FIELD_DEPENDENCIES) + len(LESSON_FIELD_DEPENDENCIES) == 78
+    assert len(TEACHER_FIELD_DEPENDENCIES) + len(LESSON_FIELD_DEPENDENCIES) == 77
     assert set(SOURCE_FIELD_DEPENDENCIES) == {
         TEACHER_SOURCE_TABLE,
         LESSON_SOURCE_TABLE,
@@ -194,6 +194,13 @@ def test_no_downstream_fields_are_exact_and_do_not_emit_handlers() -> None:
         for field, dependency in LESSON_FIELD_DEPENDENCIES.items()
         if not dependency.handlers
     } == {"差评分"}
+    for field in ("cpu占用过高", "网络延迟过高"):
+        dependency = LESSON_FIELD_DEPENDENCIES[field]
+        assert dependency.authority == "LESSON_RESERVED_NULL_SOURCE"
+        assert dependency.recompute_scope == (
+            "SINGLE_LESSON_AND_TEACHER_CLASS_QUALITY"
+        )
+        assert dependency.no_downstream_reason is None
 
 
 def test_teacher_scoring_and_gate_dependencies_are_field_level() -> None:
@@ -234,6 +241,20 @@ def test_lesson_aggregate_rules_have_narrow_recompute_scopes() -> None:
     )
     assert LESSON_FIELD_DEPENDENCIES["未开摄像头"].recompute_scope == (
         "SINGLE_LESSON_AND_TEACHER_CLASS_QUALITY"
+    )
+    expected_retirement_handlers = (
+        "LESSON_SCORE",
+        "TEACHER_CLASS_QUALITY",
+        "TEACHER_TOTAL",
+        "TEACHER_QUALIFICATION",
+    )
+    assert (
+        LESSON_FIELD_DEPENDENCIES["cpu占用过高"].handlers
+        == expected_retirement_handlers
+    )
+    assert (
+        LESSON_FIELD_DEPENDENCIES["网络延迟过高"].handlers
+        == expected_retirement_handlers
     )
     assert "TEACHER_RELIABILITY" in LESSON_FIELD_DEPENDENCIES["课程状态"].handlers
     assert "TEACHER_TOTAL" in LESSON_FIELD_DEPENDENCIES["迟到"].handlers

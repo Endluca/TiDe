@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import delete, func, select
 
+import app.source_wide_worker as source_wide_worker
 from app.config_models import (
     DEFAULT_CONFIG_PAYLOADS,
     ConfigKey,
@@ -31,6 +32,7 @@ from app.db_models import (
     TeacherRecord,
     TeacherSourceWideRecord,
 )
+from app.score_read_service import ScoreReadService
 from app.source_contracts import LESSON_SOURCE_FIELDS, TEACHER_SOURCE_FIELDS
 from app.source_test_seed import seed_source_test_data
 from app.source_wide_worker import (
@@ -60,6 +62,13 @@ _TEST_TEACHER_IDS = {
     "SW-G01-STATUS",
     "SW-POLICY-PUBLISH",
     "SW-POLICY-GRANT-GATED",
+    "SW-ONLINE-STATE",
+    "SW-ONLINE-OFF",
+    "SW-ONLINE-HEI",
+    "SW-FAVORITE-NO-LESSON",
+    "SW-FAVORITE-LEGACY-LESSON",
+    "SW-RECON-77",
+    "SW-PRE-END-L0",
 }
 
 
@@ -145,11 +154,14 @@ def _teacher_source(
     absent_cnt: int | None = 0,
     is_cpl_tesol: bool | None = None,
     is_self_introduce: bool | None = None,
+    status: str | None = "TEST-ACTIVE",
+    status_on_date: date | None = None,
 ) -> TeacherSourceWideRecord:
     return TeacherSourceWideRecord(
         tchr_id=teacher_id,
         real_name=name,
-        status="TEST-ACTIVE",
+        status=status,
+        status_on_date=status_on_date,
         job_days=1,
         total_completed_cnt=0,
         peak_completed_cnt=peak_completed_cnt,
@@ -174,6 +186,7 @@ def _source_event(
     changed_fields: list[str] | tuple[str, ...],
     old_teacher_id: str | None,
     new_teacher_id: str | None,
+    source_region: str | None = None,
     offset_seconds: int = 0,
 ) -> OutboxEventRecord:
     aggregate_type = (
@@ -182,20 +195,32 @@ def _source_event(
         else "LESSON_SOURCE_WIDE"
     )
     occurred_at = _NOW + timedelta(seconds=offset_seconds)
+    lesson_region = (
+        source_region or "ovs"
+        if source_table == "lesson_source_wide"
+        else None
+    )
+    payload = {
+        "source_table": source_table,
+        "source_id": source_id,
+        "operation": operation,
+        "changed_fields": list(changed_fields),
+        "old_teacher_id": old_teacher_id,
+        "new_teacher_id": new_teacher_id,
+    }
+    if lesson_region is not None:
+        payload["source_region"] = lesson_region
     event = OutboxEventRecord(
         outbox_id=f"OUT-SW-{token}",
         event_id=f"EVT-SW-{token}",
         aggregate_type=aggregate_type,
-        aggregate_id=source_id,
+        aggregate_id=(
+            f"{lesson_region}:{source_id}"
+            if lesson_region is not None
+            else source_id
+        ),
         event_type=EVENT_TYPE,
-        payload={
-            "source_table": source_table,
-            "source_id": source_id,
-            "operation": operation,
-            "changed_fields": list(changed_fields),
-            "old_teacher_id": old_teacher_id,
-            "new_teacher_id": new_teacher_id,
-        },
+        payload=payload,
         status="PENDING",
         available_at=occurred_at,
         attempt_count=0,
@@ -238,6 +263,96 @@ def _fixed_assignments(session, teacher_id: str) -> list[TaskAssignmentRecord]:
             .order_by(TaskAssignmentRecord.task_code)
         ).all()
     )
+
+
+def test_teacher_online_status_projects_and_advances_without_new_source_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    teacher_id = "SW-ONLINE-STATE"
+    day_29 = datetime(2026, 8, 22, 8, 0, tzinfo=timezone.utc)
+    day_30 = day_29 + timedelta(days=1)
+    monkeypatch.setattr(source_wide_worker, "_utcnow", lambda: day_29)
+    with session_scope(engine) as session:
+        session.add(
+            _teacher_source(
+                teacher_id,
+                status="on",
+                status_on_date=date(2026, 7, 24),
+            )
+        )
+        _add_teacher_insert_event(
+            session,
+            teacher_id,
+            token="ONLINE-STATE-INSERT",
+        )
+
+    inserted = SourceWideWorker(engine).run_once(max_events=10)
+    assert inserted["published"] == 1
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        assert teacher is not None
+        assert teacher.online_status == "NEW"
+        assert teacher.payload["online_status_evidence_status"] == "CONFIRMED"
+        assert teacher.payload["online_status_business_date"] == "2026-08-22"
+
+    # The clock sweep must use the last successfully projected source image,
+    # not a newer source row whose outbox event has not been applied yet.
+    with session_scope(engine) as session:
+        source = session.get(TeacherSourceWideRecord, teacher_id)
+        assert source is not None
+        source.status_on_date = date(2026, 7, 23)
+    pending_source = SourceWideWorker(engine).run_once(max_events=10)
+    assert pending_source["online_status_changes"] == 0
+    with session_scope(engine) as session:
+        assert session.get(TeacherRecord, teacher_id).online_status == "NEW"
+
+    monkeypatch.setattr(source_wide_worker, "_utcnow", lambda: day_30)
+    advanced = SourceWideWorker(engine).run_once(max_events=10)
+    assert advanced["claimed"] == 0
+    assert advanced["online_status_changes"] == 1
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        assert teacher is not None
+        assert teacher.online_status == "EXISTING"
+        assert teacher.payload["online_status_business_date"] == "2026-08-23"
+
+
+@pytest.mark.parametrize(
+    ("teacher_id", "source_status", "expected_status"),
+    [
+        ("SW-ONLINE-OFF", "off", "LEFT"),
+        ("SW-ONLINE-HEI", "hei", "BLOCKED"),
+    ],
+)
+def test_left_or_blocked_online_status_does_not_filter_score_projection(
+    teacher_id: str,
+    source_status: str,
+    expected_status: str,
+) -> None:
+    with session_scope(engine) as session:
+        session.add(
+            _teacher_source(
+                teacher_id,
+                status=source_status,
+                feedback_praise_cnt=1,
+            )
+        )
+        _add_teacher_insert_event(
+            session,
+            teacher_id,
+            token=f"ONLINE-{source_status.upper()}-INSERT",
+        )
+
+    result = SourceWideWorker(engine).run_once(max_events=10)
+    assert result["published"] == 1
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        assert teacher is not None
+        assert teacher.online_status == expected_status
+        assert teacher.graduation_state == "IN_CAMP"
+        assert teacher.payload["graduation_state"] == "IN_CAMP"
+        assert teacher.total_score > 0
+        assert teacher.payload["raw_total_score"] == teacher.total_score
 
 
 def test_teacher_insert_initializes_exactly_nine_assigned_fixed_tasks() -> None:
@@ -325,9 +440,9 @@ def test_six_seed_events_build_current_scores_without_legacy_projections() -> No
             lesson_id: item.lesson_total_score
             for lesson_id, item in lesson_results.items()
         } == {
-            "TEST-SOURCE-LESSON-001": 18,
-            "TEST-SOURCE-LESSON-002": 2,
-            "TEST-SOURCE-LESSON-003": 6,
+            "TEST-SOURCE-LESSON-001": 11,
+            "TEST-SOURCE-LESSON-002": 0,
+            "TEST-SOURCE-LESSON-003": 4,
             "TEST-SOURCE-LESSON-004": 4,
         }
         assert {
@@ -337,10 +452,324 @@ def test_six_seed_events_build_current_scores_without_legacy_projections() -> No
                 "TEST-SOURCE-TEACHER-002",
             )
         } == {
-            "TEST-SOURCE-TEACHER-001": 30,
-            "TEST-SOURCE-TEACHER-002": 10,
+            "TEST-SOURCE-TEACHER-001": 21,
+            "TEST-SOURCE-TEACHER-002": 8,
         }
         assert all(item.projection_revision == 1 for item in lesson_results.values())
+
+
+def test_teacher_reconciliation_event_rebuilds_every_lesson_and_removes_stale_hardware_points(
+) -> None:
+    teacher_id = "SW-RECON-77"
+    lesson_ids = ("SW-RECON-77-L1", "SW-RECON-77-L2")
+    with session_scope(engine) as session:
+        session.add(_teacher_source(teacher_id))
+        _add_teacher_insert_event(session, teacher_id, token="RECON-77-INSERT")
+    assert SourceWideWorker(engine).run_once(max_events=10)["failed"] == 0
+
+    with session_scope(engine) as session:
+        for offset, lesson_id in enumerate(lesson_ids):
+            session.add(
+                LessonSourceWideRecord(
+                    source_region="ovs",
+                    course_id=lesson_id,
+                    lesson_date=_NOW.date() + timedelta(days=offset),
+                    lesson_time=_NOW.time().replace(tzinfo=None),
+                    teacher_id=teacher_id,
+                    student_id=f"SW-RECON-77-STUDENT-{offset}",
+                    lesson_status="end",
+                    is_peak=False,
+                    is_late=False,
+                    is_early=False,
+                    is_favorited=False,
+                    has_positive_feedback_tag=False,
+                    is_camera_off=False,
+                    is_cpu_usage_high=None,
+                    is_network_delay_high=None,
+                )
+            )
+            session.add(
+                LessonScoreResultRecord(
+                    lesson_source_region="ovs",
+                    lesson_id=lesson_id,
+                    user_feedback_score=0,
+                    reliability_score=4,
+                    class_quality_score=2,
+                    lesson_total_score=6,
+                    dimensions={"legacy_hardware_award": True},
+                    score_rule_version="legacy-before-rev77",
+                    projection_revision=7,
+                    calculated_at=_NOW,
+                )
+            )
+        _source_event(
+            session,
+            token="RECON-77-TEACHER-WIDE",
+            source_table="teacher_source_wide",
+            source_id=teacher_id,
+            operation="UPDATE",
+            changed_fields=["feedback_favorite_cnt"],
+            old_teacher_id=teacher_id,
+            new_teacher_id=teacher_id,
+        )
+
+    result = SourceWideWorker(engine).run_once(max_events=10)
+
+    assert result["published"] == 1
+    assert result["teacher_refreshes"] == 1
+    assert result["lesson_result_changes"] == 2
+    with session_scope(engine) as session:
+        rebuilt = list(
+            session.scalars(
+                select(LessonScoreResultRecord)
+                .where(LessonScoreResultRecord.lesson_id.in_(lesson_ids))
+                .order_by(LessonScoreResultRecord.lesson_id)
+            ).all()
+        )
+        assert len(rebuilt) == 2
+        assert {item.lesson_total_score for item in rebuilt} == {4}
+        assert {item.class_quality_score for item in rebuilt} == {0}
+        assert {item.projection_revision for item in rebuilt} == {8}
+        assert {
+            item.dimensions["CLASS_QUALITY"]["components"][0][
+                "evidence_status"
+            ]
+            for item in rebuilt
+        } == {"SOURCE_MISSING"}
+        teacher = session.get(TeacherRecord, teacher_id)
+        assert teacher is not None
+        assert teacher.total_score == 8
+
+
+def test_pre_end_hardware_fact_never_awards_mutable_current_teacher() -> None:
+    lesson = LessonSourceWideRecord(
+        source_region="ovs",
+        course_id="SW-HARDWARE-PRE-END",
+        teacher_id="SW-HARDWARE-PRE-END-TEACHER",
+        lesson_status="on",
+        is_camera_off=False,
+        is_cpu_usage_high=False,
+        is_network_delay_high=False,
+    )
+    policy = source_wide_worker.ScoreGraduationConfig.model_validate(
+        DEFAULT_CONFIG_PAYLOADS[ConfigKey.SCORE_GRADUATION]
+    )
+
+    projections, attributed = source_wide_worker._lesson_projections(
+        [lesson],
+        policy,
+    )
+
+    assert projections[0].class_quality_score == 0
+    assert attributed["CLASS_QUALITY_HARDWARE"]["count"] == 0
+    component = projections[0].dimensions["CLASS_QUALITY"]["components"][0]
+    assert component["awarded"] is False
+    assert component["evidence_status"] == "CONFIRMED"
+
+
+def test_pre_end_p0_complaint_does_not_affect_qualification_hard_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    teacher_id = "SW-PRE-END-L0"
+    complaint_l3 = "PRE-END-P0"
+    complaint_rule = source_wide_worker.ComplaintRule(
+        level2_name="PRE-END-L2",
+        level3_name=complaint_l3,
+        source_level_code="P0",
+        severity_rank=0,
+        route_domain="OPS_CASE",
+    )
+    monkeypatch.setattr(
+        source_wide_worker,
+        "_complaint_rule_maps",
+        lambda _session: (
+            {complaint_l3: complaint_rule},
+            {complaint_l3: "RULE-PRE-END-P0"},
+        ),
+    )
+
+    with session_scope(engine) as session:
+        session.add(_teacher_source(teacher_id, feedback_praise_cnt=40))
+        _add_teacher_insert_event(session, teacher_id, token="PRE-END-L0-INSERT")
+    assert SourceWideWorker(engine).run_once(max_events=10)["failed"] == 0
+
+    lesson_id = "SW-PRE-END-L0-LESSON"
+    with session_scope(engine) as session:
+        for assignment in _fixed_assignments(session, teacher_id):
+            assignment.status = "COMPLETED"
+            assignment.completed_at = _NOW
+        session.add(
+            LessonSourceWideRecord(
+                source_region="ovs",
+                course_id=lesson_id,
+                teacher_id=teacher_id,
+                lesson_status="on",
+                complaint_category_l1="PRE-END-L1",
+                complaint_category_l2="PRE-END-L2",
+                complaint_category_l3=complaint_l3,
+            )
+        )
+        _source_event(
+            session,
+            token="PRE-END-L0-LESSON",
+            source_table="lesson_source_wide",
+            source_id=lesson_id,
+            operation="INSERT",
+            changed_fields=LESSON_SOURCE_FIELDS,
+            old_teacher_id=None,
+            new_teacher_id=teacher_id,
+        )
+
+    result = SourceWideWorker(engine).run_once(max_events=10)
+
+    assert result["failed"] == 0
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        qualification = session.get(TeacherQualificationRecord, teacher_id)
+        assert teacher is not None
+        assert teacher.payload["metric_inputs"]["l0_complaint_cnt"] == 0
+        assert qualification is not None
+        assert qualification.gate_results["l0_complaint_count"] == 0
+        assert (
+            qualification.gate_results["l0_complaint_evidence_status"]
+            == "CONFIRMED"
+        )
+        assert qualification.graduation_criteria_met is True
+        assert qualification.gold_criteria_met is True
+
+
+def test_current_favorite_relationship_without_lesson_never_awards_score() -> None:
+    teacher_id = "SW-FAVORITE-NO-LESSON"
+    with session_scope(engine) as session:
+        session.add(_teacher_source(teacher_id, feedback_favorite_cnt=1))
+        _add_teacher_insert_event(session, teacher_id, token="FAVORITE-NO-LESSON")
+
+    result = SourceWideWorker(engine).run_once(max_events=10)
+
+    assert result["published"] == 1
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        favorite = session.scalar(
+            select(ScoreComponentAccountRecord).where(
+                ScoreComponentAccountRecord.teacher_id == teacher_id,
+                ScoreComponentAccountRecord.component_code
+                == "FEEDBACK_FAVORITE",
+            )
+        )
+        assert teacher is not None
+        assert teacher.total_score == 0
+        assert teacher.payload["metric_inputs"]["feedback_favorite_cnt"] == 1
+        assert (
+            teacher.payload["metric_inputs"][
+                "feedback_favorite_evidence_status"
+            ]
+            == "CONFIRMED"
+        )
+        assert favorite is not None
+        assert favorite.source_scope == "LESSON"
+        assert favorite.source_metric == "course_favorite_attributions.status"
+        assert favorite.unit_count == 0
+        assert favorite.current_score == 0
+        assert favorite.lesson_attributed_count == 0
+        assert favorite.lesson_attributed_score == 0
+        assert favorite.unattributed_score == 0
+        assert favorite.reconciliation_status == "SOURCE_MISSING"
+        assert favorite.payload["source_mode"] == "SOURCE_MISSING"
+
+
+def test_legacy_lesson_favorite_flag_never_awards_course_or_teacher_score() -> None:
+    teacher_id = "SW-FAVORITE-LEGACY-LESSON"
+    lesson_id = "SW-FAVORITE-LEGACY-LESSON-001"
+    with session_scope(engine) as session:
+        session.add(_teacher_source(teacher_id, feedback_favorite_cnt=1))
+        session.add(
+            LessonSourceWideRecord(
+                source_region="ovs",
+                course_id=lesson_id,
+                lesson_date=_NOW.date(),
+                lesson_time=_NOW.time().replace(tzinfo=None),
+                teacher_id=teacher_id,
+                student_id="SW-FAVORITE-LEGACY-STUDENT",
+                lesson_status="end",
+                is_peak=False,
+                is_late=False,
+                is_early=False,
+                is_favorited=True,
+                has_positive_feedback_tag=False,
+                is_camera_off=False,
+            )
+        )
+        _add_teacher_insert_event(
+            session,
+            teacher_id,
+            token="FAVORITE-LEGACY-TEACHER",
+        )
+        _source_event(
+            session,
+            token="FAVORITE-LEGACY-LESSON",
+            source_table="lesson_source_wide",
+            source_id=lesson_id,
+            operation="INSERT",
+            changed_fields=LESSON_SOURCE_FIELDS,
+            old_teacher_id=None,
+            new_teacher_id=teacher_id,
+            offset_seconds=1,
+        )
+
+    result = SourceWideWorker(engine).run_once(max_events=10)
+
+    assert result["published"] == 2
+    with session_scope(engine) as session:
+        teacher = session.get(TeacherRecord, teacher_id)
+        lesson_result = session.get(
+            LessonScoreResultRecord, ("ovs", lesson_id)
+        )
+        favorite = session.scalar(
+            select(ScoreComponentAccountRecord).where(
+                ScoreComponentAccountRecord.teacher_id == teacher_id,
+                ScoreComponentAccountRecord.component_code
+                == "FEEDBACK_FAVORITE",
+            )
+        )
+        assert teacher is not None
+        assert teacher.total_score == 4
+        assert lesson_result is not None
+        assert lesson_result.lesson_total_score == 4
+        favorite_fact = lesson_result.dimensions["USER_FEEDBACK"]["components"][1]
+        assert favorite_fact == {
+            "awarded": False,
+            "points_per_unit": 5.0,
+            "score": 0.0,
+            "evidence_status": "SOURCE_MISSING",
+        }
+        assert favorite is not None
+        assert favorite.unit_count == 0
+        assert favorite.current_score == 0
+        assert favorite.lesson_attributed_count == 0
+        assert favorite.reconciliation_status == "SOURCE_MISSING"
+
+    scorecard = ScoreReadService(engine).teacher_scorecard(teacher_id)
+    lesson = scorecard["lessons"]["items"][0]
+    assert lesson["business_facts"]["user_feedback"]["is_favorited"] is True
+    favorite_fact = lesson["dimensions"][0]["business_facts"][1]
+    assert favorite_fact["code"] == "FEEDBACK_FAVORITE"
+    assert favorite_fact["awarded"] is False
+    assert favorite_fact["score"] == 0
+    assert favorite_fact["evidence_status"] == "SOURCE_MISSING"
+    teacher_favorite = next(
+        component
+        for dimension in scorecard["dimensions"]
+        for component in dimension["components"]
+        if component["code"] == "FEEDBACK_FAVORITE"
+    )
+    assert teacher_favorite["source_scope"] == "LESSON"
+    assert teacher_favorite["source_metric"] == (
+        "course_favorite_attributions.status"
+    )
+    assert teacher_favorite["unit_count"] == 0
+    assert teacher_favorite["score"] == 0
+    assert teacher_favorite["source_mode"] == "SOURCE_MISSING"
+    assert teacher_favorite["reconciliation_status"] == "SOURCE_MISSING"
 
 
 def test_name_only_update_does_not_recalculate_score_projections() -> None:
@@ -481,6 +910,7 @@ def test_score_policy_publish_recalculates_source_wide_teacher_in_same_transacti
         )
         session.add(
             LessonSourceWideRecord(
+                source_region="ovs",
                 course_id="SW-POLICY-LESSON",
                 lesson_date=_NOW.date(),
                 lesson_time=_NOW.time().replace(tzinfo=None),
@@ -493,8 +923,8 @@ def test_score_policy_publish_recalculates_source_wide_teacher_in_same_transacti
                 is_favorited=False,
                 has_positive_feedback_tag=True,
                 is_camera_off=False,
-                is_cpu_usage_high=False,
-                is_network_delay_high=False,
+                is_cpu_usage_high=None,
+                is_network_delay_high=None,
             )
         )
         _add_teacher_insert_event(
@@ -619,12 +1049,12 @@ def test_score_policy_publish_recalculates_source_wide_teacher_in_same_transacti
         teacher = session.get(TeacherRecord, teacher_id)
         lesson_result = session.get(
             LessonScoreResultRecord,
-            "SW-POLICY-LESSON",
+            ("ovs", "SW-POLICY-LESSON"),
         )
         qualification = session.get(TeacherQualificationRecord, teacher_id)
-        assert teacher is not None and teacher.total_score == 13
+        assert teacher is not None and teacher.total_score == 11
         assert lesson_result is not None
-        assert lesson_result.lesson_total_score == 13
+        assert lesson_result.lesson_total_score == 11
         assert lesson_result.score_rule_version == replacement_payload["policy_version"]
         assert qualification is not None
         assert qualification.score_rule_version == replacement_payload["policy_version"]
@@ -716,7 +1146,8 @@ def test_score_policy_publish_updates_current_criteria_without_granting(
         teacher = session.get(TeacherRecord, teacher_id)
         qualification = session.get(TeacherQualificationRecord, teacher_id)
         assert teacher is not None and teacher.total_score >= 100
-        assert teacher.graduation_state == "IN_PROGRESS"
+        assert teacher.graduation_state == "IN_CAMP"
+        assert teacher.payload["graduation_state"] == "IN_CAMP"
         assert qualification is not None
         assert qualification.graduation_criteria_met is True
         assert qualification.graduation_qualified is False
@@ -851,6 +1282,7 @@ def test_source_teacher_delete_preserves_identity_tasks_and_earned_qualification
         assert qualification is not None
         assert qualification.graduation_criteria_met is True
         assert qualification.graduation_qualified is True
+        assert qualification.graduation_score_locked == 100
         assert qualification.gold_criteria_met is True
         assert qualification.gold_qualified is True
         graduation_at = qualification.graduation_qualified_at
@@ -884,11 +1316,13 @@ def test_source_teacher_delete_preserves_identity_tasks_and_earned_qualification
         assert qualification is not None
         assert qualification.graduation_criteria_met is False
         assert qualification.graduation_qualified is True
+        assert qualification.graduation_score_locked == 100
         assert qualification.gold_criteria_met is False
         assert qualification.gold_qualified is True
         assert qualification.graduation_qualified_at == graduation_at
         assert qualification.gold_qualified_at == gold_at
         assert teacher.graduation_state == "GRADUATED"
+        assert teacher.payload["graduation_state"] == "GRADUATED"
         assert teacher.gold_qualified is True
         assert teacher.payload["metric_inputs"]["new_teacher_task_score"] == 30
         assert teacher.payload["metric_inputs"]["capacity_score"] == 10
@@ -928,7 +1362,8 @@ def test_source_worker_gate_keeps_scores_and_current_criteria_without_granting(
         teacher = session.get(TeacherRecord, teacher_id)
         qualification = session.get(TeacherQualificationRecord, teacher_id)
         assert teacher is not None and teacher.total_score >= 200
-        assert teacher.graduation_state == "IN_PROGRESS"
+        assert teacher.graduation_state == "IN_CAMP"
+        assert teacher.payload["graduation_state"] == "IN_CAMP"
         assert teacher.gold_qualified is False
         assert qualification is not None
         assert qualification.graduation_criteria_met is True

@@ -47,6 +47,7 @@ _LESSON_DIMENSION_COMPONENTS = {
     "RELIABILITY": ("PERFECT_COMPLETED", "PEAK_COMPLETED"),
     "CLASS_QUALITY": ("CLASS_QUALITY_HARDWARE",),
 }
+_TEACHER_DISPLAY_SCORE_CAP = 200.0
 
 
 class ScoreReadModelNotFound(LookupError):
@@ -166,7 +167,6 @@ def _source_lesson_business_facts(
             "lesson_lifecycle_status": lesson.lesson_status,
             "is_late": lesson.is_late,
             "is_early": lesson.is_early,
-            "is_false_early_leave": lesson.is_false_early_leave,
             "absence_reason_detail": lesson.absence_reason_detail,
         },
         "user_feedback": {
@@ -205,7 +205,14 @@ def _source_lesson_page(
     page_size: int,
 ) -> tuple[int, list[dict[str, Any]]]:
     lesson_join = (
-        LessonScoreResultRecord.lesson_id == LessonSourceWideRecord.course_id
+        (
+            LessonScoreResultRecord.lesson_source_region
+            == LessonSourceWideRecord.source_region
+        )
+        & (
+            LessonScoreResultRecord.lesson_id
+            == LessonSourceWideRecord.course_id
+        )
     )
     total = int(
         session.scalar(
@@ -222,6 +229,7 @@ def _source_lesson_page(
         .order_by(
             LessonSourceWideRecord.lesson_date.desc().nullslast(),
             LessonSourceWideRecord.lesson_time.desc().nullslast(),
+            LessonSourceWideRecord.source_region,
             LessonSourceWideRecord.course_id,
         )
         .offset((page - 1) * page_size)
@@ -251,6 +259,7 @@ def _source_lesson_page(
         items.append(
             {
                 "lesson_id": lesson.course_id,
+                "source_region": lesson.source_region,
                 "source_appoint_id": lesson.course_id,
                 "scheduled_start_at": _iso(scheduled_start_at),
                 "lesson_local_date": _iso(lesson.lesson_date),
@@ -365,11 +374,14 @@ class ScoreReadService:
                     "score_policy_sha256"
                 ),
                 "raw_total_score": float(teacher.total_score),
-                "public_total_score": float(
-                    teacher_payload.get(
-                        "external_display_score",
-                        teacher.total_score,
-                    )
+                "public_total_score": min(
+                    float(
+                        teacher_payload.get(
+                            "external_display_score",
+                            teacher.total_score,
+                        )
+                    ),
+                    _TEACHER_DISPLAY_SCORE_CAP,
                 ),
                 "graduation_state": teacher.graduation_state,
                 "graduation_qualified": teacher.graduation_state == "GRADUATED",

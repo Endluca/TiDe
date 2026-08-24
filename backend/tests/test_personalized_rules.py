@@ -24,7 +24,11 @@ RULES = {
 
 def test_lesson_memo_and_attendance_signals_are_exact() -> None:
     memo = evaluate_lesson(
-        {"课程id": 1, "缺席原因明细": "Unfilled Lesson Memo"},
+        {
+            "课程id": 1,
+            "课程状态": "t_absent",
+            "缺席原因明细": "Unfilled Lesson Memo",
+        },
         complaint_rules=RULES,
     )
     assert [(item.task_code, item.title) for item in memo] == [
@@ -34,14 +38,24 @@ def test_lesson_memo_and_attendance_signals_are_exact() -> None:
     assert "unfilled Lesson Memo" not in memo[0].why
 
     memo_with_late = evaluate_lesson(
-        {"课程id": 11, "缺席原因明细": "Unfilled Lesson Memo", "迟到": 1},
+        {
+            "课程id": 11,
+            "课程状态": "t_absent",
+            "缺席原因明细": "Unfilled Lesson Memo",
+            "迟到": 1,
+        },
         complaint_rules=RULES,
     )
     assert len(memo_with_late) == 1
     assert memo_with_late[0].evidence["concurrent_attendance_signals"] == ["迟到"]
 
     attendance = evaluate_lesson(
-        {"课程id": 2, "缺席原因明细": "Power Failure", "迟到": 1},
+        {
+            "课程id": 2,
+            "课程状态": "t_absent",
+            "缺席原因明细": "Power Failure",
+            "迟到": 1,
+        },
         complaint_rules=RULES,
     )
     assert len(attendance) == 1
@@ -51,10 +65,47 @@ def test_lesson_memo_and_attendance_signals_are_exact() -> None:
     assert not contains_han(attendance[0].why)
 
 
+def test_absence_reason_does_not_create_task_without_absent_status() -> None:
+    decisions = evaluate_lesson(
+        {
+            "课程id": 12,
+            "课程状态": "end",
+            "缺席原因明细": "Unfilled Lesson Memo",
+        },
+        complaint_rules=RULES,
+    )
+
+    assert decisions == []
+
+
+def test_penalty_never_creates_an_attendance_task_by_itself() -> None:
+    pre_end = evaluate_lesson(
+        {
+            "课程id": 13,
+            "课程状态": "on",
+            "迟到": True,
+            "早退": True,
+        },
+        complaint_rules=RULES,
+    )
+    completed = evaluate_lesson(
+        {
+            "课程id": 14,
+            "课程状态": "end",
+            "迟到": True,
+        },
+        complaint_rules=RULES,
+    )
+
+    assert pre_end == []
+    assert completed == []
+
+
 def test_complaint_rank_routes_to_ops_or_teacher() -> None:
     severe = evaluate_lesson(
         {
             "课程id": 3,
+            "课程状态": "end",
             "投诉一级分类": "关于老师",
             "投诉二级分类": "教学态度问题",
             "投诉三级分类": "外教向学员借钱",
@@ -68,6 +119,7 @@ def test_complaint_rank_routes_to_ops_or_teacher() -> None:
     general = evaluate_lesson(
         {
             "课程id": 4,
+            "课程状态": "end",
             "投诉一级分类": "关于老师",
             "投诉二级分类": "教学技巧问题",
             "投诉三级分类": "语速过快",
@@ -84,6 +136,7 @@ def test_attendance_and_network_complaints_skip_general_complaint_route() -> Non
     attendance = evaluate_lesson(
         {
             "课程id": 5,
+            "课程状态": "end",
             "投诉一级分类": "关于老师",
             "投诉二级分类": "出席问题",
             "投诉三级分类": "迟到",
@@ -96,6 +149,7 @@ def test_attendance_and_network_complaints_skip_general_complaint_route() -> Non
     quality = evaluate_lesson(
         {
             "课程id": 6,
+            "课程状态": "end",
             "投诉一级分类": "关于老师",
             "投诉二级分类": "网络设备问题",
             "投诉三级分类": "网络卡顿",
@@ -109,7 +163,13 @@ def test_attendance_and_network_complaints_skip_general_complaint_route() -> Non
 
 def test_quality_flags_are_merged_into_one_explainable_reminder() -> None:
     decisions = evaluate_lesson(
-        {"课程id": 7, "未开摄像头": 1, "cpu占用过高": 1, "网络延迟过高": 0},
+        {
+            "课程id": 7,
+            "课程状态": "end",
+            "未开摄像头": 1,
+            "cpu占用过高": 1,
+            "网络延迟过高": 0,
+        },
         complaint_rules=RULES,
     )
     assert len(decisions) == 1
@@ -122,6 +182,7 @@ def test_unknown_complaint_stops_in_pending_data() -> None:
     decisions = evaluate_lesson(
         {
             "课程id": 8,
+            "课程状态": "end",
             "投诉一级分类": "关于老师",
             "投诉二级分类": "教学技巧问题",
             "投诉三级分类": "未知分类",
@@ -130,3 +191,38 @@ def test_unknown_complaint_stops_in_pending_data() -> None:
     )
     assert decisions[0].output_type == "PENDING_DATA"
     assert not contains_han(decisions[0].why)
+
+
+def test_missing_complaint_level3_is_pending_even_for_attendance_category() -> None:
+    decisions = evaluate_lesson(
+        {
+            "课程id": 9,
+            "课程状态": "end",
+            "投诉一级分类": "关于老师",
+            "投诉二级分类": "出席问题",
+            "投诉三级分类": None,
+        },
+        complaint_rules=RULES,
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].output_type == "PENDING_DATA"
+    assert decisions[0].rule_code == "TR-FB-COMPLAINT-CATEGORY-MISSING"
+    assert decisions[0].task_code is None
+    assert decisions[0].evidence["missing_field"] == "投诉三级分类"
+
+
+def test_complaint_and_camera_wait_for_frozen_completion_owner() -> None:
+    decisions = evaluate_lesson(
+        {
+            "课程id": 10,
+            "课程状态": "on",
+            "投诉一级分类": "关于老师",
+            "投诉二级分类": "教学技巧问题",
+            "投诉三级分类": "语速过快",
+            "未开摄像头": 1,
+        },
+        complaint_rules=RULES,
+    )
+
+    assert decisions == []

@@ -29,6 +29,7 @@ def _negative_lesson(
     return projection.LessonTriggerRow(
         row_number=row_number,
         raw_payload={"课程id": lesson_id},
+        source_region="ovs",
         lesson_id=lesson_id,
         teacher_id="TEACHER-ENVIRONMENT",
         student_id=f"STUDENT-{row_number}",
@@ -39,7 +40,6 @@ def _negative_lesson(
         is_peak=False,
         is_late=False,
         is_early=False,
-        is_false_early_leave=False,
         negative_score=1.0,
         has_negative_tag=True,
         feedback_detail=label,
@@ -104,6 +104,28 @@ def test_repeated_environment_labels_emit_a_stable_teacher_execution_variant() -
     assert "teacher_execution_variant" not in negative_specs["缺少互动"].evidence
 
 
+def test_repeated_negative_labels_do_not_bind_mutable_pre_end_teacher() -> None:
+    first = replace(
+        _negative_lesson(row_number=1, lesson_id="LESSON-ON-1", label="缺少互动"),
+        lifecycle_status="on",
+    )
+    second = replace(
+        first,
+        row_number=2,
+        lesson_id="LESSON-ON-2",
+        student_id="STUDENT-2",
+    )
+
+    specs, _, pending_count, _ = projection.build_output_specs(
+        [first, second],
+        complaint_rules={},
+        complaint_rule_ids={},
+    )
+
+    assert not any(spec.task_code == "P-FB-NEGATIVE" for spec in specs)
+    assert pending_count == 0
+
+
 def test_materialized_variant_is_frozen_from_the_trusted_rule_not_context() -> None:
     lessons = [
         _negative_lesson(
@@ -129,7 +151,7 @@ def test_materialized_variant_is_frozen_from_the_trusted_rule_not_context() -> N
             country="CN",
             timezone="Asia/Shanghai",
             camp_day=1,
-            graduation_state="IN_PROGRESS",
+            graduation_state="IN_CAMP",
             gold_qualified=False,
             total_score=0,
             graduation_threshold=30,

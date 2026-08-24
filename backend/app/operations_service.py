@@ -10,11 +10,13 @@ from sqlalchemy import (
     Engine,
     and_,
     case,
+    exists,
     func,
     literal,
     literal_column,
     or_,
     select,
+    tuple_,
 )
 from sqlalchemy.orm import Session
 
@@ -29,6 +31,10 @@ from .db_models import (
     PersonalizedTriggerMatchRecord,
     TaskAssignmentRecord,
     TeacherRecord,
+)
+from .dts_v2_completion_correction import (
+    CompletionCorrectionRequestV2,
+    PostgresDtsV2CompletionCorrectionStore,
 )
 from .personalized_rules import normalize_text
 
@@ -230,8 +236,19 @@ def _current_complaint_levels(
 class OperationsService:
     """Read model for an operator's macro-to-micro intervention workflow."""
 
-    def __init__(self, bind: Engine | None = None) -> None:
+    def __init__(
+        self,
+        bind: Engine | None = None,
+        *,
+        completion_correction_store: (
+            PostgresDtsV2CompletionCorrectionStore | None
+        ) = None,
+    ) -> None:
         self.engine = bind or default_engine
+        self.completion_correction_store = (
+            completion_correction_store
+            or PostgresDtsV2CompletionCorrectionStore()
+        )
 
     def overview(self) -> dict[str, Any]:
         with session_scope(self.engine) as session:
@@ -687,6 +704,7 @@ class OperationsService:
                     select(
                         _output_key_expression().label("output_key"),
                         PersonalizedTriggerMatchRecord.evidence_snapshot,
+                        PersonalizedTriggerMatchRecord.lesson_source_region,
                         PersonalizedTriggerMatchRecord.lesson_id,
                         func.row_number()
                         .over(
@@ -714,6 +732,7 @@ class OperationsService:
                     select(
                         evidence_source.c.output_key,
                         evidence_source.c.evidence_snapshot,
+                        evidence_source.c.lesson_source_region,
                         evidence_source.c.lesson_id,
                     )
                     .where(
@@ -736,6 +755,7 @@ class OperationsService:
             for page_row in page_rows:
                 evidence_summaries: list[str] = []
                 lesson_ids: list[str] = []
+                source_lessons: list[dict[str, str]] = []
                 for evidence_row in evidence_by_key.get(
                     str(page_row.output_key), []
                 ):
@@ -750,10 +770,23 @@ class OperationsService:
                     if evidence_summary not in evidence_summaries:
                         evidence_summaries.append(evidence_summary)
                     if (
+                        evidence_row.lesson_source_region
+                        and
                         evidence_row.lesson_id
-                        and evidence_row.lesson_id not in lesson_ids
+                        and {
+                            "source_region": evidence_row.lesson_source_region,
+                            "source_appoint_id": evidence_row.lesson_id,
+                        }
+                        not in source_lessons
                     ):
-                        lesson_ids.append(evidence_row.lesson_id)
+                        source_lessons.append(
+                            {
+                                "source_region": evidence_row.lesson_source_region,
+                                "source_appoint_id": evidence_row.lesson_id,
+                            }
+                        )
+                        if evidence_row.lesson_id not in lesson_ids:
+                            lesson_ids.append(evidence_row.lesson_id)
                 signal_count = int(page_row.signal_count or 0)
                 prefix = (
                     f"共 {signal_count} 次命中；"
@@ -778,6 +811,7 @@ class OperationsService:
                         "triggered_at": _iso(page_row.triggered_at),
                         "why": page_row.why,
                         "source_lesson_ids": lesson_ids,
+                        "source_lessons": source_lessons,
                         "source_lesson_id": (
                             lesson_ids[0] if lesson_ids else None
                         ),
@@ -826,6 +860,10 @@ class OperationsService:
             )
             if case is None:
                 raise LookupError("case not found")
+            if case.case_type == "COURSE_COMPLETION_CORRECTION":
+                raise ValueError(
+                    "COURSE_COMPLETION_CORRECTION_REQUIRES_DEDICATED_DECISION"
+                )
             if case.status in TERMINAL_CASE_STATUSES:
                 raise RuntimeError("case is already terminal")
             next_status = "IN_REVIEW" if normalized_decision == "START_PROCESSING" else "RESOLVED"
@@ -864,29 +902,96 @@ class OperationsService:
                 "updated_at": _iso(now),
             }
 
+    def apply_completion_correction(
+        self,
+        *,
+        decision_id: str,
+        case_id: str,
+        decision: str,
+        actor_id: str,
+        reason: str,
+        expected_case_revision: int,
+        expected_conflict_fingerprint: str,
+        expected_source_revision: int,
+        expected_source_position: dict[str, Any],
+        target_participation_seq: int | None,
+        completion_snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        request = CompletionCorrectionRequestV2(
+            decision_id=decision_id,
+            case_id=case_id,
+            decision=decision,
+            actor_id=actor_id,
+            reason=reason,
+            expected_case_revision=expected_case_revision,
+            expected_conflict_fingerprint=expected_conflict_fingerprint,
+            expected_source_revision=expected_source_revision,
+            expected_source_position=expected_source_position,
+            target_participation_seq=target_participation_seq,
+            completion_snapshot=completion_snapshot,
+        )
+        with self.engine.begin() as connection:
+            result = self.completion_correction_store.apply(
+                connection,
+                request,
+            )
+        return {
+            "outcome": result.outcome,
+            "decision_id": result.decision_id,
+            "case_id": result.case_id,
+            "case_status": result.case_status,
+            "completion_conflict_status": (
+                result.completion_conflict_status
+            ),
+            "projection_event_ids": list(result.projection_event_ids),
+        }
+
     def lessons(
         self,
         *,
         page: int = 1,
         page_size: int = 50,
         teacher_id: str | None = None,
+        source_region: str | None = None,
         lesson_id: str | None = None,
         risk_only: bool = False,
     ) -> dict[str, Any]:
         with session_scope(self.engine) as session:
             statement = select(LessonSourceWideRecord)
+            if source_region is not None:
+                if source_region not in {"dom", "ovs"}:
+                    raise ValueError("source_region must be dom or ovs")
+                statement = statement.where(
+                    LessonSourceWideRecord.source_region == source_region
+                )
             if teacher_id:
                 statement = statement.where(
                     LessonSourceWideRecord.teacher_id == teacher_id
                 )
             if lesson_id:
+                if source_region is None:
+                    matching_regions = set(
+                        session.scalars(
+                            select(LessonSourceWideRecord.source_region).where(
+                                LessonSourceWideRecord.course_id == lesson_id
+                            )
+                        ).all()
+                    )
+                    if len(matching_regions) > 1:
+                        raise ValueError(
+                            "LESSON_IDENTITY_AMBIGUOUS:source_region is required"
+                        )
                 statement = statement.where(
                     LessonSourceWideRecord.course_id == lesson_id
                 )
             if risk_only:
                 statement = statement.where(
-                    LessonSourceWideRecord.course_id.in_(
-                        select(PersonalizedTriggerMatchRecord.lesson_id).where(
+                    exists(
+                        select(1).where(
+                            PersonalizedTriggerMatchRecord.lesson_source_region
+                            == LessonSourceWideRecord.source_region,
+                            PersonalizedTriggerMatchRecord.lesson_id
+                            == LessonSourceWideRecord.course_id,
                             PersonalizedTriggerMatchRecord.lesson_id.is_not(None),
                             _active_match_expression(),
                         )
@@ -898,23 +1003,35 @@ class OperationsService:
                 statement.order_by(
                     LessonSourceWideRecord.lesson_date.desc(),
                     LessonSourceWideRecord.lesson_time.desc(),
+                    LessonSourceWideRecord.source_region,
                     LessonSourceWideRecord.course_id.desc(),
                 )
                 .offset((page - 1) * page_size)
                 .limit(page_size)
             ).all()
-            lesson_ids = [item.course_id for item in records]
-            matches_by_lesson: dict[str, list[PersonalizedTriggerMatchRecord]] = defaultdict(list)
-            if lesson_ids:
+            lesson_identities = [
+                (item.source_region, item.course_id) for item in records
+            ]
+            matches_by_lesson: dict[
+                tuple[str, str], list[PersonalizedTriggerMatchRecord]
+            ] = defaultdict(list)
+            if lesson_identities:
                 for match in session.scalars(
                     select(PersonalizedTriggerMatchRecord).where(
-                        PersonalizedTriggerMatchRecord.lesson_id.in_(lesson_ids),
+                        tuple_(
+                            PersonalizedTriggerMatchRecord.lesson_source_region,
+                            PersonalizedTriggerMatchRecord.lesson_id,
+                        ).in_(lesson_identities),
                         _active_match_expression(),
                     )
                 ).all():
-                    if match.lesson_id:
-                        matches_by_lesson[match.lesson_id].append(match)
-            teacher_ids = {item.teacher_id for item in records}
+                    if match.lesson_source_region and match.lesson_id:
+                        matches_by_lesson[
+                            (match.lesson_source_region, match.lesson_id)
+                        ].append(match)
+            teacher_ids = {
+                item.teacher_id for item in records if item.teacher_id is not None
+            }
             teachers = {
                 item.teacher_id: item.name
                 for item in session.scalars(
@@ -924,7 +1041,9 @@ class OperationsService:
             complaint_levels = _current_complaint_levels(session, records)
             items: list[dict[str, Any]] = []
             for lesson in records:
-                matches = matches_by_lesson.get(lesson.course_id, [])
+                matches = matches_by_lesson.get(
+                    (lesson.source_region, lesson.course_id), []
+                )
                 domains = sorted(
                     {
                         _domain(
@@ -937,6 +1056,7 @@ class OperationsService:
                 items.append(
                     {
                         "lesson_id": lesson.course_id,
+                        "source_region": lesson.source_region,
                         "teacher_id": lesson.teacher_id,
                         "teacher_name": teachers.get(lesson.teacher_id, lesson.teacher_id),
                         "lesson_date": lesson.lesson_date.isoformat() if lesson.lesson_date else None,

@@ -5,6 +5,11 @@ export interface SourceFreshness {
   stale: boolean;
 }
 
+export type GraduationState = 'IN_CAMP' | 'GRADUATED';
+export type TeacherOnlineStatus = 'NEW' | 'EXISTING' | 'LEFT' | 'BLOCKED';
+export type GoldStatus = 'NOT_GOLD' | 'GOLD';
+export type TeacherSourceStatus = 'CONFIRMED' | 'SOURCE_MISSING';
+
 export interface TeacherProfileResponse {
   teacherId: string;
   email: string;
@@ -12,7 +17,7 @@ export interface TeacherProfileResponse {
   timezone: string | null;
   campDay: number | null;
   totalCampDays: number;
-  graduationState: string | null;
+  graduationState: GraduationState | null;
   freshness: SourceFreshness;
 }
 
@@ -27,11 +32,16 @@ export interface G01ReviewResponse {
 
 export interface TideSummaryAvailableResponse {
   available: true;
+  onlineStatus: TeacherOnlineStatus;
   rawTotalScore: number;
   publicTotalScore: number;
-  graduationState: string;
+  graduationState: GraduationState;
   graduationQualified: boolean;
+  graduationQualifiedAt: string | null;
+  graduationScoreLocked: number | null;
   goldQualified: boolean;
+  goldStatus: GoldStatus;
+  goldQualifiedAt: string | null;
   graduationThreshold: number;
   goldThreshold: number;
   mandatoryTaskCompletedCount: number;
@@ -40,6 +50,9 @@ export interface TideSummaryAvailableResponse {
   calculatedAt: string;
   dimensions: ScoreDimensionResponse[];
   availableScore: AvailableScoreResponse | null;
+  source: {
+    teacherSourceStatus: TeacherSourceStatus;
+  };
   freshness: SourceFreshness;
 }
 
@@ -88,7 +101,11 @@ export interface ScoreDimensionResponse {
 }
 
 export interface CourseFactResponse {
+  /** Compatibility display key; never a source lesson ID or database locator. */
   lessonId: string;
+  sourceRegion: 'dom' | 'ovs';
+  sourceAppointId: string;
+  participationSeq: number;
   lessonSequence: number;
   lessonCount: number;
   scheduledStartAt: string | null;
@@ -98,12 +115,11 @@ export interface CourseFactResponse {
   validForScoring: boolean;
   evidenceStatus: string;
   lessonTotalScore: number;
-  scoreRuleVersion: string;
+  scoreRuleVersion: string | null;
   updatedAt: string;
   facts: {
     late: boolean | null;
     earlyLeave: boolean | null;
-    falseEarlyLeave: boolean | null;
     positiveFeedback: boolean | null;
     favorited: boolean | null;
     rebooked: boolean | null;

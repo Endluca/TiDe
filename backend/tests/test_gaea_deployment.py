@@ -237,6 +237,7 @@ def test_gaea_dts_module_omits_the_application_build_graph() -> None:
     assert "run_dts_ingest.py" in dts_runtime
     assert "TIT_PROCESS_PROFILE=dts-ingest" in dts_runtime
     assert "TIT_DTS_TRANSPORT=official_java" in dts_runtime
+    assert "TIT_DTS_PIPELINE_MODE=V1" in dts_runtime
     assert "TIT_DTS_STARTUP_RETRY_SECONDS=15" in dts_runtime
     assert "/deployments/dts-transport.jar" in dts_runtime
     assert "/deployments/dts-diagnose.jar" in dts_runtime
@@ -535,7 +536,7 @@ def test_company_test_initializer_never_executes_schema_migrations() -> None:
 
     first_write = script.index('pnpm --dir "${DB_DIR}/.." exec ts-node')
     for guard in (
-        'EXPECTED_PUBLIC_HEAD="20260819_65_g09_set_course"',
+        'EXPECTED_PUBLIC_HEAD="20260823_100_scope_snapshot_diff"',
         'CANONICAL_TIDE_MIGRATIONS=(',
         'actual_tide_ledger_manifest=',
         'canonical_schema_ready=',
@@ -594,10 +595,10 @@ def test_company_test_initializer_requires_the_production_canonical_ledger() -> 
         "PRODUCTION_MIGRATIONS",
     )
     for contract in (
-        "count(*) = 37",
+        "count(*) = 38",
         "min(migration_order) = 1",
-        "max(migration_order) = 37",
-        "count(distinct migration_order) = 37",
+        "max(migration_order) = 38",
+        "count(distinct migration_order) = 38",
         "filename = migration_id || '.up.sql'",
         "select migration_order, migration_id, filename, sha256",
         '0032_first_login_onboarding',
@@ -608,14 +609,16 @@ def test_company_test_initializer_requires_the_production_canonical_ledger() -> 
         '0040_g02_document_read_status',
         '0041_crm_sso_hybrid',
         '0042_g09_set_kuozhi_course',
+        '0043_p_rel_execution_catalog',
     ):
         assert contract in initializer
     assert (
         "public Alembic 46 -> teacher 0028 -> public head 50 -> teacher 0032 "
         "-> public head 54 -> teacher 0037 -> public head 55 -> public head 56 "
         "-> teacher 0038 -> public head 57 -> teacher 0040 -> teacher 0041 "
-        "-> public head 63 -> public head 64 -> public head 65 -> teacher 0042"
-    ) in initializer
+        "-> public head 63 -> public head 64 -> public head 65 -> teacher 0042 "
+            "-> public head 99/100 -> teacher 0043，并最终迁移到 public head 100"
+        ) in initializer
 
 
 def test_company_test_catalog_sync_keeps_unchanged_executions_stable() -> None:
@@ -687,7 +690,7 @@ case \"${count}\" in
   3) printf 't\\n' ;;
   4) printf 't\\n' ;;
   5) printf 't\\n' ;;
-  6) printf '20260819_65_g09_set_course\\n' ;;
+  6) printf '20260823_100_scope_snapshot_diff\\n' ;;
   7)
     if [[ \"${FAKE_SCENARIO}\" == 'missing' ]]; then
       printf 'f\\n'
@@ -813,7 +816,7 @@ def test_company_test_initializer_rejects_the_precanonical_ledger_before_writes(
     )
 
     assert result.returncode != 0
-    assert "不是精确 canonical 0042" in result.stderr
+    assert "不是精确 canonical 0043" in result.stderr
     assert psql_calls == 10
     assert not pnpm_called
     assert not any(
@@ -1111,7 +1114,9 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "http://127.0.0.1:8080/health/ready" in healthcheck
     assert "http://127.0.0.1:3000/health/ready" not in healthcheck
     assert "TIDE_TEACHER_HOST must be a hostname" in healthcheck
-    assert healthcheck.count("--healthcheck") == 3
+    # Three fixed probes plus one shell-loop invocation covering all three
+    # DTS v2 runtime components.
+    assert healthcheck.count("--healthcheck") == 4
     assert "--max-heartbeat-age-seconds 90" in healthcheck
     assert "--max-readiness-age-seconds 90" in healthcheck
 
@@ -1122,6 +1127,9 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
         "score-settlement": "settle_shared_task_scores.py",
         "source-wide": "run_source_wide_worker.py",
         "dts-ingest": "run_dts_ingest.py",
+        "dts-v2-domain": "run_dts_v2_runtime.py",
+        "dts-v2-outbox": "run_dts_v2_runtime.py",
+        "dts-v2-favorite": "run_dts_v2_runtime.py",
     }
     for service, command in expected_services.items():
         service_type = (S6_DIR / service / "type").read_text(
@@ -1177,6 +1185,22 @@ def test_gaea_supervises_all_processes_and_checks_all_boundaries() -> None:
     assert "TIT_SOURCE_WORKER_READINESS" in dockerfile
     assert "TIT_DTS_INGEST_HEARTBEAT" in dockerfile
     assert "TIT_DTS_INGEST_READINESS" in dockerfile
+    for component in ("DOMAIN", "OUTBOX", "FAVORITE"):
+        assert f"TIT_V2_{component}_HEARTBEAT" in dockerfile
+        assert f"TIT_V2_{component}_READINESS" in dockerfile
+    assert "/app/bin/dts-v2-runtime-enabled.sh" in healthcheck
+    assert "for component in domain outbox favorite" in healthcheck
+    for component in ("domain", "outbox", "favorite"):
+        v2_run = (S6_DIR / f"dts-v2-{component}" / "run").read_text(
+            encoding="utf-8"
+        )
+        assert "/app/bin/dts-v2-runtime-enabled.sh" in v2_run
+        assert f"--component {component} --watch" in v2_run
+        assert f"/tmp/tit-v2-{component}-heartbeat" in v2_run
+        assert f"/tmp/tit-v2-{component}-readiness" in v2_run
+        assert (S6_DIR / f"dts-v2-{component}" / "timeout-kill").read_text(
+            encoding="utf-8"
+        ).strip() == "25000"
     dts_run = (S6_DIR / "dts-ingest" / "run").read_text(encoding="utf-8")
     assert "TIT_PROCESS_PROFILE" in dts_run
     assert "TIT_DTS_PASSWORD is required" in dts_run
@@ -1210,6 +1234,7 @@ def _runtime_env_base() -> str:
             "TIT_MIGRATION_MODE=false",
             "TASK_CATALOG_PUBLIC_WRITE=false",
             "TIT_SOURCE_WIDE_ENABLED=false",
+            "TIT_V2_RUNTIME_ENABLED=false",
             "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED=false",
             "LOG_LEVEL=debug",
             "",
@@ -1303,7 +1328,7 @@ def test_gaea_runtime_env_loads_literals_with_platform_precedence(
         "ALLOWED_EMAIL_DOMAINS": f"$(touch {untouched})",
     }
     assert not untouched.exists()
-    assert "file_keys=8" in result.stderr
+    assert "file_keys=9" in result.stderr
     assert "platform_overrides=1" in result.stderr
     assert "runtime-secret" not in result.stderr
 
@@ -1519,6 +1544,14 @@ def test_gaea_application_runtime_env_template_is_non_secret_and_current(
     assert assignments["TIT_SOURCE_WIDE_ENABLED"] == "false"
     assert assignments["TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED"] == "false"
     assert assignments["TIT_SOURCE_WORKER_MAX_PENDING_AGE_SECONDS"] == "900"
+    assert assignments["TIT_V2_RUNTIME_ENABLED"] == "false"
+    assert assignments["TIT_V2_EXPECTED_DATABASE"] == "tide_system_test"
+    assert assignments["TIT_V2_RUNTIME_BATCH_SIZE"] == "25"
+    assert assignments["TIT_V2_DOMAIN_LEASE_SECONDS"] == "120"
+    assert assignments["TIT_V2_TIME_RECHECK_LEASE_SECONDS"] == "120"
+    assert "TIT_V2_DOMAIN_DATABASE_URL" not in assignments
+    assert "TIT_V2_OUTBOX_DATABASE_URL" not in assignments
+    assert "TIT_V2_FAVORITE_DATABASE_URL" not in assignments
     assert assignments["TASK_CATALOG_PUBLIC_WRITE"] == "false"
     assert assignments["TIT_ALLOWED_HOSTS"] == "tide-camp-ops.test.51talk.biz"
     assert assignments["TIT_HEALTHCHECK_HOST"] == "tide-camp-ops.test.51talk.biz"
@@ -1609,7 +1642,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "分别构建、" in readme
     assert "推送和发布" in readme
     assert "模块选择不会自动创建 Gaea 项目" in readme
-    assert "五个业务进程入口" in readme
+    assert "八个业务进程入口" in readme
     assert "application.runtime.env.example" in readme
     assert "TIT_RUNTIME_ENV_FILE=/deployments/config/application.env" in readme
     assert "TIT_PROCESS_PROFILE=application" in readme
@@ -1623,7 +1656,7 @@ def test_gaea_readme_preserves_release_and_multi_replica_boundaries() -> None:
     assert "设置为 `2` 或更高" in readme
     assert "RollingUpdate" in readme
     assert "不再要求 `Recreate`" in readme
-    assert "不再为积分或 SourceWide Worker 新建" in readme
+    assert "不再为积分、SourceWide 或 DTS v2 Worker 新建" in readme
     assert "TIT_PROCESS_PROFILE=dts-ingest" in readme
     assert "TIT_DTS_INGEST_DB_PASSWORD" in readme
     assert "TIT_DTS_INGEST_DB_SSLMODE" in readme
@@ -1745,6 +1778,11 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
             assert topic in content
 
     for content in (generic, overseas, domestic):
+        assert content.count("TIT_DTS_PIPELINE_MODE=V1") == 1
+        assert content.count(
+            "TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID="
+        ) == 1
+        assert content.count("TIT_DTS_V2_CONTROL_GROUP=") == 1
         assert content.count("TIT_DTS_INGEST_DB_SSLMODE=verify-full") == 1
         assert content.count("TIT_DTS_ALLOW_INSECURE_DB=false") == 1
         assert content.count(
@@ -1808,6 +1846,21 @@ def test_dts_region_examples_share_the_projection_activation_contract() -> None:
     assert "TIT_DTS_ALLOW_INSECURE_DB" not in DOCKERFILE.read_text(
         encoding="utf-8"
     )
+
+
+def test_gaea_dts_service_enforces_projection_matrix_for_pipeline_modes() -> None:
+    runtime = (S6_DIR / "dts-ingest" / "run").read_text(encoding="utf-8")
+
+    assert '${TIT_DTS_PIPELINE_MODE:-V1}' in runtime
+    assert "V1_COMPAT_DUAL_CAPTURE)" in runtime
+    assert "TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID is required" in runtime
+    assert "TIT_DTS_V2_CONTROL_GROUP is required" in runtime
+    assert "requires queued projection mode" in runtime
+    assert "V2_PRIMARY)" in runtime
+    assert "ROLLED_BACK)" in runtime
+    assert "V2_PRIMARY requires legacy projection disabled" in runtime
+    assert "ROLLED_BACK requires legacy projection enabled" in runtime
+    assert "requested DTS pipeline mode is not enabled by this image" not in runtime
     assert "TIT_DTS_DOM_STUDENT_HMAC_PASSWORD" not in APPLICATION_ENV.read_text(
         encoding="utf-8"
     )

@@ -20,6 +20,15 @@ from app.database import Base, engine  # noqa: E402
 import pytest  # noqa: E402
 
 
+@pytest.fixture
+def synthetic_v2_appoint_profiles(monkeypatch):
+    """Install test-only appoint profiles for inert v2 algorithm tests."""
+
+    from dts_v2_test_profiles import install_synthetic_appoint_profiles
+
+    return install_synthetic_appoint_profiles(monkeypatch)
+
+
 # ``task_assignments`` deliberately uses PostgreSQL-only server defaults in
 # production.  The disposable unit-test harness remains SQLite so the broader
 # scoring/import/auth suite stays fast.  Tests always provide these values

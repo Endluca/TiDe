@@ -735,7 +735,49 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
         with engine.begin() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260819_65_g09_set_course"
+            ).scalar_one() == "20260823_100_scope_snapshot_diff"
+            assert connection.execute(
+                text(
+                    """
+                    SELECT graduation_state, payload ->> 'graduation_state'
+                    FROM public.teachers
+                    WHERE teacher_id = 'T-CLEANUP'
+                    """
+                )
+            ).one() == ("IN_CAMP", "IN_CAMP")
+            assert connection.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'lesson_source_wide'
+                    """
+                )
+            ).scalar_one() == 23
+            assert connection.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'lesson_source_wide'
+                      AND column_name = '假早退'
+                    """
+                )
+            ).scalar_one() == 0
+            lesson_view_definition = connection.execute(
+                text(
+                    """
+                    SELECT pg_get_viewdef(
+                        'public.teacher_lesson_score_current'::regclass,
+                        true
+                    )
+                    """
+                )
+            ).scalar_one()
+            assert "is_false_early_leave" not in lesson_view_definition
+            assert "假早退" not in lesson_view_definition
             assert connection.execute(
                 text(
                     """

@@ -35,6 +35,63 @@ const resolved: KuozhiResolvedMapping = {
 };
 
 describe('evaluateKuozhiProgress', () => {
+  it('keeps personalized course 595 incomplete while its required exam mapping is unavailable', () => {
+    const attendance: KuozhiResolvedMapping = {
+      mappingVersion: 1,
+      taskCode: 'P-REL-ATTENDANCE',
+      dataMode: 'REAL',
+      queryTeacherId: 'TEACHER-001',
+      mapping: {
+        integrationStatus: 'PARTIAL',
+        launchEnabled: true,
+        completionEnabled: false,
+        autoCompleteAssignment: false,
+        noHeader: true,
+        courses: [
+          {
+            courseId: '595',
+            tasks: [
+              {
+                courseTaskId: '3164',
+                type: 'VIDEO',
+                required: true,
+                completionPercent: 100,
+              },
+              {
+                courseTaskId: '3163',
+                type: 'VIDEO',
+                required: true,
+                completionPercent: 100,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    const result = evaluateKuozhiProgress(
+      attendance,
+      [
+        {
+          id: '595',
+          percent: 100,
+          task_list: {
+            '3164': { id: '3164', type: 'video', percent: 100 },
+            '3163': { id: '3163', type: 'video', percent: 100 },
+          },
+        },
+      ],
+      '2026-08-22T00:00:00.000Z',
+    );
+
+    expect(result.syncStatus).toBe('AVAILABLE');
+    expect(result.completion).toEqual({
+      enabled: false,
+      completed: false,
+      reasonCode: 'COMPLETION_DISABLED',
+    });
+  });
+
   it('completes G09 only after its three videos and three paired quizzes finish', () => {
     const g09: KuozhiResolvedMapping = {
       mappingVersion: 8,

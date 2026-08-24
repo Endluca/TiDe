@@ -4,6 +4,22 @@ const apiDimensionToCatalogKey = {
   CLASS_QUALITY: "classQuality",
 };
 
+export function courseParticipationKey(course) {
+  const sourceRegion = course?.sourceRegion;
+  const sourceAppointId = course?.sourceAppointId;
+  const participationSeq = Number(course?.participationSeq);
+  if (
+    !["dom", "ovs"].includes(sourceRegion)
+    || typeof sourceAppointId !== "string"
+    || sourceAppointId.length === 0
+    || !Number.isInteger(participationSeq)
+    || participationSeq < 1
+  ) {
+    throw new TypeError("Invalid course participation identity");
+  }
+  return JSON.stringify([sourceRegion, sourceAppointId, participationSeq]);
+}
+
 export const courseScoreSourceLabels = {
   FEEDBACK_PRAISE: { en: "Learner feedback", zh: "学员好评" },
   FEEDBACK_FAVORITE: { en: "Learner favorite", zh: "学员收藏" },
@@ -12,7 +28,6 @@ export const courseScoreSourceLabels = {
   PEAK_COMPLETED: { en: "Peak-time class completion", zh: "高峰时段完课" },
   PERFECT_COMPLETED: { en: "Perfect class completion", zh: "完美完课" },
   RELIABILITY_NO_EARLY_LEAVE: { en: "Class completion", zh: "课程完成情况" },
-  RELIABILITY_EARLY_LEAVE_CORRECTED: { en: "Class-record review", zh: "课程记录复核" },
   CLASS_QUALITY_HARDWARE: {
     en: "No device, network, or teaching-environment issues",
     zh: "无设备网络&教学环境问题",
@@ -98,21 +113,18 @@ const visibleCourseFactDefinitions = [
     dimension: "RELIABILITY",
     sourceKey: "ON_TIME_COMPLETED",
     read: (facts) => {
-      const effectiveEarlyLeave = facts.falseEarlyLeave === true
-        ? false
-        : facts.earlyLeave;
       if (
         facts.late === null ||
         facts.late === undefined ||
-        effectiveEarlyLeave === null ||
-        effectiveEarlyLeave === undefined
+        facts.earlyLeave === null ||
+        facts.earlyLeave === undefined
       ) {
         return {
           value: { en: "Incomplete timing data", zh: "时间记录不完整" },
           tone: "missing",
         };
       }
-      return facts.late === false && effectiveEarlyLeave === false
+      return facts.late === false && facts.earlyLeave === false
         ? {
             value: { en: "Completed on time", zh: "准时完成" },
             tone: "positive",
@@ -127,12 +139,6 @@ const visibleCourseFactDefinitions = [
     dimension: "RELIABILITY",
     sourceKey: "RELIABILITY_NO_EARLY_LEAVE",
     read: (facts) => {
-      if (facts.falseEarlyLeave === true) {
-        return {
-          value: { en: "Completed in full after review", zh: "复核后确认完整完成" },
-          tone: "positive",
-        };
-      }
       const result = factValue(
         facts.earlyLeave,
         { en: "An early finish was recorded", zh: "有提前结束记录" },
@@ -144,15 +150,6 @@ const visibleCourseFactDefinitions = [
           ? { ...result, tone: "positive" }
           : result;
     },
-  },
-  {
-    dimension: "RELIABILITY",
-    sourceKey: "RELIABILITY_EARLY_LEAVE_CORRECTED",
-    read: (facts) => factValue(
-      facts.falseEarlyLeave,
-      { en: "A mistaken record was corrected", zh: "误判记录已修正" },
-      { en: "No correction recorded", zh: "无修正记录" },
-    ),
   },
   {
     dimension: "CLASS_QUALITY",
@@ -258,15 +255,22 @@ export function courseSourcesForDimension(courses, catalogSourceKey) {
         (source) =>
           apiDimensionToCatalogKey[source.dimension] === catalogSourceKey,
       )
-      .map((source) => ({
-        sourceKey: source.sourceKey,
-        value: 1,
-        unit: "CLASSES",
-        score: Number(source.score),
-        lessonId: course.lessonId,
-        lessonNumber: course.lessonSequence || index + 1,
-        lessonStartedAt: course.scheduledStartAt,
-      })),
+      .map((source) => {
+        const courseKey = courseParticipationKey(course);
+        return {
+          sourceKey: source.sourceKey,
+          value: 1,
+          unit: "CLASSES",
+          score: Number(source.score),
+          courseKey,
+          lessonId: course.lessonId,
+          sourceRegion: course.sourceRegion,
+          sourceAppointId: course.sourceAppointId,
+          participationSeq: course.participationSeq,
+          lessonNumber: course.lessonSequence || index + 1,
+          lessonStartedAt: course.scheduledStartAt,
+        };
+      }),
   );
 }
 

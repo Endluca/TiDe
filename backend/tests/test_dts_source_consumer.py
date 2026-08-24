@@ -37,6 +37,7 @@ from app.dts_source_consumer import (
     is_peak_lesson,
     project_appoint_candidate,
     probe_broker_tcp,
+    prepare_change_event_for_ingest,
     protect_domestic_student_ids,
     reduce_latest_complaints,
     route_dirty_keys,
@@ -927,11 +928,72 @@ def test_domestic_student_ids_are_hmac_protected_before_routing() -> None:
         hashlib.sha256,
     ).hexdigest()
     assert raw_student_id not in repr(protected)
+    assert protected.source_field_types == event.source_field_types
+    assert protected.source_images_complete is False
+    assert protected.source_image_profile_id is None
     dirty = route_dirty_keys(protected)
     assert dirty.teacher_student_pairs == {("teacher-1", token)}
     candidate = project_appoint_candidate(protected)
     assert candidate is not None
     assert candidate.target_values["学员id"] == token
+
+
+def test_ingest_preparation_keeps_appoint_incomplete_without_verified_profile() -> None:
+    fields = [
+        "id",
+        "t_id",
+        "s_id",
+        "status",
+        "use_point",
+        "date",
+        "dt",
+        "end_time",
+        "start_time",
+        "time",
+        "week",
+    ]
+    event = build_change_event(
+        record(
+            operation="INSERT",
+            object_name="tide_source_dom.public.dom_appoint",
+            fields=fields,
+            after=[
+                1,
+                2,
+                "raw-student",
+                "on",
+                None,
+                "2026-08-22",
+                "2026-08-22 10:00:00",
+                "2026-08-22 10:30:00",
+                "2026-08-22 10:00:00",
+                "10:00:00",
+                6,
+            ],
+        ),
+        source_region="dom",
+        topic="dom-topic-v2",
+        partition=0,
+        offset=12,
+    )
+    settings = DtsConsumerSettings(
+        source_region="dom",
+        broker_urls=("broker.internal:18003",),
+        topic="dom-topic-v2",
+        group_id="dtsdom1234567890",
+        account="consumer",
+        password="runtime-only",
+        execution_region="cn",
+        domestic_student_hmac_key="a" * 64,
+    )
+
+    protected = prepare_change_event_for_ingest(event, settings)
+
+    assert protected.source_images_complete is False
+    assert protected.source_image_profile_id is None
+    assert protected.after is not None
+    assert "s_id" not in protected.after
+    assert protected.after["student_token"].startswith("dom:v1:")
 
 
 def test_domestic_student_protection_rejects_conflicting_aliases() -> None:
@@ -1407,6 +1469,7 @@ def test_official_avro_schema_round_trips_postgresql_dml_image() -> None:
 
     assert event.table_name == "ovs_appoint"
     assert event.after == {"id": "7"}
+    assert event.source_field_types == {"id": "NUMERIC"}
 
 
 def test_dts_sdk_1_4_avro_resolves_missing_born_timestamp() -> None:
@@ -1472,7 +1535,61 @@ def test_build_change_event_maps_full_images_and_identity() -> None:
     assert event.table_name == "ovs_appoint"
     assert event.before == {"id": "7", "status": None, "name": "old"}
     assert event.after == {"id": "7", "status": "end", "name": "new"}
+    assert event.source_field_types == {
+        "id": "NUMERIC",
+        "name": "TEXT",
+        "status": "TEXT",
+    }
+    assert event.source_field_type_numbers == {
+        "id": 0,
+        "name": 0,
+        "status": 0,
+    }
+    assert event.source_images_complete is False
+    assert event.source_image_profile_id is None
     assert event.idempotency_key == ("ovs", "topic-v2", 0, 10)
+
+
+def test_build_change_event_preserves_boolean_and_temporal_image_hints() -> None:
+    event = event_from_record(
+        record(
+            fields=["id", "is_active", "updated_at"],
+            after=[
+                {"precision": 20, "value": "7"},
+                True,
+                {"timestamp": 1786342560, "millis": 123},
+            ],
+        )
+    )
+
+    assert event.after == {
+        "id": "7",
+        "is_active": True,
+        "updated_at": "2026-08-10T06:16:00.123000+00:00",
+    }
+    assert event.source_field_types == {
+        "id": "NUMERIC",
+        "is_active": "BOOLEAN",
+        "updated_at": "TEMPORAL",
+    }
+
+
+def test_build_change_event_preserves_java_bridge_field_type_numbers() -> None:
+    raw = record(fields=["id", "status"], after=[7, "on"])
+    raw["fields"] = ["id", "status"]
+    raw["fieldTypeNumbers"] = {"id": 4, "status": 12}
+
+    event = event_from_record(raw)
+
+    assert event.source_field_type_numbers == {"id": 4, "status": 12}
+
+
+def test_build_change_event_rejects_conflicting_field_type_number_evidence() -> None:
+    raw = record(fields=["id"], after=[7])
+    raw["fieldTypeNumbers"] = {"id": 4}
+
+    with pytest.raises(DtsRecordError, match="DTS_SOURCE_FIELD_TYPE_NUMBER_DRIFT"):
+        event_from_record(raw)
 
 
 def test_build_change_event_rejects_partial_dml_image() -> None:
@@ -1551,7 +1668,7 @@ def test_appoint_routes_old_and_new_keys_and_builds_shadow_candidate() -> None:
     assert candidate.required_sources == ("dom_teacher",)
 
 
-def test_appoint_outside_script_scope_becomes_delete_candidate() -> None:
+def test_appoint_status_and_use_point_do_not_delete_course_candidate() -> None:
     fields = ["id", "t_id", "s_id", "status", "use_point"]
     event = event_from_record(
         record(
@@ -1565,11 +1682,28 @@ def test_appoint_outside_script_scope_becomes_delete_candidate() -> None:
     candidate = project_appoint_candidate(event)
 
     assert candidate is not None
-    assert candidate.action == "DELETE"
-    assert candidate.reason == "APPOINT_OUTSIDE_SCRIPT_SCOPE"
+    assert candidate.action == "UPSERT_CANDIDATE"
+    assert candidate.target_values["课程状态"] == "cancel"
+    assert candidate.target_values["学员id"] == "20"
 
 
-def test_qa_json_routes_every_embedded_appoint_id_without_rethresholding() -> None:
+def test_appoint_candidate_keeps_null_status_use_point_and_student() -> None:
+    event = event_from_record(
+        record(
+            fields=["id", "t_id", "status", "use_point"],
+            after=["99", "10", None, None],
+        )
+    )
+
+    candidate = project_appoint_candidate(event)
+
+    assert candidate is not None
+    assert candidate.action == "UPSERT_CANDIDATE"
+    assert candidate.target_values["课程状态"] is None
+    assert candidate.target_values["学员id"] is None
+
+
+def test_retired_qa_hardware_source_no_longer_routes_course_keys() -> None:
     raw = record(
         object_name="public.ovs_qa_ac_classroom_record",
         fields=["id", "type", "info"],
@@ -1583,11 +1717,11 @@ def test_qa_json_routes_every_embedded_appoint_id_without_rethresholding() -> No
 
     dirty = route_dirty_keys(event_from_record(raw))
 
-    assert dirty.course_ids == {"536848637", "538267933"}
+    assert dirty.course_ids == frozenset()
     assert dirty.issues == ()
 
 
-def test_qa_invalid_json_is_an_issue_not_a_false_value() -> None:
+def test_retired_qa_hardware_payload_is_not_parsed_as_business_evidence() -> None:
     raw = record(
         object_name="public.ovs_qa_ac_classroom_record",
         fields=["id", "type", "info"],
@@ -1596,7 +1730,7 @@ def test_qa_invalid_json_is_an_issue_not_a_false_value() -> None:
 
     dirty = route_dirty_keys(event_from_record(raw))
 
-    assert dirty.issues == ("QA_INFO_INVALID_JSON",)
+    assert dirty.issues == ()
     assert dirty.course_ids == frozenset()
 
 
@@ -1654,6 +1788,12 @@ def test_complaint_uses_latest_row_from_each_table_and_script_filters() -> None:
     user_rows[-1]["complaint_type_grandson"] = 82
     assert reduce_latest_complaints(user_rows, complaint_rows) == []
 
+    user_rows[-1]["complaint_type_grandson"] = "not-an-id"
+    assert reduce_latest_complaints(user_rows, complaint_rows) == []
+
+    user_rows[-1]["complaint_type_grandson"] = None
+    assert len(reduce_latest_complaints(user_rows, complaint_rows)) == 1
+
 
 def test_penalty_flags_use_max_valid_times_and_strictly_more_than_30_seconds() -> None:
     rows = [
@@ -1675,7 +1815,41 @@ def test_penalty_flags_use_max_valid_times_and_strictly_more_than_30_seconds() -
         rows,
         lesson_start="2026-08-11 18:00:00",
         lesson_end="2026-08-11 18:30:00",
-    ) == (False, False)
+    ) == (None, None)
+
+
+def test_penalty_null_appeal_is_unknown_but_explicit_true_still_wins() -> None:
+    unknown_only = [
+        {
+            "in_time": "2026-08-11 18:10:00",
+            "out_time": "2026-08-11 18:00:00",
+            "appeal_status": None,
+        }
+    ]
+    true_and_unknown = [
+        {
+            "in_time": "2026-08-11 18:00:31",
+            "out_time": "2026-08-11 18:29:00",
+            "appeal_status": 1,
+        },
+        *unknown_only,
+    ]
+
+    assert derive_penalty_flags(
+        unknown_only,
+        lesson_start="2026-08-11 18:00:00",
+        lesson_end="2026-08-11 18:30:00",
+    ) == (None, None)
+    assert derive_penalty_flags(
+        true_and_unknown,
+        lesson_start="2026-08-11 18:00:00",
+        lesson_end="2026-08-11 18:30:00",
+    ) == (True, True)
+    assert derive_penalty_flags(
+        [],
+        lesson_start="2026-08-11 18:00:00",
+        lesson_end="2026-08-11 18:30:00",
+    ) == (None, None)
 
 
 def test_processor_is_idempotent_within_shadow_run() -> None:

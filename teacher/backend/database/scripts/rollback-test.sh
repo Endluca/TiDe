@@ -34,6 +34,141 @@ run_sql() {
   "${ADMIN_PSQL[@]}" -d "${TEST_DB}" -f "$1" >/dev/null
 }
 
+install_public_reliability_contract() {
+  "${ADMIN_PSQL[@]}" -d "${TEST_DB}" >/dev/null <<'SQL'
+INSERT INTO public.task_templates (
+    row_id, template_id, template_version, status, revision,
+    output_type, execution_owner, external_task_template_code,
+    source_mode, payload, created_by, updated_by, integration_mode
+)
+VALUES
+(
+    'P-REL-MEMO:v1', 'P-REL-MEMO', 1, 'PUBLISHED', 99,
+    'TEACHER_TASK', 'TEACHER_APP', 'TIT.P.REL.MEMO', 'REAL',
+    '{"template_id":"P-REL-MEMO","category":"PERSONALIZED_IMPROVEMENT","content_status":"READY","title":"Lesson Memo Improvement","why_template":"A completed lesson was recorded with a blank Lesson Memo.","how_summary":"Complete the Lesson Memo guidance and review how to submit an accurate memo after every lesson.","completion_standard":"The teacher app marks the assigned Lesson Memo learning activity as completed.","benefit":"This task carries no points. It closes the identified Lesson Memo reliability gap.","score_type":"ZERO","score_value":0}'::jsonb,
+    'rollback_test_public_rev99', 'rollback_test_public_rev99',
+    'OUTBOUND_MANAGED'
+),
+(
+    'P-REL-ATTENDANCE:v1', 'P-REL-ATTENDANCE', 1, 'PUBLISHED', 99,
+    'TEACHER_TASK', 'TEACHER_APP', 'TIT.P.REL.ATTENDANCE', 'REAL',
+    '{"template_id":"P-REL-ATTENDANCE","category":"PERSONALIZED_IMPROVEMENT","content_status":"READY","title":"Attendance Improvement","why_template":"A lesson record shows a reliability issue, such as an absence, late arrival, or early leave.","how_summary":"Complete the assigned attendance training and pass its quiz.","completion_standard":"The teacher app marks the training and quiz as completed.","benefit":"This task carries no points. It targets the identified attendance reliability issue.","score_type":"ZERO","score_value":0}'::jsonb,
+    'rollback_test_public_rev99', 'rollback_test_public_rev99',
+    'OUTBOUND_MANAGED'
+)
+ON CONFLICT (row_id) DO UPDATE SET
+    template_id = EXCLUDED.template_id,
+    template_version = EXCLUDED.template_version,
+    status = EXCLUDED.status,
+    revision = EXCLUDED.revision,
+    output_type = EXCLUDED.output_type,
+    execution_owner = EXCLUDED.execution_owner,
+    external_task_template_code = EXCLUDED.external_task_template_code,
+    source_mode = EXCLUDED.source_mode,
+    payload = EXCLUDED.payload,
+    updated_by = EXCLUDED.updated_by,
+    integration_mode = EXCLUDED.integration_mode,
+    updated_at = now();
+SQL
+}
+
+p_rel_execution_state() {
+  "${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+    SELECT concat_ws('|',
+      EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id = 'b0370e08-0b2a-4b95-8ea1-356c6f618deb'
+          AND execution.shared_template_row_id = 'P-REL-MEMO:v1'
+          AND execution.task_code = 'P-REL-MEMO'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+            '{\"estimatedMinutes\":6,\"allowRetry\":true,\"contentStatus\":\"READY\",\"contentVersion\":\"2026-07-24-lesson-memo-rules-v1\",\"pendingReason\":null}'::jsonb
+          AND (
+            SELECT count(*) = 1
+            FROM tide.task_step_definitions definition
+            WHERE definition.execution_version_id = execution.id
+              AND definition.id = 'e21ab6c9-f7c9-45c6-8447-cf219f589a48'
+              AND definition.step_key = 'p-rel-memo-document'
+              AND definition.position = 1
+              AND definition.step_type = 'DOCUMENT'
+              AND definition.title = 'Read Lesson Memo Rules'
+              AND definition.config =
+                '{\"role\":\"LESSON_MEMO_RULES_DOCUMENT\",\"documentCode\":\"lesson-memo-rules\",\"sourceTitle\":\"Lesson Memo Rules\",\"sourceNodeId\":\"OG9lyrgJPzkq5xD6fvzmqRonWzN67Mw4\",\"sourceUpdatedAt\":\"2026-07-24T01:47:08Z\",\"contentVersion\":\"2026-07-24-lesson-memo-rules-v1\",\"contentHash\":\"43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51\",\"readingCompletion\":\"SCROLL_TO_END\"}'::jsonb
+          )
+          AND (
+            SELECT count(*) = 1
+            FROM tide.task_validation_rules rule
+            WHERE rule.execution_version_id = execution.id
+              AND rule.id = '480f8006-d834-4d4c-8112-bbc544dcb827'
+              AND rule.rule_key = 'all-steps-complete'
+              AND rule.rule_type = 'ALL_STEPS_COMPLETE'
+              AND rule.rule_version =
+                '2026-07-24-lesson-memo-rules-v1'
+              AND rule.position = 1
+              AND rule.config =
+                '{\"requiredStepKeys\":[\"p-rel-memo-document\"]}'::jsonb
+              AND rule.teacher_failure_copy =
+                '请将当前版本的 Lesson Memo Rules 阅读到文档末尾。'
+          )
+      ),
+      EXISTS (
+        SELECT 1
+        FROM tide.task_execution_versions execution
+        WHERE execution.id = 'a2044750-e7e4-4d07-8846-9d0e66539abf'
+          AND execution.shared_template_row_id = 'P-REL-ATTENDANCE:v1'
+          AND execution.task_code = 'P-REL-ATTENDANCE'
+          AND execution.status = 'ACTIVE'
+          AND execution.execution_contract_version = 'task-contract-v3'
+          AND execution.config =
+            '{\"estimatedMinutes\":12,\"allowRetry\":true,\"contentStatus\":\"READY\",\"contentVersion\":\"2026-08-22-reliability-course-595-v1\",\"pendingReason\":null}'::jsonb
+          AND NOT EXISTS (
+            SELECT 1 FROM tide.task_step_definitions definition
+            WHERE definition.execution_version_id = execution.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM tide.task_validation_rules rule
+            WHERE rule.execution_version_id = execution.id
+          )
+      )
+    )
+  "
+}
+
+p_rel_execution_signature() {
+  "${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
+    SELECT md5(jsonb_build_object(
+      'executions', (
+        SELECT jsonb_agg(to_jsonb(execution)
+          ORDER BY execution.shared_template_row_id)
+        FROM tide.task_execution_versions execution
+        WHERE execution.shared_template_row_id IN (
+          'P-REL-MEMO:v1', 'P-REL-ATTENDANCE:v1'
+        )
+      ),
+      'steps', (
+        SELECT jsonb_agg(to_jsonb(definition) ORDER BY definition.id)
+        FROM tide.task_step_definitions definition
+        JOIN tide.task_execution_versions execution
+          ON execution.id = definition.execution_version_id
+        WHERE execution.shared_template_row_id IN (
+          'P-REL-MEMO:v1', 'P-REL-ATTENDANCE:v1'
+        )
+      ),
+      'rules', (
+        SELECT jsonb_agg(to_jsonb(rule) ORDER BY rule.id)
+        FROM tide.task_validation_rules rule
+        JOIN tide.task_execution_versions execution
+          ON execution.id = rule.execution_version_id
+        WHERE execution.shared_template_row_id IN (
+          'P-REL-MEMO:v1', 'P-REL-ATTENDANCE:v1'
+        )
+      )
+    )::text)
+  "
+}
+
 run_sql "${DB_DIR}/fixtures/0001_shared_contract.sql"
 run_sql "${DB_DIR}/fixtures/0002_score_entry_contract.sql"
 run_sql "${DB_DIR}/fixtures/0003_course_score_snapshot_contract.sql"
@@ -69,6 +204,16 @@ run_sql "${DB_DIR}/migrations/0021_teacher_support_tickets.up.sql"
 run_sql "${DB_DIR}/migrations/0022_performance_job_leases.up.sql"
 run_sql "${DB_DIR}/migrations/0023_teacher_support_operator_atomicity.up.sql"
 run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.up.sql"
+"${ADMIN_PSQL[@]}" -d "${TEST_DB}" >/dev/null <<'SQL'
+UPDATE public.task_templates
+SET payload = jsonb_set(
+        payload,
+        '{title}',
+        to_jsonb('Cocos Course Training'::text)
+    )
+WHERE row_id = 'G09:v1'
+  AND template_id = 'G08';
+SQL
 run_sql "${DB_DIR}/migrations/0025_fixed_task_semantic_alignment.up.sql"
 run_sql "${DB_DIR}/migrations/0026_kuozhi_course_syncs.up.sql"
 run_sql "${DB_DIR}/migrations/0027_remove_local_quiz_runtime.up.sql"
@@ -160,9 +305,35 @@ run_sql "${DB_DIR}/migrations/0039_g02_policy_document.up.sql"
 run_sql "${DB_DIR}/migrations/0040_g02_document_read_status.up.sql"
 run_sql "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql"
 run_sql "${DB_DIR}/migrations/0042_g09_set_kuozhi_course.up.sql"
+install_public_reliability_contract
+run_sql "${DB_DIR}/migrations/0043_p_rel_execution_catalog.up.sql"
+[[ "$(p_rel_execution_state)" == "t|t" ]] || {
+  echo "0043 未建立精确的 Lesson Memo 文档和课程 595 execution" >&2
+  exit 1
+}
+"${ADMIN_PSQL[@]}" -d "${TEST_DB}" >/dev/null <<'SQL'
+-- 0025 审计历史契约后，显式模拟 public 当前头对 G08/G09 文案的后续发布。
+UPDATE public.task_templates
+SET payload = payload || jsonb_build_object(
+        'ops_name_zh', 'Global Communicator 培训',
+        'title', 'Global Communicator Training'
+    )
+WHERE row_id = 'G09:v1'
+  AND template_id = 'G08';
+
+UPDATE public.task_templates
+SET payload = payload || jsonb_build_object(
+        'ops_name_zh', 'SET 教学基础',
+        'title', 'SET Teaching Fundamentals'
+    )
+WHERE row_id = 'G10:v1'
+  AND template_id = 'G09';
+SQL
 run_sql "${DB_DIR}/seed/0002_mock_shiwen_views.sql"
 run_sql "${DB_DIR}/seed/0004_mock_faq_knowledge.sql"
-TIDE_DB_NAME="${TEST_DB}" pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
+TASK_CATALOG_PUBLIC_WRITE="true" \
+TIDE_DB_NAME="${TEST_DB}" \
+  pnpm --dir "${DB_DIR}/.." exec ts-node scripts/sync-current-task-catalog.ts >/dev/null
 run_sql "${DB_DIR}/scripts/grant-tit-teacher-crud.sql"
 
 final_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
@@ -315,6 +486,7 @@ g04_second_apply_guard="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   exit 1
 }
 run_sql "${DB_DIR}/seed/0005_mock_g04_two_part_catalog.sql"
+run_sql "${DB_DIR}/fixtures/0004_p_fb_negative_contract.sql"
 run_sql "${DB_DIR}/migrations/0033_g01_tesol_only.up.sql"
 run_sql "${DB_DIR}/migrations/0037_g04_remove_device_check.up.sql"
 run_sql "${DB_DIR}/migrations/0038_personalized_environment_photo.up.sql"
@@ -347,6 +519,23 @@ g04_second_apply_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   exit 1
 }
 
+install_public_reliability_contract
+p_rel_before_down_signature="$(p_rel_execution_signature)"
+run_sql "${DB_DIR}/migrations/0043_p_rel_execution_catalog.down.sql"
+p_rel_after_down_signature="$(p_rel_execution_signature)"
+[[ -n "${p_rel_before_down_signature}" \
+      && "${p_rel_after_down_signature}" == "${p_rel_before_down_signature}" \
+      && "$(p_rel_execution_state)" == "t|t" ]] || {
+  echo "0043 forward-only down 改动了 P-REL execution 目录" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0043_p_rel_execution_catalog.up.sql"
+[[ "$(p_rel_execution_state)" == "t|t" ]] || {
+  echo "0043 down-up 未保持精确的 P-REL execution 目录" >&2
+  exit 1
+}
+run_sql "${DB_DIR}/migrations/0043_p_rel_execution_catalog.down.sql"
+
 run_sql "${DB_DIR}/migrations/0042_g09_set_kuozhi_course.down.sql"
 g09_set_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select coalesce(
@@ -358,7 +547,7 @@ g09_set_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     ),
     true
   )
-)"
+")"
 [[ "${g09_set_down_state}" == "t" ]] || {
   echo "0042 down 未精确恢复 G09 待发布执行配置" >&2
   exit 1
@@ -374,7 +563,7 @@ g09_set_up_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
     ),
     true
   )
-)"
+")"
 [[ "${g09_set_up_state}" == "t" ]] || {
   echo "0042 down-up 未恢复 G09 课程 658 执行配置" >&2
   exit 1
@@ -397,7 +586,7 @@ crm_sso_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
         and column_name = 'password_hash'
         and is_nullable = 'NO'
     )
-)"
+")"
 [[ "${crm_sso_down_state}" == "t" ]] || {
   echo "0041 down 未精确恢复本地认证结构" >&2
   exit 1
@@ -405,7 +594,7 @@ crm_sso_down_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
 run_sql "${DB_DIR}/migrations/0041_crm_sso_hybrid.up.sql"
 crm_sso_up_state="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "
   select to_regclass('tide.crm_sso_logins') is not null
-)"
+")"
 [[ "${crm_sso_up_state}" == "t" ]] || {
   echo "0041 down-up 未恢复 CRM SSO 结构" >&2
   exit 1
@@ -616,6 +805,16 @@ run_sql "${DB_DIR}/migrations/0024_support_ticket_cas_and_function_owner.down.sq
 run_sql "${DB_DIR}/migrations/0023_teacher_support_operator_atomicity.down.sql"
 run_sql "${DB_DIR}/migrations/0022_performance_job_leases.down.sql"
 run_sql "${DB_DIR}/migrations/0021_teacher_support_tickets.down.sql"
+"${ADMIN_PSQL[@]}" -d "${TEST_DB}" >/dev/null <<'SQL'
+-- 0025 down 明确是 forward-only；回滚夹具在进入历史 0020 down 前
+-- 只清理 0025 持续保留的 v2 视图，不改写已发布迁移文件及 checksum。
+DROP VIEW IF EXISTS tide.analytics_content_quality_v2;
+DROP VIEW IF EXISTS tide.analytics_task_step_funnel_v2;
+DROP VIEW IF EXISTS tide.analytics_task_funnel_v2;
+DROP VIEW IF EXISTS tide.analytics_task_assignment_funnel_v2;
+DROP VIEW IF EXISTS tide.analytics_actor_task_journey_v2;
+DROP VIEW IF EXISTS tide.analytics_task_event_semantics_v2;
+SQL
 run_sql "${DB_DIR}/migrations/0020_product_analytics.down.sql"
 run_sql "${DB_DIR}/migrations/0019_growth_stage_notification_state.down.sql"
 run_sql "${DB_DIR}/migrations/0018_remove_task_assignment_teacher_response.down.sql"
@@ -644,4 +843,4 @@ schema_count="$("${ADMIN_PSQL[@]}" -d "${TEST_DB}" -Atqc "select count(*) from i
   exit 1
 }
 
-echo "空库升级至 0041，验证 G01 TESOL-only、G02 原生文档、G04 两段结构、个性化拍照与 CRM SSO 迁移后逐级回滚通过。"
+echo "空库升级至 0043，验证 G01 TESOL-only、G02 原生文档、G04 两段结构、个性化拍照、CRM SSO、P-REL-MEMO 文档与 P-REL-ATTENDANCE 课程 595 后逐级回滚通过。"

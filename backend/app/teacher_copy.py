@@ -148,8 +148,6 @@ def teacher_evidence_summary(snapshot: Mapping[str, Any] | None) -> str:
         parts.append("late arrival recorded")
     if evidence.get("is_early") is True:
         parts.append("early departure recorded")
-    if evidence.get("is_fake_early") is True:
-        parts.append("possible false early-departure signal recorded")
 
     complaint = evidence.get("complaint_level3") or evidence.get(
         "complaint_category_l3"

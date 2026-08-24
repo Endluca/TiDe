@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import Engine, delete, func, literal_column, select
+from sqlalchemy import Engine, delete, func, literal_column, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config_models import (
@@ -43,6 +43,7 @@ from .qualification_award_gate import (
     irreversible_qualification_grants_enabled,
     resolve_irreversible_qualification_grants,
 )
+from .dts_pipeline_mode import read_optional_dts_pipeline_mode
 from .services import GrowthService
 from .task_catalog import MANDATORY_TASK_CODES
 from .score_projection_lock import acquire_score_projection_lock
@@ -204,6 +205,7 @@ class SharedTaskScoreSettlementWorker:
                         settlement = self._settle_eligible_assignment(
                             session,
                             eligible_assignments[0],
+                            triggering_outbox_id=outbox_id,
                         )
                         score_entries_created = (
                             settlement.score_entries_created
@@ -475,12 +477,18 @@ class SharedTaskScoreSettlementWorker:
         if outcome is not None:
             return outcome
         assert assignment is not None
-        return self._settle_eligible_assignment(session, assignment)
+        return self._settle_eligible_assignment(
+            session,
+            assignment,
+            triggering_outbox_id=event.outbox_id,
+        )
 
     def _settle_eligible_assignment(
         self,
         session: Session,
         assignment: TaskAssignmentRecord,
+        *,
+        triggering_outbox_id: str,
     ) -> _Outcome:
         # This row lock serializes different G-task events for one teacher even
         # when multiple workers claim different outbox rows concurrently.
@@ -492,9 +500,7 @@ class SharedTaskScoreSettlementWorker:
         if teacher is None:
             raise SettlementDataError("ASSIGNMENT_TEACHER_NOT_FOUND")
         self._require_current_source_wide_teacher(session, teacher)
-        qualification_grants_enabled = (
-            irreversible_qualification_grants_enabled()
-        )
+        pipeline_mode = self._dts_pipeline_mode(session)
 
         baseline = list(
             session.scalars(
@@ -583,6 +589,9 @@ class SharedTaskScoreSettlementWorker:
                     ),
                     camp_enrollment_id=teacher.camp_enrollment_id,
                     lesson_id=None,
+                    source_region=None,
+                    source_appoint_id=None,
+                    participation_seq=None,
                     teacher_id=teacher.teacher_id,
                     dimension=ACCOUNT_DIMENSION,
                     entry_type=ENTRY_TYPE,
@@ -594,6 +603,9 @@ class SharedTaskScoreSettlementWorker:
                     recorded_at=_utcnow(),
                     reversal_of_score_entry_id=None,
                     task_assignment_id=item.assignment_id,
+                    projection_origin="FIXED_TASK_LIVE",
+                    materialized_by_run_id=None,
+                    projection_generation=None,
                     idempotency_key=f"fixed-task-award:{item.assignment_id}",
                     payload={
                         "source_mode": SYSTEM_SOURCE_MODE,
@@ -702,6 +714,22 @@ class SharedTaskScoreSettlementWorker:
                 account.version = int(account.version or 0) + 1
             account.updated_at = projection_time
         session.flush()
+        if pipeline_mode == "V2_PRIMARY":
+            self._enqueue_v2_teacher_refresh(
+                session,
+                teacher_id=teacher.teacher_id,
+                assignment_id=assignment.assignment_id,
+                triggering_outbox_id=triggering_outbox_id,
+            )
+            return _Outcome(
+                "SETTLED",
+                score_entries_created=created,
+                account_score=ledger_score,
+            )
+
+        qualification_grants_enabled = (
+            irreversible_qualification_grants_enabled()
+        )
         completed_count = sum(
             item.status == "COMPLETED" for item in baseline_by_code.values()
         )
@@ -782,6 +810,42 @@ class SharedTaskScoreSettlementWorker:
             score_entries_created=created,
             account_score=ledger_score,
         )
+
+    @staticmethod
+    def _dts_pipeline_mode(session: Session) -> str | None:
+        bind = session.get_bind()
+        if bind.dialect.name != "postgresql":
+            return None
+        return read_optional_dts_pipeline_mode(session)
+
+    @staticmethod
+    def _enqueue_v2_teacher_refresh(
+        session: Session,
+        *,
+        teacher_id: str,
+        assignment_id: str,
+        triggering_outbox_id: str,
+    ) -> None:
+        value = session.execute(
+            text(
+                "SELECT public.enqueue_shared_task_teacher_refresh_v2("
+                ":teacher_id,:assignment_id,:outbox_id)"
+            ),
+            {
+                "teacher_id": teacher_id,
+                "assignment_id": assignment_id,
+                "outbox_id": triggering_outbox_id,
+            },
+        ).scalar_one()
+        if not isinstance(value, dict):
+            raise SettlementDataError("DTS_V2_TASK_REFRESH_RESULT_INVALID")
+        if value.get("status") not in {"ENQUEUED", "NOOP", "NOOP_OLDER"}:
+            raise SettlementDataError("DTS_V2_TASK_REFRESH_RESULT_INVALID")
+        if (
+            type(value.get("dirty_work_revision")) is not int
+            or value["dirty_work_revision"] < 1
+        ):
+            raise SettlementDataError("DTS_V2_TASK_REFRESH_RESULT_INVALID")
 
     @staticmethod
     def _require_current_source_wide_teacher(
@@ -1059,7 +1123,7 @@ class SharedTaskScoreSettlementWorker:
                 "graduation_state": (
                     "GRADUATED"
                     if grant_decision.graduation_earned
-                    else "IN_PROGRESS"
+                    else "IN_CAMP"
                 ),
                 "graduation_qualified": grant_decision.graduation_earned,
                 "gold_qualified": grant_decision.gold_earned,
@@ -1375,9 +1439,12 @@ class SharedTaskScoreSettlementWorker:
         gold_earned = grant_decision.gold_earned
         graduation_earned = grant_decision.graduation_earned
         graduation_qualified_at = qualification.graduation_qualified_at
+        graduation_score_locked = qualification.graduation_score_locked
         gold_qualified_at = qualification.gold_qualified_at
         if not previous_graduation_earned and graduation_earned:
             graduation_qualified_at = occurred_at
+        if graduation_earned and graduation_score_locked is None:
+            graduation_score_locked = 100.0
         if not previous_gold_earned and gold_earned:
             gold_qualified_at = occurred_at
 
@@ -1403,6 +1470,7 @@ class SharedTaskScoreSettlementWorker:
             "graduation_criteria_met": graduation_current,
             "graduation_qualified": graduation_earned,
             "graduation_qualified_at": graduation_qualified_at,
+            "graduation_score_locked": graduation_score_locked,
             "gold_criteria_met": gold_current,
             "gold_qualified": gold_earned,
             "gold_qualified_at": gold_qualified_at,
@@ -1424,6 +1492,9 @@ class SharedTaskScoreSettlementWorker:
             {
                 "graduation_criteria_met": graduation_current,
                 "graduation_qualified": graduation_earned,
+                "graduation_state": (
+                    "GRADUATED" if graduation_earned else "IN_CAMP"
+                ),
                 "gold_criteria_met": gold_current,
                 "gold_qualified": gold_earned,
             }
@@ -1431,12 +1502,12 @@ class SharedTaskScoreSettlementWorker:
         teacher_values_changed = bool(
             teacher.payload != teacher_payload
             or teacher.graduation_state
-            != ("GRADUATED" if graduation_earned else "IN_PROGRESS")
+            != ("GRADUATED" if graduation_earned else "IN_CAMP")
             or bool(teacher.gold_qualified) != gold_earned
         )
         teacher.payload = teacher_payload
         teacher.graduation_state = (
-            "GRADUATED" if graduation_earned else "IN_PROGRESS"
+            "GRADUATED" if graduation_earned else "IN_CAMP"
         )
         teacher.gold_qualified = gold_earned
         if teacher_values_changed:

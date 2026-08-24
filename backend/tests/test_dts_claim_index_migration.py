@@ -147,10 +147,12 @@ def test_dirty_key_orm_declares_exact_partial_index_shapes() -> None:
         index.name: index for index in DtsDirtyKeyRecord.__table__.indexes
     }
 
-    pending = indexes["ix_dts_dirty_keys_pending_fifo"]
-    retry = indexes["ix_dts_dirty_keys_retry_due"]
+    pending = indexes["ix_dts_dirty_keys_pending_fifo_v2"]
+    retry = indexes["ix_dts_dirty_keys_retry_due_v2"]
     assert tuple(column.name for column in pending.columns) == (
-        "last_seen_at",
+        "next_attempt_at",
+        "updated_at",
+        "source_region",
         "key_type",
         "key_part_1",
         "key_part_2",
@@ -160,11 +162,10 @@ def test_dirty_key_orm_declares_exact_partial_index_shapes() -> None:
     )
     assert tuple(column.name for column in retry.columns) == (
         "next_attempt_at",
-        "last_seen_at",
+        "updated_at",
+        "source_region",
         "key_type",
         "key_part_1",
         "key_part_2",
     )
-    assert str(retry.dialect_options["postgresql"]["where"]) == (
-        "status = 'RETRY' AND next_attempt_at < 'infinity'::timestamptz"
-    )
+    assert str(retry.dialect_options["postgresql"]["where"]) == "status = 'RETRY'"

@@ -18,7 +18,7 @@
 | 顺序 | 任务 ID | 模板 | 教师可见触发事实 | 完成方式 |
 | --- | --- | --- | --- | --- |
 | 1 | `classroom-quality-reminder` | `NT-Q03` assignment + 关联提醒 | 未开摄像头、CPU 占用过高或网络延迟过高 | **课中质量问题**：查看异常明细并完成配置的检查 |
-| 2 | `attendance-reliability-refresher` | `P-REL-ATTENDANCE` | 普通缺席、迟到、早退或假早退 | **出席问题**：阔知规则培训与考试 |
+| 2 | `attendance-reliability-refresher` | `P-REL-ATTENDANCE` | 普通缺席、迟到或早退 | **出席问题**：阔知规则培训与考试 |
 | 3 | `lesson-memo-rules-learning` | `P-REL-MEMO` | 缺席原因明细为 `Unfilled Lesson Memo` | **出席（未填写 Lesson Memo）问题**：Lesson Memo 规范学习 |
 | 4 | `feedback-self-study` | `P-FB-NEGATIVE / P-FB-COMPLAINT` + `LESSON_PACING_AND_FLOW` | 课堂节奏、未讲完教材或过早讲完 | **掌握课堂节奏** |
 | 5 | `feedback-interaction-engagement` | 同上 + `INTERACTION_AND_ENGAGEMENT` | 只朗读／缺少互动 | **让学员更多开口** |

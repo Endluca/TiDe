@@ -1165,7 +1165,7 @@ class GrowthService:
         # Gold is a higher tier, never an alternative path around graduation.
         gold_criteria_met = graduation_criteria_met and gold_score_met and gold_gates_met
 
-        original_state = projected.get("graduation_state", "IN_PROGRESS")
+        original_state = projected.get("graduation_state", "IN_CAMP")
         previously_graduation_qualified = bool(
             projected.get("graduation_qualified")
         ) or original_state == "GRADUATED"
@@ -1179,7 +1179,7 @@ class GrowthService:
         if graduation_qualified:
             effective_state = "GRADUATED"
         else:
-            effective_state = "IN_PROGRESS"
+            effective_state = "IN_CAMP"
 
         projected.update(
             {
@@ -1359,10 +1359,10 @@ class GrowthService:
             if teacher.get("employment_status") is not None:
                 return (
                     str(teacher["employment_status"]).lower() == "on"
-                    and teacher["graduation_state"] != "GRADUATED"
+                    and teacher["graduation_state"] == "IN_CAMP"
                 )
             # Compatibility with the four legacy local Mock teachers.
-            return teacher["graduation_state"] == "IN_PROGRESS"
+            return teacher["graduation_state"] == "IN_CAMP"
 
         return {
             "as_of": now_iso(),
@@ -1377,7 +1377,7 @@ class GrowthService:
             "score_policy_source": score_policy_source,
             "teacher_count": len(teachers),
             "active_teacher_count": sum(counts_as_active(item) for item in teachers),
-            "settlement_pending_count": sum(item["graduation_state"] == "SETTLEMENT_PENDING" for item in teachers),
+            "settlement_pending_count": 0,
             "graduation_score_reached_count": sum(
                 item["graduation_score_threshold_met"] for item in teachers
             ),
@@ -1606,7 +1606,7 @@ class GrowthService:
 
         def option(teacher: dict) -> dict:
             data_mode = str(teacher.get("data_mode") or "UNKNOWN").upper()
-            graduation_state = str(teacher.get("graduation_state") or "IN_PROGRESS")
+            graduation_state = str(teacher.get("graduation_state") or "IN_CAMP")
             timezone_source_mode = self._teacher_timezone_source_mode(teacher)
             timezone_missing = not str(teacher.get("timezone") or "").strip()
             timezone_untrusted = (
@@ -1614,7 +1614,7 @@ class GrowthService:
                 and timezone_source_mode in UNTRUSTED_TIMEZONE_SOURCE_MODES
             )
             blockers: list[str] = []
-            if graduation_state != "IN_PROGRESS":
+            if graduation_state != "IN_CAMP":
                 blockers.append("GRADUATED")
             if timezone_missing or timezone_untrusted:
                 blockers.append("TIMEZONE_UNAVAILABLE")
@@ -2599,7 +2599,7 @@ class GrowthService:
 
         allowed_graduation_states = (
             ((template.get("trigger_rule") or {}).get("scope") or {}).get("graduation_states")
-            or ["IN_PROGRESS"]
+            or ["IN_CAMP"]
         )
         if teacher.get("graduation_state") not in allowed_graduation_states:
             raise DomainError(

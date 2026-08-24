@@ -1,4 +1,9 @@
 export type ShiwenDataMode = 'MIXED' | 'REAL' | 'MOCK';
+export type ShiwenGraduationState = 'IN_CAMP' | 'GRADUATED';
+export type ShiwenCourseSourceRegion = 'dom' | 'ovs';
+export type ShiwenTeacherOnlineStatus = 'NEW' | 'EXISTING' | 'LEFT' | 'BLOCKED';
+export type ShiwenGoldStatus = 'NOT_GOLD' | 'GOLD';
+export type ShiwenTeacherSourceStatus = 'CONFIRMED' | 'SOURCE_MISSING';
 
 export interface ShiwenTeacherIdentity {
   teacherId: string;
@@ -6,7 +11,7 @@ export interface ShiwenTeacherIdentity {
   name: string;
   timezone: string | null;
   campDay: number | null;
-  graduationState: string | null;
+  graduationState: ShiwenGraduationState | null;
   dataMode: ShiwenDataMode;
   sourceUpdatedAt: string;
 }
@@ -45,11 +50,16 @@ export interface ShiwenScoreDimension {
 export interface ShiwenTeacherScorecard {
   teacherId: string;
   campEnrollmentId: string;
+  onlineStatus: ShiwenTeacherOnlineStatus;
   rawTotalScore: number;
   publicTotalScore: number;
-  graduationState: string;
+  graduationState: ShiwenGraduationState;
   graduationQualified: boolean;
+  graduationQualifiedAt: string | null;
+  graduationScoreLocked: number | null;
   goldQualified: boolean;
+  goldStatus: ShiwenGoldStatus;
+  goldQualifiedAt: string | null;
   graduationThreshold: number;
   goldThreshold: number;
   mandatoryTaskCompletedCount: number;
@@ -57,6 +67,9 @@ export interface ShiwenTeacherScorecard {
   scoreRuleVersion: string;
   calculatedAt: string;
   dimensions: ShiwenScoreDimension[];
+  source: {
+    teacherSourceStatus: ShiwenTeacherSourceStatus;
+  };
 }
 
 export type ShiwenLessonScoreDimensionCode =
@@ -80,10 +93,13 @@ export interface ShiwenLessonScoreDimension {
 
 export interface ShiwenLessonScore {
   teacherId: string;
+  /** Compatibility display key; never a source lesson ID or database locator. */
   lessonId: string;
+  sourceRegion: ShiwenCourseSourceRegion;
+  sourceAppointId: string;
+  participationSeq: number;
   lessonSequence: number;
   lessonCount: number;
-  sourceAppointId: string;
   scheduledStartAt: string | null;
   lessonLocalDate: string | null;
   lessonLocalTime: string | null;
@@ -91,12 +107,11 @@ export interface ShiwenLessonScore {
   validForScoring: boolean;
   evidenceStatus: string;
   lessonTotalScore: number;
-  scoreRuleVersion: string;
+  scoreRuleVersion: string | null;
   updatedAt: string;
   facts: {
     late: boolean | null;
     earlyLeave: boolean | null;
-    falseEarlyLeave: boolean | null;
     positiveFeedback: boolean | null;
     favorited: boolean | null;
     rebooked: boolean | null;

@@ -18,6 +18,7 @@ from sqlalchemy import (
     Engine,
     Float,
     Integer,
+    Numeric,
     String,
     Text,
     Time,
@@ -90,6 +91,78 @@ DTS_STATE_TABLES = (
     DtsIngestEventRecord.__table__,
     DtsSourceRowRecord.__table__,
     DtsDirtyKeyRecord.__table__,
+)
+# Expand-only release order is deliberate: deploy this validator to every v1
+# ingest instance first, then apply revision 66.  During that window only the
+# complete legacy shape or the complete legacy+v2 nullable shape is valid;
+# mixed/partial transition schemas remain fail-closed.
+DTS_V2_TRANSITION_COLUMN_NAMES = {
+    "dts_ingest_checkpoints": frozenset(
+        {
+            "source_partition_epoch_id",
+            "consumer_group",
+            "checkpoint_row_version",
+            "is_current_epoch",
+        }
+    ),
+    "dts_ingest_events": frozenset(
+        {
+            "identity_version",
+            "source_partition_epoch_id",
+            "source_position_v2",
+            "event_payload_hash",
+        }
+    ),
+    "dts_source_rows": frozenset(
+        {
+            "source_row_revision",
+            "last_source_partition_epoch_id",
+            "last_version_kind",
+            "source_position_v2",
+            "record_id_type",
+            "record_id_numeric",
+            "record_id_text",
+            "source_timestamp_v2",
+            "source_payload_hash",
+            "provenance_state",
+            "source_key_type",
+            "source_key_numeric",
+            "source_key_text",
+            "source_schema_profile_id",
+            "source_field_types",
+        }
+    ),
+    "dts_dirty_keys": frozenset(
+        {
+            "source_region",
+            "required_work_revision",
+            "claimed_through_work_revision",
+            "completed_work_revision",
+            "last_input_identity_hash",
+            "last_input_revision",
+            "work_generation",
+            "dead_generation",
+            "blocked_by",
+            "lease_owner_kind",
+            "lease_owner",
+            "lease_token",
+            "lease_expires_at",
+        }
+    ),
+}
+DTS_V1_COMPAT_COLUMN_NAMES = frozenset(
+    {
+        "compat_status",
+        "compat_required_work_revision",
+        "compat_claimed_work_revision",
+        "compat_completed_work_revision",
+        "compat_attempt_count",
+        "compat_last_error_code",
+        "compat_next_attempt_at",
+        "compat_claimed_at",
+        "compat_claimed_by",
+        "compat_row_version",
+    }
 )
 
 
@@ -292,7 +365,7 @@ EXPECTED_DTS_STATE_INDEXES = (
         False,
     ),
 )
-EXPECTED_DTS_STATE_GUARD_TRIGGERS = tuple(
+LEGACY_EXPECTED_DTS_STATE_GUARD_TRIGGERS = tuple(
     (
         table.name,
         "guard_dts_runtime_state_write",
@@ -307,19 +380,52 @@ EXPECTED_DTS_STATE_GUARD_TRIGGERS = tuple(
     )
     for table in DTS_STATE_TABLES
 )
-EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS = (
+_DTS_DIRTY_GUARD_V96_PROSRC_SHA256 = (
+    "43faaad828f20a8988c4cf1212490b48ad8aa28782112a5e97c355d307a6d2e2"
+)
+EXPECTED_DTS_STATE_GUARD_TRIGGERS = tuple(
     (
-        "lesson_source_wide",
-        "guard_dom_lesson_student_privacy_v1",
-        23,
-        "public",
-        "guard_dom_lesson_student_privacy_v1",
-        "",
-        False,
-        0,
-        "",
-        True,
-    ),
+        table_name,
+        trigger_name,
+        event_mask,
+        function_schema,
+        (
+            "guard_dts_dirty_key_state_write_v96"
+            if table_name == "dts_dirty_keys"
+            else function_name
+        ),
+        arguments,
+        is_constraint,
+        deferrable_code,
+        referenced_table,
+        row_level,
+    )
+    for (
+        table_name,
+        trigger_name,
+        event_mask,
+        function_schema,
+        function_name,
+        arguments,
+        is_constraint,
+        deferrable_code,
+        referenced_table,
+        row_level,
+    ) in LEGACY_EXPECTED_DTS_STATE_GUARD_TRIGGERS
+)
+_SOURCE_WIDE_PRIVACY_TRIGGER_DEFINITION = (
+    "lesson_source_wide",
+    "guard_dom_lesson_student_privacy_v1",
+    23,
+    "public",
+    "guard_dom_lesson_student_privacy_v1",
+    "",
+    False,
+    0,
+    "",
+    True,
+)
+_SOURCE_WIDE_OUTBOX_TRIGGER_DEFINITIONS = (
     (
         "lesson_source_wide",
         "trg_lesson_source_wide_outbox_v1",
@@ -345,7 +451,49 @@ EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS = (
         True,
     ),
 )
-EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS = (
+_EXPAND_SOURCE_REGION_TRIGGER_DEFINITION = (
+    "lesson_source_wide",
+    "trg_00_lesson_source_region_expand_v1",
+    23,
+    "public",
+    "guard_lesson_source_region_expand_v1",
+    "",
+    False,
+    0,
+    "",
+    True,
+)
+_CONTRACT_SOURCE_REGION_TRIGGER_DEFINITION = (
+    "lesson_source_wide",
+    "trg_00_lesson_source_region_contract_v1",
+    23,
+    "public",
+    "guard_lesson_source_region_contract_v1",
+    "",
+    False,
+    0,
+    "",
+    True,
+)
+EXPANDED_SOURCE_WIDE_TRIGGER_DEFINITIONS = (
+    _SOURCE_WIDE_PRIVACY_TRIGGER_DEFINITION,
+    _EXPAND_SOURCE_REGION_TRIGGER_DEFINITION,
+    *_SOURCE_WIDE_OUTBOX_TRIGGER_DEFINITIONS,
+)
+# The exported default describes the current (contracted) head.  Runtime
+# validation also accepts the complete expand shape so the same compatibility
+# binary can be deployed between the two migrations; no partial combination is
+# accepted.
+EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS = (
+    _SOURCE_WIDE_PRIVACY_TRIGGER_DEFINITION,
+    _CONTRACT_SOURCE_REGION_TRIGGER_DEFINITION,
+    *_SOURCE_WIDE_OUTBOX_TRIGGER_DEFINITIONS,
+)
+ACCEPTED_SOURCE_WIDE_TRIGGER_DEFINITIONS = (
+    EXPANDED_SOURCE_WIDE_TRIGGER_DEFINITIONS,
+    EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS,
+)
+_COMMON_DOMESTIC_PRIVACY_FUNCTIONS = (
     (
         "dom_student_json_is_safe_v1",
         "payload jsonb",
@@ -366,6 +514,8 @@ EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS = (
         ("search_path=pg_catalog, public",),
         "d313d6dd40b98a4086d639e6582e4f8c7d1f64770af9fb4b14e457ae51fe6bff",
     ),
+)
+_EXPAND_LESSON_PRIVACY_FUNCTIONS = (
     (
         "guard_dom_lesson_student_privacy_v1",
         "",
@@ -376,6 +526,57 @@ EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS = (
         ("search_path=pg_catalog, public",),
         "520256c57eec153b215bf6baf288e55eab5a025549b2a9bbc956115d4ff13310",
     ),
+    (
+        "guard_lesson_source_region_expand_v1",
+        "",
+        "plpgsql",
+        "v",
+        False,
+        False,
+        ("search_path=pg_catalog, public",),
+        "5becb79229e10803e6586e647423081b9576ecec59493a6dfca43cd922393f0b",
+    ),
+)
+_CONTRACT_LESSON_PRIVACY_FUNCTIONS = (
+    (
+        "guard_dom_lesson_student_privacy_v1",
+        "",
+        "plpgsql",
+        "v",
+        False,
+        False,
+        ("search_path=pg_catalog, public",),
+        "836776323a7bb6ccf3a6c847f18be7ba4a240d9b6154ac6e1995b7c0bb599e7f",
+    ),
+    (
+        "guard_lesson_source_region_contract_v1",
+        "",
+        "plpgsql",
+        "v",
+        False,
+        False,
+        ("search_path=pg_catalog, public",),
+        "59a33abb0e28fc4343c788b860e3d69d0b9f65aaf464f3a7339db9dfb6a443c2",
+    ),
+)
+EXPANDED_DOMESTIC_PRIVACY_FUNCTIONS = (
+    *_COMMON_DOMESTIC_PRIVACY_FUNCTIONS,
+    *_EXPAND_LESSON_PRIVACY_FUNCTIONS,
+)
+EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS = (
+    *_COMMON_DOMESTIC_PRIVACY_FUNCTIONS,
+    *_CONTRACT_LESSON_PRIVACY_FUNCTIONS,
+)
+ACCEPTED_DOMESTIC_PRIVACY_FUNCTIONS = (
+    EXPANDED_DOMESTIC_PRIVACY_FUNCTIONS,
+    EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS,
+)
+SOURCE_WIDE_CONTRACT_FUNCTION_NAMES = tuple(
+    dict.fromkeys(
+        definition[0]
+        for accepted in ACCEPTED_DOMESTIC_PRIVACY_FUNCTIONS
+        for definition in accepted
+    )
 )
 
 
@@ -411,6 +612,8 @@ def _postgres_column_type(column_type: Any) -> str:
         )
     if isinstance(column_type, Float):
         return "double precision"
+    if isinstance(column_type, Numeric):
+        return "numeric"
     raise RuntimeError(
         f"unsupported source-wide contract type: {column_type!r}"
     )
@@ -435,6 +638,16 @@ EXPECTED_DTS_STATE_COLUMNS = tuple(
     )
     for table in DTS_STATE_TABLES
     for column in table.columns
+)
+PRE96_EXPECTED_DTS_STATE_COLUMNS = tuple(
+    column
+    for column in EXPECTED_DTS_STATE_COLUMNS
+    if column[1] not in DTS_V1_COMPAT_COLUMN_NAMES
+)
+LEGACY_EXPECTED_DTS_STATE_COLUMNS = tuple(
+    column
+    for column in PRE96_EXPECTED_DTS_STATE_COLUMNS
+    if column[1] not in DTS_V2_TRANSITION_COLUMN_NAMES[column[0]]
 )
 
 
@@ -1123,13 +1336,12 @@ class PostgresDtsEventSink:
         self,
         event: DtsChangeEvent,
     ) -> tuple[DirtyKeySet, None] | None:
-        """Return the minimal processor metadata needed by direct mode.
+        """Return only the metadata needed by the legacy direct projector.
 
-        Queued mode needs full dependency routing and the appoint projection
-        candidate before persistence.  Direct mode deliberately ignores both:
-        the projector consumes the original event and computes only its own
-        field mutation.  Avoid walking every row twice while retaining the
-        public PROCESSED/IGNORED classification used by heartbeat counters.
+        Queued/v2 capture needs full dependency routing and appoint candidates.
+        Legacy direct consumes the original event and computes only its own
+        field mutation, so avoid walking each row twice while keeping the
+        PROCESSED/IGNORED counters stable during the compatibility window.
         """
 
         if getattr(self, "_direct_projector", None) is None:
@@ -1389,7 +1601,18 @@ class PostgresDtsEventSink:
                 )
                 for row in state_columns
             )
-            if actual_state_columns != EXPECTED_DTS_STATE_COLUMNS:
+            if actual_state_columns == EXPECTED_DTS_STATE_COLUMNS:
+                expected_state_guard_triggers = (
+                    EXPECTED_DTS_STATE_GUARD_TRIGGERS
+                )
+            elif actual_state_columns in (
+                LEGACY_EXPECTED_DTS_STATE_COLUMNS,
+                PRE96_EXPECTED_DTS_STATE_COLUMNS,
+            ):
+                expected_state_guard_triggers = (
+                    LEGACY_EXPECTED_DTS_STATE_GUARD_TRIGGERS
+                )
+            else:
                 raise DtsIngestStoreError("DTS_TARGET_STATE_SCHEMA_MISMATCH")
 
             state_constraints = connection.execute(
@@ -1576,11 +1799,71 @@ class PostgresDtsEventSink:
                 for row in state_trigger_rows
             )
             if (
-                actual_state_triggers != EXPECTED_DTS_STATE_GUARD_TRIGGERS
+                actual_state_triggers != expected_state_guard_triggers
                 or any(str(row[2]) not in {"O", "A"} for row in state_trigger_rows)
             ):
                 raise DtsIngestStoreError(
                     "DTS_TARGET_STATE_GUARD_TRIGGER_MISMATCH"
+                )
+
+            state_guard_function_rows = connection.execute(
+                text(
+                    """
+                    SELECT languages.lanname,functions.provolatile,
+                           functions.proisstrict,functions.prosecdef,
+                           COALESCE(functions.proconfig,ARRAY[]::text[]),
+                           pg_catalog.encode(pg_catalog.sha256(
+                             pg_catalog.convert_to(functions.prosrc,'UTF8')
+                           ),'hex'),
+                           has_function_privilege(
+                             current_user,
+                             'public.guard_dts_dirty_key_state_write_v96()',
+                             'EXECUTE'
+                           )
+                    FROM pg_catalog.pg_proc functions
+                    JOIN pg_catalog.pg_namespace namespaces
+                      ON namespaces.oid=functions.pronamespace
+                    JOIN pg_catalog.pg_language languages
+                      ON languages.oid=functions.prolang
+                    WHERE namespaces.nspname=:schema_name
+                      AND functions.proname=
+                        'guard_dts_dirty_key_state_write_v96'
+                      AND pg_catalog.pg_get_function_identity_arguments(
+                            functions.oid
+                          )=''
+                    """
+                ),
+                {"schema_name": EXPECTED_SCHEMA},
+            ).all()
+            actual_state_guard_functions = tuple(
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    bool(row[2]),
+                    bool(row[3]),
+                    tuple(str(value) for value in row[4]),
+                    str(row[5]),
+                    bool(row[6]),
+                )
+                for row in state_guard_function_rows
+            )
+            expected_state_guard_functions = (
+                (
+                    "plpgsql",
+                    "v",
+                    False,
+                    False,
+                    ("search_path=pg_catalog, public",),
+                    _DTS_DIRTY_GUARD_V96_PROSRC_SHA256,
+                    False,
+                ),
+            ) if actual_state_columns == EXPECTED_DTS_STATE_COLUMNS else ()
+            if (
+                actual_state_guard_functions
+                != expected_state_guard_functions
+            ):
+                raise DtsIngestStoreError(
+                    "DTS_TARGET_STATE_GUARD_FUNCTION_MISMATCH"
                 )
 
             source_wide_columns = connection.execute(
@@ -1686,7 +1969,7 @@ class PostgresDtsEventSink:
             )
             if (
                 actual_source_wide_triggers
-                != EXPECTED_SOURCE_WIDE_TRIGGER_DEFINITIONS
+                not in ACCEPTED_SOURCE_WIDE_TRIGGER_DEFINITIONS
                 or any(str(row[2]) not in {"O", "A"} for row in trigger_rows)
             ):
                 raise DtsIngestStoreError(
@@ -1731,10 +2014,9 @@ class PostgresDtsEventSink:
                 ),
                 {
                     "schema_name": EXPECTED_SCHEMA,
-                    "function_names": [
-                        definition[0]
-                        for definition in EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS
-                    ],
+                    "function_names": list(
+                        SOURCE_WIDE_CONTRACT_FUNCTION_NAMES
+                    ),
                 },
             ).all()
             actual_privacy_functions = tuple(
@@ -1750,7 +2032,10 @@ class PostgresDtsEventSink:
                 )
                 for row in privacy_function_rows
             )
-            if actual_privacy_functions != EXPECTED_DOMESTIC_PRIVACY_FUNCTIONS:
+            if (
+                actual_privacy_functions
+                not in ACCEPTED_DOMESTIC_PRIVACY_FUNCTIONS
+            ):
                 raise DtsIngestStoreError(
                     "DTS_TARGET_DOM_PRIVACY_FUNCTION_MISMATCH"
                 )
@@ -1858,8 +2143,14 @@ class PostgresDtsEventSink:
                         ), lesson_violation AS (
                             SELECT 'LESSON_WIDE' AS violation
                             FROM public.lesson_source_wide lessons
-                            WHERE lessons."学员id" LIKE 'dom:%'
-                              AND lessons."学员id" !~ :token_pattern
+                            WHERE (
+                                lessons.source_region='dom'
+                                AND lessons."学员id" IS NOT NULL
+                                AND lessons."学员id" !~ :token_pattern
+                            ) OR (
+                                lessons.source_region='ovs'
+                                AND lessons."学员id" LIKE 'dom:%'
+                            )
                             LIMIT 1
                         )
                         SELECT violation FROM source_violation
@@ -1921,35 +2212,14 @@ class PostgresDtsEventSink:
                     ), lesson_violation AS (
                         SELECT 'LESSON_WIDE' AS violation
                         FROM public.lesson_source_wide lessons
-                        JOIN public.dts_source_rows appoints
-                         ON appoints.source_region = 'dom'
-                         AND appoints.source_table = 'dom_appoint'
-                         AND appoints.source_row ->> 'id'
-                             = lessons."课程id"
-                        WHERE lessons."学员id" IS NOT NULL
-                          AND lessons."学员id" !~ :token_pattern
-                        LIMIT 1
-                    ), provenance_violation AS (
-                        SELECT 'LESSON_PROVENANCE' AS violation
-                        FROM public.lesson_source_wide lessons
-                        LEFT JOIN LATERAL (
-                            SELECT
-                                count(*) FILTER (
-                                    WHERE appoints.source_region = 'dom'
-                                ) AS dom_sources,
-                                count(*) FILTER (
-                                    WHERE appoints.source_region = 'ovs'
-                                ) AS ovs_sources
-                            FROM public.dts_source_rows appoints
-                            WHERE appoints.source_table IN (
-                                'dom_appoint',
-                                'ovs_appoint'
-                            )
-                              AND appoints.source_row ->> 'id'
-                                  = lessons."课程id"
-                        ) provenance ON TRUE
-                        WHERE (provenance.dom_sources > 0)::int
-                            + (provenance.ovs_sources > 0)::int <> 1
+                        WHERE (
+                            lessons.source_region='dom'
+                            AND lessons."学员id" IS NOT NULL
+                            AND lessons."学员id" !~ :token_pattern
+                        ) OR (
+                            lessons.source_region='ovs'
+                            AND lessons."学员id" LIKE 'dom:%'
+                        )
                         LIMIT 1
                     )
                     SELECT violation FROM violations
@@ -1957,8 +2227,6 @@ class PostgresDtsEventSink:
                     SELECT violation FROM dirty_violation
                     UNION ALL
                     SELECT violation FROM lesson_violation
-                    UNION ALL
-                    SELECT violation FROM provenance_violation
                     LIMIT 1
                     """
                 ),
@@ -2233,13 +2501,12 @@ class PostgresDtsEventSink:
         connection: Any,
         event: DtsChangeEvent,
     ) -> int | None:
-        """Lock one direct stream, label the transaction and read checkpoint.
+        """Lock one direct stream, set provenance and read the checkpoint.
 
-        Direct ingestion always needs these three operations before projection.
-        Keeping them in one PostgreSQL statement removes two cross-region
-        round trips without weakening stream serialization, replay checks or
-        the transaction-local privacy provenance used by database triggers.
-        Non-PostgreSQL test engines retain the established portable fallback.
+        PostgreSQL performs all three operations in one round trip, removing
+        two cross-region round trips without weakening serialization, replay
+        checks, privacy provenance or durable-checkpoint recovery. Portable
+        test engines retain the established two-step fallback.
         """
 
         dialect_name = getattr(

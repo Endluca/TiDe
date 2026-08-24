@@ -55,7 +55,15 @@ const growthStageIndex = {
   "Day 15-30": 2,
 };
 
-const externalCourseTaskCodes = new Set(["G03", "G05", "G06", "G07", "G08", "G09"]);
+const externalCourseTaskCodes = new Set([
+  "G03",
+  "G05",
+  "G06",
+  "G07",
+  "G08",
+  "G09",
+  "P-REL-ATTENDANCE",
+]);
 const personalizedEnvironmentPhotoTaskCode = "P-FB-NEGATIVE";
 const personalizedEnvironmentPhotoStepKey = "p-fb-negative-environment-photo";
 const personalizedEnvironmentPhotoReviewProfile = "TEACHING_ENVIRONMENT_V1";

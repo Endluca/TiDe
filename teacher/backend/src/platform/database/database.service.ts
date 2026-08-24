@@ -67,6 +67,7 @@ const CURRENT_PRODUCTION_MIGRATIONS = [
   '0040_g02_document_read_status',
   '0041_crm_sso_hybrid',
   '0042_g09_set_kuozhi_course',
+  '0043_p_rel_execution_catalog',
 ] as const;
 
 @Injectable()
@@ -256,8 +257,12 @@ export class DatabaseService implements OnModuleDestroy {
           ) = 0
           AND (
             SELECT count(*)
-            FROM public.teacher_lesson_score_current
-            WHERE false
+            FROM (
+              SELECT source_region, source_appoint_id, participation_seq,
+                participation_role, visible_to_teacher
+              FROM public.teacher_lesson_score_current
+              WHERE false
+            ) AS lesson_contract
           ) = 0
         ) AS ready
       `,
@@ -282,6 +287,196 @@ export class DatabaseService implements OnModuleDestroy {
           count(*)::integer AS migration_count
         FROM public.alembic_version
       ),
+      lesson_region_schema AS (
+        SELECT
+          EXISTS (
+            SELECT 1
+            FROM pg_attribute
+            WHERE attrelid='public.lesson_source_wide'::regclass
+              AND attname='source_region'
+              AND attnum>0 AND NOT attisdropped
+          ) AS has_region,
+          COALESCE((
+            SELECT NOT attnotnull
+            FROM pg_attribute
+            WHERE attrelid='public.lesson_source_wide'::regclass
+              AND attname='source_region'
+              AND attnum>0 AND NOT attisdropped
+          ),false) AS region_nullable,
+          COALESCE((
+            SELECT attnotnull
+            FROM pg_attribute
+            WHERE attrelid='public.lesson_source_wide'::regclass
+              AND attname='老师id'
+              AND attnum>0 AND NOT attisdropped
+          ),false) AS teacher_required,
+          COALESCE((
+            SELECT array_agg(attribute.attname ORDER BY key.ordinality)
+            FROM pg_constraint AS constraint_record
+            CROSS JOIN LATERAL unnest(constraint_record.conkey)
+              WITH ORDINALITY AS key(attnum,ordinality)
+            JOIN pg_attribute AS attribute
+              ON attribute.attrelid=constraint_record.conrelid
+             AND attribute.attnum=key.attnum
+            WHERE constraint_record.conrelid=
+                  'public.lesson_source_wide'::regclass
+              AND constraint_record.contype='p'
+          ),ARRAY[]::name[]) AS primary_key_columns,
+          EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='public.lesson_source_wide'::regclass
+              AND conname='ck_lesson_source_wide_region_expand'
+              AND contype='c'
+          ) AS has_expand_check,
+          EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='public.lesson_source_wide'::regclass
+              AND conname='uq_lesson_source_wide_region_course_candidate'
+              AND contype='u'
+          ) AS has_expand_unique,
+          EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='public.lesson_source_wide'::regclass
+              AND conname='ck_lesson_source_wide_region'
+              AND contype='c'
+          ) AS has_contract_check,
+          EXISTS (
+            SELECT 1
+            FROM pg_class AS index_relation
+            JOIN pg_index AS index_record
+              ON index_record.indexrelid=index_relation.oid
+            WHERE index_record.indrelid=
+                  'public.lesson_source_wide'::regclass
+              AND index_relation.relname IN (
+                'ix_lesson_source_wide_region_teacher_time',
+                'ix_lesson_source_wide_region_teacher_student_time'
+              )
+              AND index_record.indisvalid AND index_record.indisready
+            GROUP BY index_record.indrelid
+            HAVING count(*)=2
+          ) AS has_region_indexes
+      ),
+      lesson_region_consumers AS (
+        SELECT
+          EXISTS (
+            SELECT 1 FROM pg_attribute
+            WHERE attrelid='public.lesson_score_results'::regclass
+              AND attname='lesson_source_region'
+              AND attnum>0 AND NOT attisdropped
+          ) AS result_has_region,
+          COALESCE((
+            SELECT NOT attnotnull FROM pg_attribute
+            WHERE attrelid='public.lesson_score_results'::regclass
+              AND attname='lesson_source_region'
+              AND attnum>0 AND NOT attisdropped
+          ),false) AS result_region_nullable,
+          EXISTS (
+            SELECT 1 FROM pg_attribute
+            WHERE attrelid='public.personalized_trigger_matches'::regclass
+              AND attname='lesson_source_region'
+              AND attnum>0 AND NOT attisdropped
+          ) AS match_has_region,
+          (
+            SELECT count(*)=6
+            FROM pg_attribute
+            WHERE attrelid='public.score_entries'::regclass
+              AND attname IN (
+                'source_region','source_appoint_id','participation_seq',
+                'projection_origin','materialized_by_run_id',
+                'projection_generation'
+              )
+              AND attnum>0 AND NOT attisdropped
+          ) AS score_has_typed_origin,
+          EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='public.lesson_score_results'::regclass
+              AND conname='fk_lesson_score_result_source_lesson_region'
+              AND contype='f' AND array_length(conkey,1)=2
+          ) AS result_has_composite_fk,
+          EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='public.personalized_trigger_matches'::regclass
+              AND conname='fk_personalized_trigger_match_lesson_region'
+              AND contype='f' AND array_length(conkey,1)=2
+          ) AS match_has_composite_fk
+      ),
+      lesson_region_triggers AS (
+        SELECT
+          count(*) FILTER (
+            WHERE trigger_record.tgname=
+                    'trg_00_lesson_source_region_expand_v1'
+              AND function_record.proname=
+                    'guard_lesson_source_region_expand_v1'
+              AND trigger_record.tgenabled IN ('O','A')
+              AND trigger_record.tgtype=23
+              AND NOT trigger_record.tgisinternal
+          )=1 AS has_expand_guard,
+          count(*) FILTER (
+            WHERE trigger_record.tgname=
+                    'trg_00_lesson_source_region_contract_v1'
+              AND function_record.proname=
+                    'guard_lesson_source_region_contract_v1'
+              AND trigger_record.tgenabled IN ('O','A')
+              AND trigger_record.tgtype=23
+              AND NOT trigger_record.tgisinternal
+          )=1 AS has_contract_guard,
+          count(*) FILTER (
+            WHERE trigger_record.tgname=
+                    'guard_dom_lesson_student_privacy_v1'
+              AND function_record.proname=
+                    'guard_dom_lesson_student_privacy_v1'
+              AND trigger_record.tgenabled IN ('O','A')
+              AND trigger_record.tgtype=23
+              AND NOT trigger_record.tgisinternal
+          )=1 AS has_privacy_guard
+        FROM pg_trigger AS trigger_record
+        JOIN pg_proc AS function_record
+          ON function_record.oid=trigger_record.tgfoid
+        WHERE trigger_record.tgrelid=
+              'public.lesson_source_wide'::regclass
+      ),
+      lesson_region_functions AS (
+        SELECT
+          COALESCE(bool_or(
+            function_record.proname='guard_dom_lesson_student_privacy_v1'
+            AND position('tit.dts_source_region' IN function_record.prosrc)>0
+            AND position('tit_dts_ingest_runtime' IN function_record.prosrc)>0
+          ),false) AS has_compat_privacy,
+          COALESCE(bool_or(
+            function_record.proname='guard_dom_lesson_student_privacy_v1'
+            AND position('NEW.source_region' IN function_record.prosrc)>0
+            AND position('COMPAT_REGION_MISSING' IN function_record.prosrc)>0
+            AND position('tit.dts_source_region' IN function_record.prosrc)=0
+            AND position('tit_dts_ingest_runtime' IN function_record.prosrc)=0
+          ),false) AS has_contract_privacy,
+          COALESCE(bool_or(
+            function_record.proname=
+              'guard_lesson_source_region_expand_v1'
+            AND position('context_region' IN function_record.prosrc)>0
+            AND position(
+              'COMPAT_REGION_CONTEXT_MISMATCH' IN function_record.prosrc
+            )>0
+            AND position('COMPAT_REGION_MISSING' IN function_record.prosrc)>0
+          ),false) AS has_expand_function,
+          COALESCE(bool_or(
+            function_record.proname=
+              'guard_lesson_source_region_contract_v1'
+            AND position(
+              'COMPAT_LESSON_IDENTITY_IMMUTABLE' IN function_record.prosrc
+            )>0
+            AND position('COMPAT_REGION_MISSING' IN function_record.prosrc)>0
+            AND position('context_region' IN function_record.prosrc)=0
+          ),false) AS has_contract_function
+        FROM pg_proc AS function_record
+        JOIN pg_namespace AS function_namespace
+          ON function_namespace.oid=function_record.pronamespace
+        WHERE function_namespace.nspname='public'
+          AND function_record.proname IN (
+            'guard_dom_lesson_student_privacy_v1',
+            'guard_lesson_source_region_expand_v1',
+            'guard_lesson_source_region_contract_v1'
+          )
+      ),
       latest_migration AS (
         SELECT migration_id
         FROM tide.schema_migrations
@@ -301,41 +496,87 @@ export class DatabaseService implements OnModuleDestroy {
           SELECT migration_id
           FROM latest_migration
           LIMIT 1
-        ) = '0042_g09_set_kuozhi_course'
+        ) = '0043_p_rel_execution_catalog'
         AND public_migration_state.migration_count = 1
-        AND public_migration_state.version_num =
-          '20260819_65_g09_set_course'
         AND to_regprocedure(
           'public.dom_student_json_is_safe_v1(jsonb)'
         ) IS NOT NULL
-        AND EXISTS (
-          SELECT 1
-          FROM pg_trigger AS privacy_trigger
-          WHERE privacy_trigger.tgrelid =
-              'public.lesson_source_wide'::regclass
-            AND privacy_trigger.tgname =
-              'guard_dom_lesson_student_privacy_v1'
-            AND privacy_trigger.tgfoid =
-              'public.guard_dom_lesson_student_privacy_v1()'::regprocedure
-            AND privacy_trigger.tgenabled IN ('O', 'A')
-            AND privacy_trigger.tgtype = 23
-            AND NOT privacy_trigger.tgisinternal
-        )
-        AND EXISTS (
-          SELECT 1
-          FROM pg_proc AS privacy_function
-          JOIN pg_namespace AS privacy_namespace
-            ON privacy_namespace.oid = privacy_function.pronamespace
-          WHERE privacy_namespace.nspname = 'public'
-            AND privacy_function.proname =
-              'guard_dom_lesson_student_privacy_v1'
-            AND pg_get_function_identity_arguments(privacy_function.oid) = ''
-            AND position(
-              'tit.dts_source_region' IN privacy_function.prosrc
-            ) > 0
-            AND position(
-              'tit_dts_ingest_runtime' IN privacy_function.prosrc
-            ) > 0
+        AND (SELECT has_privacy_guard FROM lesson_region_triggers)
+        AND (
+          (
+            public_migration_state.version_num=
+              '20260819_65_g09_set_course'
+            AND NOT (SELECT has_region FROM lesson_region_schema)
+            AND (SELECT primary_key_columns FROM lesson_region_schema)=
+              ARRAY['课程id']::name[]
+            AND NOT (SELECT has_expand_guard FROM lesson_region_triggers)
+            AND NOT (SELECT has_contract_guard FROM lesson_region_triggers)
+            AND (SELECT has_compat_privacy FROM lesson_region_functions)
+            AND to_regclass(
+              'public.lesson_source_region_migration_control'
+            ) IS NULL
+            AND to_regclass(
+              'public.lesson_source_region_backfill_manifest'
+            ) IS NULL
+          )
+          OR (
+            (SELECT has_region FROM lesson_region_schema)
+            AND (SELECT region_nullable FROM lesson_region_schema)
+            AND (SELECT teacher_required FROM lesson_region_schema)
+            AND (SELECT primary_key_columns FROM lesson_region_schema)=
+              ARRAY['课程id']::name[]
+            AND (SELECT has_expand_check FROM lesson_region_schema)
+            AND (SELECT has_expand_unique FROM lesson_region_schema)
+            AND NOT (SELECT has_contract_check FROM lesson_region_schema)
+            AND (SELECT has_region_indexes FROM lesson_region_schema)
+            AND (SELECT result_has_region FROM lesson_region_consumers)
+            AND (SELECT result_region_nullable FROM lesson_region_consumers)
+            AND (SELECT match_has_region FROM lesson_region_consumers)
+            AND (SELECT score_has_typed_origin FROM lesson_region_consumers)
+            AND (SELECT has_expand_guard FROM lesson_region_triggers)
+            AND NOT (SELECT has_contract_guard FROM lesson_region_triggers)
+            AND (SELECT has_expand_function FROM lesson_region_functions)
+            AND (SELECT has_compat_privacy FROM lesson_region_functions)
+            AND to_regclass(
+              'public.lesson_source_region_migration_control'
+            ) IS NOT NULL
+            AND to_regclass(
+              'public.lesson_source_region_backfill_manifest'
+            ) IS NOT NULL
+          )
+          OR (
+            (SELECT has_region FROM lesson_region_schema)
+            AND NOT (SELECT region_nullable FROM lesson_region_schema)
+            AND NOT (SELECT teacher_required FROM lesson_region_schema)
+            AND (SELECT primary_key_columns FROM lesson_region_schema)=
+              ARRAY['source_region','课程id']::name[]
+            AND NOT (SELECT has_expand_check FROM lesson_region_schema)
+            AND NOT (SELECT has_expand_unique FROM lesson_region_schema)
+            AND (SELECT has_contract_check FROM lesson_region_schema)
+            AND (SELECT has_region_indexes FROM lesson_region_schema)
+            AND (SELECT result_has_region FROM lesson_region_consumers)
+            AND NOT (
+              SELECT result_region_nullable FROM lesson_region_consumers
+            )
+            AND (SELECT match_has_region FROM lesson_region_consumers)
+            AND (SELECT score_has_typed_origin FROM lesson_region_consumers)
+            AND (
+              SELECT result_has_composite_fk FROM lesson_region_consumers
+            )
+            AND (
+              SELECT match_has_composite_fk FROM lesson_region_consumers
+            )
+            AND NOT (SELECT has_expand_guard FROM lesson_region_triggers)
+            AND (SELECT has_contract_guard FROM lesson_region_triggers)
+            AND (SELECT has_contract_function FROM lesson_region_functions)
+            AND (SELECT has_contract_privacy FROM lesson_region_functions)
+            AND to_regclass(
+              'public.lesson_source_region_migration_control'
+            ) IS NOT NULL
+            AND to_regclass(
+              'public.lesson_source_region_backfill_manifest'
+            ) IS NOT NULL
+          )
         )
         AND NOT EXISTS (
           SELECT 1

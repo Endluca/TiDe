@@ -15,7 +15,7 @@
   模块选择不会自动创建 Gaea 项目，也不会自动选择正确数据中心或让海外和国内跨项目复用同一个
   image digest。
 
-application 镜像由 s6-overlay 管理五个业务进程入口：
+application 镜像由 s6-overlay 管理八个业务进程入口：
 
 | 进程 | 监听端口 | 职责 |
 |---|---:|---|
@@ -24,10 +24,14 @@ application 镜像由 s6-overlay 管理五个业务进程入口：
 | `teacher-api` | `3000` | NestJS 教师端 API；只在 Pod 内访问，不配置 Gaea Ingress |
 | `score-settlement` | 无 | 固定任务积分结算候选进程、数据库选主和本 Pod heartbeat |
 | `source-wide` | 无 | 字段级源事件消费候选进程、数据库选主和本 Pod heartbeat/readiness |
+| `dts-v2-domain` | 无 | 三种合法 pipeline mode 下持续追平规范化事实、domain revision 与影子 Outbox |
+| `dts-v2-outbox` | 无 | 仅 V2_PRIMARY 领取并物化完整聚合类型矩阵 |
+| `dts-v2-favorite` | 无 | 仅 V2_PRIMARY 到期观察收藏关系并原子结算唯一归课 |
 
-轻量 DTS 镜像不包含上述五个进程、Node、两个前端、教师 NestJS 或 Nginx。它以非 root
-Python PID 1 运行 `run_dts_ingest.py`，Python 持有数据库、国内 HMAC、账本与 23/55 字段宽表
-投影，并管理一个运行官方 DTS SDK 1.4.0 主流程的 Java 子进程。Java stdout 只传 NDJSON
+轻量 DTS 镜像不包含上述八个进程、Node、两个前端、教师 NestJS 或 Nginx。它以非 root
+Python PID 1 运行 `run_dts_ingest.py`，Python 持有数据库、国内 HMAC、账本，以及课程/教师宽表
+23/64 个物理列（22/55 个业务字段）的投影，并管理一个运行官方 DTS SDK 1.4.0 主流程的 Java
+子进程。Java stdout 只传 NDJSON
 事件和 SDK checkpoint 接受确认，Kafka/SDK 诊断走 stderr；Java 先发送有界批次的 `EVENT`
 和 `BATCH_COMPLETE`，Python 整批数据库事务成功后才回一个 `DURABLE_ACK_BATCH`。Java 随后仅对最后一条连续 ADVANCE
 调用 `DefaultUserRecord.commit()`，REPLAY 不调用；该确认不冒充 broker 同步提交成功。脚本自身处理 SIGTERM/SIGINT，并通过 Pod 本地 heartbeat/readiness
@@ -72,7 +76,7 @@ PRE 切换时还要删除办公室 TEST 兼容层的 `COMPANY_TEST_DATABASE_ENAB
 重复 `MAIL_DELIVERY_PROVIDER`、账号清单或明文凭据，不能原样上传；只能用来核对字段。
 
 启动时镜像记录配置文件 SHA-256，周期健康检查只接受同一版本。Gaea 在线替换挂载文件不会
-热加载；文件发生变化后健康检查会要求 `RollingUpdate`，确保五个业务进程和健康检查不会
+热加载；文件发生变化后健康检查会要求 `RollingUpdate`，确保八个业务进程和健康检查不会
 同时使用两版配置。不设置 `TIT_RUNTIME_ENV_FILE` 时保持原有“全部由平台环境变量注入”的
 兼容模式。
 
@@ -83,7 +87,7 @@ PRE 切换时还要删除办公室 TEST 兼容层的 `COMPANY_TEST_DATABASE_ENAB
 
 ## 多副本执行模型
 
-每个 application Pod 都启动相同的五个业务进程，不再为积分或 SourceWide Worker 新建
+每个 application Pod 都启动相同的八个业务进程，不再为积分、SourceWide 或 DTS v2 Worker 新建
 Gaea 项目，也不按副本注入不同配置：
 
 - FastAPI、教师 Nginx 和 NestJS 都可以横向承接 HTTP 请求；登录会话、任务、积分和上传元数据
@@ -131,9 +135,10 @@ PostgreSQL 或使用 session pooling；transaction pooling 不能承载 session 
 | 视频预热账本 `/var/lib/tide/video-prefetch-runs` | 执行预热脚本时必须使用同一 RWX 卷 | 幂等记录和文件锁必须跨执行节点可见；OSS 对象存储不替代该账本 |
 | Worker heartbeat `/tmp/tit-score-worker-heartbeat` | 必须保持 Pod 本地，禁止放入共享卷 | 健康检查要证明本 Pod 的候选进程存活，不能借用 leader 的 heartbeat |
 | SourceWide heartbeat/readiness `/tmp/tit-source-worker-*` | 必须保持 Pod 本地，禁止放入共享卷 | 同时证明候选进程存活且能以预期专用账号访问数据库 |
+| DTS v2 heartbeat/readiness `/tmp/tit-v2-{domain,outbox,favorite}-*` | 必须保持 Pod 本地，禁止放入共享卷 | 只输出 mode、generation、脱敏 hash 与聚合 lag/lease；不得输出数据库 URL、epoch 原值或业务主键 |
 | Nginx 临时目录 `/tmp/tide-nginx` | Pod 本地临时空间 | 不承载业务事实 |
 
-当前五个常驻进程不会自动执行视频预热脚本；预热是受控发布动作。若从一次性 Job 或运维
+当前八个常驻进程不会自动执行视频预热脚本；预热是受控发布动作。若从一次性 Job 或运维
 终端执行，仍必须复用同一个持久化 RWX 状态目录。发布前至少用两个实际 Pod 做交叉验收：
 Pod A 上传、Pod B 下载，Pod B 删除、Pod A 读回失败；视频预热的相同幂等键只能创建一次。
 
@@ -175,13 +180,16 @@ Gaea 当前端口管理支持同一应用配置多个容器端口。不要把两
 3. `8080/health/ready`：经 Nginx 代理访问教师 API，并检查两条数据库读取链；
 4. 本 Pod 的 `/tmp/tit-score-worker-heartbeat`：积分候选进程持续刷新；leader 与 standby
    使用相同的进程存活判定；
-5. 本 Pod 的 SourceWide heartbeat 与 readiness：进程持续运行，且最近一次数据库身份校验、
-   选主或 leader ping 成功；随后只读检查 `source_wide.changed.v1` Outbox，不允许存在
-   `DEAD_LETTER`，也不允许已发生过失败（`attempt_count > 0`）且超过 `available_at`
-   900 秒仍为 `PENDING`。
+5. 本 Pod 的 SourceWide heartbeat 与 readiness：兼容/回滚模式继续校验 v1 Outbox、选主和
+   leader ping；`V2_PRIMARY` 时保留进程与数据库身份观测，但自动进入 standby，不再执行 v1
+   业务投影，也不让已停用的 v1 队列影响 PRIMARY 健康结论。
+6. `TIT_V2_RUNTIME_ENABLED=true` 时，本 Pod 的 Domain、Outbox、Favorite 三组 heartbeat、
+   readiness 与受限数据库健康快照。Domain 在兼容/回滚模式继续追数；Outbox/Favorite 只有
+   `V2_PRIMARY` 且 generation 大于等于 1 才 Ready。缺函数、缺 EXECUTE、死信、过期租约或
+   超龄 runnable 均失败关闭；业务 WAIT 只展示数量，不误判为技术故障。
 
 未持有积分 advisory lock 或教师后台租约是正常 standby 状态，不得导致本 Pod 不健康。
-因此 Pod 显示健康只表示五个进程和对应数据库就绪，不表示该 Pod 当前持有后台执行权，也
+因此 Pod 显示健康只表示八个进程和对应数据库就绪，不表示该 Pod 当前持有后台执行权，也
 不代表教师登录、九项任务、积分回写、外部素材、真实通知或完整业务验收已经完成。
 
 ## 运营端运行变量
@@ -277,6 +285,33 @@ SourceWide 健康探针会使用同一个受限数据库身份直接读取 Outbo
 超龄。数据库探测失败同样失败关闭；重启不会清除终态事件，必须先检查 `last_error`、修复
 源数据或投影问题并按运维流程重新入队，不能用反复重启掩盖毒事件。
 
+## DTS v2 运行进程变量
+
+`TIT_V2_RUNTIME_ENABLED` 默认保持 `false`。受保护命令、健康快照和权限回归已落地，但只有在
+public 迁移到当前 head、真实 profile/scope 证据完成并进入受控双捕获后才允许启用。启用后 Domain 使用
+`tit_dts_domain_projector_runtime`，Outbox 和 Favorite 使用
+`tit_dts_outbox_worker_runtime`；三个连接池必须分别注入 URL，不能复用运营 `DATABASE_URL`。
+
+| 变量名 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `TIT_V2_RUNTIME_ENABLED` | 否 | `false` | 只接受小写 `true`/`false`；缺完整 capability 时即使设为 true 也会失败关闭 |
+| `TIT_V2_EXPECTED_DATABASE` | 启用时 | 无 | 三个专用 URL 必须指向同一精确库名 |
+| `TIT_V2_DOMAIN_DATABASE_URL` | 启用时 | 无 | Domain 专用受限 LOGIN；兼容、PRIMARY、回滚三种模式都持续影子追数 |
+| `TIT_V2_OUTBOX_DATABASE_URL` | 启用时 | 无 | Outbox 专用受限 LOGIN；非 PRIMARY 不领取、不发布、不写失败状态 |
+| `TIT_V2_FAVORITE_DATABASE_URL` | 启用时 | 无 | Favorite 独立连接池，使用 Outbox 角色；非 PRIMARY 不领取/重领/结算 |
+| `TIT_V2_RUNTIME_BATCH_SIZE` | 否 | `25` | 每轮最大领取数，范围 1-1000 |
+| `TIT_V2_DOMAIN_LEASE_SECONDS` | 否 | `120` | Domain dirty lease，范围 15-300 秒 |
+| `TIT_V2_TIME_RECHECK_LEASE_SECONDS` | 否 | `120` | Outbox 进程内教师时间重检 lease，范围 15-300 秒；负责新师/旧师、30 天出营观察等无新 DTS 事件也会变化的规则 |
+| `TIT_V2_SOURCE_PROFILE_MANIFEST_SHA256` | 启用时 | 无 | 已核验 source profile manifest 的小写 SHA-256 |
+| `TIT_V2_SOURCE_PARTITION_EPOCH_SHA256` | 启用时 | 无 | epoch 安全标识，仅配置/输出 hash，不输出原值 |
+| `TIT_V2_INITIAL_H0_VECTOR_SHA256` | 启用时 | 无 | bootstrap H0 vector 的小写 SHA-256 |
+| `TIT_V2_CUTOVER_RUN_ID_SHA256` | 启用时 | 无 | cutover run identity 的小写 SHA-256 |
+
+每个领取事务与实际业务事务都调用数据库 cutover transaction guard 并持 shared advisory
+lock。Domain 比较 mode+generation；生产物化比较 PRIMARY generation。切换竞态下已领取工作
+保留给后续 reap/retry，不能误标 DONE/FAILED。heartbeat/readiness 只包含非敏感模式、代次、
+上述 hash 和聚合 lag/lease 数，不包含 URL、账号、token、epoch 原值或业务主键。
+
 ## 阿里云官方 DTS 诊断模块
 
 `gaea/dts-diagnose` 固定封装阿里云排错文档直接链接的 Java 8 JAR。构建过程不访问 GitHub；
@@ -343,7 +378,7 @@ application 项目也不配置任何 DTS 变量。
 并使用仅注入国内项目且由 Gaea 掩码保存的 `TIT_DTS_DOM_STUDENT_HMAC_PASSWORD` 生成
 `dom:v1:<HMAC-SHA256>`；海外项目、海外数据库、日志和错误 payload 都不得持有该密钥或原始国内
 学生 ID。稳定 token 用于师生去重、收藏/拉黑归因和课程宽表关联，但仍属于伪名数据，必须继续
-限制访问。若合规边界连稳定 token 都不允许跨境，则当前 23/55 投影协议不适用，必须改为国内
+限制访问。若合规边界连稳定 token 都不允许跨境，则当前 23/64 物理列投影协议不适用，必须改为国内
 状态库完成按教师聚合，只向海外发送不含个体稳定标识的指标结果。
 国内密钥首次启动会登记单向 fingerprint，后续不匹配即退出；不得直接修改密钥值“轮换”，否则
 同一学生会被拆成多个身份。轮换必须单独评审 token 版本和存量迁移。
@@ -402,6 +437,9 @@ checkpoint 推进瓶颈；日志不得包含 Avro payload、结构化 record 或
 |---|---:|---|---|
 | `TIT_PROCESS_PROFILE` | 是 | `dts-ingest` | 只启动 DTS 业务进程 |
 | `TIT_DTS_TRANSPORT` | 镜像固定 | `official_java` | 正式 Gaea 使用官方 Java 1.0 transport；`kafka_python` 只保留为显式回退诊断 |
+| `TIT_DTS_PIPELINE_MODE` | 否 | `V1` | 支持 `V1`、`V1_COMPAT_DUAL_CAPTURE`、`V2_PRIMARY`、`ROLLED_BACK`；必须与数据库 control 一致。双捕获/回滚要求 legacy projection 开启，PRIMARY 要求关闭 legacy projection；不允许只改环境变量切流 |
+| `TIT_DTS_V2_SOURCE_PARTITION_EPOCH_ID` | 双捕获时 | 每个地区当前 ACTIVE BROKER epoch ID | DOM/OVS 各自填写，readiness/heartbeat 只输出 SHA-256，不输出原值 |
+| `TIT_DTS_V2_CONTROL_GROUP` | 双捕获时 | H0 bootstrap 的 fleet/control identity | 两个项目填写相同的控制身份；不能替代各订阅真实的 `TIT_DTS_GROUP_ID` |
 | `TIT_DTS_STARTUP_RETRY_SECONDS` | 否 | `15` | `--watch` 启动暂态与稳态 Java transport 暂态恢复使用；以该值起步、2 倍退避并在 60 秒封顶，默认 `15/30/60`，允许范围 `(0,60]` |
 | `TIT_DTS_KAFKA_STARTUP_REQUEST_TIMEOUT_MS` | 回退模式 | `15000` | 仅 `kafka_python` 回退启动门禁使用；不传给 `official_java` |
 | `TIT_DTS_KAFKA_STARTUP_API_VERSION_AUTO_TIMEOUT_MS` | 回退模式 | `15000` | 仅 `kafka_python` 回退 ApiVersions 使用；Java 1.0 无此参数 |
@@ -422,6 +460,12 @@ checkpoint 推进瓶颈；日志不得包含 Avro payload、结构化 record 或
 `TIT_DTS_GROUP_ID` 必须复制各自 DTS 订阅“数据消费”页的系统生成 ID（sid），不能填写可编辑的
 消费组名称。运行时会在任何网络连接前拒绝仓库曾误发的名称占位值；SASL 用户名仍由代码按
 `<TIT_DTS_ACCOUNT>-<TIT_DTS_GROUP_ID>` 生成。
+
+`V1_COMPAT_DUAL_CAPTURE` 仍只允许 `TIT_DTS_PROJECTION_MODE=queued`。启动顺序为：先校验该地区
+业务源表 profile 全量存在，再由数据库核对 `PRIMARY` control、route 实际 sid、ACTIVE epoch 和
+current checkpoint，最后才建立 broker transport。任一项缺失都不写 readiness，也不连接后降级到
+V1；每批仍只有 v2+v1 同事务成功返回后才 ACK。readiness/heartbeat 只记录 pipeline mode、epoch
+SHA-256 和 profile manifest SHA-256，用于部署读回和跨项目对账。
 
 数据库名、Schema 和角色在代码中失败关闭为
 `tide_system_test / public / tit_dts_ingest_runtime`。SSL 默认 `verify-full`。以下明文例外只适用于
@@ -635,6 +679,13 @@ docker stop tide-camp-gaea-test
 冒充 RWX。
 
 ## 发布顺序
+
+当前发布必须到达 public `20260823_100_scope_snapshot_diff`、teacher
+`0043_p_rel_execution_catalog`，并按
+[`DTS v2 部署与切换清单`](../docs/DTS_v2部署与切换清单.md) 执行维护窗口迁移、双捕获、
+真实 profile/scope、14 类对账和原子切流。不得再按下方 public65/teacher0042 的旧流程上线。
+
+## 历史 V1 发布顺序（仅供追溯，禁止执行）
 
 1. 按跨 Schema 顺序执行 `public 46 → teacher 0028 → public 50 → teacher 0032 → public 54 → teacher 0037 → public 55 → release public 56 → teacher 0038 → release public 57 → teacher 0040 → teacher 0041 → public 59 → public 60 → public 61 → public 62 → public 63 → public 64 → public 65 → teacher 0042`，
    先完成 release 内容链到 public 57 / teacher 0041，再应用 ACL/DTS 分支并合并到 public 59，然后依次应用 public 60 国内学生隐私边界、public 61 教师文案、public 62 DTS 脏键领取索引、public 63 direct 隐私门禁、public 64 G05/G08 课程文案和 public 65 G09 课程文案，最后应用 teacher 0042 执行配置；

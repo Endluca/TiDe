@@ -17,6 +17,7 @@ import { createSupportTicket } from "../api/support-ticket-api";
 import { getCourses } from "../api/tide-api";
 import { localizeApiError } from "../api-error-copy";
 import { trackProductEvent } from "../analytics/product-analytics";
+import { courseParticipationKey } from "../course-score-sources";
 
 const copy = (language, english, chinese) => language === "zh" ? chinese : english;
 
@@ -347,7 +348,11 @@ export default function SupportTicketForm({
       });
       if (controller.signal.aborted) return;
       const options = result.items.map((lesson) => ({
-        id: lesson.lessonId,
+        id: courseParticipationKey(lesson),
+        lessonId: lesson.lessonId,
+        sourceRegion: lesson.sourceRegion,
+        sourceAppointId: lesson.sourceAppointId,
+        participationSeq: lesson.participationSeq,
         sequence: lesson.lessonSequence,
         scheduledStartAt: lesson.scheduledStartAt,
         localDate: lesson.lessonLocalDate,
@@ -401,7 +406,7 @@ export default function SupportTicketForm({
       return;
     }
     if (value === "LESSON_INFO") {
-      const currentLessonId = supportContext?.lessonId;
+      const currentLessonId = supportContext?.courseParticipationKey;
       setRelatedObjectIds(
         knownLessonOptions.some((lesson) => lesson.id === currentLessonId)
           ? [currentLessonId]
@@ -430,6 +435,7 @@ export default function SupportTicketForm({
       "lessonIds",
       "lessonDates",
       "lessonTimes",
+      "courseParticipationKey",
       "relatedObjectUnavailable",
     ].forEach((key) => delete context[key]);
     const listedIds = relatedObjectIds.filter((id) => id !== unlistedObjectId);
@@ -449,10 +455,10 @@ export default function SupportTicketForm({
     if (needsLesson) {
       const selectedLessons = knownLessonOptions.filter((item) => listedIds.includes(item.id));
       if (selectedLessons.length > 0) {
-        context.lessonIds = selectedLessons.map((lesson) => lesson.id);
+        context.lessonIds = selectedLessons.map((lesson) => lesson.lessonId);
         context.lessonDates = selectedLessons.map((lesson) => lesson.localDate).filter(Boolean);
         context.lessonTimes = selectedLessons.map((lesson) => lesson.localTime).filter(Boolean);
-        context.lessonId = selectedLessons[0].id;
+        context.lessonId = selectedLessons[0].lessonId;
         context.lessonDate = selectedLessons[0].localDate;
         context.lessonTime = selectedLessons[0].localTime;
       } else {

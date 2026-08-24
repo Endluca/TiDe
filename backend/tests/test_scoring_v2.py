@@ -78,7 +78,7 @@ def _canonical_teacher(**metric_overrides) -> dict:
         metrics["perfect_cnt"] = metric_overrides["total_completed_cnt"]
     return {
         "teacher_id": "T-V2",
-        "graduation_state": "IN_PROGRESS",
+        "graduation_state": "IN_CAMP",
         "employment_status": "on",
         "data_mode": "MIXED",
         "metric_inputs": metrics,

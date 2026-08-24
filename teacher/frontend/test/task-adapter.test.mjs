@@ -289,6 +289,50 @@ test("routes ready G03 to the Kuozhi external course", () => {
   assert.equal(task.method, "external_course");
 });
 
+test("routes ready P-REL-ATTENDANCE to the mapped Kuozhi course", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "P-REL-ATTENDANCE",
+    kind: "PERSONALIZED_IMPROVEMENT",
+    capabilities: [],
+    steps: [],
+    execution: {
+      contentStatus: "READY",
+      contentVersion: "2026-08-22-reliability-course-595-v1",
+      pendingReason: null,
+    },
+  }));
+
+  assert.equal(task.method, "external_course");
+});
+
+test("routes ready P-REL-MEMO to the embedded document reader", () => {
+  const task = adaptTaskContext(context({
+    taskCode: "P-REL-MEMO",
+    kind: "PERSONALIZED_IMPROVEMENT",
+    capabilities: ["DOCUMENT"],
+    steps: [
+      {
+        stepKey: "p-rel-memo-document",
+        type: "DOCUMENT",
+        title: "Read Lesson Memo Rules",
+        config: {
+          documentCode: "lesson-memo-rules",
+          contentVersion: "2026-07-24-lesson-memo-rules-v1",
+          contentHash: "43dde8551988fa167103510da304feac63b853aa03d6c75747086932bf111b51",
+        },
+      },
+    ],
+    execution: {
+      contentStatus: "READY",
+      contentVersion: "2026-07-24-lesson-memo-rules-v1",
+      pendingReason: null,
+    },
+  }));
+
+  assert.equal(task.method, "document_reading");
+  assert.equal(task.documentStepKey, "p-rel-memo-document");
+});
+
 test("routes G05 to Kuozhi even while legacy checklist steps remain in the backend context", () => {
   const task = adaptTaskContext(context({
     taskCode: "G05",

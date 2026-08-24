@@ -34,7 +34,7 @@ def _teacher(session, teacher_id: str) -> None:
             country="PH",
             timezone="Asia/Manila",
             camp_day=1,
-            graduation_state="IN_PROGRESS",
+            graduation_state="IN_CAMP",
             total_score=0,
             graduation_threshold=100,
             data_mode="REAL",

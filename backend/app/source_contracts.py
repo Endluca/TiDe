@@ -98,8 +98,8 @@ TEACHER_SOURCE_FIELDS: tuple[str, ...] = (
 )
 
 
-# The supplied CSV is the source contract.  It has 23 lesson columns and does
-# not provide the legacy ``是否复约`` column.
+# The confirmed lesson source contract has exactly 22 columns.  The legacy
+# ``是否复约`` column is not part of this contract.
 LESSON_SOURCE_FIELDS: tuple[str, ...] = (
     "课程id",
     "上课日期",
@@ -123,7 +123,6 @@ LESSON_SOURCE_FIELDS: tuple[str, ...] = (
     "未开摄像头",
     "cpu占用过高",
     "网络延迟过高",
-    "假早退",
 )
 
 
@@ -369,11 +368,6 @@ _lesson_dependencies: dict[str, SourceFieldDependency] = {
         ),
         "SINGLE_LESSON_AND_TEACHER_RELIABILITY",
     ),
-    "假早退": _dependency(
-        "LESSON_FACT_SOURCE",
-        ("LESSON_TRIGGER",),
-        "SINGLE_LESSON",
-    ),
     "差评标签": _dependency(
         "LESSON_FACT_SOURCE",
         ("LESSON_TRIGGER", "NEGATIVE_LABEL"),
@@ -425,11 +419,15 @@ _lesson_dependencies: dict[str, SourceFieldDependency] = {
         ),
         "SINGLE_LESSON_AND_TEACHER_CLASS_QUALITY",
     ),
+    # These are reserved nullable columns, not currently valid facts.  Their
+    # legacy recompute routes stay active so the retirement migration's NULL
+    # updates can reverse stale score/qualification projections.  A future
+    # versioned source migration must replace both the storage lock and this
+    # authority before either column may carry evidence again.
     "cpu占用过高": _dependency(
-        "LESSON_FACT_SOURCE",
+        "LESSON_RESERVED_NULL_SOURCE",
         (
             "LESSON_SCORE",
-            "LESSON_TRIGGER",
             "TEACHER_CLASS_QUALITY",
             "TEACHER_TOTAL",
             "TEACHER_QUALIFICATION",
@@ -437,10 +435,9 @@ _lesson_dependencies: dict[str, SourceFieldDependency] = {
         "SINGLE_LESSON_AND_TEACHER_CLASS_QUALITY",
     ),
     "网络延迟过高": _dependency(
-        "LESSON_FACT_SOURCE",
+        "LESSON_RESERVED_NULL_SOURCE",
         (
             "LESSON_SCORE",
-            "LESSON_TRIGGER",
             "TEACHER_CLASS_QUALITY",
             "TEACHER_TOTAL",
             "TEACHER_QUALIFICATION",
@@ -519,10 +516,10 @@ def validate_source_contracts() -> None:
         raise RuntimeError("teacher G01 source contract must contain exactly 2 fields")
     if len(TEACHER_SOURCE_FIELDS) != 55:
         raise RuntimeError("teacher source table contract must contain exactly 55 fields")
-    if len(LESSON_SOURCE_FIELDS) != 23:
-        raise RuntimeError("lesson source contract must contain exactly 23 fields")
+    if len(LESSON_SOURCE_FIELDS) != 22:
+        raise RuntimeError("lesson source contract must contain exactly 22 fields")
     if "是否复约" in LESSON_SOURCE_FIELDS:
-        raise RuntimeError("the 23-column lesson source must not contain 是否复约")
+        raise RuntimeError("the 22-column lesson source must not contain 是否复约")
 
     # Validate the raw registries as well as the ordered public mappings.  The
     # latter intentionally follows CSV order, so checking only it could hide a

@@ -42,21 +42,11 @@ _COMPLETED_STATUS = "end"
 _ABSENT_STATUS = "t_absent"
 _HBT_CODES = frozenset({5, 6, 7, 11, 19, 20, 21, 22, 503})
 _OBT_CODES = frozenset({8, 10, 201})
-_CENTER_DESCRIPTIONS = {0: "HBT", 1: "CBT", 5: "TBT", 6: "HBT"}
-_COURSE_DATE_FIELDS_BY_SUFFIX: dict[str, tuple[str, ...]] = {
-    "complaint": ("course_date",),
-    "qa_task_close_camera_record": ("start_time",),
-    "qa_task_fake_early_leave_record": ("start_time",),
-    "teacher_penalty": ("lesson_start_time",),
-    "user_teacher_grading": ("start_time",),
-}
 _COURSE_SOURCE_SUFFIXES = (
     "appoint",
     "complaint",
     "grading_label_log",
-    "qa_ac_classroom_record",
     "qa_task_close_camera_record",
-    "qa_task_fake_early_leave_record",
     "teacher_absent_reason",
     "teacher_penalty",
     "user_complaint",
@@ -74,48 +64,26 @@ _TEACHER_FEEDBACK_SUFFIXES = (
 )
 _DEPENDENCY_QUERY_CHUNK_SIZE = 100
 
-# Keep the two queue states independently indexable.  A combined
-# ``status IN (...)`` predicate forced PostgreSQL to scan and top-N sort the
-# complete multi-million-row queue for every projected key because the retry
-# readiness predicate and FIFO order could not use the old composite index.
-# Each branch now reads one candidate from its matching partial index; the
-# final join locks whichever candidate has the older source observation.
 _LOCK_NEXT_DIRTY_KEY = text(
     """
-    WITH pending_candidate AS (
-        SELECT key_type, key_part_1, key_part_2, last_seen_at
-        FROM public.dts_dirty_keys
-        WHERE status = 'PENDING'
-        ORDER BY last_seen_at, key_type, key_part_1, key_part_2
-        LIMIT 1
-    ),
-    retry_candidate AS (
-        SELECT key_type, key_part_1, key_part_2, last_seen_at
-        FROM public.dts_dirty_keys
-        WHERE status = 'RETRY'
-          AND next_attempt_at <= statement_timestamp()
-          AND next_attempt_at < 'infinity'::timestamptz
-        ORDER BY next_attempt_at, last_seen_at,
-                 key_type, key_part_1, key_part_2
-        LIMIT 1
-    ),
-    next_candidate AS (
-        SELECT key_type, key_part_1, key_part_2
-        FROM (
-            SELECT * FROM pending_candidate
-            UNION ALL
-            SELECT * FROM retry_candidate
-        ) AS candidates
-        ORDER BY last_seen_at, key_type, key_part_1, key_part_2
-        LIMIT 1
+    SELECT *
+    FROM public.claim_v1_compat_dirty_key_v1(:worker_id)
+    """
+)
+_COMPLETE_V1_COMPAT_DIRTY_KEY = text(
+    """
+    SELECT public.complete_v1_compat_dirty_key_v1(
+        :worker_id,:source_region,:key_type,:key_part_1,:key_part_2,
+        :claimed_work_revision,:expected_row_version
     )
-    SELECT dirty.*
-    FROM public.dts_dirty_keys AS dirty
-    JOIN next_candidate AS candidate
-      ON candidate.key_type = dirty.key_type
-     AND candidate.key_part_1 = dirty.key_part_1
-     AND candidate.key_part_2 = dirty.key_part_2
-    FOR UPDATE OF dirty SKIP LOCKED
+    """
+)
+_FAIL_V1_COMPAT_DIRTY_KEY = text(
+    """
+    SELECT public.fail_v1_compat_dirty_key_v1(
+        :worker_id,:source_region,:key_type,:key_part_1,:key_part_2,
+        :error_code,:max_attempts,:retry_base_seconds,:retry_max_seconds
+    )
     """
 )
 
@@ -258,6 +226,44 @@ def _int_value(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _center_type_description(value: Any) -> str:
+    code = _int_value(value)
+    if code == 1:
+        return "CBT"
+    if code == 5:
+        return "TBT"
+    return "HBT"
+
+
+def _grading_projection(
+    region: str,
+    grading: Mapping[str, Any] | None,
+) -> tuple[float | None, bool | None, bool | None]:
+    """Return negative score, negative flag and positive flag.
+
+    DOM has an approved use-point discriminator.  OVS has no confirmed source
+    profile yet, so its grading projection is deliberately unknown.
+    """
+
+    if grading is None:
+        return None, None, None
+    score = _float_value(grading.get("score"))
+    grading_type = str(grading.get("type") or "").strip().lower()
+    if region == "dom":
+        use_point = str(grading.get("use_point") or "").strip().lower()
+        if use_point == "buy":
+            negative = score in {1.0, 2.0}
+            return score if negative else None, negative, score in {4.0, 5.0}
+        if use_point == "free":
+            return (
+                None,
+                grading_type == "unsatisfactory",
+                grading_type == "satisfactory",
+            )
+        return None, None, None
+    return None, None, None
 
 
 def _float_value(value: Any) -> float | None:
@@ -426,13 +432,14 @@ class DtsWideProjector:
                 if deadline is not None and monotonic() >= deadline:
                     result.budget_exhausted = 1
                     break
-                current_key: tuple[str, str, str] | None = None
+                current_key: tuple[str, str, str, str] | None = None
                 try:
                     with connection.begin():
                         dirty = self._lock_next_dirty_key(connection)
                         if dirty is None:
                             break
                         current_key = (
+                            str(dirty["source_region"]),
                             str(dirty["key_type"]),
                             str(dirty["key_part_1"]),
                             str(dirty["key_part_2"]),
@@ -442,7 +449,7 @@ class DtsWideProjector:
                             projected = self._dispatch(connection, dirty)
                         finally:
                             self._source_row_cache = None
-                        self._mark_completed(connection, current_key)
+                        self._mark_completed(connection, dirty)
                         result.dirty_keys += 1
                         result.add(projected)
                 except Exception as exc:
@@ -462,35 +469,52 @@ class DtsWideProjector:
         return result.as_dict()
 
     def _lock_next_dirty_key(self, connection: Any) -> Mapping[str, Any] | None:
-        return connection.execute(_LOCK_NEXT_DIRTY_KEY).mappings().first()
+        return connection.execute(
+            _LOCK_NEXT_DIRTY_KEY,
+            {"worker_id": self.worker_id},
+        ).mappings().first()
 
     def _mark_completed(
         self,
         connection: Any,
-        key: tuple[str, str, str],
+        dirty: Mapping[str, Any],
     ) -> None:
-        table = DtsDirtyKeyRecord.__table__
-        connection.execute(
-            update(table)
-            .where(
-                table.c.key_type == key[0],
-                table.c.key_part_1 == key[1],
-                table.c.key_part_2 == key[2],
+        claimed_revision = dirty.get("compat_claimed_work_revision")
+        expected_row_version = dirty.get("compat_row_version")
+        if (
+            isinstance(claimed_revision, bool)
+            or not isinstance(claimed_revision, int)
+            or claimed_revision < 1
+            or isinstance(expected_row_version, bool)
+            or not isinstance(expected_row_version, int)
+            or expected_row_version < 1
+        ):
+            raise DtsWideProjectionError(
+                "DTS_V1_COMPAT_CLAIM_EVIDENCE_INVALID"
             )
-            .values(
-                status="COMPLETED",
-                attempt_count=table.c.attempt_count + 1,
-                last_error_code=None,
-                next_attempt_at=None,
-                claimed_at=None,
-                claimed_by=None,
-                row_version=table.c.row_version + 1,
+        result = connection.execute(
+            _COMPLETE_V1_COMPAT_DIRTY_KEY,
+            {
+                "worker_id": self.worker_id,
+                "source_region": str(dirty["source_region"]),
+                "key_type": str(dirty["key_type"]),
+                "key_part_1": str(dirty["key_part_1"]),
+                "key_part_2": str(dirty["key_part_2"]),
+                "claimed_work_revision": claimed_revision,
+                "expected_row_version": expected_row_version,
+            },
+        ).scalar_one()
+        if not isinstance(result, Mapping) or result.get("status") not in {
+            "COMPLETED",
+            "PENDING",
+        }:
+            raise DtsWideProjectionError(
+                "DTS_V1_COMPAT_COMPLETION_RESULT_INVALID"
             )
-        )
 
     def _mark_retry(
         self,
-        key: tuple[str, str, str],
+        key: tuple[str, str, str, str],
         exc: Exception,
         *,
         connection: Any | None = None,
@@ -508,59 +532,42 @@ class DtsWideProjector:
     def _mark_retry_in_transaction(
         self,
         connection: Any,
-        key: tuple[str, str, str],
+        key: tuple[str, str, str, str],
         exc: Exception,
     ) -> int:
-        table = DtsDirtyKeyRecord.__table__
         error_code = (
             str(exc)
             if isinstance(exc, DtsWideProjectionError) and str(exc)
             else "DTS_WIDE_PROJECTION_FAILED"
         )[:128]
-        dirty = connection.execute(
-            select(table.c.attempt_count)
-            .where(
-                table.c.key_type == key[0],
-                table.c.key_part_1 == key[1],
-                table.c.key_part_2 == key[2],
+        result = connection.execute(
+            _FAIL_V1_COMPAT_DIRTY_KEY,
+            {
+                "worker_id": self.worker_id,
+                "source_region": key[0],
+                "key_type": key[1],
+                "key_part_1": key[2],
+                "key_part_2": key[3],
+                "error_code": error_code,
+                "max_attempts": self.settings.retry_max_attempts,
+                "retry_base_seconds": self.settings.retry_base_seconds,
+                "retry_max_seconds": self.settings.retry_max_seconds,
+            },
+        ).scalar_one()
+        if not isinstance(result, Mapping):
+            raise DtsWideProjectionError(
+                "DTS_V1_COMPAT_FAILURE_RESULT_INVALID"
             )
-            .with_for_update()
-        ).first()
-        if dirty is None:
-            raise DtsWideProjectionError("DTS_DIRTY_KEY_LOST_DURING_RETRY")
-        attempt = int(dirty[0]) + 1
-        exhausted = attempt >= self.settings.retry_max_attempts
-        if exhausted:
-            # Keep the failure visible while preventing one poison key
-            # from terminating or hot-looping the whole projector.  A
-            # later real CDC event resets the key to PENDING in the ingest
-            # store, so quarantine does not suppress new source evidence.
-            next_attempt_at = text("'infinity'::timestamptz")
-        else:
-            delay = min(
-                self.settings.retry_max_seconds,
-                self.settings.retry_base_seconds * (2 ** min(attempt - 1, 8)),
+        attempt = result.get("attempt_count")
+        if (
+            isinstance(attempt, bool)
+            or not isinstance(attempt, int)
+            or attempt < 1
+            or attempt > self.settings.retry_max_attempts
+        ):
+            raise DtsWideProjectionError(
+                "DTS_V1_COMPAT_FAILURE_RESULT_INVALID"
             )
-            next_attempt_at = datetime.now(timezone.utc) + timedelta(
-                seconds=delay
-            )
-        connection.execute(
-            update(table)
-            .where(
-                table.c.key_type == key[0],
-                table.c.key_part_1 == key[1],
-                table.c.key_part_2 == key[2],
-            )
-            .values(
-                status="RETRY",
-                attempt_count=attempt,
-                last_error_code=error_code,
-                next_attempt_at=next_attempt_at,
-                claimed_at=None,
-                claimed_by=None,
-                row_version=table.c.row_version + 1,
-            )
-        )
         return attempt
 
     def _dispatch(
@@ -569,23 +576,39 @@ class DtsWideProjector:
         dirty: Mapping[str, Any],
     ) -> _ProjectionCounts:
         key_type = str(dirty["key_type"])
+        source_region = str(dirty["source_region"])
+        if source_region not in {"dom", "ovs"}:
+            raise DtsWideProjectionError("DTS_DIRTY_SOURCE_REGION_INVALID")
         key_1 = str(dirty["key_part_1"])
         key_2 = str(dirty["key_part_2"])
         if key_type == "COURSE":
-            return self._project_course(connection, key_1, dirty)
+            return self._project_course(
+                connection,
+                source_region,
+                key_1,
+                dirty,
+            )
         if key_type == "TEACHER":
             return self._project_teacher(connection, key_1)
         if key_type == "TEACHER_STUDENT":
             return self._project_course_set(
                 connection,
-                self._course_ids_for_pair(connection, key_1, key_2),
+                source_region,
+                self._course_ids_for_pair(
+                    connection,
+                    source_region,
+                    key_1,
+                    key_2,
+                ),
                 dirty,
             )
         if key_type == "LABEL":
             return self._project_course_set(
                 connection,
+                source_region,
                 self._course_ids_for_dependency(
                     connection,
+                    source_region,
                     "label_ids",
                     key_1,
                     suffixes=("grading_label_log",),
@@ -595,8 +618,10 @@ class DtsWideProjector:
         if key_type == "COMPLAINT_CATEGORY":
             return self._project_course_set(
                 connection,
+                source_region,
                 self._course_ids_for_dependency(
                     connection,
+                    source_region,
                     "category_ids",
                     key_1,
                     suffixes=("complaint", "user_complaint"),
@@ -608,12 +633,20 @@ class DtsWideProjector:
     def _project_course_set(
         self,
         connection: Any,
+        source_region: str,
         course_ids: Sequence[str],
         dirty: Mapping[str, Any],
     ) -> _ProjectionCounts:
         result = _ProjectionCounts()
         for course_id in sorted(set(course_ids)):
-            result.add(self._project_course(connection, course_id, dirty))
+            result.add(
+                self._project_course(
+                    connection,
+                    source_region,
+                    course_id,
+                    dirty,
+                )
+            )
         if not course_ids:
             result.unchanged += 1
         return result
@@ -798,6 +831,7 @@ class DtsWideProjector:
     def _course_ids_for_dependency(
         self,
         connection: Any,
+        source_region: str,
         dependency_name: str,
         dependency_value: str,
         *,
@@ -808,6 +842,7 @@ class DtsWideProjector:
             suffixes=suffixes,
             dependency_name=dependency_name,
             dependency_value=dependency_value,
+            regions=(source_region,),
         )
         return [
             course_id
@@ -818,6 +853,7 @@ class DtsWideProjector:
     def _course_ids_for_pair(
         self,
         connection: Any,
+        source_region: str,
         teacher_id: str,
         student_id: str,
     ) -> list[str]:
@@ -826,6 +862,7 @@ class DtsWideProjector:
             suffixes=("appoint",),
             dependency_name="teacher_ids",
             dependency_value=teacher_id,
+            regions=(source_region,),
         )
         return [
             course_id
@@ -837,6 +874,7 @@ class DtsWideProjector:
     def _appoint_source(
         self,
         connection: Any,
+        source_region: str,
         course_id: str,
     ) -> _SourceRow | None:
         rows = self._active_source_rows(
@@ -844,6 +882,7 @@ class DtsWideProjector:
             suffixes=("appoint",),
             dependency_name="course_ids",
             dependency_value=course_id,
+            regions=(source_region,),
         )
         rows = [item for item in rows if _string_id(item.row.get("id")) == course_id]
         if len(rows) > 1:
@@ -885,13 +924,17 @@ class DtsWideProjector:
     def _project_course(
         self,
         connection: Any,
+        source_region: str,
         course_id: str,
         dirty: Mapping[str, Any],
     ) -> _ProjectionCounts:
         result = _ProjectionCounts()
         lesson_table = LessonSourceWideRecord.__table__
         existing = connection.execute(
-            select(lesson_table).where(lesson_table.c["课程id"] == course_id)
+            select(lesson_table).where(
+                lesson_table.c.source_region == source_region,
+                lesson_table.c["课程id"] == course_id,
+            )
         ).mappings().first()
         if self._source_row_cache is not None:
             self._active_source_rows(
@@ -899,39 +942,26 @@ class DtsWideProjector:
                 suffixes=_COURSE_SOURCE_SUFFIXES,
                 dependency_name="course_ids",
                 dependency_value=course_id,
+                regions=(source_region,),
             )
-        appoint_source = self._appoint_source(connection, course_id)
+        appoint_source = self._appoint_source(
+            connection,
+            source_region,
+            course_id,
+        )
         if appoint_source is None:
             # A relation/QA event can arrive before the appoint event on the
             # same regional stream.  Absence from the change-only mirror is
             # not a delete signal; only a persisted appoint tombstone is.
-            if self._appoint_tombstoned(connection, course_id):
-                deleted = connection.execute(
-                    delete(lesson_table).where(lesson_table.c["课程id"] == course_id)
-                ).rowcount
-                if existing is not None:
-                    self._enqueue_teacher(
-                        connection,
-                        _string_id(existing["老师id"]),
-                        dirty,
-                    )
-                if deleted:
-                    result.lesson_deletes += 1
-                else:
-                    result.unchanged += 1
-                return result
-            # The incremental mirror can legitimately see a historical QA or
-            # relation event whose appoint predates the subscription.  Ignore
-            # it only when a whitelisted lesson-time field proves that the
-            # course is before the configured cohort; unknown dates remain a
-            # retryable dependency failure.
-            if self._course_dependency_is_definitively_before_cohort(
+            if self._appoint_tombstoned(
                 connection,
+                source_region,
                 course_id,
             ):
                 deleted = connection.execute(
                     delete(lesson_table).where(
-                        lesson_table.c["课程id"] == course_id
+                        lesson_table.c.source_region == source_region,
+                        lesson_table.c["课程id"] == course_id,
                     )
                 ).rowcount
                 if existing is not None:
@@ -945,25 +975,23 @@ class DtsWideProjector:
                 else:
                     result.unchanged += 1
                 return result
+            # A child timestamp cannot prove that the appoint fact is outside
+            # business scope: course facts are retained across all dates.  A
+            # non-tombstoned missing appoint therefore always remains a
+            # retryable dependency instead of deleting/ignoring the course.
             raise DtsWideProjectionError("DTS_APPOINT_DEPENDENCY_PENDING")
-        if not self._appoint_in_scope(appoint_source.row):
-            deleted = connection.execute(
-                delete(lesson_table).where(lesson_table.c["课程id"] == course_id)
-            ).rowcount
-            if existing is not None:
-                self._enqueue_teacher(
-                    connection,
-                    _string_id(existing["老师id"]),
-                    dirty,
-                )
-            if deleted:
-                result.lesson_deletes += 1
-            else:
-                result.unchanged += 1
-            return result
-
         appoint = appoint_source.row
-        teacher_id = _string_id(appoint.get("t_id"))
+        source_teacher_id = _string_id(appoint.get("t_id"))
+        teacher_id = source_teacher_id
+        if (
+            existing is not None
+            and existing.get("课程状态") == _COMPLETED_STATUS
+        ):
+            # Do not transfer a completed course when the mutable appoint
+            # owner changes after ``end``.  The v1 row can only retain the
+            # frozen completion owner; v2 records the new teacher as a
+            # pending correction participation.
+            teacher_id = _string_id(existing["老师id"]) or source_teacher_id
         student_id = student_subject(appoint)
         if teacher_id is None:
             raise DtsWideProjectionError("DTS_APPOINT_TEACHER_REQUIRED")
@@ -972,16 +1000,14 @@ class DtsWideProjector:
         )
         lesson_time = _time_value(appoint.get("start_time"))
         teacher_source = self._teacher_source(connection, teacher_id)
-        # The monitored population is defined by the domestic teacher's
-        # onboarding date.  Never materialize an overseas lesson first and
-        # hope the teacher arrives later: the two DTS topics progress
-        # independently and that transient row would already emit an Outbox
-        # event.  A later dom_teacher event requeues every already-seen appoint
-        # for this teacher from the durable source mirror.
+        # Teacher identity and region are required dependencies.  Onboarding
+        # date is not an admission condition; it only bounds explicitly
+        # defined 30-day schedule/capacity metrics.
         if teacher_source is None:
             if self._teacher_tombstoned(connection, teacher_id):
                 deleted = connection.execute(
                     delete(lesson_table).where(
+                        lesson_table.c.source_region == source_region,
                         lesson_table.c["课程id"] == course_id
                     )
                 ).rowcount
@@ -1002,28 +1028,13 @@ class DtsWideProjector:
                     result.unchanged += 1
                 return result
             raise DtsWideProjectionError("DTS_TEACHER_DEPENDENCY_PENDING")
-        if (
-            not self._teacher_in_cohort(teacher_source.row)
-            or not self._lesson_matches_teacher_window(
-                appoint_source.region,
-                lesson_date,
-                teacher_source.row,
-            )
+        if not self._lesson_matches_teacher_region(
+            appoint_source.region,
+            teacher_source.row,
         ):
-            deleted = connection.execute(
-                delete(lesson_table).where(lesson_table.c["课程id"] == course_id)
-            ).rowcount
-            if deleted and existing is not None:
-                self._enqueue_teacher(
-                    connection,
-                    _string_id(existing["老师id"]),
-                    dirty,
-                )
-            if deleted:
-                result.lesson_deletes += 1
-            else:
-                result.unchanged += 1
-            return result
+            raise DtsWideProjectionError(
+                "DTS_LEGACY_COURSE_REGION_CONFLICT"
+            )
 
         # SourceWideWorker requires the teacher projection before it can
         # consume a lesson Outbox event.  When two independent topics arrive
@@ -1032,7 +1043,12 @@ class DtsWideProjector:
         # with the new lesson in the next dirty-key transaction.
         result.add(self._ensure_teacher_wide(connection, teacher_id))
 
-        absence = self._absence_reason(connection, course_id, teacher_id, appoint)
+        absence = self._absence_reason(
+            connection,
+            source_region,
+            course_id,
+            teacher_id,
+        )
         penalty_rows = [
             {
                 **item.row,
@@ -1044,7 +1060,7 @@ class DtsWideProjector:
                 suffixes=("teacher_penalty",),
                 dependency_name="course_ids",
                 dependency_value=course_id,
-                regions=("dom",),
+                regions=(source_region,),
             )
             if _string_id(item.row.get("t_id")) == teacher_id
         ]
@@ -1053,11 +1069,24 @@ class DtsWideProjector:
             lesson_start=appoint.get("start_time"),
             lesson_end=appoint.get("end_time"),
         )
-        grading = self._latest_grading(connection, course_id)
-        score = _float_value(grading.get("score")) if grading else None
-        grading_type = str(grading.get("type") or "").strip().lower() if grading else ""
-        feedback_detail = self._feedback_detail(connection, course_id)
-        complaint_names = self._complaint_names(connection, course_id)
+        grading = self._latest_grading(
+            connection,
+            course_id,
+            appoint_source.region,
+        )
+        negative_score, negative_feedback, positive_feedback = (
+            _grading_projection(appoint_source.region, grading)
+        )
+        feedback_detail = self._feedback_detail(
+            connection,
+            course_id,
+            appoint_source.region,
+        )
+        complaint_names = self._complaint_names(
+            connection,
+            source_region,
+            course_id,
+        )
         if self._source_row_cache is not None:
             self._active_source_rows(
                 connection,
@@ -1088,27 +1117,14 @@ class DtsWideProjector:
             course_id,
             appoint_source.region,
         )
-        fake_early = self._has_course_record(
-            connection,
-            "qa_task_fake_early_leave_record",
-            course_id,
-            appoint_source.region,
-        )
-        cpu = self._qa_json_flag(
-            connection,
-            course_id=course_id,
-            region=appoint_source.region,
-            source_type="CPU",
-            json_key="cpu",
-        )
-        network = self._qa_json_flag(
-            connection,
-            course_id=course_id,
-            region=appoint_source.region,
-            source_type="NETWORK_DELAY",
-            json_key="network_delay",
+        lesson_status = (
+            _COMPLETED_STATUS
+            if existing is not None
+            and existing.get("课程状态") == _COMPLETED_STATUS
+            else _non_empty(appoint.get("status"))
         )
         values: dict[str, Any] = {
+            "source_region": source_region,
             "课程id": course_id,
             "上课日期": lesson_date,
             "上课时间": lesson_time,
@@ -1121,37 +1137,28 @@ class DtsWideProjector:
             ),
             "老师id": teacher_id,
             "学员id": student_id,
-            "课程状态": _non_empty(appoint.get("status")),
+            "课程状态": lesson_status,
             "缺席原因明细": absence,
             "迟到": is_late,
             "早退": is_early,
-            "差评分": score if score in {1.0, 2.0} else None,
-            "差评标签": (
-                score in {1.0, 2.0} or grading_type == "unsatisfactory"
-                if grading is not None
-                else None
-            ),
+            "差评分": negative_score,
+            "差评标签": negative_feedback,
             "投诉一级分类": complaint_names[0],
             "投诉二级分类": complaint_names[1],
             "投诉三级分类": complaint_names[2],
             "是否拉黑": is_blocked,
             "收藏": is_favorited,
-            "好评标签": (
-                score in {4.0, 5.0} or grading_type == "satisfactory"
-                if grading is not None
-                else None
-            ),
+            "好评标签": positive_feedback,
             "评价详情": feedback_detail,
             "未开摄像头": camera,
-            "cpu占用过高": cpu,
-            "网络延迟过高": network,
-            "假早退": fake_early,
+            "cpu占用过高": None,
+            "网络延迟过高": None,
         }
         changed = self._upsert(
             connection,
             lesson_table,
             values,
-            primary_keys=("课程id",),
+            primary_keys=("source_region", "课程id"),
         )
         old_teacher = _string_id(existing["老师id"]) if existing is not None else None
         self._enqueue_lesson_teachers_if_changed(
@@ -1184,82 +1191,45 @@ class DtsWideProjector:
         return projected
 
     @staticmethod
-    def _appoint_tombstoned(connection: Any, course_id: str) -> bool:
+    def _appoint_tombstoned(
+        connection: Any,
+        source_region: str,
+        course_id: str,
+    ) -> bool:
         table = DtsSourceRowRecord.__table__
         dependency = {"course_ids": [course_id]}
         return connection.execute(
             select(table.c.source_key)
             .where(
-                table.c.source_table.in_(("dom_appoint", "ovs_appoint")),
+                table.c.source_region == source_region,
+                table.c.source_table == f"{source_region}_appoint",
                 table.c.is_deleted.is_(True),
                 table.c.dependency_keys.op("@>")(cast(dependency, JSONB)),
             )
             .limit(1)
         ).first() is not None
 
-    def _course_dependency_is_definitively_before_cohort(
-        self,
-        connection: Any,
-        course_id: str,
-    ) -> bool:
-        """Return true only when mirrored lesson-time evidence is pre-cohort."""
-
-        known_dates: list[date] = []
-        rows = self._active_source_rows(
-            connection,
-            suffixes=tuple(_COURSE_DATE_FIELDS_BY_SUFFIX),
-            dependency_name="course_ids",
-            dependency_value=course_id,
-        )
-        for item in rows:
-            _region, _separator, suffix = item.table.partition("_")
-            for field_name in _COURSE_DATE_FIELDS_BY_SUFFIX.get(suffix, ()):
-                lesson_date = _date_value(item.row.get(field_name))
-                if lesson_date is not None:
-                    known_dates.append(lesson_date)
-                    break
-        return bool(known_dates) and all(
-            lesson_date < self.settings.cohort_start
-            for lesson_date in known_dates
-        )
-
     @staticmethod
     def _appoint_in_scope(row: Mapping[str, Any]) -> bool:
-        return (
-            str(row.get("use_point") or "") == "buy"
-            and str(row.get("status") or "") not in {"cancel", "on"}
-            and student_subject(row) is not None
-        )
+        # Kept as a compatibility seam for callers/tests.  Every non-deleted
+        # appoint current row is a course fact, independent of status,
+        # use_point, student availability, and the teacher's 30-day window.
+        del row
+        return True
 
-    def _lesson_matches_teacher_window(
-        self,
+    @staticmethod
+    def _lesson_matches_teacher_region(
         region: str,
-        lesson_date: date | None,
         teacher: Mapping[str, Any],
     ) -> bool:
-        region_match = teacher_matches_region(region, teacher.get("course"))
-        if region_match is not True:
-            return False
-        onboard = _date_value(teacher.get("status_on_time"))
-        if onboard is None or lesson_date is None:
-            return False
-        return onboard <= lesson_date <= onboard + timedelta(days=29)
-
-    def _teacher_in_cohort(self, teacher: Mapping[str, Any]) -> bool:
-        onboard = _date_value(teacher.get("status_on_time"))
-        if onboard is None or onboard < self.settings.cohort_start:
-            return False
-        return (
-            self.settings.cohort_end_exclusive is None
-            or onboard < self.settings.cohort_end_exclusive
-        )
+        return teacher_matches_region(region, teacher.get("course")) is True
 
     def _absence_reason(
         self,
         connection: Any,
+        source_region: str,
         course_id: str,
         teacher_id: str,
-        appoint: Mapping[str, Any],
     ) -> str | None:
         rows = [
             item.row
@@ -1268,21 +1238,18 @@ class DtsWideProjector:
                 suffixes=("teacher_absent_reason",),
                 dependency_name="course_ids",
                 dependency_value=course_id,
-                regions=("dom",),
+                regions=(source_region,),
             )
             if _string_id(item.row.get("t_id")) == teacher_id
         ]
         latest = _latest(rows, time_fields=("add_time",))
-        return _non_empty(
-            latest.get("reason_desc") if latest else None,
-            latest.get("reason_type") if latest else None,
-            appoint.get("cancel_reason"),
-        )
+        return _non_empty(latest.get("reason_type") if latest else None)
 
     def _latest_grading(
         self,
         connection: Any,
         course_id: str,
+        region: str,
     ) -> Mapping[str, Any] | None:
         rows = [
             item.row
@@ -1291,13 +1258,24 @@ class DtsWideProjector:
                 suffixes=("user_teacher_grading",),
                 dependency_name="course_ids",
                 dependency_value=course_id,
+                regions=(region,),
             )
             if _int_value(item.row.get("is_del")) in (None, 0)
-            and _int_value(item.row.get("status")) in (None, 0)
+            and (
+                region == "dom"
+                or _int_value(item.row.get("status")) in (None, 0)
+            )
         ]
         return _latest(rows, time_fields=("update_time", "create_time"))
 
-    def _feedback_detail(self, connection: Any, course_id: str) -> str | None:
+    def _feedback_detail(
+        self,
+        connection: Any,
+        course_id: str,
+        region: str,
+    ) -> str | None:
+        if region != "dom":
+            return None
         rows = [
             item.row
             for item in self._active_source_rows(
@@ -1305,9 +1283,8 @@ class DtsWideProjector:
                 suffixes=("grading_label_log",),
                 dependency_name="course_ids",
                 dependency_value=course_id,
+                regions=(region,),
             )
-            if _int_value(item.row.get("type")) == 1
-            and str(item.row.get("status") or "").lower() == "normal"
         ]
         labels: dict[tuple[int, int | str], str] = {}
         for row in rows:
@@ -1320,6 +1297,7 @@ class DtsWideProjector:
     def _complaint_names(
         self,
         connection: Any,
+        source_region: str,
         course_id: str,
     ) -> tuple[str | None, str | None, str | None]:
         user_rows = [
@@ -1329,6 +1307,7 @@ class DtsWideProjector:
                 suffixes=("user_complaint",),
                 dependency_name="course_ids",
                 dependency_value=course_id,
+                regions=(source_region,),
             )
         ]
         complaint_rows = [
@@ -1338,6 +1317,7 @@ class DtsWideProjector:
                 suffixes=("complaint",),
                 dependency_name="course_ids",
                 dependency_value=course_id,
+                regions=(source_region,),
             )
         ]
         complaints = reduce_latest_complaints(user_rows, complaint_rows)
@@ -1387,6 +1367,9 @@ class DtsWideProjector:
         student_id: str | None,
         course_id: str,
     ) -> bool:
+        # Compatibility-only v1 projection.  Nearest-course matching is not
+        # the authoritative end+24h observation/unique attribution contract,
+        # so downstream scoring must ignore the resulting lesson boolean.
         if student_id is None:
             return False
         relationships = self._active_source_rows(
@@ -1446,8 +1429,7 @@ class DtsWideProjector:
         valid_end = _datetime_value(row.get("valid_end_time"))
         return (
             _truthy(row.get("is_valid_forever"))
-            or valid_end is None
-            or valid_end.year >= 2999
+            or (valid_end is not None and valid_end.year >= 2999)
         )
 
     def _has_course_record(
@@ -1466,48 +1448,6 @@ class DtsWideProjector:
                 regions=(region,),
             )
         )
-
-    def _qa_json_flag(
-        self,
-        connection: Any,
-        *,
-        course_id: str,
-        region: str,
-        source_type: str,
-        json_key: str,
-    ) -> bool | None:
-        rows = self._active_source_rows(
-            connection,
-            suffixes=("qa_ac_classroom_record",),
-            dependency_name="course_ids",
-            dependency_value=course_id,
-            regions=(region,),
-        )
-        malformed = False
-        for source in rows:
-            if str(source.row.get("type") or "").upper() != source_type:
-                continue
-            info = source.row.get("info")
-            if isinstance(info, str):
-                try:
-                    info = json.loads(info)
-                except json.JSONDecodeError:
-                    malformed = True
-                    continue
-            if not isinstance(info, Mapping):
-                malformed = True
-                continue
-            items = info.get(json_key)
-            if not isinstance(items, Sequence) or isinstance(items, (str, bytes, bytearray)):
-                malformed = True
-                continue
-            if any(
-                isinstance(item, Mapping)
-                and _string_id(item.get("appoint_id")) == course_id
-                for item in items
-            ):
-                return True
-        return None if malformed else False
 
     def _enqueue_teacher(
         self,
@@ -1626,14 +1566,21 @@ class DtsWideProjector:
             return result
         teacher = teacher_source.row
         onboard = _date_value(teacher.get("status_on_time"))
-        if not self._teacher_in_cohort(teacher):
-            return self._delete_teacher_projection(connection, teacher_id)
-        onboard_end = onboard + timedelta(days=29)
-        lessons = self._teacher_lessons(connection, teacher_id, onboard, onboard_end)
-        course_ids = {str(row["课程id"]) for row in lessons}
+        onboard_end = (
+            onboard + timedelta(days=29) if onboard is not None else None
+        )
+        lessons = self._teacher_lessons(connection, teacher_id)
         completed = [row for row in lessons if row["课程状态"] == _COMPLETED_STATUS]
+        observation_completed = [
+            row
+            for row in completed
+            if onboard is not None
+            and onboard_end is not None
+            and row["上课日期"] is not None
+            and onboard <= row["上课日期"] <= onboard_end
+        ]
         absent = [row for row in lessons if row["课程状态"] == _ABSENT_STATUS]
-        no_notice, during_absence_ids = self._teacher_absence_facts(
+        no_notice = self._teacher_absence_facts(
             connection,
             teacher_id,
             lessons,
@@ -1641,10 +1588,7 @@ class DtsWideProjector:
         late = [
             row
             for row in lessons
-            if (
-                (row["课程状态"] == _COMPLETED_STATUS and row["迟到"] is True)
-                or str(row["课程id"]) in during_absence_ids
-            )
+            if row["课程状态"] == _COMPLETED_STATUS and row["迟到"] is True
         ]
         early = [
             row
@@ -1652,40 +1596,52 @@ class DtsWideProjector:
             if row["课程状态"] == _COMPLETED_STATUS and row["早退"] is True
         ]
         anomalous_ids = {
-            str(row["课程id"])
+            (str(row["source_region"]), str(row["课程id"]))
             for row in (*absent, *late, *early)
         }
         perfect = [
             row
             for row in completed
-            if row["迟到"] is not True
-            and row["早退"] is not True
-            and str(row["课程id"]) not in during_absence_ids
+            if row["迟到"] is False
+            and row["早退"] is False
         ]
+        completed_course_identities = {
+            (str(row["source_region"]), str(row["课程id"]))
+            for row in completed
+        }
         (
             evaluated_ids,
             complaint_total,
             valid_complaint_total,
         ) = self._teacher_feedback_facts(
             connection,
-            course_ids,
+            completed_course_identities,
         )
         completed_students = {
             str(row["学员id"])
             for row in completed
             if row["学员id"] is not None
         }
-        favorite_students = {
-            str(row["学员id"])
-            for row in lessons
-            if row["收藏"] is True and row["学员id"] is not None
-        }
-        blocked_students = {
-            str(row["学员id"])
-            for row in lessons
-            if row["是否拉黑"] is True and row["学员id"] is not None
-        }
-        schedules = self._teacher_schedules(connection, teacher_id, onboard, onboard_end)
+        # Relationship counts are independent current facts.  They must not
+        # disappear merely because this teacher/student pair has no completed
+        # (or even no projected) course.  Region stays in the identity because
+        # DOM and OVS do not share an authoritative cross-region student key.
+        favorite_students = self._teacher_relationship_students(
+            connection,
+            teacher_id,
+            relation_suffix="teacher_favorite",
+        )
+        blocked_students = self._teacher_relationship_students(
+            connection,
+            teacher_id,
+            relation_suffix="teacher_blacklist",
+        )
+        schedules = self._teacher_schedules(
+            connection,
+            teacher_id,
+            onboard,
+            onboard_end,
+        )
         peak_schedule = [
             row
             for row in schedules
@@ -1694,7 +1650,11 @@ class DtsWideProjector:
         status_on = onboard
         status_off = _date_value(teacher.get("status_off_time"))
         snapshot_date = connection.execute(select(text("current_date"))).scalar_one()
-        job_days = ((status_off or snapshot_date) - status_on).days
+        job_days = (
+            ((status_off or snapshot_date) - status_on).days
+            if status_on is not None
+            else None
+        )
         total_booked = len(lessons)
         total_completed = len(completed)
         total_evaluated = len(evaluated_ids)
@@ -1714,8 +1674,8 @@ class DtsWideProjector:
             "tchr_id": teacher_id,
             "real_name": _non_empty(teacher.get("real_name")),
             "center_type_id": _string_id(teacher.get("center_type")),
-            "center_type_desc": _CENTER_DESCRIPTIONS.get(
-                _int_value(teacher.get("center_type"))
+            "center_type_desc": _center_type_description(
+                teacher.get("center_type")
             ),
             "bu": self._teacher_bu(teacher),
             "status": _non_empty(teacher.get("status")),
@@ -1723,7 +1683,11 @@ class DtsWideProjector:
             "status_off_date": status_off,
             "last_on_date": _date_value(teacher.get("last_on_time")),
             "job_days": job_days,
-            "job_month": math.floor(job_days / 30) + 1 if job_days >= 0 else None,
+            "job_month": (
+                math.floor(job_days / 30) + 1
+                if job_days is not None and job_days >= 0
+                else None
+            ),
             "teach_area_type": self._teacher_area(teacher),
             "onboard_date": onboard,
             "onboard_30d_end_date": onboard_end,
@@ -1744,15 +1708,25 @@ class DtsWideProjector:
             "total_completed_cnt": total_completed,
             "peak_completed_cnt": sum(row["是否高峰"] is True for row in completed),
             "absent_cnt": len(absent),
-            "late_cnt": len({str(row["课程id"]) for row in late}),
-            "early_cnt": len({str(row["课程id"]) for row in early}),
+            "late_cnt": len({
+                (str(row["source_region"]), str(row["课程id"]))
+                for row in late
+            }),
+            "early_cnt": len({
+                (str(row["source_region"]), str(row["课程id"]))
+                for row in early
+            }),
             "anomaly_cnt": len(anomalous_ids),
             "perfect_cnt": len(perfect),
             "no_notice_cnt": len(no_notice),
             "first_completed_student_cnt": first_completed_students,
             "feedback_total_eval_cnt": total_evaluated,
-            "feedback_praise_cnt": sum(row["好评标签"] is True for row in lessons),
-            "feedback_negative_cnt": sum(row["差评标签"] is True for row in lessons),
+            "feedback_praise_cnt": sum(
+                row["好评标签"] is True for row in completed
+            ),
+            "feedback_negative_cnt": sum(
+                row["差评标签"] is True for row in completed
+            ),
             "feedback_complaint_cnt": complaint_total,
             "feedback_valid_complaint_cnt": valid_complaint_total,
             "feedback_favorite_cnt": len(favorite_students),
@@ -1772,31 +1746,42 @@ class DtsWideProjector:
             "reliability_late_rate": _safe_rate(len(late), total_completed),
             "reliability_early_leave_rate": _safe_rate(len(early), total_completed),
             "reliability_late_early_rate": _safe_rate(
-                len(late) + len(early),
+                len(
+                    {
+                        (str(row["source_region"]), str(row["课程id"]))
+                        for row in late
+                    }
+                    | {
+                        (str(row["source_region"]), str(row["课程id"]))
+                        for row in early
+                    }
+                ),
                 total_completed,
             ),
             "feedback_praise_rate": _safe_rate(
-                sum(row["好评标签"] is True for row in lessons),
+                sum(row["好评标签"] is True for row in completed),
                 total_evaluated,
             ),
             "feedback_negative_rate": _safe_rate(
-                sum(row["差评标签"] is True for row in lessons),
+                sum(row["差评标签"] is True for row in completed),
                 total_evaluated,
             ),
             "feedback_complaint_rate": _safe_rate(
                 complaint_total,
                 total_completed,
             ),
-            "feedback_favorite_rate": _safe_rate(
-                len(favorite_students),
-                first_completed_students,
-            ),
-            "feedback_block_rate": _safe_rate(
-                len(blocked_students),
-                first_completed_students,
-            ),
+            # Favorite/block are current relationship counts and do not share
+            # the completed-student denominator.  The confirmed contract keeps
+            # both legacy rate fields NULL until a same-scope denominator is
+            # explicitly defined.
+            "feedback_favorite_rate": None,
+            "feedback_block_rate": None,
             "feedback_eval_rate": _safe_rate(total_evaluated, total_completed),
-            "capacity_avg_completed_per_day": total_completed / 30,
+            "capacity_avg_completed_per_day": (
+                len(observation_completed) / 30
+                if onboard is not None
+                else None
+            ),
             "capacity_peak_slot_rate": _safe_rate(peak_slots, total_slots),
             "capacity_key_slot_day_rate": _safe_rate(peak_slot_days, slot_days),
             "is_cpl_tesol": self._tesol_state(
@@ -1822,27 +1807,57 @@ class DtsWideProjector:
         self,
         connection: Any,
         teacher_id: str,
-        start: date,
-        end: date,
     ) -> list[Mapping[str, Any]]:
         table = LessonSourceWideRecord.__table__
         return list(
             connection.execute(
                 select(table).where(
                     table.c["老师id"] == teacher_id,
-                    table.c["上课日期"] >= start,
-                    table.c["上课日期"] <= end,
                 )
             ).mappings()
         )
+
+    def _teacher_relationship_students(
+        self,
+        connection: Any,
+        teacher_id: str,
+        *,
+        relation_suffix: str,
+    ) -> set[tuple[str, str]]:
+        if relation_suffix not in {"teacher_favorite", "teacher_blacklist"}:
+            raise ValueError("unsupported teacher relationship source")
+        teacher_field = (
+            "tea_id" if relation_suffix == "teacher_favorite" else "teacher_id"
+        )
+        students: set[tuple[str, str]] = set()
+        for source in self._active_source_rows(
+            connection,
+            suffixes=(relation_suffix,),
+            dependency_name="teacher_ids",
+            dependency_value=teacher_id,
+            regions=("dom", "ovs"),
+        ):
+            if _string_id(source.row.get(teacher_field)) != teacher_id:
+                continue
+            if (
+                relation_suffix == "teacher_blacklist"
+                and not self._active_blacklist(source.row)
+            ):
+                continue
+            student_token = student_subject(source.row)
+            if student_token is not None:
+                students.add((source.region, student_token))
+        return students
 
     def _teacher_schedules(
         self,
         connection: Any,
         teacher_id: str,
-        start: date,
-        end: date,
+        start: date | None,
+        end: date | None,
     ) -> list[Mapping[str, Any]]:
+        if start is None or end is None:
+            return []
         return [
             item.row
             for item in self._active_source_rows(
@@ -1862,92 +1877,76 @@ class DtsWideProjector:
         connection: Any,
         teacher_id: str,
         lessons: Sequence[Mapping[str, Any]],
-    ) -> tuple[set[str], set[str]]:
-        rows = self._active_source_rows(
-            connection,
-            suffixes=("teacher_absent_reason",),
-            dependency_name="teacher_ids",
-            dependency_value=teacher_id,
-            regions=("dom",),
-        )
-        lesson_starts: dict[str, datetime] = {}
-        for lesson in lessons:
-            course_id = _string_id(lesson.get("课程id"))
-            lesson_date = _date_value(lesson.get("上课日期"))
-            lesson_time = _time_value(lesson.get("上课时间"))
-            if (
-                course_id is not None
-                and lesson_date is not None
-                and lesson_time is not None
-            ):
-                lesson_starts[course_id] = datetime.combine(
-                    lesson_date,
-                    lesson_time,
-                )
-        no_notice: set[str] = set()
-        during_lesson: set[str] = set()
-        for item in rows:
-            course_id = _string_id(item.row.get("appoint_id"))
-            if course_id is None or course_id not in lesson_starts:
-                continue
-            if (
-                str(item.row.get("reason_type") or "").strip().lower()
-                == "no notification"
-            ):
-                no_notice.add(course_id)
-            added_at = _datetime_value(item.row.get("add_time"))
-            if added_at is not None and added_at >= lesson_starts[course_id]:
-                during_lesson.add(course_id)
-        return no_notice, during_lesson
+    ) -> set[tuple[str, str]]:
+        # The course projection has already selected the latest current reason
+        # for this exact course/teacher.  Re-scanning every active source row
+        # here would turn an older ``No Notification`` into a permanent true
+        # even after a newer reason replaces it.
+        del connection, teacher_id
+        return {
+            (str(lesson["source_region"]), course_id)
+            for lesson in lessons
+            if str(lesson.get("课程状态") or "").strip().lower()
+            == _ABSENT_STATUS
+            and str(lesson.get("缺席原因明细") or "").strip().lower()
+            == "no notification"
+            if (course_id := _string_id(lesson.get("课程id"))) is not None
+        }
 
     def _teacher_feedback_facts(
         self,
         connection: Any,
-        course_ids: set[str],
-    ) -> tuple[set[str], int, int]:
+        course_identities: set[tuple[str, str]],
+    ) -> tuple[set[tuple[str, str]], int, int]:
+        course_ids = {course_id for _region, course_id in course_identities}
         rows = self._active_source_rows_for_dependency_values(
             connection,
             suffixes=_TEACHER_FEEDBACK_SUFFIXES,
             dependency_name="course_ids",
             dependency_values=tuple(course_ids),
         )
-        gradings: dict[str, list[Mapping[str, Any]]] = {}
-        user_complaints: dict[str, list[Mapping[str, Any]]] = {}
-        complaints: dict[str, list[Mapping[str, Any]]] = {}
-        complaint_courses: set[str] = set()
+        gradings: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+        user_complaints: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+        complaints: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+        complaint_courses: set[tuple[str, str]] = set()
         for item in rows:
             course_id = _string_id(item.row.get("appoint_id"))
-            if course_id is None or course_id not in course_ids:
+            identity = (item.region, course_id or "")
+            if course_id is None or identity not in course_identities:
                 continue
             if item.table.endswith("_user_teacher_grading"):
-                if (
-                    _int_value(item.row.get("is_del")) in (None, 0)
-                    and _int_value(item.row.get("status")) in (None, 0)
+                region = item.table.split("_", 1)[0]
+                if _int_value(item.row.get("is_del")) in (None, 0) and (
+                    region == "dom"
+                    or _int_value(item.row.get("status")) in (None, 0)
                 ):
-                    gradings.setdefault(course_id, []).append(item.row)
+                    gradings.setdefault(identity, []).append(item.row)
             elif item.table.endswith("_user_complaint"):
-                complaint_courses.add(course_id)
-                user_complaints.setdefault(course_id, []).append(item.row)
+                complaint_courses.add(identity)
+                user_complaints.setdefault(identity, []).append(item.row)
             elif item.table.endswith("_complaint"):
-                complaint_courses.add(course_id)
-                complaints.setdefault(course_id, []).append(item.row)
+                complaint_courses.add(identity)
+                complaints.setdefault(identity, []).append(item.row)
 
-        evaluated_ids = {
-            course_id
-            for course_id, grading_rows in gradings.items()
-            if _latest(
+        evaluated_ids: set[tuple[str, str]] = set()
+        for identity, grading_rows in gradings.items():
+            latest = _latest(
                 grading_rows,
                 time_fields=("update_time", "create_time"),
             )
-            is not None
-        }
-        valid_courses: set[str] = set()
-        for course_id in complaint_courses:
+            if latest is None:
+                continue
+            region = identity[0]
+            _score, negative, positive = _grading_projection(region, latest)
+            if negative is True or positive is True:
+                evaluated_ids.add(identity)
+        valid_courses: set[tuple[str, str]] = set()
+        for identity in complaint_courses:
             if reduce_latest_complaints(
-                user_complaints.get(course_id, []),
-                complaints.get(course_id, []),
+                user_complaints.get(identity, []),
+                complaints.get(identity, []),
             ):
-                valid_courses.add(course_id)
+                valid_courses.add(identity)
         return evaluated_ids, len(complaint_courses), len(valid_courses)
 
     @staticmethod
@@ -1959,8 +1958,7 @@ class DtsWideProjector:
         seen_tesol = [
             item
             for item in active_certifications
-            if str(item.row.get("certification_type") or "").strip().lower()
-            == "tesol"
+            if _string_id(item.row.get("certification_code")) == "16"
         ]
         if any(
             _int_value(item.row.get("certification_status")) == 1
@@ -1980,7 +1978,7 @@ class DtsWideProjector:
             )
         ).scalars()
         if any(
-            str(row.get("certification_type") or "").strip().lower() == "tesol"
+            _string_id(row.get("certification_code")) == "16"
             for row in deleted_rows
         ):
             return False
@@ -2003,7 +2001,7 @@ class DtsWideProjector:
         if course is None:
             return None
         rendered = str(course)
-        return "ovs" if "global_cn" in rendered or "global_pool" in rendered else "dmo"
+        return "ovs" if "global_cn" in rendered or "global_pool" in rendered else "dom"
 
     @staticmethod
     def _schedule_is_peak(

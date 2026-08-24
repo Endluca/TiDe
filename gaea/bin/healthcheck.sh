@@ -53,12 +53,27 @@ cd /app/operations
 if [ "${source_wide_enabled}" = "false" ]; then
   printf '%s\n' \
     'SourceWide healthcheck intentionally skipped: TIT_SOURCE_WIDE_ENABLED=false' >&2
+else
+  /opt/venv/bin/python scripts/run_source_wide_worker.py \
+    --healthcheck \
+    --heartbeat-path /tmp/tit-source-worker-heartbeat \
+    --readiness-path /tmp/tit-source-worker-readiness \
+    --max-heartbeat-age-seconds 90 \
+    --max-readiness-age-seconds 90
+fi
+
+v2_enabled="$(/app/bin/dts-v2-runtime-enabled.sh)"
+if [ "${v2_enabled}" = "false" ]; then
+  printf '%s\n' \
+    'DTS v2 runtime healthchecks intentionally skipped: TIT_V2_RUNTIME_ENABLED=false' >&2
   exit 0
 fi
 
-exec /opt/venv/bin/python scripts/run_source_wide_worker.py \
-  --healthcheck \
-  --heartbeat-path /tmp/tit-source-worker-heartbeat \
-  --readiness-path /tmp/tit-source-worker-readiness \
-  --max-heartbeat-age-seconds 90 \
-  --max-readiness-age-seconds 90
+for component in domain outbox favorite; do
+  /opt/venv/bin/python scripts/run_dts_v2_runtime.py \
+    --component "${component}" --healthcheck \
+    --heartbeat-path "/tmp/tit-v2-${component}-heartbeat" \
+    --readiness-path "/tmp/tit-v2-${component}-readiness" \
+    --max-heartbeat-age-seconds 90 \
+    --max-readiness-age-seconds 90
+done

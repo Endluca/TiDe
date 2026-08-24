@@ -313,6 +313,9 @@ def reset_score_policy_v1(
                 ),
                 camp_enrollment_id=teacher.camp_enrollment_id,
                 lesson_id=None,
+                source_region=None,
+                source_appoint_id=None,
+                participation_seq=None,
                 teacher_id=teacher.teacher_id,
                 dimension=TASK_DIMENSION,
                 entry_type=FIXED_ENTRY_TYPE,
@@ -326,6 +329,9 @@ def reset_score_policy_v1(
                 recorded_at=now,
                 reversal_of_score_entry_id=None,
                 task_assignment_id=assignment.assignment_id,
+                projection_origin="FIXED_TASK_LIVE",
+                materialized_by_run_id=None,
+                projection_generation=None,
                 idempotency_key=(
                     f"fixed-task-award:{assignment.assignment_id}"
                 ),

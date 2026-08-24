@@ -17,13 +17,14 @@ from app.db_models import (
 from app.source_contracts import LESSON_SOURCE_FIELDS
 
 
-def test_lesson_source_wide_is_exactly_the_23_field_contract() -> None:
+def test_lesson_source_wide_is_region_plus_the_22_field_contract() -> None:
     columns = tuple(
         column.name for column in inspect(LessonSourceWideRecord).columns
     )
 
-    assert columns == LESSON_SOURCE_FIELDS
+    assert columns == ("source_region", *LESSON_SOURCE_FIELDS)
     assert len(columns) == 23
+    assert "假早退" not in columns
     assert "学员id" in columns
     assert "student_id_hash" not in columns
     assert "source_batch_id" not in columns

@@ -33,7 +33,7 @@ def _teacher(
         country=None,
         timezone="UTC",
         camp_day=1,
-        graduation_state="IN_PROGRESS",
+        graduation_state="IN_CAMP",
         gold_qualified=False,
         total_score=total_score,
         graduation_threshold=100,

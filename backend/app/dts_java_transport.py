@@ -33,7 +33,7 @@ from .dts_source_consumer import (
     DtsChangeEvent,
     DtsEventProcessor,
     build_change_event,
-    protect_domestic_student_ids,
+    prepare_change_event_for_ingest,
 )
 
 
@@ -469,7 +469,7 @@ class OfficialJavaDtsTransport:
                     partition=event.partition,
                     offset=event.offset,
                 )
-                change_event = protect_domestic_student_ids(
+                change_event = prepare_change_event_for_ingest(
                     change_event,
                     self.settings,
                 )
