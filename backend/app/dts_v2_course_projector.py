@@ -241,7 +241,7 @@ class DtsV2CourseProjector:
             source_table,
             source_appoint_id,
         )
-        current_source = _read_source_current_for_update(
+        current_source = _read_source_current(
             connection,
             source_region=source_region,
             source_table=source_table,
@@ -404,13 +404,18 @@ def _lock_identity(connection: Connection, *parts: Any) -> None:
     )
 
 
-def _read_source_current_for_update(
+def _read_source_current(
     connection: Connection,
     *,
     source_region: str,
     source_table: str,
     source_appoint_id: str,
 ) -> Mapping[str, Any] | None:
+    # The ingest runtime owns ``dts_source_rows`` and the application role is
+    # intentionally read-only on that table.  Course projection is already
+    # serialized by the transaction-scoped advisory lock above and runs from
+    # one stable transaction snapshot, so a row lock is both redundant and
+    # invalid here: PostgreSQL requires UPDATE privilege for ``FOR UPDATE``.
     return connection.execute(
         text(
             """
@@ -423,7 +428,6 @@ def _read_source_current_for_update(
             WHERE source_region = :source_region
               AND source_table = :source_table
               AND source_key = :source_key
-            FOR UPDATE
             """
         ),
         {

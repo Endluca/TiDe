@@ -8,6 +8,7 @@ from app.dts_v2_course_projector import (
     DtsV2CourseProjectionResult,
     DtsV2CourseProjector,
     DtsV2CourseProjectorError,
+    _read_source_current,
 )
 
 
@@ -17,6 +18,32 @@ class _Connection:
 
     def in_transaction(self) -> bool:
         return self._in_transaction
+
+
+class _MappingResult:
+    def __init__(self, row: object) -> None:
+        self._row = row
+
+    def mappings(self) -> _MappingResult:
+        return self
+
+    def one_or_none(self) -> object:
+        return self._row
+
+
+class _CapturingConnection:
+    def __init__(self) -> None:
+        self.statement = ""
+        self.parameters: dict[str, object] = {}
+
+    def execute(
+        self,
+        statement: object,
+        parameters: dict[str, object],
+    ) -> _MappingResult:
+        self.statement = str(statement)
+        self.parameters = parameters
+        return _MappingResult({"source_key": "9001"})
 
 
 class _Projector(DtsV2CourseProjector):
@@ -94,3 +121,23 @@ def test_project_until_current_requires_open_transaction() -> None:
             source_region="dom",
             source_appoint_id="9001",
         )
+
+
+def test_source_current_read_does_not_lock_ingest_owned_row() -> None:
+    connection = _CapturingConnection()
+
+    row = _read_source_current(
+        connection,  # type: ignore[arg-type]
+        source_region="dom",
+        source_table="dom_appoint",
+        source_appoint_id="9001",
+    )
+
+    assert row == {"source_key": "9001"}
+    assert "FROM public.dts_source_rows" in connection.statement
+    assert "FOR UPDATE" not in connection.statement.upper()
+    assert connection.parameters == {
+        "source_region": "dom",
+        "source_table": "dom_appoint",
+        "source_key": "9001",
+    }

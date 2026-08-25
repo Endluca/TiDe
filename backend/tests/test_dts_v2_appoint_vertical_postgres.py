@@ -24,6 +24,7 @@ from app.dts_source_contract_v2 import with_v2_source_image_completeness
 from app.dts_v2_course_projector import (
     DtsV2CourseProjector,
     DtsV2CourseProjectorError,
+    _read_source_current,
 )
 from app.dts_v2_shadow_source_writer import (
     DtsV2ShadowSourceWriter,
@@ -147,6 +148,42 @@ def _settings() -> DtsConsumerSettings:
         execution_region="cn",
         domestic_student_hmac_key="22" * 32,
     )
+
+
+@pytest.mark.skipif(
+    not _postgres_tools_available(),
+    reason="PostgreSQL server binaries are unavailable",
+)
+def test_source_current_is_readable_by_select_only_domain_role(
+    v2_postgres_engine,
+) -> None:
+    with v2_postgres_engine.begin() as connection:
+        connection.execute(
+            text(
+                "GRANT SELECT ON TABLE public.dts_source_rows "
+                "TO tit_growth_app"
+            )
+        )
+        connection.execute(
+            text(
+                "REVOKE INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER ON TABLE "
+                "public.dts_source_rows FROM tit_growth_app"
+            )
+        )
+        connection.execute(text("SET LOCAL ROLE tit_growth_app"))
+
+        assert connection.execute(
+            text(
+                "SELECT has_table_privilege(current_user,"
+                "'public.dts_source_rows','UPDATE')"
+            )
+        ).scalar_one() is False
+        assert _read_source_current(
+            connection,
+            source_region="dom",
+            source_table="dom_appoint",
+            source_appoint_id="999999999",
+        ) is None
 
 
 def _complete_row(
