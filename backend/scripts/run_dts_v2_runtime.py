@@ -345,7 +345,12 @@ def _component_ready(component: str, snapshot: Any) -> bool:
         if component == OUTBOX_COMPONENT and isinstance(
             snapshot, _OutboxRuntimeSnapshot
         ):
-            return runtime_ready and snapshot.teacher_time_recheck.ready
+            recheck = snapshot.teacher_time_recheck
+            return (
+                runtime_ready
+                and recheck.mode == "V2_PRIMARY"
+                and recheck.projection_generation >= 1
+            )
         return runtime_ready
     return False
 

@@ -169,16 +169,18 @@ def test_outbox_primary_requires_time_recheck_health() -> None:
     )
     snapshot = runner._OutboxRuntimeSnapshot(base, health)
     assert runner._component_ready("outbox", snapshot) is True
-    not_scheduled = runner._OutboxRuntimeSnapshot(
+    catching_up = runner._OutboxRuntimeSnapshot(
         base,
         runner.TeacherTimeRecheckHealthV2(
             **{
                 **health.__dict__,
                 "schedule_due": True,
+                "stale_runnable_count": 20,
             }
         ),
     )
-    assert runner._component_ready("outbox", not_scheduled) is False
+    assert catching_up.teacher_time_recheck.ready is False
+    assert runner._component_ready("outbox", catching_up) is True
 
 
 def test_outbox_runs_event_and_clock_driven_workers_together() -> None:

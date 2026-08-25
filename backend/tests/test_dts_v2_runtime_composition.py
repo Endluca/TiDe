@@ -122,6 +122,21 @@ def test_domain_shadow_health_is_ready_but_materializers_require_primary() -> No
     assert runtime_health_ready(shadow, component=FAVORITE_COMPONENT) is False
 
 
+def test_runtime_health_does_not_turn_business_backlog_into_liveness_failure() -> None:
+    backlog = _health("V2_PRIMARY", 1)
+    backlog = type(backlog)(
+        **{
+            **backlog.__dict__,
+            "dead_count": 3,
+            "stale_runnable_count": 50_000,
+        }
+    )
+
+    assert backlog.ready is False
+    assert runtime_health_ready(backlog, component=DOMAIN_COMPONENT) is True
+    assert runtime_health_ready(backlog, component=OUTBOX_COMPONENT) is True
+
+
 def test_production_outbox_never_falls_back_to_direct_course_dml() -> None:
     worker = build_outbox_worker(
         SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
