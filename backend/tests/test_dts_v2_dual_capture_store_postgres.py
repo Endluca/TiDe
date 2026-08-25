@@ -312,7 +312,6 @@ def test_single_pipeline_first_event_missing_update_and_insert(
             / "20260824_public100_to_101_single_pipeline_reset.sql"
         )
         _execute_dms_onequery_file(psql_url, public_100_101_sql)
-        _run_alembic(backend_dir, admin_url, "check")
 
         with admin_engine.begin() as connection:
             assert connection.execute(
@@ -335,6 +334,14 @@ def test_single_pipeline_first_event_missing_update_and_insert(
             / "20260824_public101_dom_privacy_read_acl_hotfix.sql"
         )
         _execute_dms_onequery_file(psql_url, dom_privacy_acl_hotfix_sql)
+        public_101_102_sql = (
+            backend_dir
+            / "migrations"
+            / "dms"
+            / "20260825_public101_to_102_dts_ingest_batch_throughput.sql"
+        )
+        _execute_dms_onequery_file(psql_url, public_101_102_sql)
+        _run_alembic(backend_dir, admin_url, "check")
 
         application_url = URL.create(
             "postgresql+psycopg",
@@ -360,7 +367,7 @@ def test_single_pipeline_first_event_missing_update_and_insert(
         with admin_engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260824_101_dts_single_pipeline_reset"
+            ).scalar_one() == "20260825_102_dts_ingest_batch_throughput"
             profile_manifest_sha256 = connection.execute(
                 text(
                     "SELECT source_profile_manifest_sha256 "
@@ -541,6 +548,36 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                 ("TEACHER", "50"),
                 ("TEACHER", "60"),
             ]
+
+        with pytest.raises(
+            Exception,
+            match="DTS_V2_SOURCE_CURRENT_VERSION_MISMATCH",
+        ):
+            with admin_engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE public.dts_source_rows "
+                        "SET source_payload_hash=repeat('f',64) "
+                        "WHERE source_region='ovs' "
+                        "AND source_table='ovs_appoint' AND source_key=:key"
+                    ),
+                    {"key": str(APPOINT_ID)},
+                )
+        with pytest.raises(
+            Exception,
+            match="DIRTY_REQUIRED_REVISION_MISMATCH",
+        ):
+            with admin_engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE public.dts_dirty_keys "
+                        "SET required_work_revision="
+                        "required_work_revision+1,row_version=row_version+1 "
+                        "WHERE source_region='ovs' AND key_type='COURSE' "
+                        "AND key_part_1=:key AND key_part_2=''"
+                    ),
+                    {"key": str(APPOINT_ID)},
+                )
 
         flushed_batch_sizes: list[int] = []
         current_batch_sizes: list[int] = []
@@ -805,6 +842,20 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                 },
             ).scalar_one() == bulk_count
 
+        # Exercise the batch enqueue against live PROCESSING work.  New CDC
+        # input must advance required work without stealing or clearing the
+        # projector lease that was acquired before the batch committed.
+        with application_engine.begin() as connection:
+            claimed_count = len(
+                connection.execute(
+                    text(
+                        "SELECT * FROM public.claim_domain_dirty_keys_v2("
+                        "'batch-throughput-test',1000,300)"
+                    )
+                ).all()
+            )
+        assert claimed_count >= bulk_count
+
         bulk_update_first_offset = bulk_first_offset + bulk_count
         bulk_updates = tuple(
             _appoint_event(
@@ -856,6 +907,24 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                     "first_appoint": bulk_first_appoint,
                     "next_appoint": bulk_first_appoint + bulk_count,
                     "next_teacher": 2_000 + bulk_count,
+                },
+            ).scalar_one() == bulk_count
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM public.dts_dirty_keys "
+                    "WHERE source_region='ovs' AND key_type='COURSE' "
+                    "AND key_part_1::numeric>=:first_appoint "
+                    "AND key_part_1::numeric<:next_appoint "
+                    "AND status='PROCESSING' "
+                    "AND required_work_revision=2 "
+                    "AND claimed_through_work_revision=1 "
+                    "AND pending_event_count=2 "
+                    "AND lease_owner='batch-throughput-test' "
+                    "AND lease_token IS NOT NULL"
+                ),
+                {
+                    "first_appoint": bulk_first_appoint,
+                    "next_appoint": bulk_first_appoint + bulk_count,
                 },
             ).scalar_one() == bulk_count
 

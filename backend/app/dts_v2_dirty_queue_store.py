@@ -220,36 +220,12 @@ class DtsV2DirtyQueueStore:
                 dirty_key=dirty_key,
             )
             payload.append({"ordinal": ordinal, **parameters})
-        rows = connection.execute(
+        value = connection.execute(
             text(
                 """
-                WITH inputs AS MATERIALIZED (
-                  SELECT *
-                  FROM jsonb_to_recordset(CAST(:commands AS jsonb)) AS item(
-                    ordinal integer,source_region text,source_table text,
-                    source_key text,source_row_revision bigint,
-                    key_type text,key_part_1 text,key_part_2 text,
-                    peer_teacher boolean
-                  )
-                ), enqueued AS MATERIALIZED (
-                  SELECT ordinal,
-                    CASE WHEN peer_teacher THEN
-                      public.enqueue_peer_teacher_dirty_from_source_revision_v2(
-                        source_region,source_table,source_key,
-                        source_row_revision,key_type,key_part_1,key_part_2
-                      )
-                    ELSE
-                      public.enqueue_dirty_from_source_revision_v2(
-                        source_region,source_table,source_key,
-                        source_row_revision,key_type,key_part_1,key_part_2
-                      )
-                    END response
-                  FROM inputs
-                  ORDER BY ordinal
+                SELECT public.enqueue_dirty_from_source_revisions_batch_v3(
+                    CAST(:commands AS jsonb)
                 )
-                SELECT ordinal,response
-                FROM enqueued
-                ORDER BY ordinal
                 """
             ),
             {
@@ -259,8 +235,15 @@ class DtsV2DirtyQueueStore:
                     separators=(",", ":"),
                 )
             },
-        ).mappings()
-        results = tuple(_json_result(row["response"]) for row in rows)
+        ).scalar_one()
+        envelope = _json_result(value)
+        raw_results = envelope.get("responses")
+        if (
+            envelope.get("command_count") != len(payload)
+            or not isinstance(raw_results, list)
+        ):
+            raise DtsV2DirtyQueueError("DIRTY_DATABASE_RESULT_INVALID")
+        results = tuple(_json_result(response) for response in raw_results)
         if len(results) != len(payload):
             raise DtsV2DirtyQueueError("DIRTY_DATABASE_RESULT_INVALID")
         return results

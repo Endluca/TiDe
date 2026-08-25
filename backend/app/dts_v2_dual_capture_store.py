@@ -36,6 +36,7 @@ from .dts_ingest_store import (
     PostgresDtsEventSink,
     _require_session_transport,
 )
+from .dts_postgres_batch_copy import copy_rows, jsonb
 from .dts_source_consumer import (
     DATA_OPERATIONS,
     AppointProjectionCandidate,
@@ -45,12 +46,12 @@ from .dts_source_consumer import (
     assert_domestic_event_protected,
 )
 from .dts_source_contract_v2 import V2_BUSINESS_SOURCE_SUFFIXES_BY_REGION
+from .dts_v2_dirty_queue_store import DirtyKeyV2, DtsV2DirtyQueueStore
 from .dts_v2_shadow_source_writer import (
     DtsV2ShadowSourceWriteResult,
     DtsV2ShadowSourceWriter,
     DtsV2ShadowSourceWriterError,
 )
-from .dts_v2_dirty_queue_store import DirtyKeyV2, DtsV2DirtyQueueStore
 
 
 V2_PRIMARY_MODE = "V2_PRIMARY"
@@ -202,45 +203,12 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         dirty_keys: DirtyKeySet,
         appoint_candidate: AppointProjectionCandidate | None,
     ) -> bool:
-        del appoint_candidate
-        self._validate_event(event)
-        self._require_queued_only()
-        self._validate_runtime()
-        with self.engine.begin() as connection:
-            checkpoint = self._validate_dual_capture_state(
-                connection,
-                source_region=event.source_region,
-                topic=event.topic,
-                partition=event.partition,
-                lock_checkpoint=True,
-            )
-            if checkpoint is None:
-                self._initialize_stream_if_missing(connection, event)
-                checkpoint = self._validate_dual_capture_state(
-                    connection,
-                    source_region=event.source_region,
-                    topic=event.topic,
-                    partition=event.partition,
-                    lock_checkpoint=True,
-                )
-            if checkpoint is None:
-                raise DtsV2DualCaptureStoreError(
-                    "DTS_SINGLE_PIPELINE_STREAM_INIT_MISSING"
-                )
-            (
-                duplicate,
-                _next_checkpoint_version,
-                _next_offset,
-            ) = self._apply_dual_event(
-                connection,
-                event,
-                dirty_keys,
-                expected_checkpoint_row_version=(
-                    checkpoint["checkpoint_row_version"]
-                ),
-                expected_next_offset=checkpoint["next_offset"],
-            )
-            return duplicate
+        # Keep the one-event API on exactly the same persistence path as the
+        # normal consumer batch.  This prevents diagnostic/recovery callers
+        # from silently re-enabling the retired per-event dirty/ledger path.
+        return self.apply_batch(
+            ((event, dirty_keys, appoint_candidate),)
+        )[0]
 
     def apply_batch(
         self,
@@ -691,6 +659,18 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                           ),
                           has_function_privilege(
                             current_user,
+                            'public.enqueue_dirty_from_source_revisions_batch_v3('
+                            'jsonb)',
+                            'EXECUTE'
+                          ),
+                          has_function_privilege(
+                            current_user,
+                            'public.dts_active_source_scope_tables_v1('
+                            'text,text[])',
+                            'EXECUTE'
+                          ),
+                          has_function_privilege(
+                            current_user,
                             'public.lock_dts_source_partition_epoch_for_ingest_v2('
                             'text,text,text,integer)',
                             'EXECUTE'
@@ -750,6 +730,8 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     True,
                     True,
                     True,
+                    True,
+                    True,
                     False,
                     True,
                     True,
@@ -771,6 +753,8 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                         FROM unnest(ARRAY[
                           'initialize_dts_event_stream_v1(text,text,integer,text,text,bigint,bigint,text,text)',
                           'enqueue_dirty_from_source_revision_v2(text,text,text,bigint,text,text,text)',
+                          'enqueue_dirty_from_source_revisions_batch_v3(jsonb)',
+                          'dts_active_source_scope_tables_v1(text,text[])',
                           'lock_dts_source_partition_epoch_for_ingest_v2(text,text,text,integer)',
                           'lock_dts_source_table_for_ingest_v3(text,text)',
                           'scope_membership_apply_cdc_v3(text,text,text,bigint,jsonb,jsonb,boolean)',
@@ -799,6 +783,16 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     (
                         "enqueue_dirty_from_source_revision_v2("
                         "text,text,text,bigint,text,text,text)",
+                        True,
+                        True,
+                    ),
+                    (
+                        "enqueue_dirty_from_source_revisions_batch_v3(jsonb)",
+                        True,
+                        True,
+                    ),
+                    (
+                        "dts_active_source_scope_tables_v1(text,text[])",
                         True,
                         True,
                     ),
@@ -1193,6 +1187,14 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                         'text,text,text,bigint,text,text,text)'
                       ) IS NOT NULL,
                       to_regprocedure(
+                        'public.enqueue_dirty_from_source_revisions_batch_v3('
+                        'jsonb)'
+                      ) IS NOT NULL,
+                      to_regprocedure(
+                        'public.dts_active_source_scope_tables_v1('
+                        'text,text[])'
+                      ) IS NOT NULL,
+                      to_regprocedure(
                         'public.lock_dts_source_partition_epoch_for_ingest_v2('
                         'text,text,text,integer)'
                       ) IS NOT NULL,
@@ -1214,6 +1216,18 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                         'tit_dts_ingest_runtime',
                         'public.enqueue_dirty_from_source_revision_v2('
                         'text,text,text,bigint,text,text,text)',
+                        'EXECUTE'
+                      ),
+                      has_function_privilege(
+                        'tit_dts_ingest_runtime',
+                        'public.enqueue_dirty_from_source_revisions_batch_v3('
+                        'jsonb)',
+                        'EXECUTE'
+                      ),
+                      has_function_privilege(
+                        'tit_dts_ingest_runtime',
+                        'public.dts_active_source_scope_tables_v1('
+                        'text,text[])',
                         'EXECUTE'
                       ),
                       has_function_privilege(
@@ -1259,6 +1273,10 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 )
             ).one()
             if tuple(function_state) != (
+                True,
+                True,
+                True,
+                True,
                 True,
                 True,
                 True,
@@ -1582,6 +1600,45 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         records: Sequence[Mapping[str, Any]],
     ) -> None:
         if not records:
+            return
+        copied = copy_rows(
+            connection,
+            statement="""
+                COPY public.dts_ingest_events (
+                    source_region,topic,partition_id,offset_value,record_id,
+                    source_timestamp,source_txid,source_position,operation,
+                    source_database,source_schema,source_table,route_status,
+                    dirty_key_count,issue_codes,identity_version,
+                    source_partition_epoch_id,source_position_v2,
+                    event_payload_hash
+                ) FROM STDIN
+            """,
+            rows=(
+                (
+                    record["source_region"],
+                    record["topic"],
+                    record["partition"],
+                    record["offset"],
+                    record["record_id"],
+                    record["source_timestamp"],
+                    record["source_txid"],
+                    record["opaque_source_position"],
+                    record["operation"],
+                    record["source_database"],
+                    record["source_schema"],
+                    record["source_table"],
+                    record["route_status"],
+                    record["dirty_key_count"],
+                    jsonb(json.loads(str(record["issue_codes"]))),
+                    _V2_IDENTITY_VERSION,
+                    record["epoch_id"],
+                    jsonb(json.loads(str(record["source_position"]))),
+                    record["event_payload_hash"],
+                )
+                for record in records
+            ),
+        )
+        if copied:
             return
         payload = [
             {

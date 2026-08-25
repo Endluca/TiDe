@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from .dts_postgres_batch_copy import copy_rows, jsonb
 from .dts_source_consumer import (
     DtsChangeEvent,
     DtsRecordError,
@@ -1892,6 +1893,33 @@ def _apply_cdc_membership_overlays_batch(
 ) -> None:
     if not writes:
         return
+    source_region = writes[0].event.source_region
+    source_tables = sorted(
+        {
+            str(write.route.source_table)
+            for write in writes
+            if write.route.source_table
+        }
+    )
+    active_tables = frozenset(
+        connection.execute(
+            text(
+                """
+                SELECT public.dts_active_source_scope_tables_v1(
+                    :source_region,CAST(:source_tables AS text[])
+                )
+                """
+            ),
+            {"source_region": source_region, "source_tables": source_tables},
+        ).scalar_one()
+    )
+    if not active_tables:
+        return
+    writes = tuple(
+        write for write in writes if write.route.source_table in active_tables
+    )
+    if not writes:
+        return
     payload = [
         {
             "ordinal": ordinal,
@@ -2206,6 +2234,58 @@ def _append_versions_batch(
 ) -> None:
     if not writes:
         return
+    copied = copy_rows(
+        connection,
+        statement="""
+            COPY public.dts_source_row_versions (
+                source_region,source_partition_epoch_id,topic,partition_id,
+                offset_value,version_kind,source_table,
+                source_schema_profile_id,source_field_types,source_key,
+                source_key_data,source_key_type,source_key_numeric,
+                source_key_text,operation,before_row,after_row,
+                source_timestamp,record_id_type,record_id_numeric,
+                record_id_text,source_position,source_row_revision,
+                snapshot_id,snapshot_as_of,covered_through_offsets,diff_step,
+                source_table_publish_generation,protected_source_row_hash
+            ) FROM STDIN
+        """,
+        rows=(
+            (
+                write.event.source_region,
+                source_partition_epoch_id,
+                write.event.topic,
+                write.event.partition,
+                write.event.offset,
+                "CDC",
+                write.route.source_table,
+                write.route.source_schema_profile_id,
+                jsonb(write.route.source_field_types),
+                write.route.source_key,
+                jsonb(json.loads(write.route.source_key_data_json or "{}")),
+                write.route.source_key_type,
+                write.route.source_key_numeric,
+                write.route.source_key_text,
+                write.route.operation,
+                jsonb(write.route.before_row),
+                jsonb(write.route.after_row),
+                write.source_timestamp,
+                "numeric",
+                Decimal(write.event.record_id),
+                None,
+                jsonb(write.position),
+                write.revision,
+                None,
+                None,
+                None,
+                None,
+                None,
+                write.route.protected_payload_hash,
+            )
+            for write in writes
+        ),
+    )
+    if copied:
+        return
     records = [
         _json_batch_record(
             _write_parameters(
@@ -2403,6 +2483,67 @@ def _upsert_currents_batch(
 ) -> None:
     if not writes:
         return
+    new_writes = tuple(write for write in writes if write.current_row_version == 1)
+    existing_writes = tuple(
+        write for write in writes if write.current_row_version != 1
+    )
+    copied = copy_rows(
+        connection,
+        statement="""
+            COPY public.dts_source_rows (
+                source_region,source_table,source_key,source_key_data,
+                dependency_keys,source_row,is_deleted,source_timestamp,
+                last_record_id,source_position,last_topic,last_partition,
+                last_offset,row_version,source_row_revision,
+                last_source_partition_epoch_id,last_version_kind,
+                source_position_v2,record_id_type,record_id_numeric,
+                record_id_text,source_timestamp_v2,source_payload_hash,
+                provenance_state,source_key_type,source_key_numeric,
+                source_key_text,source_schema_profile_id,source_field_types
+            ) FROM STDIN
+        """,
+        rows=(
+            (
+                write.event.source_region,
+                write.route.source_table,
+                write.route.source_key,
+                jsonb(json.loads(write.route.source_key_data_json or "{}")),
+                jsonb(write.dependency_keys),
+                jsonb(
+                    write.route.before_row
+                    if write.event.operation == "DELETE"
+                    else write.route.after_row
+                ),
+                write.event.operation == "DELETE",
+                write.event.source_timestamp,
+                write.event.record_id,
+                _json_dump(write.position),
+                write.event.topic,
+                write.event.partition,
+                write.event.offset,
+                write.current_row_version,
+                write.revision,
+                source_partition_epoch_id,
+                "CDC",
+                jsonb(write.position),
+                "numeric",
+                Decimal(write.event.record_id),
+                None,
+                write.source_timestamp,
+                write.route.protected_payload_hash,
+                "V2_CONFIRMED",
+                write.route.source_key_type,
+                write.route.source_key_numeric,
+                write.route.source_key_text,
+                write.route.source_schema_profile_id,
+                jsonb(write.route.source_field_types),
+            )
+            for write in new_writes
+        ),
+    )
+    if copied and not existing_writes:
+        return
+    writes = existing_writes if copied else writes
     records: list[dict[str, Any]] = []
     for ordinal, write in enumerate(writes):
         parameters = _current_write_parameters(

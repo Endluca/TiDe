@@ -125,22 +125,20 @@ def test_batch_enqueue_uses_one_ordered_database_call() -> None:
     connection = _Connection(
         [
             _Result(
-                rows=(
-                    {
-                        "ordinal": 0,
-                        "response": {
+                value={
+                    "command_count": 2,
+                    "fast_path_count": 2,
+                    "responses": [
+                        {
                             "status": "ENQUEUED",
                             "dirty_work_revision": 1,
                         },
-                    },
-                    {
-                        "ordinal": 1,
-                        "response": {
+                        {
                             "status": "ENQUEUED",
                             "dirty_work_revision": 2,
                         },
-                    },
-                )
+                    ],
+                }
             )
         ]
     )
@@ -170,9 +168,9 @@ def test_batch_enqueue_uses_one_ordered_database_call() -> None:
     ]
     assert len(connection.calls) == 1
     sql, parameters = connection.calls[0]
-    assert "jsonb_to_recordset" in sql
-    assert "enqueue_dirty_from_source_revision_v2" in sql
-    assert "enqueue_peer_teacher_dirty_from_source_revision_v2" in sql
+    assert "enqueue_dirty_from_source_revisions_batch_v3" in sql
+    assert "jsonb_to_recordset" not in sql
+    assert "enqueue_peer_teacher_dirty_from_source_revision_v2" not in sql
     payload = json.loads(parameters["commands"])
     assert [item["ordinal"] for item in payload] == [0, 1]
     assert [item["peer_teacher"] for item in payload] == [False, True]

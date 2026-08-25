@@ -14,6 +14,12 @@ MIGRATION = (
     / "versions"
     / "20260824_101_dts_single_pipeline_reset.py"
 )
+THROUGHPUT_MIGRATION = (
+    ROOT
+    / "migrations"
+    / "versions"
+    / "20260825_102_dts_ingest_batch_throughput.py"
+)
 PUBLIC_DMS = (
     ROOT
     / "migrations"
@@ -31,6 +37,12 @@ DOM_PRIVACY_ACL_HOTFIX_DMS = (
     / "migrations"
     / "dms"
     / "20260824_public101_dom_privacy_read_acl_hotfix.sql"
+)
+THROUGHPUT_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260825_public101_to_102_dts_ingest_batch_throughput.sql"
 )
 TEACHER_DMS = (
     ROOT
@@ -122,6 +134,26 @@ def test_dom_privacy_acl_hotfix_is_single_statement_and_read_only() -> None:
         source,
         re.IGNORECASE,
     )
+
+
+def test_batch_throughput_migration_and_dms_are_single_pipeline_only() -> None:
+    migration = THROUGHPUT_MIGRATION.read_text(encoding="utf-8")
+    source = THROUGHPUT_DMS.read_text(encoding="utf-8")
+    assert 'revision: str = "20260825_102_dts_ingest_batch_throughput"' in migration
+    assert "enqueue_dirty_from_source_revisions_batch_v3" in migration
+    assert "dts_active_source_scope_tables_v1" in migration
+    assert "DROP TRIGGER IF EXISTS trg_sync_v1_compat_dirty_input_v1" in migration
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "public rev102 DMS requires public head 101" in source
+    assert "exact 38-row teacher ledger ending at 0043" in source
+    assert "dts_rev102_fact_fence" in source
+    assert "public rev102 postflight verification failed" in source
+    assert (
+        "UPDATE alembic_version SET "
+        "version_num='20260825_102_dts_ingest_batch_throughput'" in source
+    )
+    _assert_dms_onequery_compatible(source)
 
 
 def test_formal_public_65_to_100_dms_matches_observed_heads() -> None:
