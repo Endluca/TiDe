@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import time
@@ -41,6 +42,7 @@ from app.runtime_settings import operations_database_transport_mode
 
 
 _STOP = False
+_SAFE_DTS_ERROR_CODE = re.compile(r"\bDTS_[A-Z0-9_]{1,127}\b")
 _URL_ENV = {
     DOMAIN_COMPONENT: "TIT_V2_DOMAIN_DATABASE_URL",
     OUTBOX_COMPONENT: "TIT_V2_OUTBOX_DATABASE_URL",
@@ -58,6 +60,28 @@ _DEFAULT_READINESS = {
 
 class DtsV2RuntimeRunnerError(RuntimeError):
     pass
+
+
+def _safe_unexpected_error(exc: Exception) -> str:
+    """Expose only a stable DTS code or SQLSTATE, never SQL/parameters."""
+    original = getattr(exc, "orig", None)
+    for candidate in (original, exc):
+        if candidate is None:
+            continue
+        match = _SAFE_DTS_ERROR_CODE.search(str(candidate))
+        if match is not None:
+            return match.group(0)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(
+        original, "pgcode", None
+    )
+    if not isinstance(sqlstate, str) or not re.fullmatch(
+        r"[0-9A-Z]{5}", sqlstate
+    ):
+        sqlstate = "NO_SQLSTATE"
+    return (
+        "DTS_V2_RUNTIME_UNEXPECTED:"
+        f"{type(exc).__name__}:{sqlstate}"
+    )
 
 
 @dataclass(frozen=True)
@@ -454,8 +478,8 @@ def main() -> int:
     except (DtsV2RuntimeCompositionError, DtsV2RuntimeRunnerError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    except Exception:
-        print("DTS_V2_RUNTIME_UNEXPECTED", file=sys.stderr)
+    except Exception as exc:
+        print(_safe_unexpected_error(exc), file=sys.stderr)
         return 1
 
 

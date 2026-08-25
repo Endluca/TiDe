@@ -72,6 +72,28 @@ def test_wrong_database_role_fails_without_echoing_url(
     assert secret not in str(raised.value)
 
 
+def test_unexpected_runtime_error_exposes_only_safe_code_or_sqlstate() -> None:
+    secret = "password=must-not-leak"
+    coded = RuntimeError(
+        f"{secret} DTS_V2_TIME_RECHECK_SCHEDULE_SINGLETON_REQUIRED detail"
+    )
+    assert runner._safe_unexpected_error(coded) == (
+        "DTS_V2_TIME_RECHECK_SCHEDULE_SINGLETON_REQUIRED"
+    )
+
+    class DatabaseError(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__(secret)
+            self.orig = SimpleNamespace(
+                sqlstate="42501",
+                __str__=lambda _self: secret,
+            )
+
+    fallback = runner._safe_unexpected_error(DatabaseError())
+    assert fallback == "DTS_V2_RUNTIME_UNEXPECTED:DatabaseError:42501"
+    assert secret not in fallback
+
+
 @pytest.mark.parametrize(
     ("mode", "generation", "expected"),
     [

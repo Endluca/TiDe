@@ -20,6 +20,12 @@ THROUGHPUT_MIGRATION = (
     / "versions"
     / "20260825_102_dts_ingest_batch_throughput.py"
 )
+TIME_RECHECK_RESEED_MIGRATION = (
+    ROOT
+    / "migrations"
+    / "versions"
+    / "20260825_103_reseed_time_recheck_schedule.py"
+)
 PUBLIC_DMS = (
     ROOT
     / "migrations"
@@ -43,6 +49,12 @@ THROUGHPUT_DMS = (
     / "migrations"
     / "dms"
     / "20260825_public101_to_102_dts_ingest_batch_throughput.sql"
+)
+TIME_RECHECK_RESEED_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260825_public102_to_103_reseed_time_recheck_schedule.sql"
 )
 TEACHER_DMS = (
     ROOT
@@ -152,6 +164,27 @@ def test_batch_throughput_migration_and_dms_are_single_pipeline_only() -> None:
     assert (
         "UPDATE alembic_version SET "
         "version_num='20260825_102_dts_ingest_batch_throughput'" in source
+    )
+    _assert_dms_onequery_compatible(source)
+
+
+def test_time_recheck_schedule_is_reseeded_after_destructive_reset() -> None:
+    migration = TIME_RECHECK_RESEED_MIGRATION.read_text(encoding="utf-8")
+    source = TIME_RECHECK_RESEED_DMS.read_text(encoding="utf-8")
+    assert (
+        'revision: str = "20260825_103_reseed_time_recheck_schedule"'
+        in migration
+    )
+    assert "20260825_102_dts_ingest_batch_throughput" in migration
+    assert "INSERT INTO public.dts_teacher_time_recheck_schedule" in migration
+    assert "ON CONFLICT (schedule_id) DO NOTHING" in migration
+    assert "DTS_V2_TIME_RECHECK_SCHEDULE_SINGLETON_REQUIRED" in migration
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "public rev103 DMS requires public head 102" in source
+    assert "public rev103 postflight verification failed" in source
+    assert (
+        "version_num='20260825_103_reseed_time_recheck_schedule'" in source
     )
     _assert_dms_onequery_compatible(source)
 
