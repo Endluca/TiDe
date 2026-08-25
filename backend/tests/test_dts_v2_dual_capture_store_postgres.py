@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
-from app import dts_ingest_store
+from app import dts_ingest_store, dts_v2_shadow_source_writer
 from app.dts_ingest_store import DtsIngestDatabaseSettings
 from app.dts_source_consumer import DirtyKeySet, DtsChangeEvent
 from app.dts_source_contract_v2 import with_v2_source_image_completeness
@@ -534,6 +534,245 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                 ("TEACHER", "50"),
                 ("TEACHER", "60"),
             ]
+
+        flushed_batch_sizes: list[int] = []
+        current_batch_sizes: list[int] = []
+        membership_batch_sizes: list[int] = []
+        dirty_batch_sizes: list[int] = []
+        original_append_versions_batch = (
+            dts_v2_shadow_source_writer._append_versions_batch
+        )
+        original_upsert_currents_batch = (
+            dts_v2_shadow_source_writer._upsert_currents_batch
+        )
+        original_membership_batch = (
+            dts_v2_shadow_source_writer._apply_cdc_membership_overlays_batch
+        )
+        original_dirty_batch = (
+            sink._dirty_queue_store.enqueue_source_revisions_batch
+        )
+
+        def _record_append_versions_batch(*args: Any, **kwargs: Any) -> None:
+            flushed_batch_sizes.append(len(kwargs["writes"]))
+            original_append_versions_batch(*args, **kwargs)
+
+        def _record_upsert_currents_batch(*args: Any, **kwargs: Any) -> None:
+            current_batch_sizes.append(len(kwargs["writes"]))
+            original_upsert_currents_batch(*args, **kwargs)
+
+        def _record_membership_batch(*args: Any, **kwargs: Any) -> None:
+            membership_batch_sizes.append(len(kwargs["writes"]))
+            original_membership_batch(*args, **kwargs)
+
+        def _record_dirty_batch(*args: Any, **kwargs: Any) -> Any:
+            dirty_batch_sizes.append(len(kwargs["commands"]))
+            return original_dirty_batch(*args, **kwargs)
+
+        monkeypatch.setattr(
+            dts_v2_shadow_source_writer,
+            "_append_versions_batch",
+            _record_append_versions_batch,
+        )
+        monkeypatch.setattr(
+            dts_v2_shadow_source_writer,
+            "_upsert_currents_batch",
+            _record_upsert_currents_batch,
+        )
+        monkeypatch.setattr(
+            dts_v2_shadow_source_writer,
+            "_apply_cdc_membership_overlays_batch",
+            _record_membership_batch,
+        )
+        monkeypatch.setattr(
+            sink._dirty_queue_store,
+            "enqueue_source_revisions_batch",
+            _record_dirty_batch,
+        )
+        bulk_count = 200
+        bulk_first_offset = 43
+        bulk_first_appoint = APPOINT_ID + 10_000
+        bulk_events = tuple(
+            _appoint_event(
+                bulk_first_offset + index,
+                operation="INSERT",
+                before=None,
+                after=_row(
+                    1_000 + index,
+                    appoint_id=bulk_first_appoint + index,
+                ),
+                complete=True,
+            )
+            for index in range(bulk_count)
+        )
+        assert sink.apply_batch(
+            tuple(
+                (event, DirtyKeySet(), None) for event in bulk_events
+            )
+        ) == (False,) * bulk_count
+        assert flushed_batch_sizes == [bulk_count]
+        assert current_batch_sizes == [bulk_count]
+        assert membership_batch_sizes == [bulk_count]
+        assert dirty_batch_sizes == [bulk_count * 2]
+
+        with admin_engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT next_offset FROM public.dts_ingest_checkpoints "
+                    "WHERE source_region='ovs' AND topic=:topic "
+                    "AND partition_id=0"
+                ),
+                {"topic": TOPIC},
+            ).scalar_one() == bulk_first_offset + bulk_count
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM public.dts_source_row_versions "
+                    "WHERE source_region='ovs' AND topic=:topic "
+                    "AND partition_id=0 AND offset_value>=:first_offset "
+                    "AND offset_value<:next_offset"
+                ),
+                {
+                    "topic": TOPIC,
+                    "first_offset": bulk_first_offset,
+                    "next_offset": bulk_first_offset + bulk_count,
+                },
+            ).scalar_one() == bulk_count
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM public.dts_source_rows "
+                    "WHERE source_region='ovs' "
+                    "AND source_table='ovs_appoint' "
+                    "AND source_key_numeric>=:first_appoint "
+                    "AND source_key_numeric<:next_appoint "
+                    "AND source_row_revision=1 "
+                    "AND provenance_state='V2_CONFIRMED'"
+                ),
+                {
+                    "first_appoint": bulk_first_appoint,
+                    "next_appoint": bulk_first_appoint + bulk_count,
+                },
+            ).scalar_one() == bulk_count
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM public.dts_dirty_keys "
+                    "WHERE source_region='ovs' AND key_type='COURSE' "
+                    "AND key_part_1::numeric>=:first_appoint "
+                    "AND key_part_1::numeric<:next_appoint"
+                ),
+                {
+                    "first_appoint": bulk_first_appoint,
+                    "next_appoint": bulk_first_appoint + bulk_count,
+                },
+            ).scalar_one() == bulk_count
+
+        bulk_update_first_offset = bulk_first_offset + bulk_count
+        bulk_updates = tuple(
+            _appoint_event(
+                bulk_update_first_offset + index,
+                operation="UPDATE",
+                before={
+                    "id": bulk_first_appoint + index,
+                    "t_id": 1_000 + index,
+                },
+                after={
+                    "id": bulk_first_appoint + index,
+                    "t_id": 2_000 + index,
+                },
+                complete=False,
+            )
+            for index in range(bulk_count)
+        )
+        assert sink.apply_batch(
+            tuple(
+                (event, DirtyKeySet(), None) for event in bulk_updates
+            )
+        ) == (False,) * bulk_count
+        assert flushed_batch_sizes == [bulk_count, bulk_count]
+        assert current_batch_sizes == [bulk_count, bulk_count]
+        assert membership_batch_sizes == [bulk_count, bulk_count]
+        assert dirty_batch_sizes == [bulk_count * 2, bulk_count * 3]
+
+        with admin_engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT next_offset FROM public.dts_ingest_checkpoints "
+                    "WHERE source_region='ovs' AND topic=:topic "
+                    "AND partition_id=0"
+                ),
+                {"topic": TOPIC},
+            ).scalar_one() == bulk_update_first_offset + bulk_count
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM public.dts_source_rows "
+                    "WHERE source_region='ovs' "
+                    "AND source_table='ovs_appoint' "
+                    "AND source_key_numeric>=:first_appoint "
+                    "AND source_key_numeric<:next_appoint "
+                    "AND source_row_revision=2 "
+                    "AND (source_row ->> 't_id')::numeric>=2000 "
+                    "AND (source_row ->> 't_id')::numeric<:next_teacher"
+                ),
+                {
+                    "first_appoint": bulk_first_appoint,
+                    "next_appoint": bulk_first_appoint + bulk_count,
+                    "next_teacher": 2_000 + bulk_count,
+                },
+            ).scalar_one() == bulk_count
+
+        bulk_delete_first_offset = bulk_update_first_offset + bulk_count
+        bulk_deletes = tuple(
+            _appoint_event(
+                bulk_delete_first_offset + index,
+                operation="DELETE",
+                before=_row(
+                    2_000 + index,
+                    appoint_id=bulk_first_appoint + index,
+                ),
+                after=None,
+                complete=True,
+            )
+            for index in range(bulk_count)
+        )
+        assert sink.apply_batch(
+            tuple(
+                (event, DirtyKeySet(), None) for event in bulk_deletes
+            )
+        ) == (False,) * bulk_count
+        assert flushed_batch_sizes == [
+            bulk_count,
+            bulk_count,
+            bulk_count,
+        ]
+        assert current_batch_sizes == flushed_batch_sizes
+        assert membership_batch_sizes == flushed_batch_sizes
+        assert dirty_batch_sizes == [
+            bulk_count * 2,
+            bulk_count * 3,
+            bulk_count * 2,
+        ]
+
+        with admin_engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT next_offset FROM public.dts_ingest_checkpoints "
+                    "WHERE source_region='ovs' AND topic=:topic "
+                    "AND partition_id=0"
+                ),
+                {"topic": TOPIC},
+            ).scalar_one() == bulk_delete_first_offset + bulk_count
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM public.dts_source_rows "
+                    "WHERE source_region='ovs' "
+                    "AND source_table='ovs_appoint' "
+                    "AND source_key_numeric>=:first_appoint "
+                    "AND source_key_numeric<:next_appoint "
+                    "AND source_row_revision=3 AND is_deleted IS TRUE"
+                ),
+                {
+                    "first_appoint": bulk_first_appoint,
+                    "next_appoint": bulk_first_appoint + bulk_count,
+                },
+            ).scalar_one() == bulk_count
 
         before_start = _appoint_event(
             0,

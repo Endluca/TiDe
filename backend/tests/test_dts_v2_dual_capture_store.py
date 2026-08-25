@@ -145,6 +145,60 @@ class _BatchWriter(_Writer):
         )
 
 
+class _DeferredBatchContext:
+    def __init__(self) -> None:
+        self.deferred_offsets: set[int] = set()
+
+
+class _DeferringBatchWriter(_Writer):
+    def __init__(self, calls: list[tuple[Any, ...]]) -> None:
+        super().__init__(calls)
+        self.context = _DeferredBatchContext()
+
+    def prepare_batch(
+        self,
+        connection: object,
+        events: tuple[DtsChangeEvent, ...],
+        source_partition_epoch_id: str,
+    ) -> _DeferredBatchContext:
+        del connection
+        self.calls.append(
+            (
+                "prepare-batch",
+                tuple(event.offset for event in events),
+                source_partition_epoch_id,
+            )
+        )
+        return self.context
+
+    def apply_cdc(
+        self,
+        connection: object,
+        event: DtsChangeEvent,
+        source_partition_epoch_id: str,
+        *,
+        batch_context: _DeferredBatchContext | None = None,
+    ) -> DtsV2ShadowSourceWriteResult:
+        assert batch_context is self.context
+        self.context.deferred_offsets.add(event.offset)
+        return super().apply_cdc(
+            connection,
+            event,
+            source_partition_epoch_id,
+        )
+
+    def flush_batch(
+        self,
+        connection: object,
+        batch_context: _DeferredBatchContext,
+    ) -> None:
+        del connection
+        assert batch_context is self.context
+        self.calls.append(
+            ("flush-source-batch", tuple(sorted(batch_context.deferred_offsets)))
+        )
+
+
 class _QueueStore:
     def __init__(
         self,
@@ -184,6 +238,30 @@ class _QueueStore:
             "7001",
         )
         return {"status": "ENQUEUED"}
+
+
+class _BatchQueueStore(_QueueStore):
+    def enqueue_source_revisions_batch(
+        self,
+        connection: object,
+        *,
+        commands: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+    ) -> tuple[dict[str, str], ...]:
+        del connection
+        self.calls.append(
+            (
+                "enqueue-batch",
+                tuple(
+                    (
+                        command["source_row_revision"],
+                        command["dirty_key"].key_type,
+                        command["dirty_key"].key_part_1,
+                    )
+                    for command in commands
+                ),
+            )
+        )
+        return tuple({"status": "ENQUEUED"} for _command in commands)
 
 
 class _UnitSink(PostgresDtsV2DualCaptureSink):
@@ -500,6 +578,43 @@ def test_batch_capable_writer_defers_ledger_and_checkpoint_once() -> None:
     )
 
 
+def test_deferred_source_flushes_before_dirty_ledger_and_checkpoint() -> None:
+    calls: list[tuple[Any, ...]] = []
+    engine = _Engine()
+    writer = _DeferringBatchWriter(calls)
+    sink = _BatchUnitSink(
+        engine,
+        writer,
+        calls,
+        queue_store=_BatchQueueStore(calls),
+    )
+
+    assert sink.apply_batch(
+        tuple(
+            (_event(offset), DirtyKeySet(), None)
+            for offset in range(2)
+        )
+    ) == (False, False)
+
+    ordered_calls = [call[0] for call in calls]
+    assert ordered_calls.index("flush-source-batch") < ordered_calls.index(
+        "enqueue-batch"
+    )
+    assert ordered_calls.index("enqueue-batch") < ordered_calls.index(
+        "ledger-batch"
+    )
+    assert ordered_calls.index("ledger-batch") < ordered_calls.index(
+        "checkpoint-batch"
+    )
+    assert not any(call[0] == "enqueue" for call in calls)
+    assert calls[ordered_calls.index("flush-source-batch")] == (
+        "flush-source-batch",
+        (0, 1),
+    )
+    assert len(calls[ordered_calls.index("enqueue-batch")][1]) == 6
+    assert (engine.begins, engine.commits, engine.rollbacks) == (1, 1, 0)
+
+
 def test_exact_replay_requires_source_version_and_ledger_and_does_not_enqueue() -> None:
     sink, engine, calls = _sink(
         replay_offsets=frozenset({3}),
@@ -666,6 +781,11 @@ def test_shadow_batch_missing_current_uses_one_prefetch_and_no_event_sql(
         "_lock_source_table_for_cdc",
         lambda *_args, **_kwargs: calls.append("table-lock"),
     )
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_lock_identities",
+        lambda *_args, **_kwargs: calls.append("identity-lock-batch"),
+    )
     for forbidden in (
         "_lock_identity",
         "_read_version_identity",
@@ -697,7 +817,55 @@ def test_shadow_batch_missing_current_uses_one_prefetch_and_no_event_sql(
     assert {result.status for result in results} == {
         "IGNORED_MISSING_CURRENT"
     }
-    assert calls == ["table-lock", "current-prefetch"]
+    assert calls == [
+        "table-lock",
+        "identity-lock-batch",
+        "current-prefetch",
+    ]
+
+
+def test_shadow_batch_repeated_identity_keeps_ordered_event_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = (
+        _event(0, operation="INSERT"),
+        _event(1, operation="UPDATE"),
+    )
+
+    class _Rows:
+        @staticmethod
+        def mappings() -> tuple[()]:
+            return ()
+
+    class _Connection:
+        @staticmethod
+        def execute(*_args: Any, **_kwargs: Any) -> _Rows:
+            return _Rows()
+
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_require_broker_epoch",
+        lambda *_args, **_kwargs: {"status": "ACTIVE"},
+    )
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_lock_source_table_for_cdc",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        shadow_source_writer,
+        "_lock_identities",
+        lambda *_args, **_kwargs: None,
+    )
+
+    context = DtsV2ShadowSourceWriter(enabled=True).prepare_batch(
+        _Connection(),  # type: ignore[arg-type]
+        events,
+        EPOCH_ID,
+    )
+
+    assert context is not None
+    assert context.deferred_candidate_offsets == frozenset()
 
 
 @pytest.mark.parametrize(

@@ -114,6 +114,47 @@ def _json_result(value: Any) -> dict[str, Any]:
     raise DtsV2DirtyQueueError("DIRTY_DATABASE_RESULT_INVALID")
 
 
+def _source_revision_enqueue_parameters(
+    *,
+    source_region: str,
+    source_table: str,
+    source_key: str,
+    source_row_revision: int,
+    dirty_key: DirtyKeyV2,
+) -> dict[str, Any]:
+    cross_region_category = (
+        dirty_key.source_region == "dom"
+        and dirty_key.key_type == "COMPLAINT_CATEGORY"
+        and source_region in _REGIONS
+    )
+    cross_region_teacher_peer = (
+        source_region == "dom"
+        and source_table == "dom_teacher"
+        and dirty_key.source_region == "ovs"
+        and dirty_key.key_type == "TEACHER"
+        and dirty_key.key_part_1 == source_key
+        and dirty_key.key_part_2 == ""
+    )
+    if (
+        source_region != dirty_key.source_region
+        and not cross_region_category
+        and not cross_region_teacher_peer
+    ):
+        raise DtsV2DirtyQueueError("DIRTY_SOURCE_REGION_MISMATCH")
+    if not source_table or not source_key or source_row_revision < 1:
+        raise DtsV2DirtyQueueError("DIRTY_SOURCE_REFERENCE_INVALID")
+    return {
+        "source_region": source_region,
+        "source_table": source_table,
+        "source_key": source_key,
+        "source_row_revision": source_row_revision,
+        "key_type": dirty_key.key_type,
+        "key_part_1": dirty_key.key_part_1,
+        "key_part_2": dirty_key.key_part_2,
+        "peer_teacher": cross_region_teacher_peer,
+    }
+
+
 class DtsV2DirtyQueueStore:
     """Invoke dirty queue commands on an existing transaction connection."""
 
@@ -127,30 +168,16 @@ class DtsV2DirtyQueueStore:
         source_row_revision: int,
         dirty_key: DirtyKeyV2,
     ) -> dict[str, Any]:
-        cross_region_category = (
-            dirty_key.source_region == "dom"
-            and dirty_key.key_type == "COMPLAINT_CATEGORY"
-            and source_region in _REGIONS
+        parameters = _source_revision_enqueue_parameters(
+            source_region=source_region,
+            source_table=source_table,
+            source_key=source_key,
+            source_row_revision=source_row_revision,
+            dirty_key=dirty_key,
         )
-        cross_region_teacher_peer = (
-            source_region == "dom"
-            and source_table == "dom_teacher"
-            and dirty_key.source_region == "ovs"
-            and dirty_key.key_type == "TEACHER"
-            and dirty_key.key_part_1 == source_key
-            and dirty_key.key_part_2 == ""
-        )
-        if (
-            source_region != dirty_key.source_region
-            and not cross_region_category
-            and not cross_region_teacher_peer
-        ):
-            raise DtsV2DirtyQueueError("DIRTY_SOURCE_REGION_MISMATCH")
-        if not source_table or not source_key or source_row_revision < 1:
-            raise DtsV2DirtyQueueError("DIRTY_SOURCE_REFERENCE_INVALID")
         function_name = (
             "enqueue_peer_teacher_dirty_from_source_revision_v2"
-            if cross_region_teacher_peer
+            if parameters.pop("peer_teacher")
             else "enqueue_dirty_from_source_revision_v2"
         )
         value = connection.execute(
@@ -162,17 +189,81 @@ class DtsV2DirtyQueueStore:
                 )
                 """
             ),
-            {
-                "source_region": source_region,
-                "source_table": source_table,
-                "source_key": source_key,
-                "source_row_revision": source_row_revision,
-                "key_type": dirty_key.key_type,
-                "key_part_1": dirty_key.key_part_1,
-                "key_part_2": dirty_key.key_part_2,
-            },
+            parameters,
         ).scalar_one()
         return _json_result(value)
+
+    def enqueue_source_revisions_batch(
+        self,
+        connection: Any,
+        *,
+        commands: Sequence[Mapping[str, Any]],
+    ) -> tuple[dict[str, Any], ...]:
+        if not commands:
+            return ()
+        payload: list[dict[str, Any]] = []
+        for ordinal, command in enumerate(commands):
+            dirty_key = command.get("dirty_key")
+            if not isinstance(dirty_key, DirtyKeyV2):
+                raise DtsV2DirtyQueueError("DIRTY_KEY_INVALID")
+            source_row_revision = command.get("source_row_revision")
+            if (
+                isinstance(source_row_revision, bool)
+                or not isinstance(source_row_revision, int)
+            ):
+                raise DtsV2DirtyQueueError("DIRTY_SOURCE_REFERENCE_INVALID")
+            parameters = _source_revision_enqueue_parameters(
+                source_region=str(command.get("source_region") or ""),
+                source_table=str(command.get("source_table") or ""),
+                source_key=str(command.get("source_key") or ""),
+                source_row_revision=source_row_revision,
+                dirty_key=dirty_key,
+            )
+            payload.append({"ordinal": ordinal, **parameters})
+        rows = connection.execute(
+            text(
+                """
+                WITH inputs AS MATERIALIZED (
+                  SELECT *
+                  FROM jsonb_to_recordset(CAST(:commands AS jsonb)) AS item(
+                    ordinal integer,source_region text,source_table text,
+                    source_key text,source_row_revision bigint,
+                    key_type text,key_part_1 text,key_part_2 text,
+                    peer_teacher boolean
+                  )
+                ), enqueued AS MATERIALIZED (
+                  SELECT ordinal,
+                    CASE WHEN peer_teacher THEN
+                      public.enqueue_peer_teacher_dirty_from_source_revision_v2(
+                        source_region,source_table,source_key,
+                        source_row_revision,key_type,key_part_1,key_part_2
+                      )
+                    ELSE
+                      public.enqueue_dirty_from_source_revision_v2(
+                        source_region,source_table,source_key,
+                        source_row_revision,key_type,key_part_1,key_part_2
+                      )
+                    END response
+                  FROM inputs
+                  ORDER BY ordinal
+                )
+                SELECT ordinal,response
+                FROM enqueued
+                ORDER BY ordinal
+                """
+            ),
+            {
+                "commands": json.dumps(
+                    payload,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            },
+        ).mappings()
+        results = tuple(_json_result(row["response"]) for row in rows)
+        if len(results) != len(payload):
+            raise DtsV2DirtyQueueError("DIRTY_DATABASE_RESULT_INVALID")
+        return results
 
     def claim_domain(
         self,

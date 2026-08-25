@@ -387,6 +387,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             self.source_partition_epoch_id,
         )
         deferred_ledger: list[dict[str, Any]] = []
+        deferred_dirty: list[dict[str, Any]] = []
         initial_checkpoint_version = checkpoint_row_version
         expected_next_offset = next_offset
         for event, dirty_keys in new_items:
@@ -399,6 +400,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     expected_next_offset=expected_next_offset,
                     batch_context=batch_context,
                     deferred_ledger=deferred_ledger,
+                    deferred_dirty=deferred_dirty,
                 )
             )
             if duplicate:
@@ -407,6 +409,14 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 )
             duplicate_flags.append(False)
 
+        flush_batch = getattr(self._v2_writer, "flush_batch", None)
+        if callable(flush_batch) and batch_context is not None:
+            flush_batch(connection, batch_context)
+        elif deferred_dirty:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_DEFERRED_WRITER_INVALID"
+            )
+        self._enqueue_deferred_dirty_batch(connection, deferred_dirty)
         self._write_new_ledger_batch(connection, deferred_ledger)
         last_event = new_items[-1][0]
         self._advance_batch_checkpoint(
@@ -843,6 +853,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         expected_next_offset: int,
         batch_context: Any | None = None,
         deferred_ledger: list[dict[str, Any]] | None = None,
+        deferred_dirty: list[dict[str, Any]] | None = None,
     ) -> tuple[bool, int, int]:
         if event.offset > expected_next_offset:
             raise DtsV2DualCaptureStoreError(
@@ -926,19 +937,27 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 raise DtsV2DualCaptureStoreError(
                     "DTS_V2_DUAL_CAPTURE_SOURCE_REVISION_INVALID"
                 )
+            is_deferred_source_write = bool(
+                batch_context is not None
+                and event.offset
+                in getattr(batch_context, "deferred_offsets", set())
+            )
             for dirty_key in revision_dirty_keys:
-                enqueue_result = self._dirty_queue_store.enqueue_source_revision(
-                    connection,
-                    source_region=v2_result.source_region,
-                    source_table=v2_result.source_table,
-                    source_key=v2_result.source_key,
-                    source_row_revision=revision,
-                    dirty_key=dirty_key,
-                )
-                if enqueue_result.get("status") != "ENQUEUED":
-                    raise DtsV2DualCaptureStoreError(
-                        "DTS_V2_DUAL_CAPTURE_DIRTY_ENQUEUE_INCONSISTENT"
-                    )
+                command = {
+                    "source_region": v2_result.source_region,
+                    "source_table": v2_result.source_table,
+                    "source_key": v2_result.source_key,
+                    "source_row_revision": revision,
+                    "dirty_key": dirty_key,
+                }
+                if is_deferred_source_write:
+                    if deferred_dirty is None:
+                        raise DtsV2DualCaptureStoreError(
+                            "DTS_V2_DUAL_CAPTURE_DEFERRED_DIRTY_INVALID"
+                        )
+                    deferred_dirty.append(command)
+                else:
+                    self._enqueue_source_revision(connection, command)
 
         route_status = (
             "IGNORED"
@@ -1011,6 +1030,48 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             checkpoint_row_version,
             expected_next_offset if duplicate else event.offset + 1,
         )
+
+    def _enqueue_source_revision(
+        self,
+        connection: Connection,
+        command: Mapping[str, Any],
+    ) -> None:
+        enqueue_result = self._dirty_queue_store.enqueue_source_revision(
+            connection,
+            source_region=command["source_region"],
+            source_table=command["source_table"],
+            source_key=command["source_key"],
+            source_row_revision=command["source_row_revision"],
+            dirty_key=command["dirty_key"],
+        )
+        if enqueue_result.get("status") != "ENQUEUED":
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_DIRTY_ENQUEUE_INCONSISTENT"
+            )
+
+    def _enqueue_deferred_dirty_batch(
+        self,
+        connection: Connection,
+        commands: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if not commands:
+            return
+        enqueue_batch = getattr(
+            self._dirty_queue_store,
+            "enqueue_source_revisions_batch",
+            None,
+        )
+        if callable(enqueue_batch):
+            results = enqueue_batch(connection, commands=commands)
+            if len(results) != len(commands) or any(
+                result.get("status") != "ENQUEUED" for result in results
+            ):
+                raise DtsV2DualCaptureStoreError(
+                    "DTS_V2_DUAL_CAPTURE_DIRTY_ENQUEUE_INCONSISTENT"
+                )
+            return
+        for command in commands:
+            self._enqueue_source_revision(connection, command)
 
     def _was_missing_current_ignored(
         self,

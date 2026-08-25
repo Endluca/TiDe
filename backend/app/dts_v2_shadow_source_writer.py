@@ -72,7 +72,25 @@ class DtsV2ShadowSourceBatchContext:
     incoming_epoch: Mapping[str, Any]
     locked_tables: frozenset[str]
     current_identities: set[tuple[str, str, str]]
+    current_rows: dict[tuple[str, str, str], Mapping[str, Any]]
     new_offsets: frozenset[int]
+    deferred_candidate_offsets: frozenset[int]
+    deferred_offsets: set[int]
+    deferred_writes: list["DtsV2ShadowDeferredWrite"]
+
+
+@dataclass(frozen=True)
+class DtsV2ShadowDeferredWrite:
+    """One independently provable source transition awaiting batch flush."""
+
+    event: DtsChangeEvent
+    route: V2SourceRouteDecision
+    position: Mapping[str, Any]
+    source_timestamp: datetime
+    revision: int
+    dependency_keys: Mapping[str, Any]
+    before_dependency_keys: Mapping[str, Any]
+    after_dependency_keys: Mapping[str, Any]
 
 
 class DtsV2ShadowSourceWriter:
@@ -139,12 +157,17 @@ class DtsV2ShadowSourceWriter:
             )
 
         identities: set[tuple[str, str, str]] = set()
+        identity_counts: dict[tuple[str, str, str], int] = {}
+        event_identities: dict[int, tuple[str, str, str]] = {}
         tables: set[str] = set()
         for event in business_events:
             table = event.table_name or ""
             _source_key_type, source_key = _event_source_identity(event)
+            identity = (event.source_region, table, source_key)
             tables.add(table)
-            identities.add((event.source_region, table, source_key))
+            identities.add(identity)
+            identity_counts[identity] = identity_counts.get(identity, 0) + 1
+            event_identities[event.offset] = identity
 
         incoming_epoch = _require_broker_epoch(
             connection,
@@ -157,15 +180,43 @@ class DtsV2ShadowSourceWriter:
                 source_region=first.source_region,
                 source_table=table,
             )
+        _lock_identities(
+            connection,
+            tuple(
+                ("source-current", *identity)
+                for identity in sorted(identities)
+            ),
+        )
 
-        current_identities: set[tuple[str, str, str]] = set()
+        current_rows: dict[
+            tuple[str, str, str], Mapping[str, Any]
+        ] = {}
         if identities:
             rows = connection.execute(
                 text(
                     """
-                    SELECT current.source_region,
-                           current.source_table,
-                           current.source_key
+                    SELECT current.source_region, current.source_table,
+                           current.source_key, current.source_key_data,
+                           current.dependency_keys, current.source_row,
+                           current.is_deleted, current.source_timestamp,
+                           current.last_record_id, current.source_position,
+                           current.last_topic, current.last_partition,
+                           current.last_offset, current.row_version,
+                           current.source_row_revision,
+                           current.last_source_partition_epoch_id,
+                           current.last_version_kind,
+                           current.source_position_v2,
+                           current.record_id_type,
+                           current.record_id_numeric,
+                           current.record_id_text,
+                           current.source_timestamp_v2,
+                           current.source_payload_hash,
+                           current.provenance_state,
+                           current.source_key_type,
+                           current.source_key_numeric,
+                           current.source_key_text,
+                           current.source_schema_profile_id,
+                           current.source_field_types
                     FROM public.dts_source_rows AS current
                     JOIN jsonb_to_recordset(CAST(:identities AS jsonb))
                       AS requested(
@@ -195,14 +246,32 @@ class DtsV2ShadowSourceWriter:
                     )
                 },
             ).mappings()
-            current_identities.update(
-                (
+            for row in rows:
+                identity = (
                     str(row["source_region"]),
                     str(row["source_table"]),
                     str(row["source_key"]),
                 )
-                for row in rows
+                current_rows[identity] = dict(row)
+
+        current_identities = set(current_rows)
+        deferred_candidate_offsets = frozenset(
+            event.offset
+            for event in business_events
+            if identity_counts[event_identities[event.offset]] == 1
+            and (
+                (
+                    event.operation == "INSERT"
+                    and event_identities[event.offset]
+                    not in current_identities
+                )
+                or (
+                    event.operation in {"UPDATE", "DELETE"}
+                    and event_identities[event.offset]
+                    in current_identities
+                )
             )
+        )
 
         return DtsV2ShadowSourceBatchContext(
             source_region=first.source_region,
@@ -212,8 +281,56 @@ class DtsV2ShadowSourceWriter:
             incoming_epoch=incoming_epoch,
             locked_tables=frozenset(tables),
             current_identities=current_identities,
+            current_rows=current_rows,
             new_offsets=frozenset(event.offset for event in business_events),
+            deferred_candidate_offsets=deferred_candidate_offsets,
+            deferred_offsets=set(),
+            deferred_writes=[],
         )
+
+    def flush_batch(
+        self,
+        connection: Connection,
+        batch_context: DtsV2ShadowSourceBatchContext,
+    ) -> None:
+        """Persist independent source transitions without per-event RTTs."""
+
+        if not connection.in_transaction():
+            raise DtsV2ShadowSourceWriterError(
+                "DTS_V2_SHADOW_SOURCE_TRANSACTION_REQUIRED"
+            )
+        writes = tuple(batch_context.deferred_writes)
+        if not writes:
+            return
+        if len({write.event.offset for write in writes}) != len(writes):
+            raise DtsV2ShadowSourceWriterError(
+                "DTS_V2_SHADOW_BATCH_DEFERRED_IDENTITY_INVALID"
+            )
+        identities = {
+            (
+                write.event.source_region,
+                write.route.source_table,
+                write.route.source_key,
+            )
+            for write in writes
+        }
+        if len(identities) != len(writes):
+            raise DtsV2ShadowSourceWriterError(
+                "DTS_V2_SHADOW_BATCH_DEFERRED_IDENTITY_INVALID"
+            )
+        _append_versions_batch(
+            connection,
+            source_partition_epoch_id=batch_context.source_partition_epoch_id,
+            writes=writes,
+        )
+        _upsert_currents_batch(
+            connection,
+            source_partition_epoch_id=batch_context.source_partition_epoch_id,
+            writes=writes,
+            initial_currents=batch_context.current_rows,
+        )
+        _apply_cdc_membership_overlays_batch(connection, writes=writes)
+        batch_context.deferred_writes.clear()
 
     def apply_cdc(
         self,
@@ -278,6 +395,8 @@ class DtsV2ShadowSourceWriter:
             source_partition_epoch_id=source_partition_epoch_id,
         )
 
+        identity = (event.source_region, table, source_key)
+        deferred_candidate = False
         if batch_context is None:
             incoming_epoch = _require_broker_epoch(
                 connection,
@@ -319,7 +438,6 @@ class DtsV2ShadowSourceWriter:
                     "DTS_V2_SHADOW_BATCH_CONTEXT_MISMATCH"
                 )
             incoming_epoch = batch_context.incoming_epoch
-            identity = (event.source_region, table, source_key)
             if (
                 event.operation in {"UPDATE", "DELETE"}
                 and identity not in batch_context.current_identities
@@ -329,11 +447,22 @@ class DtsV2ShadowSourceWriter:
                     source_key=source_key,
                     source_key_type=source_key_type,
                 )
+            deferred_candidate = (
+                event.offset in batch_context.deferred_candidate_offsets
+            )
 
-        replay = _read_version_identity(
-            connection,
-            event=event,
-            source_partition_epoch_id=source_partition_epoch_id,
+        # Replay-prefix records are handled before a batch context is built.
+        # For the locked contiguous new suffix, an existing immutable version
+        # without its checkpoint is impossible because both commit in the same
+        # transaction.  Avoid one cross-region lookup per new business event.
+        replay = (
+            _read_version_identity(
+                connection,
+                event=event,
+                source_partition_epoch_id=source_partition_epoch_id,
+            )
+            if batch_context is None
+            else None
         )
         if replay is not None:
             replay_route = _route_from_persisted_version(replay)
@@ -367,11 +496,15 @@ class DtsV2ShadowSourceWriter:
             # it must never append a new delivery or advance source current.
             raise DtsV2ShadowSourceWriterError("DTS_V2_SHADOW_EPOCH_REJECTED")
 
-        stored_current = _read_current_for_update(
-            connection,
-            event=event,
-            source_table=table,
-            source_key=source_key,
+        stored_current = (
+            batch_context.current_rows.get(identity)
+            if batch_context is not None and deferred_candidate
+            else _read_current_for_update(
+                connection,
+                event=event,
+                source_table=table,
+                source_key=source_key,
+            )
         )
         legacy_current = bool(
             stored_current is not None
@@ -478,36 +611,51 @@ class DtsV2ShadowSourceWriter:
             event.source_region,
             None if event.operation == "DELETE" else route.after_row,
         )
-        _append_version(
-            connection,
-            event=event,
-            source_partition_epoch_id=source_partition_epoch_id,
-            route=route,
-            position=position,
-            source_timestamp=source_timestamp,
-            revision=revision,
-        )
-        _write_current(
-            connection,
-            event=event,
-            source_partition_epoch_id=source_partition_epoch_id,
-            route=route,
-            position=position,
-            source_timestamp=source_timestamp,
-            revision=revision,
-            dependency_keys=dependency_keys,
-            stored_current=stored_current,
-        )
-        _apply_cdc_membership_overlay(
-            connection,
-            source_region=event.source_region,
-            source_table=table,
-            source_key=source_key,
-            source_row_revision=revision,
-            before_dependency_keys=before_dependency_keys,
-            after_dependency_keys=after_dependency_keys,
-            after_is_present=event.operation != "DELETE",
-        )
+        if batch_context is not None and deferred_candidate:
+            batch_context.deferred_writes.append(
+                DtsV2ShadowDeferredWrite(
+                    event=event,
+                    route=route,
+                    position=position,
+                    source_timestamp=source_timestamp,
+                    revision=revision,
+                    dependency_keys=dependency_keys,
+                    before_dependency_keys=before_dependency_keys,
+                    after_dependency_keys=after_dependency_keys,
+                )
+            )
+            batch_context.deferred_offsets.add(event.offset)
+        else:
+            _append_version(
+                connection,
+                event=event,
+                source_partition_epoch_id=source_partition_epoch_id,
+                route=route,
+                position=position,
+                source_timestamp=source_timestamp,
+                revision=revision,
+            )
+            _write_current(
+                connection,
+                event=event,
+                source_partition_epoch_id=source_partition_epoch_id,
+                route=route,
+                position=position,
+                source_timestamp=source_timestamp,
+                revision=revision,
+                dependency_keys=dependency_keys,
+                stored_current=stored_current,
+            )
+            _apply_cdc_membership_overlay(
+                connection,
+                source_region=event.source_region,
+                source_table=table,
+                source_key=source_key,
+                source_row_revision=revision,
+                before_dependency_keys=before_dependency_keys,
+                after_dependency_keys=after_dependency_keys,
+                after_is_present=event.operation != "DELETE",
+            )
         result = _result(
             "SEMANTIC_REPLAY"
             if semantic_replay
@@ -517,9 +665,7 @@ class DtsV2ShadowSourceWriter:
             revision=revision,
         )
         if batch_context is not None:
-            batch_context.current_identities.add(
-                (event.source_region, table, source_key)
-            )
+            batch_context.current_identities.add(identity)
         return result
 
 
@@ -1118,21 +1264,44 @@ def _require_source_position_advances(
         )
 
 
-def _lock_identity(connection: Connection, *parts: Any) -> None:
+def _identity_lock_id(*parts: Any) -> int:
     payload = json.dumps(
         list(parts),
         ensure_ascii=False,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    lock_id = int.from_bytes(
+    return int.from_bytes(
         hashlib.sha256(payload).digest()[:8],
         byteorder="big",
         signed=True,
     )
+
+
+def _lock_identity(connection: Connection, *parts: Any) -> None:
+    lock_id = _identity_lock_id(*parts)
     connection.execute(
         text("SELECT pg_advisory_xact_lock(:lock_id)"),
         {"lock_id": lock_id},
+    )
+
+
+def _lock_identities(
+    connection: Connection,
+    identities: Sequence[Sequence[Any]],
+) -> None:
+    lock_ids = sorted({_identity_lock_id(*parts) for parts in identities})
+    if not lock_ids:
+        return
+    connection.execute(
+        text(
+            """
+            SELECT pg_advisory_xact_lock(lock_id)
+            FROM unnest(CAST(:lock_ids AS bigint[])) AS locks(lock_id)
+            ORDER BY lock_id
+            """
+        ),
+        {"lock_ids": lock_ids},
     )
 
 
@@ -1646,6 +1815,69 @@ def _apply_cdc_membership_overlay(
         )
 
 
+def _apply_cdc_membership_overlays_batch(
+    connection: Connection,
+    *,
+    writes: Sequence[DtsV2ShadowDeferredWrite],
+) -> None:
+    if not writes:
+        return
+    payload = [
+        {
+            "ordinal": ordinal,
+            "source_region": write.event.source_region,
+            "source_table": write.route.source_table,
+            "source_key": write.route.source_key,
+            "source_row_revision": write.revision,
+            "before_dependencies": write.before_dependency_keys,
+            "after_dependencies": write.after_dependency_keys,
+            "after_is_present": write.event.operation != "DELETE",
+        }
+        for ordinal, write in enumerate(writes)
+    ]
+    total, accepted = connection.execute(
+        text(
+            """
+            WITH inputs AS MATERIALIZED (
+              SELECT *
+              FROM jsonb_to_recordset(CAST(:records AS jsonb)) AS item(
+                ordinal integer,source_region text,source_table text,
+                source_key text,source_row_revision bigint,
+                before_dependencies jsonb,after_dependencies jsonb,
+                after_is_present boolean
+              )
+            ), applied AS MATERIALIZED (
+              SELECT ordinal,source_row_revision,
+                     public.scope_membership_apply_cdc_v3(
+                       source_region,source_table,source_key,
+                       source_row_revision,before_dependencies,
+                       after_dependencies,after_is_present
+                     ) response
+              FROM inputs
+              ORDER BY ordinal
+            )
+            SELECT count(*),count(*) FILTER (
+              WHERE response ->> 'status' = 'APPLIED'
+                AND (response ->> 'source_row_revision')::bigint =
+                    source_row_revision
+            )
+            FROM applied
+            """
+        ),
+        {
+            "records": json.dumps(
+                payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+        },
+    ).one()
+    if total != len(writes) or accepted != len(writes):
+        raise DtsV2ShadowSourceWriterError(
+            "DTS_V2_SOURCE_MEMBERSHIP_OVERLAY_REJECTED"
+        )
+
+
 def _dirty_keys_for_route(
     route: V2SourceRouteDecision,
     source_region: str,
@@ -1896,6 +2128,55 @@ def _append_version(
     )
 
 
+def _append_versions_batch(
+    connection: Connection,
+    *,
+    source_partition_epoch_id: str,
+    writes: Sequence[DtsV2ShadowDeferredWrite],
+) -> None:
+    if not writes:
+        return
+    connection.execute(
+        text(
+            """
+            INSERT INTO public.dts_source_row_versions (
+                source_region, source_partition_epoch_id, topic, partition_id,
+                offset_value, version_kind, source_table,
+                source_schema_profile_id, source_field_types, source_key,
+                source_key_data, source_key_type, source_key_numeric,
+                source_key_text, operation, before_row, after_row,
+                source_timestamp, record_id_type, record_id_numeric,
+                record_id_text, source_position, source_row_revision,
+                snapshot_id, snapshot_as_of, covered_through_offsets,
+                diff_step, source_table_publish_generation,
+                protected_source_row_hash
+            ) VALUES (
+                :source_region, :epoch_id, :topic, :partition_id,
+                :offset_value, 'CDC', :source_table, :profile_id,
+                CAST(:source_field_types AS jsonb), :source_key,
+                CAST(:source_key_data AS jsonb), :source_key_type,
+                :source_key_numeric, :source_key_text, :operation,
+                CAST(:before_row AS jsonb), CAST(:after_row AS jsonb),
+                :source_timestamp, 'numeric', :record_id_numeric, NULL,
+                CAST(:source_position AS jsonb), :source_row_revision,
+                NULL, NULL, NULL, NULL, NULL, :payload_hash
+            )
+            """
+        ),
+        [
+            _write_parameters(
+                event=write.event,
+                source_partition_epoch_id=source_partition_epoch_id,
+                route=write.route,
+                position=write.position,
+                source_timestamp=write.source_timestamp,
+                revision=write.revision,
+            )
+            for write in writes
+        ],
+    )
+
+
 def _write_current(
     connection: Connection,
     *,
@@ -1908,28 +2189,15 @@ def _write_current(
     dependency_keys: Mapping[str, Any],
     stored_current: Mapping[str, Any] | None,
 ) -> None:
-    current_row = route.before_row if event.operation == "DELETE" else route.after_row
-    assert current_row is not None
-    parameters = _write_parameters(
+    parameters = _current_write_parameters(
         event=event,
         source_partition_epoch_id=source_partition_epoch_id,
         route=route,
         position=position,
         source_timestamp=source_timestamp,
         revision=revision,
-    )
-    parameters.update(
-        {
-            "dependency_keys": _json_dump(dependency_keys),
-            "source_row": _json_dump(current_row),
-            "is_deleted": event.operation == "DELETE",
-            "legacy_source_position": _json_dump(position),
-            "row_version": (
-                1
-                if stored_current is None
-                else int(stored_current["row_version"]) + 1
-            ),
-        }
+        dependency_keys=dependency_keys,
+        stored_current=stored_current,
     )
     if stored_current is None:
         sql = """
@@ -1992,6 +2260,137 @@ def _write_current(
               AND source_key = :source_key
         """
     connection.execute(text(sql), parameters)
+
+
+def _current_write_parameters(
+    *,
+    event: DtsChangeEvent,
+    source_partition_epoch_id: str,
+    route: V2SourceRouteDecision,
+    position: Mapping[str, Any],
+    source_timestamp: datetime,
+    revision: int,
+    dependency_keys: Mapping[str, Any],
+    stored_current: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    current_row = (
+        route.before_row if event.operation == "DELETE" else route.after_row
+    )
+    assert current_row is not None
+    parameters = _write_parameters(
+        event=event,
+        source_partition_epoch_id=source_partition_epoch_id,
+        route=route,
+        position=position,
+        source_timestamp=source_timestamp,
+        revision=revision,
+    )
+    parameters.update(
+        {
+            "dependency_keys": _json_dump(dependency_keys),
+            "source_row": _json_dump(current_row),
+            "is_deleted": event.operation == "DELETE",
+            "legacy_source_position": _json_dump(position),
+            "row_version": (
+                1
+                if stored_current is None
+                else int(stored_current["row_version"]) + 1
+            ),
+        }
+    )
+    return parameters
+
+
+def _upsert_currents_batch(
+    connection: Connection,
+    *,
+    source_partition_epoch_id: str,
+    writes: Sequence[DtsV2ShadowDeferredWrite],
+    initial_currents: Mapping[
+        tuple[str, str, str], Mapping[str, Any]
+    ],
+) -> None:
+    if not writes:
+        return
+    parameters: list[dict[str, Any]] = []
+    for write in writes:
+        identity = (
+            write.event.source_region,
+            write.route.source_table or "",
+            write.route.source_key or "",
+        )
+        parameters.append(
+            _current_write_parameters(
+                event=write.event,
+                source_partition_epoch_id=source_partition_epoch_id,
+                route=write.route,
+                position=write.position,
+                source_timestamp=write.source_timestamp,
+                revision=write.revision,
+                dependency_keys=write.dependency_keys,
+                stored_current=initial_currents.get(identity),
+            )
+        )
+    connection.execute(
+        text(
+            """
+            INSERT INTO public.dts_source_rows (
+                source_region, source_table, source_key, source_key_data,
+                dependency_keys, source_row, is_deleted, source_timestamp,
+                last_record_id, source_position, last_topic, last_partition,
+                last_offset, row_version, source_row_revision,
+                last_source_partition_epoch_id, last_version_kind,
+                source_position_v2, record_id_type, record_id_numeric,
+                record_id_text, source_timestamp_v2, source_payload_hash,
+                provenance_state, source_key_type, source_key_numeric,
+                source_key_text, source_schema_profile_id, source_field_types
+            ) VALUES (
+                :source_region, :source_table, :source_key,
+                CAST(:source_key_data AS jsonb),
+                CAST(:dependency_keys AS jsonb), CAST(:source_row AS jsonb),
+                :is_deleted, :legacy_source_timestamp, :legacy_record_id,
+                :legacy_source_position, :topic, :partition_id, :offset_value,
+                :row_version, :source_row_revision, :epoch_id, 'CDC',
+                CAST(:source_position AS jsonb), 'numeric',
+                :record_id_numeric, NULL, :source_timestamp, :payload_hash,
+                'V2_CONFIRMED', :source_key_type, :source_key_numeric,
+                :source_key_text, :profile_id,
+                CAST(:source_field_types AS jsonb)
+            )
+            ON CONFLICT (source_region, source_table, source_key) DO UPDATE
+            SET source_key_data = EXCLUDED.source_key_data,
+                dependency_keys = EXCLUDED.dependency_keys,
+                source_row = EXCLUDED.source_row,
+                is_deleted = EXCLUDED.is_deleted,
+                source_timestamp = EXCLUDED.source_timestamp,
+                last_record_id = EXCLUDED.last_record_id,
+                source_position = EXCLUDED.source_position,
+                last_topic = EXCLUDED.last_topic,
+                last_partition = EXCLUDED.last_partition,
+                last_offset = EXCLUDED.last_offset,
+                row_version = EXCLUDED.row_version,
+                updated_at = clock_timestamp(),
+                source_row_revision = EXCLUDED.source_row_revision,
+                last_source_partition_epoch_id =
+                    EXCLUDED.last_source_partition_epoch_id,
+                last_version_kind = EXCLUDED.last_version_kind,
+                source_position_v2 = EXCLUDED.source_position_v2,
+                record_id_type = EXCLUDED.record_id_type,
+                record_id_numeric = EXCLUDED.record_id_numeric,
+                record_id_text = EXCLUDED.record_id_text,
+                source_timestamp_v2 = EXCLUDED.source_timestamp_v2,
+                source_payload_hash = EXCLUDED.source_payload_hash,
+                provenance_state = EXCLUDED.provenance_state,
+                source_key_type = EXCLUDED.source_key_type,
+                source_key_numeric = EXCLUDED.source_key_numeric,
+                source_key_text = EXCLUDED.source_key_text,
+                source_schema_profile_id =
+                    EXCLUDED.source_schema_profile_id,
+                source_field_types = EXCLUDED.source_field_types
+            """
+        ),
+        parameters,
+    )
 
 
 def _write_parameters(

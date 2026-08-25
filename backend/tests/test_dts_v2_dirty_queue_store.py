@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.dts_v2_dirty_queue_store import (
@@ -116,6 +118,85 @@ def test_dom_teacher_can_enqueue_only_its_exact_ovs_peer() -> None:
             source_key="9",
             source_row_revision=1,
             dirty_key=peer,
+        )
+
+
+def test_batch_enqueue_uses_one_ordered_database_call() -> None:
+    connection = _Connection(
+        [
+            _Result(
+                rows=(
+                    {
+                        "ordinal": 0,
+                        "response": {
+                            "status": "ENQUEUED",
+                            "dirty_work_revision": 1,
+                        },
+                    },
+                    {
+                        "ordinal": 1,
+                        "response": {
+                            "status": "ENQUEUED",
+                            "dirty_work_revision": 2,
+                        },
+                    },
+                )
+            )
+        ]
+    )
+    results = DtsV2DirtyQueueStore().enqueue_source_revisions_batch(
+        connection,
+        commands=(
+            {
+                "source_region": "dom",
+                "source_table": "dom_appoint",
+                "source_key": "9001",
+                "source_row_revision": 1,
+                "dirty_key": DirtyKeyV2("dom", "COURSE", "9001"),
+            },
+            {
+                "source_region": "dom",
+                "source_table": "dom_teacher",
+                "source_key": "9",
+                "source_row_revision": 1,
+                "dirty_key": DirtyKeyV2("ovs", "TEACHER", "9"),
+            },
+        ),
+    )
+
+    assert [result["status"] for result in results] == [
+        "ENQUEUED",
+        "ENQUEUED",
+    ]
+    assert len(connection.calls) == 1
+    sql, parameters = connection.calls[0]
+    assert "jsonb_to_recordset" in sql
+    assert "enqueue_dirty_from_source_revision_v2" in sql
+    assert "enqueue_peer_teacher_dirty_from_source_revision_v2" in sql
+    payload = json.loads(parameters["commands"])
+    assert [item["ordinal"] for item in payload] == [0, 1]
+    assert [item["peer_teacher"] for item in payload] == [False, True]
+
+
+@pytest.mark.parametrize("source_row_revision", (True, "1", None, 0))
+def test_batch_enqueue_rejects_invalid_source_revision(
+    source_row_revision: object,
+) -> None:
+    with pytest.raises(
+        DtsV2DirtyQueueError,
+        match="DIRTY_SOURCE_REFERENCE_INVALID",
+    ):
+        DtsV2DirtyQueueStore().enqueue_source_revisions_batch(
+            _Connection([]),
+            commands=(
+                {
+                    "source_region": "dom",
+                    "source_table": "dom_appoint",
+                    "source_key": "9001",
+                    "source_row_revision": source_row_revision,
+                    "dirty_key": DirtyKeyV2("dom", "COURSE", "9001"),
+                },
+            ),
         )
 
 
