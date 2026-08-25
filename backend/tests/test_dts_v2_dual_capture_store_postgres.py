@@ -25,6 +25,7 @@ from app.dts_v2_runtime_composition import (
     OUTBOX_COMPONENT,
     validate_runtime_startup,
 )
+from scripts import run_dts_v2_runtime as runtime_runner
 from dts_v2_test_profiles import SYNTHETIC_APPOINT_SOURCE_FIELDS
 from test_dts_v2_source_current_guards_postgres import (
     _postgres_tools_available,
@@ -341,6 +342,20 @@ def test_single_pipeline_first_event_missing_update_and_insert(
             / "20260825_public101_to_102_dts_ingest_batch_throughput.sql"
         )
         _execute_dms_onequery_file(psql_url, public_101_102_sql)
+        public_102_or_103_104_sql = (
+            backend_dir
+            / "migrations"
+            / "dms"
+            / "20260825_public102_or_103_to_104_runtime_table_acl.sql"
+        )
+        _execute_dms_onequery_file(psql_url, public_102_or_103_104_sql)
+        public_104_105_sql = (
+            backend_dir
+            / "migrations"
+            / "dms"
+            / "20260825_public104_to_105_runtime_pipeline_read_acl.sql"
+        )
+        _execute_dms_onequery_file(psql_url, public_104_105_sql)
         _run_alembic(backend_dir, admin_url, "check")
 
         application_url = URL.create(
@@ -363,11 +378,33 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                     component=component,
                     expected_database="tide_system_test",
                 )
+            monkeypatch.setenv(
+                "TIT_IRREVERSIBLE_QUALIFICATION_GRANTS_ENABLED", "false"
+            )
+            snapshot = runtime_runner._runtime_snapshot(
+                application_engine,
+                component=OUTBOX_COMPONENT,
+                expected_database="tide_system_test",
+                threshold=900,
+            )
+            assert snapshot.mode == "V2_PRIMARY"
 
         with admin_engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260825_102_dts_ingest_batch_throughput"
+            ).scalar_one() == "20260825_105_pipeline_read_acl"
+            assert connection.execute(
+                text(
+                    "SELECT has_table_privilege("
+                    "'tit_growth_app','public.outbox_events','UPDATE')"
+                )
+            ).scalar_one() is True
+            assert connection.execute(
+                text(
+                    "SELECT has_table_privilege("
+                    "'tit_growth_app','public.dts_pipeline_control','SELECT')"
+                )
+            ).scalar_one() is True
             profile_manifest_sha256 = connection.execute(
                 text(
                     "SELECT source_profile_manifest_sha256 "

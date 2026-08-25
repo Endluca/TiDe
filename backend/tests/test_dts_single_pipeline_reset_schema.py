@@ -26,6 +26,18 @@ TIME_RECHECK_RESEED_MIGRATION = (
     / "versions"
     / "20260825_103_reseed_time_recheck_schedule.py"
 )
+RUNTIME_TABLE_ACL_MIGRATION = (
+    ROOT
+    / "migrations"
+    / "versions"
+    / "20260825_104_runtime_table_acl.py"
+)
+RUNTIME_PIPELINE_READ_ACL_MIGRATION = (
+    ROOT
+    / "migrations"
+    / "versions"
+    / "20260825_105_runtime_pipeline_read_acl.py"
+)
 PUBLIC_DMS = (
     ROOT
     / "migrations"
@@ -55,6 +67,18 @@ TIME_RECHECK_RESEED_DMS = (
     / "migrations"
     / "dms"
     / "20260825_public102_to_103_reseed_time_recheck_schedule.sql"
+)
+RUNTIME_TABLE_ACL_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260825_public102_or_103_to_104_runtime_table_acl.sql"
+)
+RUNTIME_PIPELINE_READ_ACL_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260825_public104_to_105_runtime_pipeline_read_acl.sql"
 )
 TEACHER_DMS = (
     ROOT
@@ -186,6 +210,45 @@ def test_time_recheck_schedule_is_reseeded_after_destructive_reset() -> None:
     assert (
         "version_num='20260825_103_reseed_time_recheck_schedule'" in source
     )
+    _assert_dms_onequery_compatible(source)
+
+
+def test_runtime_outbox_acl_is_table_level_and_trigger_guarded() -> None:
+    migration = RUNTIME_TABLE_ACL_MIGRATION.read_text(encoding="utf-8")
+    source = RUNTIME_TABLE_ACL_DMS.read_text(encoding="utf-8")
+    assert 'revision: str = "20260825_104_runtime_table_acl"' in migration
+    assert "20260825_103_reseed_time_recheck_schedule" in migration
+    assert "REVOKE ALL PRIVILEGES (%I) ON TABLE" in migration
+    assert "GRANT SELECT,INSERT,UPDATE,DELETE" in migration
+    assert "guard_outbox_event_update" in migration
+    assert "DTS_V2_OUTBOX_TABLE_ACL_INVALID" in migration
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "public rev104 DMS requires public head 102 or 103" in source
+    assert "public rev104 postflight verification failed" in source
+    assert "GRANT SELECT,INSERT,UPDATE,DELETE" in source
+    assert "REVOKE TRUNCATE,REFERENCES,TRIGGER" in source
+    assert "version_num='20260825_104_runtime_table_acl'" in source
+    _assert_dms_onequery_compatible(source)
+
+
+def test_runtime_pipeline_control_is_table_level_read_only() -> None:
+    migration = RUNTIME_PIPELINE_READ_ACL_MIGRATION.read_text(
+        encoding="utf-8"
+    )
+    source = RUNTIME_PIPELINE_READ_ACL_DMS.read_text(encoding="utf-8")
+    assert (
+        'revision: str = "20260825_105_pipeline_read_acl"'
+        in migration
+    )
+    assert "20260825_104_runtime_table_acl" in migration
+    assert "GRANT SELECT ON TABLE public.dts_pipeline_control" in migration
+    assert "REVOKE INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER" in migration
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "public rev105 DMS requires public head 104" in source
+    assert "public rev105 postflight verification failed" in source
+    assert "version_num='20260825_105_pipeline_read_acl'" in source
     _assert_dms_onequery_compatible(source)
 
 

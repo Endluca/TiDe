@@ -187,6 +187,17 @@ def test_runtime_course_command_health_acl_and_atomic_failure(
     )
     app = create_engine(admin.url.set(username="tit_growth_app"))
     try:
+        # The shared ops-case fixture intentionally remains pinned at rev100
+        # so it can exercise the original materialization contracts.  Mirror
+        # the rev105 runtime ACL here because current startup composition reads
+        # the pipeline singleton before constructing any worker.
+        with admin.begin() as connection:
+            connection.execute(
+                text(
+                    "GRANT SELECT ON TABLE public.dts_pipeline_control "
+                    "TO tit_growth_app"
+                )
+            )
         with admin.connect() as connection:
             assert connection.execute(
                 text(
@@ -215,7 +226,7 @@ def test_runtime_course_command_health_acl_and_atomic_failure(
                       )
                     """
                 )
-            ).one() == (True, False, False, True, False)
+            ).one() == (True, False, False, True, True)
 
         with admin.begin() as connection:
             key = {

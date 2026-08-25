@@ -60,7 +60,7 @@ class _Connection:
                     "rolreplication": False,
                     "rolbypassrls": False,
                     "public_create": False,
-                    "pipeline_select": False,
+                    "pipeline_select": True,
                 }
             )
         signature = parameters["signature"]
