@@ -494,6 +494,13 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                 (teacher_change, DirtyKeySet(), None),
             )
         ) == (False, False)
+        repeated_identity_metrics = sink.consume_last_batch_metrics()
+        assert repeated_identity_metrics["db_source_version_write_count"] == 2
+        assert repeated_identity_metrics["db_source_current_write_count"] == 1
+        assert repeated_identity_metrics["db_source_membership_write_count"] == 1
+        assert repeated_identity_metrics["db_repeated_source_identity_count"] == 1
+        assert repeated_identity_metrics["db_raw_dirty_command_count"] == 5
+        assert repeated_identity_metrics["db_coalesced_dirty_command_count"] == 3
         assert sink.apply(missing_update, DirtyKeySet(), None) is True
 
         with admin_engine.connect() as connection:
@@ -588,8 +595,106 @@ def test_single_pipeline_first_event_missing_update_and_insert(
             "enqueue_source_revisions_batch",
             _record_dirty_batch,
         )
+        repeated_count = 100
+        repeated_first_offset = 43
+        repeated_updates = tuple(
+            _appoint_event(
+                repeated_first_offset + index,
+                operation="UPDATE",
+                before={"id": APPOINT_ID, "t_id": 60 + index},
+                after={"id": APPOINT_ID, "t_id": 61 + index},
+                complete=False,
+            )
+            for index in range(repeated_count)
+        )
+        assert sink.apply_batch(
+            tuple(
+                (event, DirtyKeySet(), None)
+                for event in repeated_updates
+            )
+        ) == (False,) * repeated_count
+        repeated_metrics = sink.consume_last_batch_metrics()
+        assert flushed_batch_sizes == [repeated_count]
+        assert current_batch_sizes == [1]
+        assert membership_batch_sizes == [1]
+        assert dirty_batch_sizes == [repeated_count + 2]
+        assert repeated_metrics["db_source_version_write_count"] == repeated_count
+        assert repeated_metrics["db_source_current_write_count"] == 1
+        assert repeated_metrics["db_source_membership_write_count"] == 1
+        assert repeated_metrics["db_repeated_source_identity_count"] == 1
+        assert repeated_metrics["db_raw_dirty_command_count"] == (
+            repeated_count * 3
+        )
+        assert repeated_metrics["db_coalesced_dirty_command_count"] == (
+            repeated_count + 2
+        )
+        with admin_engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT source_row_revision,row_version,"
+                    "source_row ->> 't_id' "
+                    "FROM public.dts_source_rows "
+                    "WHERE source_region='ovs' "
+                    "AND source_table='ovs_appoint' AND source_key=:key"
+                ),
+                {"key": str(APPOINT_ID)},
+            ).one() == (repeated_count + 2, 2, "160")
+        flushed_batch_sizes.clear()
+        current_batch_sizes.clear()
+        membership_batch_sizes.clear()
+        dirty_batch_sizes.clear()
+
+        net_delete_first_offset = repeated_first_offset + repeated_count
+        net_delete_events = (
+            _appoint_event(
+                net_delete_first_offset,
+                operation="UPDATE",
+                before={"id": APPOINT_ID, "t_id": 160},
+                after={"id": APPOINT_ID, "t_id": 170},
+                complete=False,
+            ),
+            _appoint_event(
+                net_delete_first_offset + 1,
+                operation="DELETE",
+                before=_row(170),
+                after=None,
+                complete=True,
+            ),
+        )
+        assert sink.apply_batch(
+            tuple(
+                (event, DirtyKeySet(), None)
+                for event in net_delete_events
+            )
+        ) == (False, False)
+        net_delete_metrics = sink.consume_last_batch_metrics()
+        assert flushed_batch_sizes == [2]
+        assert current_batch_sizes == [1]
+        assert membership_batch_sizes == [1]
+        assert dirty_batch_sizes == [3]
+        assert net_delete_metrics["db_source_version_write_count"] == 2
+        assert net_delete_metrics["db_source_current_write_count"] == 1
+        assert net_delete_metrics["db_source_membership_write_count"] == 1
+        assert net_delete_metrics["db_raw_dirty_command_count"] == 5
+        assert net_delete_metrics["db_coalesced_dirty_command_count"] == 3
+        with admin_engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT source_row_revision,row_version,is_deleted,"
+                    "source_row ->> 't_id',dependency_keys -> 'teacher_ids' "
+                    "FROM public.dts_source_rows "
+                    "WHERE source_region='ovs' "
+                    "AND source_table='ovs_appoint' AND source_key=:key"
+                ),
+                {"key": str(APPOINT_ID)},
+            ).one() == (repeated_count + 4, 3, True, "170", ["160"])
+        flushed_batch_sizes.clear()
+        current_batch_sizes.clear()
+        membership_batch_sizes.clear()
+        dirty_batch_sizes.clear()
+
         bulk_count = 200
-        bulk_first_offset = 43
+        bulk_first_offset = net_delete_first_offset + len(net_delete_events)
         bulk_first_appoint = APPOINT_ID + 10_000
         bulk_events = tuple(
             _appoint_event(
@@ -621,6 +726,12 @@ def test_single_pipeline_first_event_missing_update_and_insert(
             "db_source_version_elapsed_ms",
             "db_source_current_elapsed_ms",
             "db_source_membership_elapsed_ms",
+            "db_source_version_write_count",
+            "db_source_current_write_count",
+            "db_source_membership_write_count",
+            "db_repeated_source_identity_count",
+            "db_raw_dirty_command_count",
+            "db_coalesced_dirty_command_count",
         }
         assert all(
             isinstance(value, int) and value >= 0
@@ -637,6 +748,12 @@ def test_single_pipeline_first_event_missing_update_and_insert(
         assert current_batch_sizes == [bulk_count]
         assert membership_batch_sizes == [bulk_count]
         assert dirty_batch_sizes == [bulk_count * 2]
+        assert batch_metrics["db_source_version_write_count"] == bulk_count
+        assert batch_metrics["db_source_current_write_count"] == bulk_count
+        assert batch_metrics["db_source_membership_write_count"] == bulk_count
+        assert batch_metrics["db_repeated_source_identity_count"] == 0
+        assert batch_metrics["db_raw_dirty_command_count"] == bulk_count * 2
+        assert batch_metrics["db_coalesced_dirty_command_count"] == bulk_count * 2
 
         with admin_engine.connect() as connection:
             assert connection.execute(

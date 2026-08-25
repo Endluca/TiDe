@@ -16,6 +16,7 @@ from app.dts_source_consumer import (
 from app.dts_v2_dual_capture_store import (
     DtsV2DualCaptureStoreError,
     PostgresDtsV2DualCaptureSink,
+    _coalesce_deferred_dirty_commands,
     _event_payload_hash,
 )
 from app.dts_v2_dirty_queue_store import DirtyKeyV2
@@ -611,8 +612,47 @@ def test_deferred_source_flushes_before_dirty_ledger_and_checkpoint() -> None:
         "flush-source-batch",
         (0, 1),
     )
-    assert len(calls[ordered_calls.index("enqueue-batch")][1]) == 6
+    assert calls[ordered_calls.index("enqueue-batch")][1] == (
+        (2, "COURSE", "7001"),
+        (2, "TEACHER", "80"),
+        (2, "TEACHER", "81"),
+        (2, "TEACHER", "82"),
+    )
     assert (engine.begins, engine.commits, engine.rollbacks) == (1, 1, 0)
+
+
+def test_dirty_coalescing_keeps_source_identities_separate() -> None:
+    shared_dirty = DirtyKeyV2("ovs", "TEACHER", "80")
+    commands = (
+        {
+            "source_region": "ovs",
+            "source_table": "ovs_appoint",
+            "source_key": "7001",
+            "source_row_revision": 1,
+            "dirty_key": shared_dirty,
+        },
+        {
+            "source_region": "ovs",
+            "source_table": "ovs_appoint",
+            "source_key": "7002",
+            "source_row_revision": 4,
+            "dirty_key": shared_dirty,
+        },
+        {
+            "source_region": "ovs",
+            "source_table": "ovs_appoint",
+            "source_key": "7001",
+            "source_row_revision": 2,
+            "dirty_key": shared_dirty,
+        },
+    )
+
+    coalesced = _coalesce_deferred_dirty_commands(commands)
+
+    assert tuple(
+        (command["source_key"], command["source_row_revision"])
+        for command in coalesced
+    ) == (("7001", 2), ("7002", 4))
 
 
 def test_exact_replay_requires_source_version_and_ledger_and_does_not_enqueue() -> None:
@@ -824,7 +864,7 @@ def test_shadow_batch_missing_current_uses_one_prefetch_and_no_event_sql(
     ]
 
 
-def test_shadow_batch_repeated_identity_keeps_ordered_event_path(
+def test_shadow_batch_repeated_identity_uses_deferred_ordered_event_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events = (
@@ -865,7 +905,7 @@ def test_shadow_batch_repeated_identity_keeps_ordered_event_path(
     )
 
     assert context is not None
-    assert context.deferred_candidate_offsets == frozenset()
+    assert context.deferred_candidate_offsets == frozenset({0, 1})
 
 
 @pytest.mark.parametrize(

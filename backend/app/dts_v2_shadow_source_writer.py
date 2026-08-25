@@ -15,7 +15,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from time import perf_counter
@@ -74,6 +74,10 @@ class DtsV2ShadowSourceBatchContext:
     locked_tables: frozenset[str]
     current_identities: set[tuple[str, str, str]]
     current_rows: dict[tuple[str, str, str], Mapping[str, Any]]
+    persisted_row_versions: dict[tuple[str, str, str], int]
+    last_deferred_writes: dict[
+        tuple[str, str, str], "DtsV2ShadowDeferredWrite"
+    ]
     new_offsets: frozenset[int]
     deferred_candidate_offsets: frozenset[int]
     deferred_offsets: set[int]
@@ -89,6 +93,7 @@ class DtsV2ShadowDeferredWrite:
     position: Mapping[str, Any]
     source_timestamp: datetime
     revision: int
+    current_row_version: int
     dependency_keys: Mapping[str, Any]
     before_dependency_keys: Mapping[str, Any]
     after_dependency_keys: Mapping[str, Any]
@@ -164,8 +169,6 @@ class DtsV2ShadowSourceWriter:
             )
 
         identities: set[tuple[str, str, str]] = set()
-        identity_counts: dict[tuple[str, str, str], int] = {}
-        event_identities: dict[int, tuple[str, str, str]] = {}
         tables: set[str] = set()
         for event in business_events:
             table = event.table_name or ""
@@ -173,8 +176,6 @@ class DtsV2ShadowSourceWriter:
             identity = (event.source_region, table, source_key)
             tables.add(table)
             identities.add(identity)
-            identity_counts[identity] = identity_counts.get(identity, 0) + 1
-            event_identities[event.offset] = identity
 
         incoming_epoch = _require_broker_epoch(
             connection,
@@ -262,22 +263,17 @@ class DtsV2ShadowSourceWriter:
                 current_rows[identity] = dict(row)
 
         current_identities = set(current_rows)
+        persisted_row_versions = {
+            identity: int(row["row_version"])
+            for identity, row in current_rows.items()
+        }
+        # Every new business event is routed against the locked in-memory
+        # current.  Repeated changes for one source identity must not fall back
+        # to one SELECT/INSERT/UPDATE round trip per event: the immutable
+        # versions are still appended in order, while only the final current is
+        # upserted when the batch flushes.
         deferred_candidate_offsets = frozenset(
-            event.offset
-            for event in business_events
-            if identity_counts[event_identities[event.offset]] == 1
-            and (
-                (
-                    event.operation == "INSERT"
-                    and event_identities[event.offset]
-                    not in current_identities
-                )
-                or (
-                    event.operation in {"UPDATE", "DELETE"}
-                    and event_identities[event.offset]
-                    in current_identities
-                )
-            )
+            event.offset for event in business_events
         )
 
         return DtsV2ShadowSourceBatchContext(
@@ -289,6 +285,8 @@ class DtsV2ShadowSourceWriter:
             locked_tables=frozenset(tables),
             current_identities=current_identities,
             current_rows=current_rows,
+            persisted_row_versions=persisted_row_versions,
+            last_deferred_writes={},
             new_offsets=frozenset(event.offset for event in business_events),
             deferred_candidate_offsets=deferred_candidate_offsets,
             deferred_offsets=set(),
@@ -314,18 +312,11 @@ class DtsV2ShadowSourceWriter:
             raise DtsV2ShadowSourceWriterError(
                 "DTS_V2_SHADOW_BATCH_DEFERRED_IDENTITY_INVALID"
             )
-        identities = {
-            (
-                write.event.source_region,
-                write.route.source_table,
-                write.route.source_key,
-            )
-            for write in writes
-        }
-        if len(identities) != len(writes):
-            raise DtsV2ShadowSourceWriterError(
-                "DTS_V2_SHADOW_BATCH_DEFERRED_IDENTITY_INVALID"
-            )
+        identity_counts: dict[tuple[str, str, str], int] = {}
+        for write in writes:
+            identity = _deferred_write_identity(write)
+            identity_counts[identity] = identity_counts.get(identity, 0) + 1
+        final_writes = _final_deferred_writes(writes)
         flush_started = perf_counter()
         phase_started = perf_counter()
         _append_versions_batch(
@@ -337,11 +328,13 @@ class DtsV2ShadowSourceWriter:
         _upsert_currents_batch(
             connection,
             source_partition_epoch_id=batch_context.source_partition_epoch_id,
-            writes=writes,
-            initial_currents=batch_context.current_rows,
+            writes=final_writes,
         )
         current_finished = perf_counter()
-        _apply_cdc_membership_overlays_batch(connection, writes=writes)
+        _apply_cdc_membership_overlays_batch(
+            connection,
+            writes=final_writes,
+        )
         membership_finished = perf_counter()
         self._last_flush_metrics = {
             "db_source_version_elapsed_ms": _elapsed_ms(
@@ -359,6 +352,12 @@ class DtsV2ShadowSourceWriter:
             "db_source_flush_elapsed_ms": _elapsed_ms(
                 flush_started,
                 membership_finished,
+            ),
+            "db_source_version_write_count": len(writes),
+            "db_source_current_write_count": len(final_writes),
+            "db_source_membership_write_count": len(final_writes),
+            "db_repeated_source_identity_count": sum(
+                count > 1 for count in identity_counts.values()
             ),
         }
         batch_context.deferred_writes.clear()
@@ -598,6 +597,11 @@ class DtsV2ShadowSourceWriter:
                 route.before_row,
                 stored_current["source_row"],
             ):
+                prior_deferred_write = (
+                    None
+                    if batch_context is None
+                    else batch_context.last_deferred_writes.get(identity)
+                )
                 semantic_replay = (
                     event.operation == "UPDATE"
                     and not stored_current["is_deleted"]
@@ -605,10 +609,18 @@ class DtsV2ShadowSourceWriter:
                         route.after_row,
                         stored_current["source_row"],
                     )
-                    and _current_transition_matches(
-                        connection,
-                        stored_current=stored_current,
-                        route=route,
+                    and (
+                        _deferred_transition_matches(
+                            prior_deferred_write,
+                            stored_current=stored_current,
+                            route=route,
+                        )
+                        if prior_deferred_write is not None
+                        else _current_transition_matches(
+                            connection,
+                            stored_current=stored_current,
+                            route=route,
+                        )
                     )
                 )
                 if not semantic_replay:
@@ -643,17 +655,28 @@ class DtsV2ShadowSourceWriter:
             None if event.operation == "DELETE" else route.after_row,
         )
         if batch_context is not None and deferred_candidate:
-            batch_context.deferred_writes.append(
-                DtsV2ShadowDeferredWrite(
-                    event=event,
-                    route=route,
-                    position=position,
-                    source_timestamp=source_timestamp,
-                    revision=revision,
-                    dependency_keys=dependency_keys,
-                    before_dependency_keys=before_dependency_keys,
-                    after_dependency_keys=after_dependency_keys,
-                )
+            # row_version protects physical current-row writes, not immutable
+            # source revisions.  One batch performs at most one physical
+            # current write per identity, even if it contains many versions.
+            current_row_version = (
+                batch_context.persisted_row_versions.get(identity, 0) + 1
+            )
+            deferred_write = DtsV2ShadowDeferredWrite(
+                event=event,
+                route=route,
+                position=position,
+                source_timestamp=source_timestamp,
+                revision=revision,
+                current_row_version=current_row_version,
+                dependency_keys=dependency_keys,
+                before_dependency_keys=before_dependency_keys,
+                after_dependency_keys=after_dependency_keys,
+            )
+            batch_context.deferred_writes.append(deferred_write)
+            batch_context.last_deferred_writes[identity] = deferred_write
+            batch_context.current_rows[identity] = _deferred_current_row(
+                deferred_write,
+                source_partition_epoch_id=source_partition_epoch_id,
             )
             batch_context.deferred_offsets.add(event.offset)
         else:
@@ -1503,6 +1526,22 @@ def _current_transition_matches(
         == stored_current["source_row_revision"]
         and _same_json(previous["before_row"], route.before_row)
         and _same_json(previous["after_row"], route.after_row)
+    )
+
+
+def _deferred_transition_matches(
+    previous: DtsV2ShadowDeferredWrite,
+    *,
+    stored_current: Mapping[str, Any],
+    route: V2SourceRouteDecision,
+) -> bool:
+    """Prove a semantic replay from the prior in-memory batch version."""
+
+    return bool(
+        previous.event.operation == "UPDATE"
+        and previous.revision == stored_current.get("source_row_revision")
+        and _same_json(previous.route.before_row, route.before_row)
+        and _same_json(previous.route.after_row, route.after_row)
     )
 
 
@@ -2361,31 +2400,25 @@ def _upsert_currents_batch(
     *,
     source_partition_epoch_id: str,
     writes: Sequence[DtsV2ShadowDeferredWrite],
-    initial_currents: Mapping[
-        tuple[str, str, str], Mapping[str, Any]
-    ],
 ) -> None:
     if not writes:
         return
     records: list[dict[str, Any]] = []
     for ordinal, write in enumerate(writes):
-        identity = (
-            write.event.source_region,
-            write.route.source_table or "",
-            write.route.source_key or "",
+        parameters = _current_write_parameters(
+            event=write.event,
+            source_partition_epoch_id=source_partition_epoch_id,
+            route=write.route,
+            position=write.position,
+            source_timestamp=write.source_timestamp,
+            revision=write.revision,
+            dependency_keys=write.dependency_keys,
+            stored_current=None,
         )
+        parameters["row_version"] = write.current_row_version
         records.append(
             _json_batch_record(
-                _current_write_parameters(
-                    event=write.event,
-                    source_partition_epoch_id=source_partition_epoch_id,
-                    route=write.route,
-                    position=write.position,
-                    source_timestamp=write.source_timestamp,
-                    revision=write.revision,
-                    dependency_keys=write.dependency_keys,
-                    stored_current=initial_currents.get(identity),
-                ),
+                parameters,
                 ordinal=ordinal,
             )
         )
@@ -2472,6 +2505,106 @@ def _upsert_currents_batch(
         raise DtsV2ShadowSourceWriterError(
             "DTS_V2_SHADOW_BATCH_CURRENT_COUNT_INVALID"
         )
+
+
+def _deferred_write_identity(
+    write: DtsV2ShadowDeferredWrite,
+) -> tuple[str, str, str]:
+    source_table = write.route.source_table
+    source_key = write.route.source_key
+    if not source_table or not source_key:
+        raise DtsV2ShadowSourceWriterError(
+            "DTS_V2_SHADOW_BATCH_DEFERRED_IDENTITY_INVALID"
+        )
+    return (write.event.source_region, source_table, source_key)
+
+
+def _final_deferred_writes(
+    writes: Sequence[DtsV2ShadowDeferredWrite],
+) -> tuple[DtsV2ShadowDeferredWrite, ...]:
+    """Build the net visible transition per identity, in stable order.
+
+    Intermediate source versions never become visible outside the transaction.
+    Membership therefore moves from the batch's first before-image directly to
+    its final after-image.  A final tombstone retains those pre-batch dependency
+    keys so existing memberships can be removed by the final revision.
+    """
+
+    final_by_identity: dict[
+        tuple[str, str, str], DtsV2ShadowDeferredWrite
+    ] = {}
+    first_before_by_identity: dict[
+        tuple[str, str, str], Mapping[str, Any]
+    ] = {}
+    for write in writes:
+        identity = _deferred_write_identity(write)
+        first_before_by_identity.setdefault(
+            identity,
+            write.before_dependency_keys,
+        )
+        final_by_identity[identity] = write
+    return tuple(
+        replace(
+            write,
+            dependency_keys=(
+                first_before_by_identity[identity]
+                if write.event.operation == "DELETE"
+                else write.dependency_keys
+            ),
+            before_dependency_keys=first_before_by_identity[identity],
+        )
+        for identity, write in final_by_identity.items()
+    )
+
+
+def _deferred_current_row(
+    write: DtsV2ShadowDeferredWrite,
+    *,
+    source_partition_epoch_id: str,
+) -> dict[str, Any]:
+    """Materialize one deferred transition as current for the next event."""
+
+    parameters = _current_write_parameters(
+        event=write.event,
+        source_partition_epoch_id=source_partition_epoch_id,
+        route=write.route,
+        position=write.position,
+        source_timestamp=write.source_timestamp,
+        revision=write.revision,
+        dependency_keys=write.dependency_keys,
+        stored_current=None,
+    )
+    return {
+        "source_region": parameters["source_region"],
+        "source_table": parameters["source_table"],
+        "source_key": parameters["source_key"],
+        "source_key_data": json.loads(parameters["source_key_data"]),
+        "dependency_keys": json.loads(parameters["dependency_keys"]),
+        "source_row": json.loads(parameters["source_row"]),
+        "is_deleted": parameters["is_deleted"],
+        "source_timestamp": parameters["legacy_source_timestamp"],
+        "last_record_id": parameters["legacy_record_id"],
+        "source_position": parameters["legacy_source_position"],
+        "last_topic": parameters["topic"],
+        "last_partition": parameters["partition_id"],
+        "last_offset": parameters["offset_value"],
+        "row_version": write.current_row_version,
+        "source_row_revision": write.revision,
+        "last_source_partition_epoch_id": parameters["epoch_id"],
+        "last_version_kind": "CDC",
+        "source_position_v2": json.loads(parameters["source_position"]),
+        "record_id_type": "numeric",
+        "record_id_numeric": parameters["record_id_numeric"],
+        "record_id_text": None,
+        "source_timestamp_v2": parameters["source_timestamp"],
+        "source_payload_hash": parameters["payload_hash"],
+        "provenance_state": "V2_CONFIRMED",
+        "source_key_type": parameters["source_key_type"],
+        "source_key_numeric": parameters["source_key_numeric"],
+        "source_key_text": parameters["source_key_text"],
+        "source_schema_profile_id": parameters["profile_id"],
+        "source_field_types": json.loads(parameters["source_field_types"]),
+    }
 
 
 def _write_parameters(

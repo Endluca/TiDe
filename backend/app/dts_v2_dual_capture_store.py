@@ -437,7 +437,9 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         )
         if callable(consume_flush_metrics):
             writer_metrics = dict(consume_flush_metrics())
-        self._enqueue_deferred_dirty_batch(connection, deferred_dirty)
+        raw_dirty_count, coalesced_dirty_count = (
+            self._enqueue_deferred_dirty_batch(connection, deferred_dirty)
+        )
         dirty_finished = perf_counter()
         self._write_new_ledger_batch(connection, deferred_ledger)
         ledger_finished = perf_counter()
@@ -480,6 +482,8 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 transaction_body_started,
                 checkpoint_finished,
             ),
+            "db_raw_dirty_command_count": raw_dirty_count,
+            "db_coalesced_dirty_command_count": coalesced_dirty_count,
             **writer_metrics,
         }
         return tuple(duplicate_flags)
@@ -1108,25 +1112,27 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         self,
         connection: Connection,
         commands: Sequence[Mapping[str, Any]],
-    ) -> None:
+    ) -> tuple[int, int]:
         if not commands:
-            return
+            return (0, 0)
+        coalesced_commands = _coalesce_deferred_dirty_commands(commands)
         enqueue_batch = getattr(
             self._dirty_queue_store,
             "enqueue_source_revisions_batch",
             None,
         )
         if callable(enqueue_batch):
-            results = enqueue_batch(connection, commands=commands)
-            if len(results) != len(commands) or any(
+            results = enqueue_batch(connection, commands=coalesced_commands)
+            if len(results) != len(coalesced_commands) or any(
                 result.get("status") != "ENQUEUED" for result in results
             ):
                 raise DtsV2DualCaptureStoreError(
                     "DTS_V2_DUAL_CAPTURE_DIRTY_ENQUEUE_INCONSISTENT"
                 )
-            return
-        for command in commands:
+            return (len(commands), len(coalesced_commands))
+        for command in coalesced_commands:
             self._enqueue_source_revision(connection, command)
+        return (len(commands), len(coalesced_commands))
 
     def _was_missing_current_ignored(
         self,
@@ -1797,6 +1803,66 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
 # Public runtime name. The historical class name remains as an import alias so
 # existing unit fixtures do not create a second implementation path.
 PostgresDtsSourceEventSink = PostgresDtsV2DualCaptureSink
+
+
+def _coalesce_deferred_dirty_commands(
+    commands: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Union dirty fanout for one source identity at its final batch revision.
+
+    The source-version ledger keeps every intermediate transition.  Dirty work
+    is different: workers cannot observe the transaction until the final
+    current is committed, and the database command surface deliberately accepts
+    only that final revision.  Preserve the union of every affected domain key
+    while removing duplicate commands and rebinding them to the final source
+    revision.
+    """
+
+    final_revisions: dict[tuple[str, str, str], int] = {}
+    ordered_unique: dict[
+        tuple[str, str, str, str, str, str], dict[str, Any]
+    ] = {}
+    for command in commands:
+        source_region = command.get("source_region")
+        source_table = command.get("source_table")
+        source_key = command.get("source_key")
+        revision = command.get("source_row_revision")
+        dirty_key = command.get("dirty_key")
+        if (
+            not isinstance(source_region, str)
+            or not source_region
+            or not isinstance(source_table, str)
+            or not source_table
+            or not isinstance(source_key, str)
+            or not source_key
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 1
+            or not isinstance(dirty_key, DirtyKeyV2)
+        ):
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_DEFERRED_DIRTY_INVALID"
+            )
+        source_identity = (source_region, source_table, source_key)
+        final_revisions[source_identity] = max(
+            revision,
+            final_revisions.get(source_identity, 0),
+        )
+        command_identity = (
+            *source_identity,
+            dirty_key.key_type,
+            dirty_key.key_part_1,
+            dirty_key.key_part_2,
+        )
+        ordered_unique.setdefault(command_identity, dict(command))
+
+    coalesced: list[dict[str, Any]] = []
+    for command_identity, command in ordered_unique.items():
+        command["source_row_revision"] = final_revisions[
+            command_identity[:3]
+        ]
+        coalesced.append(command)
+    return tuple(coalesced)
 
 
 def _is_v2_business_event(event: DtsChangeEvent) -> bool:
