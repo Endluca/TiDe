@@ -725,7 +725,49 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
         with engine.begin() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260825_102_dts_ingest_batch_throughput"
+            ).scalar_one() == "20260825_105_pipeline_read_acl"
+            assert connection.execute(
+                text(
+                    """
+                    SELECT
+                      has_table_privilege(
+                        'tit_growth_app','public.outbox_events','SELECT'
+                      ),
+                      has_table_privilege(
+                        'tit_growth_app','public.outbox_events','INSERT'
+                      ),
+                      has_table_privilege(
+                        'tit_growth_app','public.outbox_events','UPDATE'
+                      ),
+                      has_table_privilege(
+                        'tit_growth_app','public.outbox_events','DELETE'
+                      ),
+                      has_table_privilege(
+                        'tit_growth_app','public.outbox_events','TRUNCATE'
+                      )
+                    """
+                )
+            ).one() == (True, True, True, True, False)
+            connection.execute(text("SET LOCAL ROLE tit_growth_app"))
+            assert connection.execute(
+                text(
+                    """
+                    SELECT outbox_id
+                    FROM public.outbox_events
+                    WHERE status='PENDING'
+                    ORDER BY available_at,created_at,outbox_id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                    """
+                )
+            ).all() == []
+            assert connection.execute(
+                text(
+                    "SELECT qualification_grants_enabled "
+                    "FROM public.dts_pipeline_control "
+                    "WHERE control_id='PRIMARY'"
+                )
+            ).scalar_one() is False
             assert connection.execute(
                 text(
                     """

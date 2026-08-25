@@ -204,6 +204,7 @@ def validate_runtime_startup(
     if (
         row.get("rolcanlogin") is not True
         or row.get("rolinherit") is not False
+        or row.get("pipeline_select") is not True
         or any(
             row.get(name) is True
             for name in (
@@ -213,7 +214,6 @@ def validate_runtime_startup(
                 "rolreplication",
                 "rolbypassrls",
                 "public_create",
-                "pipeline_select",
             )
         )
     ):
