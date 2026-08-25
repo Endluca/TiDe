@@ -481,15 +481,24 @@ def _read_claim_relationship_source_identities(
     rows = connection.execute(
         text(
             """
-            SELECT input_identity
-            FROM public.dts_dirty_key_inputs
-            WHERE source_region=:source_region
-              AND key_type=:key_type
-              AND key_part_1=:key_part_1
-              AND key_part_2=:key_part_2
-              AND dirty_work_revision<=:claimed_work_revision
-              AND input_kind='SOURCE_REVISION'
-            ORDER BY dirty_work_revision
+            SELECT input.input_identity
+            FROM public.dts_dirty_key_inputs AS input
+            JOIN public.dts_dirty_keys AS dirty
+              ON dirty.source_region=input.source_region
+             AND dirty.key_type=input.key_type
+             AND dirty.key_part_1=input.key_part_1
+             AND dirty.key_part_2=input.key_part_2
+            WHERE input.source_region=:source_region
+              AND input.key_type=:key_type
+              AND input.key_part_1=:key_part_1
+              AND input.key_part_2=:key_part_2
+              AND input.dirty_work_revision>dirty.completed_work_revision
+              AND input.dirty_work_revision<=:claimed_work_revision
+              AND input.input_kind='SOURCE_REVISION'
+              AND dirty.status='PROCESSING'
+              AND dirty.lease_token=:lease_token
+              AND dirty.claimed_through_work_revision=:claimed_work_revision
+            ORDER BY input.dirty_work_revision
             """
         ),
         {
@@ -497,6 +506,7 @@ def _read_claim_relationship_source_identities(
             "key_type": claim.key.key_type,
             "key_part_1": claim.key.key_part_1,
             "key_part_2": claim.key.key_part_2,
+            "lease_token": claim.lease_token,
             "claimed_work_revision": claim.claimed_work_revision,
         },
     ).mappings()
@@ -567,26 +577,39 @@ def _read_relationship_versions(
     rows = connection.execute(
         text(
             """
-            SELECT source_region,source_partition_epoch_id,topic,
-                   partition_id,offset_value,source_table,source_key,
-                   source_key_type,source_row_revision,operation,before_row,
-                   after_row,source_field_types,source_timestamp
-            FROM public.dts_source_row_versions
-            WHERE source_region=:source_region
-              AND source_row_revision IS NOT NULL
-              AND operation=ANY(CAST(:operations AS text[]))
+            SELECT version.source_region,version.source_partition_epoch_id,
+                   version.topic,version.partition_id,version.offset_value,
+                   version.source_table,version.source_key,
+                   version.source_key_type,version.source_row_revision,
+                   version.operation,version.before_row,version.after_row,
+                   version.source_field_types,version.source_timestamp
+            FROM public.dts_source_row_versions AS version
+            WHERE version.source_region=:source_region
+              AND version.source_row_revision IS NOT NULL
+              AND version.operation=ANY(CAST(:operations AS text[]))
               AND EXISTS (
                     SELECT 1
                     FROM jsonb_array_elements(CAST(:identities AS jsonb))
                          AS identity
-                    WHERE identity->>'source_table'=source_table
-                      AND identity->>'source_key'=source_key
+                    WHERE identity->>'source_table'=version.source_table
+                      AND identity->>'source_key'=version.source_key
                   )
-            ORDER BY convert_to(source_table,'UTF8'),
-                     convert_to(source_key_type,'UTF8'),
-                     source_key_numeric NULLS LAST,
-                     convert_to(COALESCE(source_key_text,''),'UTF8'),
-                     source_row_revision,topic,partition_id,offset_value
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM public.teacher_student_relationship_events AS event
+                    WHERE event.source_region=version.source_region
+                      AND event.source_partition_epoch_id=
+                          version.source_partition_epoch_id
+                      AND event.topic=version.topic
+                      AND event.partition_id=version.partition_id
+                      AND event.offset_value=version.offset_value
+                  )
+            ORDER BY convert_to(version.source_table,'UTF8'),
+                     convert_to(version.source_key_type,'UTF8'),
+                     version.source_key_numeric NULLS LAST,
+                     convert_to(COALESCE(version.source_key_text,''),'UTF8'),
+                     version.source_row_revision,version.topic,
+                     version.partition_id,version.offset_value
             """
         ),
         {

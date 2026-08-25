@@ -38,6 +38,12 @@ RUNTIME_PIPELINE_READ_ACL_MIGRATION = (
     / "versions"
     / "20260825_105_runtime_pipeline_read_acl.py"
 )
+DTS_HOT_INDEX_MIGRATION = (
+    ROOT
+    / "migrations"
+    / "versions"
+    / "20260825_106_dts_hot_indexes.py"
+)
 PUBLIC_DMS = (
     ROOT
     / "migrations"
@@ -79,6 +85,12 @@ RUNTIME_PIPELINE_READ_ACL_DMS = (
     / "migrations"
     / "dms"
     / "20260825_public104_to_105_runtime_pipeline_read_acl.sql"
+)
+DTS_HOT_INDEX_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260825_public105_to_106_dts_hot_indexes.sql"
 )
 TEACHER_DMS = (
     ROOT
@@ -249,6 +261,26 @@ def test_runtime_pipeline_control_is_table_level_read_only() -> None:
     assert "public rev105 DMS requires public head 104" in source
     assert "public rev105 postflight verification failed" in source
     assert "version_num='20260825_105_pipeline_read_acl'" in source
+    _assert_dms_onequery_compatible(source)
+
+
+def test_dts_hot_indexes_remove_observed_write_amplification() -> None:
+    migration = DTS_HOT_INDEX_MIGRATION.read_text(encoding="utf-8")
+    source = DTS_HOT_INDEX_DMS.read_text(encoding="utf-8")
+    assert 'revision: str = "20260825_106_dts_hot_indexes"' in migration
+    assert "20260825_105_pipeline_read_acl" in migration
+    assert "ix_dts_ingest_events_processed_at_brin" in migration
+    assert "USING brin (processed_at)" in migration
+    assert "pages_per_range=64" in migration
+    assert "ix_dts_dirty_keys_ready_v3" in migration
+    assert "WHERE status IN ('PENDING','RETRY')" in migration
+    assert "DROP INDEX public.ix_dts_dirty_keys_ready_v2" in migration
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "public rev106 DMS requires public head 105" in source
+    assert "requires DTS and app stopped" in source
+    assert "public rev106 postflight verification failed" in source
+    assert "version_num='20260825_106_dts_hot_indexes'" in source
     _assert_dms_onequery_compatible(source)
 
 

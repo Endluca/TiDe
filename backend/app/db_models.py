@@ -509,10 +509,10 @@ class DtsIngestEventRecord(Base):
             name="ck_dts_event_route_status",
         ),
         Index(
-            "ix_dts_ingest_events_source_table_processed",
-            "source_region",
-            "source_table",
+            "ix_dts_ingest_events_processed_at_brin",
             "processed_at",
+            postgresql_using="brin",
+            postgresql_with={"pages_per_range": 64},
         ),
     )
 
@@ -718,34 +718,14 @@ class DtsDirtyKeyRecord(Base):
             name="ck_dts_dirty_key_state_shape_v2",
         ).ddl_if(dialect="postgresql"),
         Index(
-            "ix_dts_dirty_keys_ready_v2",
-            "status",
+            "ix_dts_dirty_keys_ready_v3",
             "next_attempt_at",
             "updated_at",
             "source_region",
             "key_type",
             "key_part_1",
             "key_part_2",
-        ),
-        Index(
-            "ix_dts_dirty_keys_pending_fifo_v2",
-            "next_attempt_at",
-            "updated_at",
-            "source_region",
-            "key_type",
-            "key_part_1",
-            "key_part_2",
-            postgresql_where=text("status = 'PENDING'"),
-        ),
-        Index(
-            "ix_dts_dirty_keys_retry_due_v2",
-            "next_attempt_at",
-            "updated_at",
-            "source_region",
-            "key_type",
-            "key_part_1",
-            "key_part_2",
-            postgresql_where=text("status = 'RETRY'"),
+            postgresql_where=text("status IN ('PENDING','RETRY')"),
         ),
         CheckConstraint(
             "compat_status IN ('STANDBY','PENDING','PROCESSING','RETRY',"

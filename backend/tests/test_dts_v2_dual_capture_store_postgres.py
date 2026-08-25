@@ -356,6 +356,13 @@ def test_single_pipeline_first_event_missing_update_and_insert(
             / "20260825_public104_to_105_runtime_pipeline_read_acl.sql"
         )
         _execute_dms_onequery_file(psql_url, public_104_105_sql)
+        public_105_106_sql = (
+            backend_dir
+            / "migrations"
+            / "dms"
+            / "20260825_public105_to_106_dts_hot_indexes.sql"
+        )
+        _execute_dms_onequery_file(psql_url, public_105_106_sql)
         _run_alembic(backend_dir, admin_url, "check")
 
         application_url = URL.create(
@@ -392,7 +399,7 @@ def test_single_pipeline_first_event_missing_update_and_insert(
         with admin_engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260825_105_pipeline_read_acl"
+            ).scalar_one() == "20260825_106_dts_hot_indexes"
             assert connection.execute(
                 text(
                     "SELECT has_table_privilege("

@@ -333,13 +333,13 @@ EXPECTED_DTS_STATE_INDEXES = (
     ),
     (
         "dts_ingest_events",
-        "ix_dts_ingest_events_source_table_processed",
-        "btree",
+        "ix_dts_ingest_events_processed_at_brin",
+        "brin",
         True,
         True,
         False,
-        ("source_region", "source_table", "processed_at"),
-        ("text_ops", "text_ops", "timestamptz_ops"),
+        ("processed_at",),
+        ("timestamptz_minmax_ops",),
         False,
     ),
     (

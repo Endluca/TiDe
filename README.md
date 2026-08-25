@@ -109,7 +109,7 @@ Tide_teachers_camp/
 
 - PostgreSQL 是运行事实源，Schema 只通过 Alembic 变更。
 - 当前交接测试库只包含显式测试 Seed，不是生产日更数据。
-- 当前代码迁移 head 为 public `20260825_105_pipeline_read_acl` 与 teacher
+- 当前代码迁移 head 为 public `20260825_106_dts_hot_indexes` 与 teacher
   `0043_p_rel_execution_catalog`，最终 teacher canonical 账本为 38 条，其中
   `20260811_51_g01_tesol_only` / `0033_g01_tesol_only`
   将 G01 收窄为 TESOL-only，`20260811_54_g04_remove_device_check` /

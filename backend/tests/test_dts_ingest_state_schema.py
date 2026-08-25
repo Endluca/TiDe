@@ -95,6 +95,19 @@ def test_runtime_orm_matches_the_four_dts_state_tables() -> None:
     }
     assert "source_row" in db_models.DtsSourceRowRecord.__table__.columns
     assert "last_record_id" in db_models.DtsSourceRowRecord.__table__.columns
+    ledger_indexes = {
+        index.name: index
+        for index in db_models.DtsIngestEventRecord.__table__.indexes
+    }
+    assert "ix_dts_ingest_events_source_table_processed" not in ledger_indexes
+    ledger_brin = ledger_indexes["ix_dts_ingest_events_processed_at_brin"]
+    assert tuple(column.name for column in ledger_brin.columns) == (
+        "processed_at",
+    )
+    assert ledger_brin.dialect_options["postgresql"]["using"] == "brin"
+    assert ledger_brin.dialect_options["postgresql"]["with"] == {
+        "pages_per_range": 64
+    }
 
 
 def test_revision_57_refuses_to_drop_persisted_replay_state(monkeypatch) -> None:

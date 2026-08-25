@@ -142,14 +142,16 @@ def test_v62_drops_claim_indexes_concurrently_in_reverse_order(monkeypatch) -> N
     )
 
 
-def test_dirty_key_orm_declares_exact_partial_index_shapes() -> None:
+def test_dirty_key_orm_declares_one_exact_runnable_index_shape() -> None:
     indexes = {
         index.name: index for index in DtsDirtyKeyRecord.__table__.indexes
     }
 
-    pending = indexes["ix_dts_dirty_keys_pending_fifo_v2"]
-    retry = indexes["ix_dts_dirty_keys_retry_due_v2"]
-    assert tuple(column.name for column in pending.columns) == (
+    assert "ix_dts_dirty_keys_ready_v2" not in indexes
+    assert "ix_dts_dirty_keys_pending_fifo_v2" not in indexes
+    assert "ix_dts_dirty_keys_retry_due_v2" not in indexes
+    ready = indexes["ix_dts_dirty_keys_ready_v3"]
+    assert tuple(column.name for column in ready.columns) == (
         "next_attempt_at",
         "updated_at",
         "source_region",
@@ -157,15 +159,6 @@ def test_dirty_key_orm_declares_exact_partial_index_shapes() -> None:
         "key_part_1",
         "key_part_2",
     )
-    assert str(pending.dialect_options["postgresql"]["where"]) == (
-        "status = 'PENDING'"
+    assert str(ready.dialect_options["postgresql"]["where"]) == (
+        "status IN ('PENDING','RETRY')"
     )
-    assert tuple(column.name for column in retry.columns) == (
-        "next_attempt_at",
-        "updated_at",
-        "source_region",
-        "key_type",
-        "key_part_1",
-        "key_part_2",
-    )
-    assert str(retry.dialect_options["postgresql"]["where"]) == "status = 'RETRY'"

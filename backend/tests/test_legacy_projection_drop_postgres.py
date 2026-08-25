@@ -725,7 +725,7 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
         with engine.begin() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260825_105_pipeline_read_acl"
+            ).scalar_one() == "20260825_106_dts_hot_indexes"
             assert connection.execute(
                 text(
                     """

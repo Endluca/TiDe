@@ -938,7 +938,24 @@ def test_domestic_student_ids_are_hmac_protected_before_routing() -> None:
     assert candidate.target_values["学员id"] == token
 
 
-def test_ingest_preparation_uses_new_insert_as_event_contract_baseline() -> None:
+def test_ingest_preparation_uses_new_insert_as_event_contract_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import dts_source_consumer as consumer_module
+
+    fingerprint_calls = 0
+    original_fingerprint = consumer_module._source_event_proof_fingerprint
+
+    def counted_fingerprint(event):
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        return original_fingerprint(event)
+
+    monkeypatch.setattr(
+        consumer_module,
+        "_source_event_proof_fingerprint",
+        counted_fingerprint,
+    )
     fields = [
         "id",
         "t_id",
@@ -996,6 +1013,9 @@ def test_ingest_preparation_uses_new_insert_as_event_contract_baseline() -> None
     assert protected.after is not None
     assert "s_id" not in protected.after
     assert protected.after["student_token"].startswith("dom:v1:")
+    # Raw attestation, raw verification and one protected fingerprint.  The
+    # two protected proof objects must reuse that same digest.
+    assert fingerprint_calls == 3
 
 
 def test_domestic_student_protection_rejects_conflicting_aliases() -> None:

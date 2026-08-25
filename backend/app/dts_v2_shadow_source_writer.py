@@ -28,8 +28,9 @@ from .dts_postgres_batch_copy import copy_rows, jsonb
 from .dts_source_consumer import (
     DtsChangeEvent,
     DtsRecordError,
+    _assert_domestic_event_protected_with_fingerprint,
     _has_v2_source_image_completeness_proof,
-    assert_domestic_event_protected,
+    _source_event_proof_fingerprint,
 )
 from .dts_source_contract_v2 import (
     V2_BUSINESS_SOURCE_SUFFIXES_BY_REGION,
@@ -390,12 +391,14 @@ class DtsV2ShadowSourceWriter:
             raise DtsV2ShadowSourceWriterError(
                 "DTS_V2_SHADOW_SOURCE_TABLE_NOT_PROFILED"
             )
+        event_fingerprint = _source_event_proof_fingerprint(event)
         exact_complete_profile = (
             event.source_images_complete is True
             and event.source_image_profile_id == expected_profile
             and _has_v2_source_image_completeness_proof(
                 event,
                 expected_profile_id=expected_profile,
+                event_fingerprint=event_fingerprint,
             )
         )
         completeness_claimed = bool(
@@ -411,9 +414,10 @@ class DtsV2ShadowSourceWriter:
                 "DTS_V2_SHADOW_EXACT_SOURCE_PROFILE_REQUIRED"
             )
         try:
-            assert_domestic_event_protected(
+            _assert_domestic_event_protected_with_fingerprint(
                 event,
                 require_process_proof=True,
+                event_fingerprint=event_fingerprint,
             )
         except DtsRecordError as exc:
             raise DtsV2ShadowSourceWriterError(str(exc)) from exc
