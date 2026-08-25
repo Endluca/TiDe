@@ -4,6 +4,11 @@ from datetime import date
 
 import pytest
 
+from app.dts_v2_domain_aggregate import (
+    build_domain_aggregate_identity_v2,
+    canonical_domain_state_v2,
+)
+from app.dts_v2_outbox_worker import DtsV2OutboxEvent
 from app.dts_v2_teacher_outbox_processor import (
     DtsV2TeacherOutboxProcessor,
     DtsV2TeacherOutboxProcessorError,
@@ -223,6 +228,142 @@ def _states() -> dict[str, dict[str, object]]:
         "scope_evidence": _scopes("ovs"),
     }
     return {"dom": dom, "ovs": ovs}
+
+
+def _aggregate_row(
+    region: str,
+    state: dict[str, object],
+    *,
+    state_hash: str | None = None,
+) -> dict[str, object]:
+    identity = build_domain_aggregate_identity_v2(
+        "TEACHER",
+        {"source_region": region, "teacher_id": TEACHER_ID},
+    )
+    return {
+        "aggregate_type": "TEACHER",
+        "aggregate_id": identity.aggregate_id,
+        "canonical_key": dict(identity.aggregate_key),
+        "canonical_key_sha256": identity.aggregate_id.rsplit(":", 1)[-1],
+        "revision": 1,
+        "aggregate_state": state,
+        "aggregate_state_sha256": (
+            canonical_domain_state_v2(state)[1]
+            if state_hash is None
+            else state_hash
+        ),
+    }
+
+
+def _event(region: str = "dom") -> DtsV2OutboxEvent:
+    identity = build_domain_aggregate_identity_v2(
+        "TEACHER",
+        {"source_region": region, "teacher_id": TEACHER_ID},
+    )
+    return DtsV2OutboxEvent(
+        outbox_id="outbox:v2:" + "a" * 64,
+        event_id=f"source_wide.changed.v2:{identity.aggregate_id}:1",
+        aggregate_type="TEACHER",
+        aggregate_id=identity.aggregate_id,
+        event_type="source_wide.changed.v2",
+        payload={
+            "aggregate_key": dict(identity.aggregate_key),
+            "aggregate_revision": 1,
+        },
+        payload_sha256="b" * 64,
+        attempt_count=0,
+        recovery_count=0,
+        row_version=1,
+    )
+
+
+class _AggregateRows:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+
+    def mappings(self) -> "_AggregateRows":
+        return self
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
+class _AggregateConnection:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+
+    def execute(self, statement, parameters):
+        assert "FROM public.domain_aggregate_revisions" in str(statement)
+        assert len(parameters["aggregate_ids"]) == 2
+        return _AggregateRows(self.rows)
+
+
+class _UnexpectedMaterializer:
+    def apply_teacher_plan(self, connection, plan, *, triggering_event_id):
+        del connection, plan, triggering_event_id
+        raise AssertionError("materializer must not run for an unmet dependency")
+
+
+def test_missing_dom_teacher_baseline_is_an_auditable_noop() -> None:
+    missing_baseline_state = {
+        "protocol_version": "teacher-domain-v1",
+        "profile": None,
+        "profile_evidence_status": "SOURCE_MISSING",
+        "profile_reference": {
+            "source_region": "dom",
+            "teacher_id": TEACHER_ID,
+        },
+    }
+    processor = DtsV2TeacherOutboxProcessor(
+        materializer=_UnexpectedMaterializer(),
+    )
+
+    result = processor.process_event(
+        _AggregateConnection(
+            [_aggregate_row("dom", missing_baseline_state)]
+        ),  # type: ignore[arg-type]
+        _event(),
+    )
+
+    assert result == {"teacher_baseline_missing_skips": 1}
+
+
+def test_missing_peer_region_waits_without_materializing() -> None:
+    processor = DtsV2TeacherOutboxProcessor(
+        materializer=_UnexpectedMaterializer(),
+    )
+
+    result = processor.process_event(
+        _AggregateConnection(
+            [_aggregate_row("dom", _states()["dom"])]
+        ),  # type: ignore[arg-type]
+        _event(),
+    )
+
+    assert result == {"teacher_regional_dependency_waits": 1}
+
+
+def test_malformed_existing_aggregate_is_not_hidden_as_dependency_wait() -> None:
+    processor = DtsV2TeacherOutboxProcessor(
+        materializer=_UnexpectedMaterializer(),
+    )
+
+    with pytest.raises(
+        DtsV2TeacherOutboxProcessorError,
+        match="DTS_V2_TEACHER_REGIONAL_AGGREGATE_HASH_MISMATCH",
+    ):
+        processor.process_event(
+            _AggregateConnection(
+                [
+                    _aggregate_row(
+                        "dom",
+                        _states()["dom"],
+                        state_hash="0" * 64,
+                    )
+                ]
+            ),  # type: ignore[arg-type]
+            _event(),
+        )
 
 
 def test_global_teacher_plan_merges_regions_and_keeps_all_course_facts() -> None:
