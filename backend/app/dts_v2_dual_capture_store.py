@@ -250,6 +250,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         self._require_queued_only()
         self._validate_runtime()
         with self.engine.begin() as connection:
+            state_lock_started = perf_counter()
             checkpoint = self._validate_dual_capture_state(
                 connection,
                 source_region=first_event.source_region,
@@ -258,7 +259,19 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 lock_checkpoint=True,
             )
             if checkpoint is None:
-                self._initialize_stream_if_missing(connection, first_event)
+                # A normal hot batch needs only the stream/epoch/checkpoint
+                # locks.  The full catalog/ACL/state proof is repeated only
+                # when the hot read cannot find a complete stream, which is
+                # the expected first-batch path after a destructive reset.
+                startup_state = self._validate_dual_capture_state(
+                    connection,
+                    source_region=first_event.source_region,
+                    topic=first_event.topic,
+                    partition=first_event.partition,
+                    lock_checkpoint=False,
+                )
+                if startup_state is None:
+                    self._initialize_stream_if_missing(connection, first_event)
                 checkpoint = self._validate_dual_capture_state(
                     connection,
                     source_region=first_event.source_region,
@@ -272,6 +285,10 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 )
             checkpoint_row_version = checkpoint["checkpoint_row_version"]
             next_offset = checkpoint["next_offset"]
+            state_lock_elapsed_ms = _elapsed_ms(
+                state_lock_started,
+                perf_counter(),
+            )
             prepare_batch = getattr(self._v2_writer, "prepare_batch", None)
             if callable(prepare_batch):
                 return self._apply_optimized_batch_transaction(
@@ -280,6 +297,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     checkpoint_row_version=checkpoint_row_version,
                     next_offset=next_offset,
                     prepare_batch=prepare_batch,
+                    state_lock_elapsed_ms=state_lock_elapsed_ms,
                 )
             duplicates: list[bool] = []
             # Do not bulk-fold v2 current.  Applying each event in source order
@@ -308,6 +326,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         checkpoint_row_version: int,
         next_offset: int,
         prepare_batch: Any,
+        state_lock_elapsed_ms: int,
     ) -> tuple[bool, ...]:
         """Persist a continuous batch with one ledger and checkpoint write.
 
@@ -422,6 +441,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         )
         checkpoint_finished = perf_counter()
         self._last_batch_metrics = {
+            "db_state_lock_elapsed_ms": state_lock_elapsed_ms,
             "db_batch_prepare_elapsed_ms": _elapsed_ms(
                 phase_started,
                 prepare_finished,
@@ -1148,6 +1168,13 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         partition: int,
         lock_checkpoint: bool,
     ) -> Mapping[str, Any] | None:
+        if lock_checkpoint:
+            return self._lock_batch_state(
+                connection,
+                source_region=source_region,
+                topic=topic,
+                partition=partition,
+            )
         try:
             missing_relations = connection.execute(
                 text(
@@ -1393,35 +1420,9 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     "DTS_V2_DUAL_CAPTURE_STREAM_MISMATCH"
                 )
 
-            if lock_checkpoint:
-                # Serialize the stream before v2 current is touched.
-                self._lock_stream_checkpoint(
-                    connection,
-                    _stream_event(source_region, topic, partition),
-                )
-                locked_epoch = connection.execute(
-                    text(
-                        """
-                        SELECT public.lock_dts_source_partition_epoch_for_ingest_v2(
-                            :source_region,:epoch_id,:topic,:partition
-                        )
-                        """
-                    ),
-                    {
-                        "source_region": source_region,
-                        "epoch_id": self.source_partition_epoch_id,
-                        "topic": topic,
-                        "partition": partition,
-                    },
-                ).scalar_one()
-                if locked_epoch is not True:
-                    raise DtsV2DualCaptureStoreError(
-                        "DTS_V2_DUAL_CAPTURE_ACTIVE_EPOCH_MISMATCH"
-                    )
-            checkpoint_lock = "FOR UPDATE" if lock_checkpoint else "FOR SHARE"
             checkpoint_rows = connection.execute(
                 text(
-                    f"""
+                    """
                     SELECT next_offset, source_timestamp,
                            source_partition_epoch_id, consumer_group,
                            checkpoint_row_version, is_current_epoch
@@ -1429,7 +1430,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     WHERE source_region = :source_region
                       AND topic = :topic
                       AND partition_id = :partition
-                    {checkpoint_lock}
+                    FOR SHARE
                     """
                 ),
                 {
@@ -1450,6 +1451,132 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 "DTS_V2_DUAL_CAPTURE_CHECKPOINT_MISSING"
             )
         checkpoint = checkpoint_rows[0]
+        self._validate_checkpoint_state(checkpoint)
+        return checkpoint
+
+    def _lock_batch_state(
+        self,
+        connection: Connection,
+        *,
+        source_region: str,
+        topic: str,
+        partition: int,
+    ) -> Mapping[str, Any] | None:
+        """Lock the live single-pipeline stream in one PostgreSQL round trip.
+
+        Startup already proves schema, ACLs, function definitions and the
+        complete reset state.  Re-running those catalog reads for every batch
+        costs several China-to-Singapore round trips and cannot strengthen the
+        transaction.  The hot path keeps the mutable invariants: stream
+        serialization, active epoch, current mode and checkpoint identity.
+        """
+
+        try:
+            rows = connection.execute(
+                text(
+                    """
+                    WITH active_epoch AS MATERIALIZED (
+                        SELECT source_region,source_partition_epoch_id,
+                               topic,partition_id
+                        FROM public.dts_source_partition_epochs
+                        WHERE source_region=:source_region
+                          AND source_partition_epoch_id=:epoch_id
+                          AND topic=:topic
+                          AND partition_id=:partition
+                          AND epoch_kind='BROKER'
+                          AND status='ACTIVE'
+                    ),
+                    stream_lock AS MATERIALIZED (
+                        SELECT pg_catalog.pg_advisory_xact_lock(
+                            pg_catalog.hashtextextended(:stream_identity,0)
+                        ) AS acquired
+                    ),
+                    epoch_lock AS MATERIALIZED (
+                        SELECT
+                          public.lock_dts_source_partition_epoch_for_ingest_v2(
+                            epoch.source_region,
+                            epoch.source_partition_epoch_id,
+                            epoch.topic,
+                            epoch.partition_id
+                          ) AS locked
+                        FROM active_epoch AS epoch
+                        CROSS JOIN stream_lock
+                    ),
+                    checkpoint AS MATERIALIZED (
+                        SELECT current_checkpoint.next_offset,
+                               current_checkpoint.source_timestamp,
+                               current_checkpoint.source_partition_epoch_id,
+                               current_checkpoint.consumer_group,
+                               current_checkpoint.checkpoint_row_version,
+                               current_checkpoint.is_current_epoch
+                        FROM public.dts_ingest_checkpoints
+                          AS current_checkpoint
+                        CROSS JOIN epoch_lock
+                        WHERE current_checkpoint.source_region=:source_region
+                          AND current_checkpoint.topic=:topic
+                          AND current_checkpoint.partition_id=:partition
+                        FOR UPDATE OF current_checkpoint
+                    )
+                    SELECT checkpoint.next_offset,
+                           checkpoint.source_timestamp,
+                           checkpoint.source_partition_epoch_id,
+                           checkpoint.consumer_group,
+                           checkpoint.checkpoint_row_version,
+                           checkpoint.is_current_epoch,
+                           control.mode,
+                           control.row_version AS control_row_version,
+                           epoch_lock.locked AS epoch_locked
+                    FROM checkpoint
+                    CROSS JOIN epoch_lock
+                    LEFT JOIN public.dts_pipeline_control AS control
+                      ON control.control_id='PRIMARY'
+                    """
+                ),
+                {
+                    "stream_identity": self._stream_identity(
+                        _stream_event(source_region, topic, partition)
+                    ),
+                    "source_region": source_region,
+                    "epoch_id": self.source_partition_epoch_id,
+                    "topic": topic,
+                    "partition": partition,
+                },
+            ).mappings().all()
+        except SQLAlchemyError as exc:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_STATE_UNREADABLE"
+            ) from exc
+
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_CHECKPOINT_CONFLICT"
+            )
+        state = rows[0]
+        if state.get("mode") is None:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_CONTROL_MISSING"
+            )
+        if state.get("mode") != self.pipeline_mode:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_MODE_MISMATCH"
+            )
+        _positive_version(
+            state.get("control_row_version"),
+            "DTS_V2_DUAL_CAPTURE_CONTROL_INVALID",
+        )
+        if state.get("epoch_locked") is not True:
+            raise DtsV2DualCaptureStoreError(
+                "DTS_V2_DUAL_CAPTURE_ACTIVE_EPOCH_MISMATCH"
+            )
+        self._validate_checkpoint_state(state)
+        return state
+
+    def _validate_checkpoint_state(
+        self,
+        checkpoint: Mapping[str, Any],
+    ) -> None:
         if (
             checkpoint.get("source_partition_epoch_id")
             != self.source_partition_epoch_id
@@ -1471,7 +1598,6 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             checkpoint.get("source_timestamp"),
             "DTS_V2_DUAL_CAPTURE_CHECKPOINT_INVALID",
         )
-        return checkpoint
 
     def _write_or_validate_ledger(
         self,

@@ -753,6 +753,7 @@ def test_single_pipeline_first_event_missing_update_and_insert(
         ) == (False,) * bulk_count
         batch_metrics = sink.consume_last_batch_metrics()
         assert set(batch_metrics) == {
+            "db_state_lock_elapsed_ms",
             "db_batch_prepare_elapsed_ms",
             "db_event_route_elapsed_ms",
             "db_source_flush_elapsed_ms",

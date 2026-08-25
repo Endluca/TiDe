@@ -24,6 +24,7 @@ from app.dts_v2_shadow_source_writer import (
     DtsV2ShadowSourceWriteResult,
     DtsV2ShadowSourceWriter,
     DtsV2ShadowSourceWriterError,
+    _require_broker_epoch_and_lock_batch,
 )
 
 
@@ -813,18 +814,10 @@ def test_shadow_batch_missing_current_uses_one_prefetch_and_no_event_sql(
 
     monkeypatch.setattr(
         shadow_source_writer,
-        "_require_broker_epoch",
-        lambda *_args, **_kwargs: {"status": "ACTIVE"},
-    )
-    monkeypatch.setattr(
-        shadow_source_writer,
-        "_lock_source_table_for_cdc",
-        lambda *_args, **_kwargs: calls.append("table-lock"),
-    )
-    monkeypatch.setattr(
-        shadow_source_writer,
-        "_lock_identities",
-        lambda *_args, **_kwargs: calls.append("identity-lock-batch"),
+        "_require_broker_epoch_and_lock_batch",
+        lambda *_args, **_kwargs: (
+            calls.append("epoch-and-lock-batch") or {"status": "ACTIVE"}
+        ),
     )
     for forbidden in (
         "_lock_identity",
@@ -858,10 +851,113 @@ def test_shadow_batch_missing_current_uses_one_prefetch_and_no_event_sql(
         "IGNORED_MISSING_CURRENT"
     }
     assert calls == [
-        "table-lock",
-        "identity-lock-batch",
+        "epoch-and-lock-batch",
         "current-prefetch",
     ]
+
+
+def test_shadow_batch_epoch_and_all_locks_use_one_database_request() -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _Rows:
+        @staticmethod
+        def mappings() -> "_Rows":
+            return _Rows()
+
+        @staticmethod
+        def one_or_none() -> dict[str, Any]:
+            return {
+                "source_partition_epoch_id": EPOCH_ID,
+                "topic": "topic-dual",
+                "partition_id": 0,
+                "epoch_kind": "BROKER",
+                "status": "ACTIVE",
+                "epoch_sequence": 1,
+                "predecessor_epoch_id": None,
+                "start_offset": 0,
+                "v2_epoch_bootstrap_floor": 0,
+                "source_tables_locked": True,
+                "source_table_count": 2,
+                "identity_lock_count": 2,
+                "active_source_scope_tables": [],
+            }
+
+    class _Connection:
+        @staticmethod
+        def execute(statement: Any, parameters: dict[str, Any]) -> _Rows:
+            calls.append((str(statement), parameters))
+            return _Rows()
+
+    result = _require_broker_epoch_and_lock_batch(
+        _Connection(),  # type: ignore[arg-type]
+        event=_event(0),
+        source_partition_epoch_id=EPOCH_ID,
+        source_tables=("ovs_teacher_favorite", "ovs_appoint"),
+        identities=(
+            ("source-current", "ovs", "ovs_appoint", "7001"),
+            ("source-current", "ovs", "ovs_teacher_favorite", "9"),
+        ),
+    )
+
+    assert result["status"] == "ACTIVE"
+    assert len(calls) == 1
+    statement, parameters = calls[0]
+    assert "table_locks AS MATERIALIZED" in statement
+    assert "identity_locks AS MATERIALIZED" in statement
+    assert "active_scope_tables AS MATERIALIZED" in statement
+    assert parameters["source_tables"] == [
+        "ovs_appoint",
+        "ovs_teacher_favorite",
+    ]
+    assert len(parameters["identity_lock_ids"]) == 2
+
+
+def test_single_pipeline_hot_state_lock_uses_one_database_request() -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _Rows:
+        @staticmethod
+        def mappings() -> "_Rows":
+            return _Rows()
+
+        @staticmethod
+        def all() -> list[dict[str, Any]]:
+            return [
+                {
+                    "next_offset": 9,
+                    "source_timestamp": 1_787_500_009,
+                    "source_partition_epoch_id": EPOCH_ID,
+                    "consumer_group": CONSUMER_GROUP,
+                    "checkpoint_row_version": 3,
+                    "is_current_epoch": True,
+                    "mode": "V2_PRIMARY",
+                    "control_row_version": 1,
+                    "epoch_locked": True,
+                }
+            ]
+
+    class _Connection:
+        @staticmethod
+        def execute(statement: Any, parameters: dict[str, Any]) -> _Rows:
+            calls.append((str(statement), parameters))
+            return _Rows()
+
+    sink, _engine, _calls = _sink()
+    state = PostgresDtsV2DualCaptureSink._lock_batch_state(
+        sink,
+        _Connection(),  # type: ignore[arg-type]
+        source_region="ovs",
+        topic="topic-dual",
+        partition=0,
+    )
+
+    assert state is not None and state["next_offset"] == 9
+    assert len(calls) == 1
+    statement, parameters = calls[0]
+    assert "stream_lock AS MATERIALIZED" in statement
+    assert "epoch_lock AS MATERIALIZED" in statement
+    assert "FOR UPDATE OF current_checkpoint" in statement
+    assert parameters["epoch_id"] == EPOCH_ID
 
 
 def test_shadow_batch_repeated_identity_uses_deferred_ordered_event_path(
@@ -884,18 +980,8 @@ def test_shadow_batch_repeated_identity_uses_deferred_ordered_event_path(
 
     monkeypatch.setattr(
         shadow_source_writer,
-        "_require_broker_epoch",
+        "_require_broker_epoch_and_lock_batch",
         lambda *_args, **_kwargs: {"status": "ACTIVE"},
-    )
-    monkeypatch.setattr(
-        shadow_source_writer,
-        "_lock_source_table_for_cdc",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        shadow_source_writer,
-        "_lock_identities",
-        lambda *_args, **_kwargs: None,
     )
 
     context = DtsV2ShadowSourceWriter(enabled=True).prepare_batch(
