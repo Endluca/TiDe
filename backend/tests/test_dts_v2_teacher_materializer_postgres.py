@@ -23,7 +23,10 @@ from app.dts_v2_course_domain_projector import (
 )
 from app.dts_v2_source_repository import DtsV2CurrentSourceRow
 from app.dts_v2_teacher_materializer import PostgresDtsV2TeacherMaterializer
-from app.dts_v2_teacher_outbox_processor import TeacherMaterializationPlanV2
+from app.dts_v2_teacher_outbox_processor import (
+    DtsV2TeacherOutboxProcessor,
+    TeacherMaterializationPlanV2,
+)
 from test_dts_v2_ops_case_postgres import (
     _postgres_tools_available,
     _run_alembic,
@@ -52,6 +55,37 @@ _PROOF_COLUMNS = {
     "v2_materialized_at",
     "v2_row_version",
 }
+
+
+@pytest.mark.skipif(
+    not _postgres_tools_available(),
+    reason="local PostgreSQL binaries are required for rev89 contracts",
+)
+def test_teacher_outbox_legacy_read_works_for_select_only_runtime_role(
+    ops_case_postgres,
+) -> None:
+    admin, worker, _recovery = ops_case_postgres
+    with admin.connect() as connection:
+        privileges = connection.execute(
+            text(
+                """
+                SELECT
+                  has_table_privilege(
+                    'tit_growth_app','public.teacher_source_wide','SELECT'
+                  ) AS can_select,
+                  has_table_privilege(
+                    'tit_growth_app','public.teacher_source_wide','UPDATE'
+                  ) AS can_update
+                """
+            )
+        ).mappings().one()
+        assert privileges == {"can_select": True, "can_update": False}
+
+    with worker.begin() as connection:
+        assert DtsV2TeacherOutboxProcessor._read_legacy_first_dates(
+            connection,
+            "teacher-not-yet-materialized",
+        ) is None
 
 
 class _TeacherProfileRepository:
