@@ -23,9 +23,10 @@ from .dts_source_consumer import (
     SUPPORTED_REGIONS,
     DtsChangeEvent,
     DtsRecordError,
+    _assert_domestic_event_protected_with_fingerprint,
     _attest_v2_source_image_completeness,
     _has_v2_source_image_completeness_proof,
-    assert_domestic_event_protected,
+    _source_event_proof_fingerprint,
 )
 from .dts_source_profile_registry_v2 import (
     DtsSourceProfileManifestError,
@@ -481,9 +482,11 @@ def build_v2_source_route(
         and event.source_image_profile_id != expected_profile_id
     ):
         raise DtsRecordError("DTS_SOURCE_SCHEMA_PROFILE_MISMATCH")
-    assert_domestic_event_protected(
+    event_fingerprint = _source_event_proof_fingerprint(event)
+    _assert_domestic_event_protected_with_fingerprint(
         event,
         require_process_proof=True,
+        event_fingerprint=event_fingerprint,
     )
     if current is not None and (
         current.source_region != event.source_region
@@ -507,6 +510,7 @@ def build_v2_source_route(
     complete_profile_proof = _has_v2_source_image_completeness_proof(
         event,
         expected_profile_id=expected_profile_id,
+        event_fingerprint=event_fingerprint,
     ) and (
         _uses_event_field_contract(table)
         or _protected_images_retain_complete_shape(

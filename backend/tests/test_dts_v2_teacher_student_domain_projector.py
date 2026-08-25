@@ -491,6 +491,76 @@ class _Repository:
         return ()
 
 
+class _MappingRows:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+
+    def mappings(self) -> list[dict[str, Any]]:
+        return self.rows
+
+
+class _CaptureConnection:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.statement = ""
+        self.parameters: dict[str, Any] = {}
+
+    def execute(self, statement, parameters):
+        self.statement = str(statement)
+        self.parameters = dict(parameters)
+        return _MappingRows(self.rows)
+
+
+def test_relationship_claim_reads_only_uncompleted_inputs_for_current_lease() -> None:
+    claim = DirtyClaimV2(
+        key=DirtyKeyV2("dom", "TEACHER_STUDENT", "100", DOM_STUDENT),
+        lease_token="lease-incremental",
+        claimed_work_revision=9,
+        row_version=11,
+    )
+    connection = _CaptureConnection(
+        [
+            {
+                "input_identity": {
+                    "source_table": "dom_teacher_favorite",
+                    "source_key": "7",
+                }
+            },
+            {
+                "input_identity": {
+                    "source_table": "dom_appoint",
+                    "source_key": "ignored",
+                }
+            },
+        ]
+    )
+
+    assert relation_domain._read_claim_relationship_source_identities(
+        connection, claim
+    ) == {("dom_teacher_favorite", "7")}
+    assert (
+        "input.dirty_work_revision>dirty.completed_work_revision"
+        in connection.statement
+    )
+    assert "dirty.status='PROCESSING'" in connection.statement
+    assert "dirty.lease_token=:lease_token" in connection.statement
+    assert connection.parameters["lease_token"] == "lease-incremental"
+    assert connection.parameters["claimed_work_revision"] == 9
+
+
+def test_relationship_version_read_skips_already_materialized_events() -> None:
+    connection = _CaptureConnection([])
+
+    assert relation_domain._read_relationship_versions(
+        connection,
+        source_region="dom",
+        source_identities={("dom_teacher_favorite", "7")},
+    ) == ()
+    assert "NOT EXISTS" in connection.statement
+    assert "teacher_student_relationship_events AS event" in connection.statement
+    assert "event.offset_value=version.offset_value" in connection.statement
+
+
 class _RevisionStore:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []

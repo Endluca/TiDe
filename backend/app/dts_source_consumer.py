@@ -737,6 +737,7 @@ def _source_image_completeness_proof_matches(
     *,
     expected_profile_id: str,
     protected: bool,
+    event_fingerprint: str | None = None,
 ) -> bool:
     proof = event._v2_source_image_completeness_proof
     if (
@@ -759,7 +760,11 @@ def _source_image_completeness_proof_matches(
         expected_fingerprint
         and hmac.compare_digest(
             expected_fingerprint,
-            _source_event_proof_fingerprint(event),
+            (
+                _source_event_proof_fingerprint(event)
+                if event_fingerprint is None
+                else event_fingerprint
+            ),
         )
     )
 
@@ -768,22 +773,32 @@ def _has_v2_source_image_completeness_proof(
     event: "DtsChangeEvent",
     *,
     expected_profile_id: str,
+    event_fingerprint: str | None = None,
 ) -> bool:
     return _source_image_completeness_proof_matches(
         event,
         expected_profile_id=expected_profile_id,
         protected=event.source_region == "dom",
+        event_fingerprint=event_fingerprint,
     )
 
 
-def _domestic_protection_proof_matches(event: "DtsChangeEvent") -> bool:
+def _domestic_protection_proof_matches(
+    event: "DtsChangeEvent",
+    *,
+    event_fingerprint: str | None = None,
+) -> bool:
     proof = event._domestic_protection_proof
     return bool(
         isinstance(proof, _DomesticProtectionProof)
         and proof.marker is _DOMESTIC_PROTECTION_PROOF_MARKER
         and hmac.compare_digest(
             proof.protected_event_fingerprint,
-            _source_event_proof_fingerprint(event),
+            (
+                _source_event_proof_fingerprint(event)
+                if event_fingerprint is None
+                else event_fingerprint
+            ),
         )
     )
 
@@ -925,12 +940,11 @@ def protect_domestic_student_ids(
         _v2_source_image_completeness_proof=completeness_proof,
     )
 
+    protected_fingerprint = _source_event_proof_fingerprint(protected)
     if isinstance(completeness_proof, _SourceImageCompletenessProof):
         completeness_proof = replace(
             completeness_proof,
-            protected_event_fingerprint=_source_event_proof_fingerprint(
-                protected
-            ),
+            protected_event_fingerprint=protected_fingerprint,
         )
         protected = replace(
             protected,
@@ -939,9 +953,7 @@ def protect_domestic_student_ids(
 
     protection_proof = _DomesticProtectionProof(
         marker=_DOMESTIC_PROTECTION_PROOF_MARKER,
-        protected_event_fingerprint=_source_event_proof_fingerprint(
-            protected
-        ),
+        protected_event_fingerprint=protected_fingerprint,
     )
     return replace(protected, _domestic_protection_proof=protection_proof)
 
@@ -952,6 +964,21 @@ def assert_domestic_event_protected(
     require_process_proof: bool = False,
 ) -> None:
     """Second-line guard at the database boundary, before any row bind."""
+
+    _assert_domestic_event_protected_with_fingerprint(
+        event,
+        require_process_proof=require_process_proof,
+        event_fingerprint=None,
+    )
+
+
+def _assert_domestic_event_protected_with_fingerprint(
+    event: DtsChangeEvent,
+    *,
+    require_process_proof: bool,
+    event_fingerprint: str | None,
+) -> None:
+    """Internal same-boundary variant that reuses a freshly computed hash."""
 
     if event.source_region != "dom":
         return
@@ -979,7 +1006,10 @@ def assert_domestic_event_protected(
 
     inspect(event.before)
     inspect(event.after)
-    if require_process_proof and not _domestic_protection_proof_matches(event):
+    if require_process_proof and not _domestic_protection_proof_matches(
+        event,
+        event_fingerprint=event_fingerprint,
+    ):
         raise DtsRecordError("DTS_DOM_PROTECTION_PROOF_INVALID")
 
 

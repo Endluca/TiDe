@@ -675,7 +675,7 @@ def test_dts_runtime_requires_crud_on_exactly_six_tables() -> None:
             "ix_dts_dirty_keys_pending_fifo",
             "ix_dts_dirty_keys_ready",
             "ix_dts_dirty_keys_retry_due",
-            "ix_dts_ingest_events_source_table_processed",
+            "ix_dts_ingest_events_processed_at_brin",
             "ix_dts_source_rows_dependency_keys",
             "ix_dts_source_rows_table_active",
         ],
