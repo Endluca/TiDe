@@ -137,7 +137,6 @@ def _primary_projection_generation(connection: Connection) -> int:
                 SELECT mode,projection_generation
                 FROM public.dts_pipeline_control
                 WHERE control_id='PRIMARY'
-                FOR SHARE
                 """
             )
         ).mappings()

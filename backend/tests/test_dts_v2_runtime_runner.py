@@ -94,6 +94,32 @@ def test_unexpected_runtime_error_exposes_only_safe_code_or_sqlstate() -> None:
     assert secret not in fallback
 
 
+def test_domain_run_diagnostics_are_bounded_and_value_blind() -> None:
+    diagnostics = runner._safe_run_diagnostics(
+        "domain",
+        {
+            "failure_diagnostics": {
+                "SQLSTATE_40001": 2,
+                "DTS_V2_COURSE_PLAN_STALE": 1,
+                "bad:value": 9,
+                "source-secret": "do-not-expose",
+            }
+        },
+    )
+    assert diagnostics == {
+        "DTS_V2_COURSE_PLAN_STALE": 1,
+        "SQLSTATE_40001": 2,
+    }
+    assert runner._safe_run_diagnostics("outbox", {}) == {}
+
+
+def test_runtime_skips_idle_delay_only_when_worker_claimed_work() -> None:
+    assert runner._run_claimed_work({"claimed": 1}) is True
+    assert runner._run_claimed_work({"outbox_claimed": 2}) is True
+    assert runner._run_claimed_work({"claimed": 0, "completed": 9}) is False
+    assert runner._run_claimed_work({"claimed": "1"}) is False
+
+
 @pytest.mark.parametrize(
     ("mode", "generation", "expected"),
     [
@@ -143,16 +169,18 @@ def test_outbox_primary_requires_time_recheck_health() -> None:
     )
     snapshot = runner._OutboxRuntimeSnapshot(base, health)
     assert runner._component_ready("outbox", snapshot) is True
-    not_scheduled = runner._OutboxRuntimeSnapshot(
+    catching_up = runner._OutboxRuntimeSnapshot(
         base,
         runner.TeacherTimeRecheckHealthV2(
             **{
                 **health.__dict__,
                 "schedule_due": True,
+                "stale_runnable_count": 20,
             }
         ),
     )
-    assert runner._component_ready("outbox", not_scheduled) is False
+    assert catching_up.teacher_time_recheck.ready is False
+    assert runner._component_ready("outbox", catching_up) is True
 
 
 def test_outbox_runs_event_and_clock_driven_workers_together() -> None:

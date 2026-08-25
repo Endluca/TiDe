@@ -89,7 +89,7 @@ def test_reads_current_snapshot_and_marks_older_event_superseded() -> None:
     assert snapshot.event_revision == 2
     assert snapshot.is_superseded_event is True
     assert snapshot.aggregate_state["course"]["source_status"] == "end"
-    assert "FOR SHARE" in connection.sql
+    assert "FOR SHARE" not in connection.sql
 
 
 def test_future_event_revision_fails_closed() -> None:

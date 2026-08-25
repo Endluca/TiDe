@@ -396,12 +396,18 @@ def runtime_health_ready(
     _component(component)
     if not isinstance(snapshot, DtsV2RuntimeHealthSnapshot):
         _fail("DTS_V2_RUNTIME_HEALTH_SNAPSHOT_REQUIRED")
+    # Container health proves that the runtime can keep making progress under
+    # the expected mode/generation.  Queue lag, stale work and DEAD rows remain
+    # explicit business-acceptance signals in the snapshot, but restarting the
+    # whole application cannot repair them and must not block backlog catch-up.
     if component == DOMAIN_COMPONENT:
-        return snapshot.ready
+        return snapshot.mode in {
+            "V1_COMPAT_DUAL_CAPTURE",
+            "V2_PRIMARY",
+        }
     return (
         snapshot.mode == "V2_PRIMARY"
         and snapshot.projection_generation >= 1
-        and snapshot.ready
     )
 
 

@@ -42,6 +42,7 @@ from app.runtime_settings import operations_database_transport_mode
 
 
 _STOP = False
+_DEFAULT_RUNTIME_BATCH_SIZE = 100
 _SAFE_DTS_ERROR_CODE = re.compile(r"\bDTS_[A-Z0-9_]{1,127}\b")
 _URL_ENV = {
     DOMAIN_COMPONENT: "TIT_V2_DOMAIN_DATABASE_URL",
@@ -168,7 +169,12 @@ def _qualification_grants_enabled_from_env() -> bool:
 
 
 def _build_worker(component: str, engine, identity: dict[str, str]):
-    batch_size = _positive_int("TIT_V2_RUNTIME_BATCH_SIZE", 25, 1, 1000)
+    batch_size = _positive_int(
+        "TIT_V2_RUNTIME_BATCH_SIZE",
+        _DEFAULT_RUNTIME_BATCH_SIZE,
+        1,
+        1000,
+    )
     if component == DOMAIN_COMPONENT:
         return (
             build_domain_worker(
@@ -228,6 +234,42 @@ def _run_worker_once(component: str, worker: Any, batch_size: int) -> dict[str, 
             reap_limit=batch_size,
         )
     )
+
+
+def _safe_run_diagnostics(
+    component: str,
+    result: dict[str, Any],
+) -> dict[str, int]:
+    """Expose only bounded, aggregate failure codes from one Domain batch."""
+
+    if component != DOMAIN_COMPONENT:
+        return {}
+    value = result.get("failure_diagnostics")
+    if not isinstance(value, dict):
+        return {}
+    safe: dict[str, int] = {}
+    for code, count in value.items():
+        if (
+            isinstance(code, str)
+            and re.fullmatch(r"[A-Za-z0-9_]{1,128}", code)
+            and type(count) is int
+            and count > 0
+        ):
+            safe[code] = count
+    return dict(sorted(safe.items()))
+
+
+def _run_claimed_work(result: dict[str, Any]) -> bool:
+    """Skip the idle delay while any bounded worker still has backlog."""
+
+    for key, value in result.items():
+        if (
+            (key == "claimed" or key.endswith("_claimed"))
+            and type(value) is int
+            and value > 0
+        ):
+            return True
+    return False
 
 
 def _runtime_snapshot(
@@ -303,7 +345,12 @@ def _component_ready(component: str, snapshot: Any) -> bool:
         if component == OUTBOX_COMPONENT and isinstance(
             snapshot, _OutboxRuntimeSnapshot
         ):
-            return runtime_ready and snapshot.teacher_time_recheck.ready
+            recheck = snapshot.teacher_time_recheck
+            return (
+                runtime_ready
+                and recheck.mode == "V2_PRIMARY"
+                and recheck.projection_generation >= 1
+            )
         return runtime_ready
     return False
 
@@ -399,15 +446,12 @@ def run(args: argparse.Namespace) -> int:
 
         worker = None
         batch_size = _positive_int(
-            "TIT_V2_RUNTIME_BATCH_SIZE", 25, 1, 1000
+            "TIT_V2_RUNTIME_BATCH_SIZE",
+            _DEFAULT_RUNTIME_BATCH_SIZE,
+            1,
+            1000,
         )
         while not _STOP:
-            snapshot = _runtime_snapshot(
-                engine,
-                component=component,
-                expected_database=expected_database,
-                threshold=args.stale_after_seconds,
-            )
             active = _component_active(component, snapshot)
             if active:
                 if worker is None:
@@ -431,6 +475,20 @@ def run(args: argparse.Namespace) -> int:
                 for key, value in sorted(result.items())
                 if type(value) is int
             }
+            diagnostics = _safe_run_diagnostics(component, result)
+            if diagnostics:
+                payload["last_run_failure_diagnostics"] = diagnostics
+                print(
+                    json.dumps(
+                        {
+                            "event": "dts_v2_domain_batch_failure",
+                            "failure_diagnostics": diagnostics,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
             _write_json(args.heartbeat_path, payload)
             if _component_ready(component, snapshot):
                 _write_json(args.readiness_path, payload)
@@ -438,6 +496,8 @@ def run(args: argparse.Namespace) -> int:
                 _remove(args.readiness_path)
             if not args.watch:
                 return 0
+            if _run_claimed_work(result):
+                continue
             deadline = time.monotonic() + args.interval_seconds
             while not _STOP and time.monotonic() < deadline:
                 time.sleep(min(0.25, deadline - time.monotonic()))

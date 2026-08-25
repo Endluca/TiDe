@@ -670,7 +670,6 @@ def _write_score_entry(
                    projection_generation,payload
             FROM public.score_entries
             WHERE idempotency_key=:idempotency_key
-            FOR SHARE
             """
         ),
         {"idempotency_key": idempotency_key},

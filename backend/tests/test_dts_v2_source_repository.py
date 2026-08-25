@@ -139,7 +139,7 @@ def test_repository_reads_by_protected_dependency_without_raw_payload() -> None:
     assert rows[0].source_key == "12"
     sql, parameters = connection.calls[0]
     assert "dependency_keys @>" in sql
-    assert "FOR SHARE" in sql
+    assert "FOR SHARE" not in sql
     assert parameters["dependency"] == '{"course_ids":["9001"]}'
 
 

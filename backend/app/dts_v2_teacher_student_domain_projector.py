@@ -587,7 +587,6 @@ def _read_relationship_versions(
                      source_key_numeric NULLS LAST,
                      convert_to(COALESCE(source_key_text,''),'UTF8'),
                      source_row_revision,topic,partition_id,offset_value
-            FOR SHARE
             """
         ),
         {
@@ -974,7 +973,6 @@ def _read_preferred_scopes(
                    OR (state.scope_level='GLOBAL' AND state.scope_key='*'))
             ORDER BY state.source_table,state.scope_kind,
                      CASE state.scope_level WHEN 'TEACHER' THEN 0 ELSE 1 END
-            FOR SHARE OF state
             """
         ),
         {
@@ -1147,7 +1145,6 @@ def _read_latest_pair_event(
                     AND new_student_token=:student_token))
             ORDER BY event_sequence DESC
             LIMIT 1
-            FOR SHARE
             """
         ),
         _pair_params(pair),
@@ -1430,7 +1427,6 @@ def _read_existing_observations(
               AND student_token=:student_token
               AND status NOT IN ('INVALIDATED','VOIDED')
             ORDER BY source_appoint_id,observation_revision DESC
-            FOR SHARE
             """
         ),
         _pair_params(pair),
@@ -1457,7 +1453,6 @@ def _read_existing_attribution(
               AND teacher_id=:teacher_id
               AND teacher_id_type=:teacher_id_type
               AND student_token=:student_token
-            FOR SHARE
             """
         ),
         _pair_params(pair),

@@ -262,7 +262,13 @@ class DtsV2CurrentSourceRow:
 
 
 class DtsV2SourceRepository:
-    """Read complete protected current rows on an existing transaction."""
+    """Read protected current rows from the caller's stable transaction snapshot.
+
+    ``dts_source_rows`` is owned by the ingest runtime and intentionally
+    SELECT-only for the application role.  The Domain worker supplies a
+    repeatable-read snapshot; adding a PostgreSQL row lock here would
+    incorrectly require UPDATE privilege on ingest-owned evidence.
+    """
 
     def read_for_dependency(
         self,
@@ -313,7 +319,6 @@ class DtsV2SourceRepository:
                          source_key_numeric NULLS LAST,
                          convert_to(COALESCE(source_key_text,''),'UTF8'),
                          source_row_revision
-                FOR SHARE
                 """
             ),
             {
@@ -359,7 +364,6 @@ class DtsV2SourceRepository:
                 ORDER BY source_key_numeric NULLS LAST,
                          convert_to(COALESCE(source_key_text,''),'UTF8'),
                          source_row_revision
-                FOR SHARE
                 """
             ),
             {
