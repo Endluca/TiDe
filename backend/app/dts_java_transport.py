@@ -521,6 +521,26 @@ class OfficialJavaDtsTransport:
             0,
             int((database_finished - database_started) * 1000),
         )
+        consume_batch_metrics = getattr(
+            self.processor,
+            "consume_batch_metrics",
+            None,
+        )
+        if callable(consume_batch_metrics):
+            batch_metrics = dict(consume_batch_metrics())
+            if any(
+                not isinstance(key, str)
+                or not key.startswith("db_")
+                or key in counters
+                or isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                for key, value in batch_metrics.items()
+            ):
+                raise DtsJavaTransportError(
+                    "DTS_OFFICIAL_JAVA_BATCH_METRICS_INVALID"
+                )
+            counters.update(batch_metrics)
         for result, acknowledgement in zip(
             results,
             acknowledgements,

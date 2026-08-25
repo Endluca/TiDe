@@ -19,6 +19,7 @@ import math
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import text
@@ -142,6 +143,12 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                 "DTS_V2_DUAL_CAPTURE_DIRTY_STORE_INVALID"
             )
         self._dirty_queue_store = queue_store
+        self._last_batch_metrics: dict[str, int] = {}
+
+    def consume_last_batch_metrics(self) -> dict[str, int]:
+        metrics = self._last_batch_metrics
+        self._last_batch_metrics = {}
+        return metrics
 
     def enable_direct_projection(self, projector: Any) -> None:
         del projector
@@ -247,6 +254,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
     ) -> tuple[bool, ...]:
         if not items:
             return ()
+        self._last_batch_metrics = {}
         prepared = tuple((event, dirty_keys) for event, dirty_keys, _ in items)
         first_event = prepared[0][0]
         stream_identity = (
@@ -381,11 +389,14 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
         if not new_items:
             return tuple(duplicate_flags)
 
+        transaction_body_started = perf_counter()
+        phase_started = perf_counter()
         batch_context = prepare_batch(
             connection,
             tuple(event for event, _dirty_keys in new_items),
             self.source_partition_epoch_id,
         )
+        prepare_finished = perf_counter()
         deferred_ledger: list[dict[str, Any]] = []
         deferred_dirty: list[dict[str, Any]] = []
         initial_checkpoint_version = checkpoint_row_version
@@ -408,6 +419,7 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
                     "DTS_V2_DUAL_CAPTURE_LEDGER_VERSION_INCONSISTENT"
                 )
             duplicate_flags.append(False)
+        route_finished = perf_counter()
 
         flush_batch = getattr(self._v2_writer, "flush_batch", None)
         if callable(flush_batch) and batch_context is not None:
@@ -416,8 +428,19 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             raise DtsV2DualCaptureStoreError(
                 "DTS_V2_DUAL_CAPTURE_DEFERRED_WRITER_INVALID"
             )
+        flush_finished = perf_counter()
+        writer_metrics: dict[str, int] = {}
+        consume_flush_metrics = getattr(
+            self._v2_writer,
+            "consume_last_flush_metrics",
+            None,
+        )
+        if callable(consume_flush_metrics):
+            writer_metrics = dict(consume_flush_metrics())
         self._enqueue_deferred_dirty_batch(connection, deferred_dirty)
+        dirty_finished = perf_counter()
         self._write_new_ledger_batch(connection, deferred_ledger)
+        ledger_finished = perf_counter()
         last_event = new_items[-1][0]
         self._advance_batch_checkpoint(
             connection,
@@ -427,6 +450,38 @@ class PostgresDtsV2DualCaptureSink(PostgresDtsEventSink):
             expected_next_offset=next_offset,
             advanced_next_offset=expected_next_offset,
         )
+        checkpoint_finished = perf_counter()
+        self._last_batch_metrics = {
+            "db_batch_prepare_elapsed_ms": _elapsed_ms(
+                phase_started,
+                prepare_finished,
+            ),
+            "db_event_route_elapsed_ms": _elapsed_ms(
+                prepare_finished,
+                route_finished,
+            ),
+            "db_source_flush_elapsed_ms": _elapsed_ms(
+                route_finished,
+                flush_finished,
+            ),
+            "db_dirty_elapsed_ms": _elapsed_ms(
+                flush_finished,
+                dirty_finished,
+            ),
+            "db_ledger_elapsed_ms": _elapsed_ms(
+                dirty_finished,
+                ledger_finished,
+            ),
+            "db_checkpoint_elapsed_ms": _elapsed_ms(
+                ledger_finished,
+                checkpoint_finished,
+            ),
+            "db_transaction_body_elapsed_ms": _elapsed_ms(
+                transaction_body_started,
+                checkpoint_finished,
+            ),
+            **writer_metrics,
+        }
         return tuple(duplicate_flags)
 
     def _initialize_stream_if_missing(
@@ -1986,6 +2041,10 @@ def _json_dump(value: Any) -> str:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+def _elapsed_ms(started: float, finished: float) -> int:
+    return max(0, int((finished - started) * 1000))
 
 
 def _stream_event(

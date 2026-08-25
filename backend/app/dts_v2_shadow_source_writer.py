@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import text
@@ -98,6 +99,12 @@ class DtsV2ShadowSourceWriter:
 
     def __init__(self, *, enabled: bool = False) -> None:
         self.enabled = enabled
+        self._last_flush_metrics: dict[str, int] = {}
+
+    def consume_last_flush_metrics(self) -> dict[str, int]:
+        metrics = self._last_flush_metrics
+        self._last_flush_metrics = {}
+        return metrics
 
     def apply_appoint_cdc(
         self,
@@ -299,6 +306,7 @@ class DtsV2ShadowSourceWriter:
             raise DtsV2ShadowSourceWriterError(
                 "DTS_V2_SHADOW_SOURCE_TRANSACTION_REQUIRED"
             )
+        self._last_flush_metrics = {}
         writes = tuple(batch_context.deferred_writes)
         if not writes:
             return
@@ -318,18 +326,41 @@ class DtsV2ShadowSourceWriter:
             raise DtsV2ShadowSourceWriterError(
                 "DTS_V2_SHADOW_BATCH_DEFERRED_IDENTITY_INVALID"
             )
+        flush_started = perf_counter()
+        phase_started = perf_counter()
         _append_versions_batch(
             connection,
             source_partition_epoch_id=batch_context.source_partition_epoch_id,
             writes=writes,
         )
+        version_finished = perf_counter()
         _upsert_currents_batch(
             connection,
             source_partition_epoch_id=batch_context.source_partition_epoch_id,
             writes=writes,
             initial_currents=batch_context.current_rows,
         )
+        current_finished = perf_counter()
         _apply_cdc_membership_overlays_batch(connection, writes=writes)
+        membership_finished = perf_counter()
+        self._last_flush_metrics = {
+            "db_source_version_elapsed_ms": _elapsed_ms(
+                phase_started,
+                version_finished,
+            ),
+            "db_source_current_elapsed_ms": _elapsed_ms(
+                version_finished,
+                current_finished,
+            ),
+            "db_source_membership_elapsed_ms": _elapsed_ms(
+                current_finished,
+                membership_finished,
+            ),
+            "db_source_flush_elapsed_ms": _elapsed_ms(
+                flush_started,
+                membership_finished,
+            ),
+        }
         batch_context.deferred_writes.clear()
 
     def apply_cdc(
@@ -2136,34 +2167,8 @@ def _append_versions_batch(
 ) -> None:
     if not writes:
         return
-    connection.execute(
-        text(
-            """
-            INSERT INTO public.dts_source_row_versions (
-                source_region, source_partition_epoch_id, topic, partition_id,
-                offset_value, version_kind, source_table,
-                source_schema_profile_id, source_field_types, source_key,
-                source_key_data, source_key_type, source_key_numeric,
-                source_key_text, operation, before_row, after_row,
-                source_timestamp, record_id_type, record_id_numeric,
-                record_id_text, source_position, source_row_revision,
-                snapshot_id, snapshot_as_of, covered_through_offsets,
-                diff_step, source_table_publish_generation,
-                protected_source_row_hash
-            ) VALUES (
-                :source_region, :epoch_id, :topic, :partition_id,
-                :offset_value, 'CDC', :source_table, :profile_id,
-                CAST(:source_field_types AS jsonb), :source_key,
-                CAST(:source_key_data AS jsonb), :source_key_type,
-                :source_key_numeric, :source_key_text, :operation,
-                CAST(:before_row AS jsonb), CAST(:after_row AS jsonb),
-                :source_timestamp, 'numeric', :record_id_numeric, NULL,
-                CAST(:source_position AS jsonb), :source_row_revision,
-                NULL, NULL, NULL, NULL, NULL, :payload_hash
-            )
-            """
-        ),
-        [
+    records = [
+        _json_batch_record(
             _write_parameters(
                 event=write.event,
                 source_partition_epoch_id=source_partition_epoch_id,
@@ -2171,10 +2176,60 @@ def _append_versions_batch(
                 position=write.position,
                 source_timestamp=write.source_timestamp,
                 revision=write.revision,
+            ),
+            ordinal=ordinal,
+        )
+        for ordinal, write in enumerate(writes)
+    ]
+    inserted_count = connection.execute(
+        text(
+            """
+            WITH incoming AS MATERIALIZED (
+              SELECT *
+              FROM jsonb_to_recordset(CAST(:records AS jsonb)) AS item(
+                ordinal integer,source_region text,epoch_id text,topic text,
+                partition_id integer,offset_value bigint,source_table text,
+                profile_id text,source_field_types jsonb,source_key text,
+                source_key_data jsonb,source_key_type text,
+                source_key_numeric numeric,source_key_text text,
+                operation text,before_row jsonb,after_row jsonb,
+                source_timestamp timestamptz,record_id_numeric numeric,
+                source_position jsonb,source_row_revision bigint,
+                payload_hash text
+              )
+            ), inserted AS (
+              INSERT INTO public.dts_source_row_versions (
+                  source_region, source_partition_epoch_id, topic,
+                  partition_id, offset_value, version_kind, source_table,
+                  source_schema_profile_id, source_field_types, source_key,
+                  source_key_data, source_key_type, source_key_numeric,
+                  source_key_text, operation, before_row, after_row,
+                  source_timestamp, record_id_type, record_id_numeric,
+                  record_id_text, source_position, source_row_revision,
+                  snapshot_id, snapshot_as_of, covered_through_offsets,
+                  diff_step, source_table_publish_generation,
+                  protected_source_row_hash
+              )
+              SELECT source_region,epoch_id,topic,partition_id,offset_value,
+                     'CDC',source_table,profile_id,source_field_types,
+                     source_key,source_key_data,source_key_type,
+                     source_key_numeric,source_key_text,operation,before_row,
+                     after_row,source_timestamp,'numeric',record_id_numeric,
+                     NULL,source_position,source_row_revision,
+                     NULL,NULL,NULL,NULL,NULL,payload_hash
+              FROM incoming
+              ORDER BY ordinal
+              RETURNING 1
             )
-            for write in writes
-        ],
-    )
+            SELECT count(*) FROM inserted
+            """
+        ),
+        {"records": _json_dump(records)},
+    ).scalar_one()
+    if inserted_count != len(writes):
+        raise DtsV2ShadowSourceWriterError(
+            "DTS_V2_SHADOW_BATCH_VERSION_COUNT_INVALID"
+        )
 
 
 def _write_current(
@@ -2312,85 +2367,111 @@ def _upsert_currents_batch(
 ) -> None:
     if not writes:
         return
-    parameters: list[dict[str, Any]] = []
-    for write in writes:
+    records: list[dict[str, Any]] = []
+    for ordinal, write in enumerate(writes):
         identity = (
             write.event.source_region,
             write.route.source_table or "",
             write.route.source_key or "",
         )
-        parameters.append(
-            _current_write_parameters(
-                event=write.event,
-                source_partition_epoch_id=source_partition_epoch_id,
-                route=write.route,
-                position=write.position,
-                source_timestamp=write.source_timestamp,
-                revision=write.revision,
-                dependency_keys=write.dependency_keys,
-                stored_current=initial_currents.get(identity),
+        records.append(
+            _json_batch_record(
+                _current_write_parameters(
+                    event=write.event,
+                    source_partition_epoch_id=source_partition_epoch_id,
+                    route=write.route,
+                    position=write.position,
+                    source_timestamp=write.source_timestamp,
+                    revision=write.revision,
+                    dependency_keys=write.dependency_keys,
+                    stored_current=initial_currents.get(identity),
+                ),
+                ordinal=ordinal,
             )
         )
-    connection.execute(
+    upserted_count = connection.execute(
         text(
             """
-            INSERT INTO public.dts_source_rows (
-                source_region, source_table, source_key, source_key_data,
-                dependency_keys, source_row, is_deleted, source_timestamp,
-                last_record_id, source_position, last_topic, last_partition,
-                last_offset, row_version, source_row_revision,
-                last_source_partition_epoch_id, last_version_kind,
-                source_position_v2, record_id_type, record_id_numeric,
-                record_id_text, source_timestamp_v2, source_payload_hash,
-                provenance_state, source_key_type, source_key_numeric,
-                source_key_text, source_schema_profile_id, source_field_types
-            ) VALUES (
-                :source_region, :source_table, :source_key,
-                CAST(:source_key_data AS jsonb),
-                CAST(:dependency_keys AS jsonb), CAST(:source_row AS jsonb),
-                :is_deleted, :legacy_source_timestamp, :legacy_record_id,
-                :legacy_source_position, :topic, :partition_id, :offset_value,
-                :row_version, :source_row_revision, :epoch_id, 'CDC',
-                CAST(:source_position AS jsonb), 'numeric',
-                :record_id_numeric, NULL, :source_timestamp, :payload_hash,
-                'V2_CONFIRMED', :source_key_type, :source_key_numeric,
-                :source_key_text, :profile_id,
-                CAST(:source_field_types AS jsonb)
+            WITH incoming AS MATERIALIZED (
+              SELECT *
+              FROM jsonb_to_recordset(CAST(:records AS jsonb)) AS item(
+                ordinal integer,source_region text,source_table text,
+                source_key text,source_key_data jsonb,dependency_keys jsonb,
+                source_row jsonb,is_deleted boolean,
+                legacy_source_timestamp bigint,legacy_record_id bigint,
+                legacy_source_position text,topic text,partition_id integer,
+                offset_value bigint,row_version integer,
+                source_row_revision bigint,epoch_id text,
+                source_position jsonb,record_id_numeric numeric,
+                source_timestamp timestamptz,payload_hash text,
+                source_key_type text,source_key_numeric numeric,
+                source_key_text text,profile_id text,source_field_types jsonb
+              )
+            ), upserted AS (
+              INSERT INTO public.dts_source_rows (
+                  source_region, source_table, source_key, source_key_data,
+                  dependency_keys, source_row, is_deleted, source_timestamp,
+                  last_record_id, source_position, last_topic,
+                  last_partition, last_offset, row_version,
+                  source_row_revision, last_source_partition_epoch_id,
+                  last_version_kind, source_position_v2, record_id_type,
+                  record_id_numeric, record_id_text, source_timestamp_v2,
+                  source_payload_hash, provenance_state, source_key_type,
+                  source_key_numeric, source_key_text,
+                  source_schema_profile_id, source_field_types
+              )
+              SELECT source_region,source_table,source_key,source_key_data,
+                     dependency_keys,source_row,is_deleted,
+                     legacy_source_timestamp,legacy_record_id,
+                     legacy_source_position,topic,partition_id,offset_value,
+                     row_version,source_row_revision,epoch_id,'CDC',
+                     source_position,'numeric',record_id_numeric,NULL,
+                     source_timestamp,payload_hash,'V2_CONFIRMED',
+                     source_key_type,source_key_numeric,source_key_text,
+                     profile_id,source_field_types
+              FROM incoming
+              ORDER BY ordinal
+              ON CONFLICT (source_region, source_table, source_key) DO UPDATE
+              SET source_key_data = EXCLUDED.source_key_data,
+                  dependency_keys = EXCLUDED.dependency_keys,
+                  source_row = EXCLUDED.source_row,
+                  is_deleted = EXCLUDED.is_deleted,
+                  source_timestamp = EXCLUDED.source_timestamp,
+                  last_record_id = EXCLUDED.last_record_id,
+                  source_position = EXCLUDED.source_position,
+                  last_topic = EXCLUDED.last_topic,
+                  last_partition = EXCLUDED.last_partition,
+                  last_offset = EXCLUDED.last_offset,
+                  row_version = EXCLUDED.row_version,
+                  updated_at = clock_timestamp(),
+                  source_row_revision = EXCLUDED.source_row_revision,
+                  last_source_partition_epoch_id =
+                      EXCLUDED.last_source_partition_epoch_id,
+                  last_version_kind = EXCLUDED.last_version_kind,
+                  source_position_v2 = EXCLUDED.source_position_v2,
+                  record_id_type = EXCLUDED.record_id_type,
+                  record_id_numeric = EXCLUDED.record_id_numeric,
+                  record_id_text = EXCLUDED.record_id_text,
+                  source_timestamp_v2 = EXCLUDED.source_timestamp_v2,
+                  source_payload_hash = EXCLUDED.source_payload_hash,
+                  provenance_state = EXCLUDED.provenance_state,
+                  source_key_type = EXCLUDED.source_key_type,
+                  source_key_numeric = EXCLUDED.source_key_numeric,
+                  source_key_text = EXCLUDED.source_key_text,
+                  source_schema_profile_id =
+                      EXCLUDED.source_schema_profile_id,
+                  source_field_types = EXCLUDED.source_field_types
+              RETURNING 1
             )
-            ON CONFLICT (source_region, source_table, source_key) DO UPDATE
-            SET source_key_data = EXCLUDED.source_key_data,
-                dependency_keys = EXCLUDED.dependency_keys,
-                source_row = EXCLUDED.source_row,
-                is_deleted = EXCLUDED.is_deleted,
-                source_timestamp = EXCLUDED.source_timestamp,
-                last_record_id = EXCLUDED.last_record_id,
-                source_position = EXCLUDED.source_position,
-                last_topic = EXCLUDED.last_topic,
-                last_partition = EXCLUDED.last_partition,
-                last_offset = EXCLUDED.last_offset,
-                row_version = EXCLUDED.row_version,
-                updated_at = clock_timestamp(),
-                source_row_revision = EXCLUDED.source_row_revision,
-                last_source_partition_epoch_id =
-                    EXCLUDED.last_source_partition_epoch_id,
-                last_version_kind = EXCLUDED.last_version_kind,
-                source_position_v2 = EXCLUDED.source_position_v2,
-                record_id_type = EXCLUDED.record_id_type,
-                record_id_numeric = EXCLUDED.record_id_numeric,
-                record_id_text = EXCLUDED.record_id_text,
-                source_timestamp_v2 = EXCLUDED.source_timestamp_v2,
-                source_payload_hash = EXCLUDED.source_payload_hash,
-                provenance_state = EXCLUDED.provenance_state,
-                source_key_type = EXCLUDED.source_key_type,
-                source_key_numeric = EXCLUDED.source_key_numeric,
-                source_key_text = EXCLUDED.source_key_text,
-                source_schema_profile_id =
-                    EXCLUDED.source_schema_profile_id,
-                source_field_types = EXCLUDED.source_field_types
+            SELECT count(*) FROM upserted
             """
         ),
-        parameters,
-    )
+        {"records": _json_dump(records)},
+    ).scalar_one()
+    if upserted_count != len(writes):
+        raise DtsV2ShadowSourceWriterError(
+            "DTS_V2_SHADOW_BATCH_CURRENT_COUNT_INVALID"
+        )
 
 
 def _write_parameters(
@@ -2432,6 +2513,39 @@ def _write_parameters(
     }
 
 
+_BATCH_JSON_FIELDS = frozenset(
+    {
+        "source_field_types",
+        "source_key_data",
+        "before_row",
+        "after_row",
+        "source_position",
+        "dependency_keys",
+        "source_row",
+    }
+)
+
+
+def _json_batch_record(
+    parameters: Mapping[str, Any],
+    *,
+    ordinal: int,
+) -> dict[str, Any]:
+    """Convert bound SQL values into one JSON recordset-safe object."""
+
+    record: dict[str, Any] = {"ordinal": ordinal}
+    for field_name, value in parameters.items():
+        if value is not None and field_name in _BATCH_JSON_FIELDS:
+            record[field_name] = json.loads(str(value))
+        elif isinstance(value, Decimal):
+            record[field_name] = format(value, "f")
+        elif isinstance(value, datetime):
+            record[field_name] = value.isoformat()
+        else:
+            record[field_name] = value
+    return record
+
+
 def _json_dump(value: Any) -> str | None:
     if value is None:
         return None
@@ -2442,6 +2556,10 @@ def _json_dump(value: Any) -> str | None:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+def _elapsed_ms(started: float, finished: float) -> int:
+    return max(0, int((finished - started) * 1000))
 
 
 def _result(

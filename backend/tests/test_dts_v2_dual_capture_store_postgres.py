@@ -609,6 +609,30 @@ def test_single_pipeline_first_event_missing_update_and_insert(
                 (event, DirtyKeySet(), None) for event in bulk_events
             )
         ) == (False,) * bulk_count
+        batch_metrics = sink.consume_last_batch_metrics()
+        assert set(batch_metrics) == {
+            "db_batch_prepare_elapsed_ms",
+            "db_event_route_elapsed_ms",
+            "db_source_flush_elapsed_ms",
+            "db_dirty_elapsed_ms",
+            "db_ledger_elapsed_ms",
+            "db_checkpoint_elapsed_ms",
+            "db_transaction_body_elapsed_ms",
+            "db_source_version_elapsed_ms",
+            "db_source_current_elapsed_ms",
+            "db_source_membership_elapsed_ms",
+        }
+        assert all(
+            isinstance(value, int) and value >= 0
+            for value in batch_metrics.values()
+        )
+        assert batch_metrics["db_transaction_body_elapsed_ms"] >= max(
+            batch_metrics["db_batch_prepare_elapsed_ms"],
+            batch_metrics["db_source_flush_elapsed_ms"],
+            batch_metrics["db_dirty_elapsed_ms"],
+            batch_metrics["db_ledger_elapsed_ms"],
+            batch_metrics["db_checkpoint_elapsed_ms"],
+        )
         assert flushed_batch_sizes == [bulk_count]
         assert current_batch_sizes == [bulk_count]
         assert membership_batch_sizes == [bulk_count]

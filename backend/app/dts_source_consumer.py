@@ -2761,6 +2761,22 @@ class DtsEventProcessor:
     def __init__(self, sink: DtsEventSink) -> None:
         self._sink = sink
 
+    def consume_batch_metrics(self) -> dict[str, int]:
+        consume = getattr(self._sink, "consume_last_batch_metrics", None)
+        if not callable(consume):
+            return {}
+        metrics = dict(consume())
+        if any(
+            not isinstance(key, str)
+            or not key.startswith("db_")
+            or isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for key, value in metrics.items()
+        ):
+            raise DtsRecordError("DTS_SINK_BATCH_METRICS_INVALID")
+        return metrics
+
     def process(self, event: DtsChangeEvent) -> ProcessResult:
         # Keep the kafka-python fallback on its established single-event
         # persistence path.  Only the official Java transport opts into the

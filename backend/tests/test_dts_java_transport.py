@@ -360,11 +360,12 @@ def _assert_batch_result(
     batch_bytes: int,
     durable_next_offset: int,
     transport_prefiltered: int = 0,
+    batch_metrics: dict[str, int] | None = None,
 ) -> None:
     assert result["db_elapsed_ms"] >= 0
     assert result["sdk_ack_elapsed_ms"] >= 0
     assert result["batch_elapsed_ms"] >= result["db_elapsed_ms"]
-    assert result == {
+    expected = {
         "requested_max_messages": requested_max_messages,
         "seen": seen,
         "processed": processed,
@@ -383,6 +384,8 @@ def _assert_batch_result(
         "batch_elapsed_ms": result["batch_elapsed_ms"],
         "durable_next_offset": durable_next_offset,
     }
+    expected.update(batch_metrics or {})
+    assert result == expected
 
 
 def test_command_is_injectable_without_credentials() -> None:
@@ -441,6 +444,12 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
             )
             return (SimpleNamespace(status="PROCESSED"),)
 
+        def consume_batch_metrics(self) -> dict[str, int]:
+            return {
+                "db_source_version_elapsed_ms": 3,
+                "db_dirty_elapsed_ms": 5,
+            }
+
     change_event = SimpleNamespace(source_timestamp=1786550400)
     monkeypatch.setattr(
         dts_java_transport,
@@ -498,6 +507,10 @@ def test_database_write_precedes_ack_and_sdk_checkpoint_acceptance(
         sdk_checkpoint_accepted=1,
         batch_bytes=_record_bytes(process.event_record),
         durable_next_offset=43,
+        batch_metrics={
+            "db_source_version_elapsed_ms": 3,
+            "db_dirty_elapsed_ms": 5,
+        },
     )
     assert observed_commands_at_process == [["START", "POLL"]]
     assert [item["type"] for item in process.commands] == [
