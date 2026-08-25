@@ -41,8 +41,14 @@ class _Result:
 
 
 class _Connection:
-    def __init__(self, *, missing: str | None = None):
+    def __init__(
+        self,
+        *,
+        missing: str | None = None,
+        domain_queue_read: bool = True,
+    ):
         self.missing = missing
+        self.domain_queue_read = domain_queue_read
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
@@ -61,6 +67,8 @@ class _Connection:
                     "rolbypassrls": False,
                     "public_create": False,
                     "pipeline_select": True,
+                    "domain_dirty_keys_select": self.domain_queue_read,
+                    "domain_dirty_inputs_select": self.domain_queue_read,
                 }
             )
         signature = parameters["signature"]
@@ -112,6 +120,24 @@ def test_capability_registry_is_complete_and_missing_function_fails_closed() -> 
 def test_outbox_startup_requires_teacher_time_recheck_capabilities() -> None:
     assert set(TEACHER_TIME_RECHECK_CAPABILITIES).issubset(
         RUNTIME_CAPABILITIES[OUTBOX_COMPONENT]
+    )
+
+
+def test_domain_startup_requires_claimed_queue_evidence_reads() -> None:
+    with pytest.raises(
+        DtsV2RuntimeCompositionError,
+        match="DTS_V2_DOMAIN_QUEUE_READ_CAPABILITY_REQUIRED",
+    ):
+        validate_runtime_startup(
+            _Connection(domain_queue_read=False),
+            component=DOMAIN_COMPONENT,
+            expected_database="tit_growth",
+        )
+
+    validate_runtime_startup(
+        _Connection(domain_queue_read=False),
+        component=OUTBOX_COMPONENT,
+        expected_database="tit_growth",
     )
 
 

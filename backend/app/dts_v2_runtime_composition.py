@@ -149,7 +149,13 @@ _IDENTITY_SQL = text(
            has_schema_privilege(current_user,'public','CREATE') AS public_create,
            has_table_privilege(
              current_user,'public.dts_pipeline_control','SELECT'
-           ) AS pipeline_select
+           ) AS pipeline_select,
+           has_table_privilege(
+             current_user,'public.dts_dirty_keys','SELECT'
+           ) AS domain_dirty_keys_select,
+           has_table_privilege(
+             current_user,'public.dts_dirty_key_inputs','SELECT'
+           ) AS domain_dirty_inputs_select
     FROM pg_roles role WHERE role.rolname=session_user
     """
 )
@@ -218,6 +224,11 @@ def validate_runtime_startup(
         )
     ):
         _fail("DTS_V2_RUNTIME_ROLE_PRIVILEGES_INVALID")
+    if component == DOMAIN_COMPONENT and (
+        row.get("domain_dirty_keys_select") is not True
+        or row.get("domain_dirty_inputs_select") is not True
+    ):
+        _fail("DTS_V2_DOMAIN_QUEUE_READ_CAPABILITY_REQUIRED")
 
     missing: list[str] = []
     forbidden: list[str] = []

@@ -189,12 +189,14 @@ def test_runtime_course_command_health_acl_and_atomic_failure(
     try:
         # The shared ops-case fixture intentionally remains pinned at rev100
         # so it can exercise the original materialization contracts.  Mirror
-        # the rev105 runtime ACL here because current startup composition reads
-        # the pipeline singleton before constructing any worker.
+        # the current runtime read ACLs here because startup composition reads
+        # the pipeline singleton and Domain queue evidence before constructing
+        # any worker.
         with admin.begin() as connection:
             connection.execute(
                 text(
-                    "GRANT SELECT ON TABLE public.dts_pipeline_control "
+                    "GRANT SELECT ON TABLE public.dts_pipeline_control,"
+                    "public.dts_dirty_keys,public.dts_dirty_key_inputs "
                     "TO tit_growth_app"
                 )
             )
