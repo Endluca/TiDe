@@ -44,6 +44,12 @@ DTS_HOT_INDEX_MIGRATION = (
     / "versions"
     / "20260825_106_dts_hot_indexes.py"
 )
+DOMAIN_QUEUE_READ_ACL_MIGRATION = (
+    ROOT
+    / "migrations"
+    / "versions"
+    / "20260825_107_domain_queue_read_acl.py"
+)
 PUBLIC_DMS = (
     ROOT
     / "migrations"
@@ -91,6 +97,12 @@ DTS_HOT_INDEX_DMS = (
     / "migrations"
     / "dms"
     / "20260825_public105_to_106_dts_hot_indexes.sql"
+)
+DOMAIN_QUEUE_READ_ACL_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260825_public106_to_107_domain_queue_read_acl.sql"
 )
 TEACHER_DMS = (
     ROOT
@@ -281,6 +293,28 @@ def test_dts_hot_indexes_remove_observed_write_amplification() -> None:
     assert "requires DTS and app stopped" in source
     assert "public rev106 postflight verification failed" in source
     assert "version_num='20260825_106_dts_hot_indexes'" in source
+    _assert_dms_onequery_compatible(source)
+
+
+def test_domain_queue_evidence_is_read_only_for_shared_runtime() -> None:
+    migration = DOMAIN_QUEUE_READ_ACL_MIGRATION.read_text(encoding="utf-8")
+    source = DOMAIN_QUEUE_READ_ACL_DMS.read_text(encoding="utf-8")
+    assert (
+        'revision: str = "20260825_107_domain_queue_read_acl"'
+        in migration
+    )
+    assert "20260825_106_dts_hot_indexes" in migration
+    for relation in ("dts_dirty_keys", "dts_dirty_key_inputs"):
+        assert f"public.{relation}" in migration
+        assert f"public.{relation}" in source
+    assert "GRANT SELECT ON TABLE" in migration
+    assert "REVOKE INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER" in migration
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "public rev107 DMS requires public head 106" in source
+    assert "public rev107 migration requires app stopped" in source
+    assert "public rev107 postflight verification failed" in source
+    assert "version_num='20260825_107_domain_queue_read_acl'" in source
     _assert_dms_onequery_compatible(source)
 
 
