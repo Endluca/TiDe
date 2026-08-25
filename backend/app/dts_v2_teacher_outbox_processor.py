@@ -1,9 +1,11 @@
 """Global TEACHER Outbox reducer over the locked DOM and OVS aggregates.
 
 TEACHER domain aggregates are deliberately regional.  A teacher-wide serving
-row is global, so consuming either regional event must lock and merge both
-regional current aggregates.  Missing or malformed peers are dependency
-failures, never permission to treat the absent region as an empty data set.
+row is global, so consuming either regional event must merge both regional
+current aggregates.  A missing authoritative DOM teacher baseline or a peer
+aggregate that has not arrived yet is settled as an explicit no-op; the later
+baseline/peer revision emits a fresh event.  Malformed existing aggregates
+still fail closed and are never treated as an empty data set.
 """
 
 from __future__ import annotations
@@ -45,6 +47,14 @@ _EVIDENCE = frozenset(
 
 class DtsV2TeacherOutboxProcessorError(RuntimeError):
     """The global teacher snapshot cannot be proved from regional inputs."""
+
+
+class _DtsV2TeacherBaselineMissing(DtsV2TeacherOutboxProcessorError):
+    """No authoritative ``dom_teacher`` baseline exists for this teacher."""
+
+
+class _DtsV2TeacherRegionalDependencyMissing(DtsV2TeacherOutboxProcessorError):
+    """An authoritative teacher exists but its regional pair is not ready."""
 
 
 @dataclass(frozen=True)
@@ -174,17 +184,19 @@ class DtsV2TeacherAggregateBundleReader:
                 },
             ).mappings()
         )
-        if len(rows) != 2:
-            raise DtsV2TeacherOutboxProcessorError(
-                "DTS_V2_TEACHER_REGIONAL_AGGREGATE_MISSING"
-            )
         by_id = {str(row.get("aggregate_id")): row for row in rows}
+        if len(by_id) != len(rows):
+            raise DtsV2TeacherOutboxProcessorError(
+                "DTS_V2_TEACHER_REGIONAL_AGGREGATE_INVALID"
+            )
         regions: dict[str, RegionalTeacherAggregateV2] = {}
         for region, identity in identities.items():
             row = by_id.get(identity.aggregate_id)
-            if row is None or row.get("aggregate_type") != "TEACHER":
+            if row is None:
+                continue
+            if row.get("aggregate_type") != "TEACHER":
                 raise DtsV2TeacherOutboxProcessorError(
-                    "DTS_V2_TEACHER_REGIONAL_AGGREGATE_MISSING"
+                    "DTS_V2_TEACHER_REGIONAL_AGGREGATE_INVALID"
                 )
             revision = row.get("revision")
             state = row.get("aggregate_state")
@@ -210,6 +222,29 @@ class DtsV2TeacherAggregateBundleReader:
                 aggregate_state=dict(state),
                 aggregate_state_sha256=state_hash,
                 current_revision=revision,
+            )
+
+        dom = regions.get("dom")
+        if dom is None:
+            raise _DtsV2TeacherBaselineMissing(
+                "DTS_V2_TEACHER_BASELINE_MISSING"
+            )
+        profile_status = dom.aggregate_state.get("profile_evidence_status")
+        profile_snapshot = dom.aggregate_state.get("profile")
+        if profile_status == "SOURCE_MISSING" and profile_snapshot is None:
+            raise _DtsV2TeacherBaselineMissing(
+                "DTS_V2_TEACHER_BASELINE_MISSING"
+            )
+        if (
+            profile_status not in {"CONFIRMED", "CONFIRMED_TOMBSTONE"}
+            or not isinstance(profile_snapshot, Mapping)
+        ):
+            raise DtsV2TeacherOutboxProcessorError(
+                "DTS_V2_TEACHER_PROFILE_EVIDENCE_MISSING"
+            )
+        if "ovs" not in regions:
+            raise _DtsV2TeacherRegionalDependencyMissing(
+                "DTS_V2_TEACHER_REGIONAL_DEPENDENCY_MISSING"
             )
         return TeacherAggregateCurrentBundleV2(
             teacher_id=teacher_id,
@@ -262,7 +297,20 @@ class DtsV2TeacherOutboxProcessor:
             raise DtsV2TeacherOutboxProcessorError(
                 "DTS_V2_TEACHER_OUTBOX_EVENT_REQUIRED"
             )
-        bundle = self.aggregate_reader.read_current(connection, event)
+        try:
+            bundle = self.aggregate_reader.read_current(connection, event)
+        except _DtsV2TeacherBaselineMissing:
+            # Auxiliary facts may legitimately arrive before dom_teacher.
+            # Publishing this event is an auditable no-op.  A later
+            # dom_teacher revision fans out fresh DOM and OVS aggregates and
+            # therefore a new Outbox event; this event must not consume the
+            # technical retry/dead-letter budget.
+            return {"teacher_baseline_missing_skips": 1}
+        except _DtsV2TeacherRegionalDependencyMissing:
+            # The peer aggregate owns its own revision and Outbox event.  Do
+            # not turn normal cross-region ordering into a failure loop: the
+            # peer event will trigger materialization once the pair is present.
+            return {"teacher_regional_dependency_waits": 1}
         legacy = self._read_legacy_first_dates(
             connection,
             bundle.teacher_id,

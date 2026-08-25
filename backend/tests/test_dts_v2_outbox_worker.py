@@ -151,9 +151,16 @@ class _Engine:
 
 
 class _Processor:
-    def __init__(self, error_code: str | None = None, *, unexpected: bool = False):
+    def __init__(
+        self,
+        error_code: str | None = None,
+        *,
+        unexpected: bool = False,
+        counts: dict[str, int] | None = None,
+    ):
         self.error_code = error_code
         self.unexpected = unexpected
+        self.counts = counts
 
     def process_event(self, connection: _Connection, event: object) -> dict[str, int]:
         connection.domain_writes.append("partial-or-complete-domain-write")
@@ -161,6 +168,8 @@ class _Processor:
             raise DtsV2OutboxProcessingError(self.error_code)
         if self.unexpected:
             raise RuntimeError("must not be persisted")
+        if self.counts is not None:
+            return self.counts
         return {"teachers": 1, "scores": 2}
 
 
@@ -217,6 +226,28 @@ def test_success_publishes_in_the_same_savepoint_and_resolves_old_case() -> None
         "case_recovery"
     )
     assert connection.log.index("publish") < connection.log.index("savepoint_commit")
+
+
+def test_dependency_wait_does_not_consume_retry_or_enter_dead_letter() -> None:
+    worker, connection = _worker(
+        _event(attempt_count=7),
+        processor=_Processor(
+            counts={"teacher_regional_dependency_waits": 1}
+        ),
+    )
+
+    result = worker.run_once(max_events=1)
+
+    assert result == {
+        "claimed": 1,
+        "published": 1,
+        "retries": 0,
+        "dead_letters": 0,
+        "handler_counts": {"teacher_regional_dependency_waits": 1},
+    }
+    assert connection.row["status"] == "PUBLISHED"
+    assert connection.row["attempt_count"] == 7
+    assert connection.row["last_error"] is None
 
 
 def test_production_guarded_worker_is_inert_outside_primary() -> None:
