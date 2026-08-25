@@ -229,6 +229,27 @@ class DtsV2TeacherOutboxProcessor:
             aggregate_reader or DtsV2TeacherAggregateBundleReader()
         )
 
+    @staticmethod
+    def _read_legacy_first_dates(
+        connection: Connection,
+        teacher_id: str,
+    ) -> Mapping[str, Any] | None:
+        # The protected materializer owns the write lock and revalidates the
+        # aggregate revision/hash vector before applying the plan.  This
+        # compatibility read must therefore remain a plain SELECT: the shared
+        # application role intentionally has no UPDATE privilege on
+        # teacher_source_wide, while PostgreSQL row-locking SELECTs require it.
+        return connection.execute(
+            text(
+                """
+                SELECT first_open_slot_dt,first_booked_dt,first_completed_dt
+                FROM public.teacher_source_wide
+                WHERE tchr_id=:teacher_id
+                """
+            ),
+            {"teacher_id": teacher_id},
+        ).mappings().one_or_none()
+
     def process_event(
         self,
         connection: Connection,
@@ -242,17 +263,10 @@ class DtsV2TeacherOutboxProcessor:
                 "DTS_V2_TEACHER_OUTBOX_EVENT_REQUIRED"
             )
         bundle = self.aggregate_reader.read_current(connection, event)
-        legacy = connection.execute(
-            text(
-                """
-                SELECT first_open_slot_dt,first_booked_dt,first_completed_dt
-                FROM public.teacher_source_wide
-                WHERE tchr_id=:teacher_id
-                FOR SHARE
-                """
-            ),
-            {"teacher_id": bundle.teacher_id},
-        ).mappings().one_or_none()
+        legacy = self._read_legacy_first_dates(
+            connection,
+            bundle.teacher_id,
+        )
         business_date = connection.execute(
             text(
                 "SELECT (transaction_timestamp() AT TIME ZONE "

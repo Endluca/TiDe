@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from app.dts_v2_teacher_outbox_processor import (
+    DtsV2TeacherOutboxProcessor,
     DtsV2TeacherOutboxProcessorError,
     build_teacher_materialization_plan_v2,
 )
@@ -377,3 +378,46 @@ def test_cross_region_teacher_type_conflict_fails_closed() -> None:
             business_date_beijing=date(2026, 8, 22),
             legacy_first_dates={},
         )
+
+
+class _LegacyMappings:
+    def __init__(self, row: dict[str, object] | None) -> None:
+        self.row = row
+
+    def mappings(self) -> _LegacyMappings:
+        return self
+
+    def one_or_none(self) -> dict[str, object] | None:
+        return self.row
+
+
+class _LegacyConnection:
+    def __init__(self, row: dict[str, object] | None) -> None:
+        self.row = row
+        self.sql = ""
+        self.parameters: dict[str, object] = {}
+
+    def execute(self, statement, parameters):
+        self.sql = str(statement)
+        self.parameters = dict(parameters)
+        return _LegacyMappings(self.row)
+
+
+def test_legacy_first_dates_read_never_requests_a_row_lock() -> None:
+    expected = {
+        "first_open_slot_dt": date(2026, 1, 3),
+        "first_booked_dt": date(2026, 7, 10),
+        "first_completed_dt": date(2026, 7, 10),
+    }
+    connection = _LegacyConnection(expected)
+
+    actual = DtsV2TeacherOutboxProcessor._read_legacy_first_dates(
+        connection,  # type: ignore[arg-type]
+        TEACHER_ID,
+    )
+
+    assert actual == expected
+    assert "FROM public.teacher_source_wide" in connection.sql
+    assert "FOR SHARE" not in connection.sql
+    assert "FOR UPDATE" not in connection.sql
+    assert connection.parameters == {"teacher_id": TEACHER_ID}
