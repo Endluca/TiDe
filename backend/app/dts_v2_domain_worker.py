@@ -9,10 +9,12 @@ RETRY, or DEAD state.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from .dts_v2_dirty_queue_store import (
@@ -73,6 +75,15 @@ class DtsV2DomainTransientError(RuntimeError):
         super().__init__(error_code)
 
 
+class _DtsV2DomainFreshTransactionRetry(RuntimeError):
+    """Settle an aborted repeatable-read claim from a fresh transaction."""
+
+    def __init__(self, error_code: str, diagnostic: str) -> None:
+        self.error_code = error_code
+        self.diagnostic = diagnostic
+        super().__init__(error_code)
+
+
 @dataclass
 class DtsV2DomainWorkerRunResult:
     claimed: int = 0
@@ -82,6 +93,7 @@ class DtsV2DomainWorkerRunResult:
     retry_scheduled: int = 0
     dead: int = 0
     projection_counts: dict[str, int] = field(default_factory=dict)
+    failure_diagnostics: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +104,9 @@ class DtsV2DomainWorkerRunResult:
             "retry_scheduled": self.retry_scheduled,
             "dead": self.dead,
             "projection_counts": dict(sorted(self.projection_counts.items())),
+            "failure_diagnostics": dict(
+                sorted(self.failure_diagnostics.items())
+            ),
         }
 
 
@@ -169,7 +184,49 @@ class DtsV2DomainWorker:
         claim_state: DtsV2RuntimeTransactionState | None,
         result: DtsV2DomainWorkerRunResult,
     ) -> None:
+        try:
+            self._process_one_transaction(
+                claim,
+                claim_state=claim_state,
+                result=result,
+            )
+        except _DtsV2DomainFreshTransactionRetry as exc:
+            # A repeatable-read serialization/deadlock failure invalidates the
+            # processing snapshot.  Queue settlement must therefore happen in
+            # a new transaction; retrying against the old snapshot can fail a
+            # second time and strand the lease.
+            with self.engine.begin() as connection:
+                process_state = self._runtime_state(connection)
+                if self.primary_guard is not None and (
+                    process_state is None or process_state != claim_state
+                ):
+                    return
+                failure = self.queue.fail_domain(
+                    connection,
+                    claim,
+                    error_code=exc.error_code,
+                )
+            self._record_failure_diagnostic(
+                exc.diagnostic,
+                result=result,
+            )
+            self._record_failure_result(failure, result=result)
+
+    def _process_one_transaction(
+        self,
+        claim: DirtyClaimV2,
+        *,
+        claim_state: DtsV2RuntimeTransactionState | None,
+        result: DtsV2DomainWorkerRunResult,
+    ) -> None:
         with self.engine.begin() as connection:
+            # Evidence tables are intentionally SELECT-only for the application
+            # role.  A repeatable-read snapshot gives one claim a stable source
+            # view without granting UPDATE merely to support row-lock syntax.
+            # Writable normalized facts retain their explicit row locks.
+            connection.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            )
             process_state = self._runtime_state(connection)
             if self.primary_guard is not None and (
                 process_state is None or process_state != claim_state
@@ -199,6 +256,10 @@ class DtsV2DomainWorker:
                 return
             except DtsV2DomainTransientError as exc:
                 handler.rollback()
+                self._record_failure_diagnostic(
+                    exc.error_code,
+                    result=result,
+                )
                 failure = self.queue.fail_domain(
                     connection,
                     claim,
@@ -206,8 +267,29 @@ class DtsV2DomainWorker:
                 )
                 self._record_failure_result(failure, result=result)
                 return
-            except Exception:
+            except Exception as exc:
                 handler.rollback()
+                diagnostic = _safe_failure_diagnostic(exc)
+                retry_code = {
+                    "SQLSTATE_40001": "DB_SERIALIZATION_TRANSIENT",
+                    "SQLSTATE_40P01": "DB_DEADLOCK_TRANSIENT",
+                }.get(diagnostic)
+                if retry_code is not None:
+                    raise _DtsV2DomainFreshTransactionRetry(
+                        retry_code,
+                        diagnostic,
+                    ) from exc
+                if diagnostic == "SQLSTATE_42501":
+                    # Permission failures are deterministic deployment defects,
+                    # never transient source-data failures.  Fail the process
+                    # with a stable code instead of silently burning retries.
+                    raise DtsV2DomainWorkerError(
+                        "DTS_V2_DOMAIN_DATABASE_PERMISSION_REQUIRED"
+                    ) from exc
+                self._record_failure_diagnostic(
+                    diagnostic,
+                    result=result,
+                )
                 failure = self.queue.fail_domain(
                     connection,
                     claim,
@@ -232,6 +314,16 @@ class DtsV2DomainWorker:
                 raise DtsV2DomainWorkerError(
                     "DTS_V2_DOMAIN_COMPLETE_RESULT_INVALID"
                 )
+
+    @staticmethod
+    def _record_failure_diagnostic(
+        diagnostic: str,
+        *,
+        result: DtsV2DomainWorkerRunResult,
+    ) -> None:
+        result.failure_diagnostics[diagnostic] = (
+            result.failure_diagnostics.get(diagnostic, 0) + 1
+        )
 
     @staticmethod
     def _record_wait_result(
@@ -306,6 +398,30 @@ def _projection_counts(values: Mapping[str, int]) -> dict[str, int]:
             )
         result[name] = count
     return result
+
+
+_SAFE_DTS_CODE = re.compile(r"\bDTS_[A-Z0-9_]{1,127}\b")
+
+
+def _safe_failure_diagnostic(exc: Exception) -> str:
+    """Return a bounded diagnostic without SQL, parameters or source data."""
+
+    original = getattr(exc, "orig", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(
+        original, "pgcode", None
+    )
+    if isinstance(sqlstate, str) and re.fullmatch(r"[0-9A-Z]{5}", sqlstate):
+        return f"SQLSTATE_{sqlstate}"
+    for candidate in (exc, original):
+        if candidate is None:
+            continue
+        match = _SAFE_DTS_CODE.search(str(candidate))
+        if match is not None:
+            return match.group(0)
+    name = type(exc).__name__
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name):
+        return name
+    return "Exception"
 
 
 __all__ = [

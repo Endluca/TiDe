@@ -32,7 +32,12 @@ class DtsV2AggregateSnapshot:
 
 
 class DtsV2AggregateStateReader:
-    """Lock and validate the current aggregate behind one immutable event."""
+    """Read and validate the current aggregate behind one immutable event.
+
+    Aggregate revisions are immutable through a protected publisher and are
+    intentionally SELECT-only to the runtime role.  Downstream protected
+    materializers revalidate the exact revision/hash vector where required.
+    """
 
     def read_current(
         self,
@@ -76,7 +81,6 @@ class DtsV2AggregateStateReader:
                 FROM public.domain_aggregate_revisions
                 WHERE aggregate_type=:aggregate_type
                   AND aggregate_id=:aggregate_id
-                FOR SHARE
                 """
             ),
             {

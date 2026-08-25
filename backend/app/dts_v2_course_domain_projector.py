@@ -1536,7 +1536,6 @@ def _read_current_global_scope_states(
               AND scope_level='GLOBAL'
               AND scope_key='*'
             ORDER BY source_table
-            FOR SHARE
             """
         ),
         {
@@ -1681,7 +1680,6 @@ def _read_source_trigger_evidence(
               AND version.source_table=:source_table
               AND version.source_key=:source_key
               AND version.source_row_revision=:source_row_revision
-            FOR SHARE OF version,current_row
             """
         ),
         {
@@ -1756,7 +1754,6 @@ def _read_scope_trigger_evidence(
             FROM public.domain_aggregate_revisions
             WHERE aggregate_type='SOURCE_SCOPE'
               AND canonical_key=CAST(:canonical_key AS jsonb)
-            FOR SHARE
             """
         ),
         {"canonical_key": _json_dump(identity)},
@@ -2036,8 +2033,9 @@ def _read_complaint_rules(
 ) -> dict[str, tuple[_ComplaintRule, ...]]:
     if not normalized_names:
         return {}
-    # Publication takes the same locks in shared/exclusive order.  Holding both
-    # shared locks freezes one catalog generation for the full course rebuild.
+    # Publication takes the same advisory locks in shared/exclusive order.
+    # They freeze one catalog generation for the full course rebuild without
+    # requiring UPDATE privilege on the read-only catalog tables themselves.
     connection.execute(
         text(
             "SELECT pg_advisory_xact_lock_shared("
@@ -2062,7 +2060,6 @@ def _read_complaint_rules(
               AND rule.category_l3_normalized=ANY(CAST(:names AS text[]))
             ORDER BY rule.category_l3_normalized,
                      rule.source_sha256,rule.source_row_number
-            FOR SHARE OF imported,rule
             """
         ),
         {"names": sorted(normalized_names)},

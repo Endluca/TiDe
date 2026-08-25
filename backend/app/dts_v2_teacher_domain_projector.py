@@ -461,7 +461,6 @@ def _read_teacher_scope_evidence(
                    OR (state.scope_level='GLOBAL' AND state.scope_key='*'))
             ORDER BY state.source_table,state.scope_kind,
                      CASE state.scope_level WHEN 'TEACHER' THEN 0 ELSE 1 END
-            FOR SHARE OF state
             """
         ),
         {
@@ -640,7 +639,6 @@ def _read_teacher_history_evidence(
                      source_row_revision NULLS FIRST,
                      convert_to(source_partition_epoch_id,'UTF8'),
                      convert_to(topic,'UTF8'),partition_id,offset_value
-            FOR SHARE
             """
         ),
         {
@@ -677,7 +675,6 @@ def _read_teacher_history_evidence(
                          source_row_revision NULLS FIRST,
                          convert_to(source_partition_epoch_id,'UTF8'),
                          convert_to(topic,'UTF8'),partition_id,offset_value
-                FOR SHARE
                 """
             ),
             {"teacher_id": teacher_id},

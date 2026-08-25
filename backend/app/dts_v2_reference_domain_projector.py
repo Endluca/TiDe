@@ -277,7 +277,6 @@ def _reference_evidence(
               AND scope_kind='CURRENT'
               AND scope_level='GLOBAL'
               AND scope_key='*'
-            FOR SHARE
             """
         ),
         {"source_region": source_region, "source_table": source_table},

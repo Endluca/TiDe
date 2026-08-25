@@ -207,7 +207,7 @@ def test_complaint_rule_reader_freezes_only_the_published_catalog() -> None:
     assert "ACTIVE_COMPLAINT_RULE_SET" in connection.calls[1][0]
     read_sql = connection.calls[2][0]
     assert "imported.status='PUBLISHED'" in read_sql
-    assert "FOR SHARE OF imported,rule" in read_sql
+    assert "FOR SHARE OF imported,rule" not in read_sql
 
 
 class _Repository:

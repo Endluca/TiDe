@@ -888,7 +888,7 @@ def _read_primary_projection_generation(
         text(
             "SELECT mode,projection_generation "
             "FROM public.dts_pipeline_control "
-            "WHERE control_id='PRIMARY' FOR SHARE"
+            "WHERE control_id='PRIMARY'"
         )
     ).mappings().one_or_none()
     if row is None or row.get("mode") != _V2_PRIMARY_MODE:

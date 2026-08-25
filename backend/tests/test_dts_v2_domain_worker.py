@@ -38,6 +38,12 @@ class _Connection:
         self.log.append("savepoint_begin")
         return _Nested(self.log)
 
+    def execute(self, statement):
+        assert str(statement) == (
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        )
+        self.log.append("repeatable_read")
+
 
 class _Begin(AbstractContextManager[_Connection]):
     def __init__(self, log: list[str]) -> None:
@@ -162,6 +168,7 @@ def test_guarded_domain_leaves_lease_when_mode_changes_after_claim(
         "retry_scheduled": 0,
         "dead": 0,
         "projection_counts": {},
+        "failure_diagnostics": {},
     }
     assert "project" not in log
     assert "complete" not in log
@@ -201,12 +208,14 @@ def test_success_commits_projection_outbox_and_queue_completion_together() -> No
         "retry_scheduled": 0,
         "dead": 0,
         "projection_counts": {"course_changes": 1, "outbox_events": 2},
+        "failure_diagnostics": {},
     }
     assert log == [
         "transaction_begin",
         "claim",
         "transaction_commit",
         "transaction_begin",
+        "repeatable_read",
         "savepoint_begin",
         "project",
         "complete",
@@ -258,8 +267,53 @@ def test_failure_is_value_blind_and_recorded_after_savepoint_rollback(
     result = worker.run_once()
 
     assert result[counter] == 1
+    assert sum(result["failure_diagnostics"].values()) == 1
     assert log.index("savepoint_rollback") < log.index(expected_fail)
     assert "sensitive source value" not in " ".join(log)
+
+
+def test_database_permission_error_fails_fast_with_stable_code() -> None:
+    class PermissionFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("must-not-leak")
+            self.orig = type("Original", (), {"sqlstate": "42501"})()
+
+    worker, log = _worker(
+        outcomes=[PermissionFailure()],
+        terminal_results=[],
+    )
+
+    with pytest.raises(
+        DtsV2DomainWorkerError,
+        match="DTS_V2_DOMAIN_DATABASE_PERMISSION_REQUIRED",
+    ):
+        worker.run_once()
+
+    assert "savepoint_rollback" in log
+    assert not any(value.startswith("fail:") for value in log)
+
+
+def test_serialization_failure_is_settled_from_fresh_transaction() -> None:
+    class SerializationFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("must-not-leak")
+            self.orig = type("Original", (), {"sqlstate": "40001"})()
+
+    worker, log = _worker(
+        outcomes=[SerializationFailure()],
+        terminal_results=[{"status": "RETRY"}],
+    )
+
+    result = worker.run_once()
+
+    assert result["retry_scheduled"] == 1
+    assert result["failure_diagnostics"] == {"SQLSTATE_40001": 1}
+    assert log.count("transaction_begin") == 3
+    assert log[-3:] == [
+        "transaction_begin",
+        "fail:DB_SERIALIZATION_TRANSIENT",
+        "transaction_commit",
+    ]
 
 
 def test_newer_dirty_input_keeps_current_projection_and_requeues_claim() -> None:
