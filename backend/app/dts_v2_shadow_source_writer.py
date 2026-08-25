@@ -73,6 +73,7 @@ class DtsV2ShadowSourceBatchContext:
     source_partition_epoch_id: str
     incoming_epoch: Mapping[str, Any]
     locked_tables: frozenset[str]
+    active_scope_tables: frozenset[str]
     current_identities: set[tuple[str, str, str]]
     current_rows: dict[tuple[str, str, str], Mapping[str, Any]]
     persisted_row_versions: dict[tuple[str, str, str], int]
@@ -178,20 +179,12 @@ class DtsV2ShadowSourceWriter:
             tables.add(table)
             identities.add(identity)
 
-        incoming_epoch = _require_broker_epoch(
+        incoming_epoch = _require_broker_epoch_and_lock_batch(
             connection,
             event=first,
             source_partition_epoch_id=source_partition_epoch_id,
-        )
-        for table in sorted(tables):
-            _lock_source_table_for_cdc(
-                connection,
-                source_region=first.source_region,
-                source_table=table,
-            )
-        _lock_identities(
-            connection,
-            tuple(
+            source_tables=tuple(sorted(tables)),
+            identities=tuple(
                 ("source-current", *identity)
                 for identity in sorted(identities)
             ),
@@ -284,6 +277,9 @@ class DtsV2ShadowSourceWriter:
             source_partition_epoch_id=source_partition_epoch_id,
             incoming_epoch=incoming_epoch,
             locked_tables=frozenset(tables),
+            active_scope_tables=frozenset(
+                incoming_epoch.get("active_source_scope_tables", ())
+            ),
             current_identities=current_identities,
             current_rows=current_rows,
             persisted_row_versions=persisted_row_versions,
@@ -335,6 +331,7 @@ class DtsV2ShadowSourceWriter:
         _apply_cdc_membership_overlays_batch(
             connection,
             writes=final_writes,
+            active_tables=batch_context.active_scope_tables,
         )
         membership_finished = perf_counter()
         self._last_flush_metrics = {
@@ -1026,6 +1023,17 @@ def _require_broker_epoch(
             "partition_id": event.partition,
         },
     ).mappings().one_or_none()
+    return _validate_broker_epoch(
+        epoch,
+        event=event,
+    )
+
+
+def _validate_broker_epoch(
+    epoch: Mapping[str, Any] | None,
+    *,
+    event: DtsChangeEvent,
+) -> Mapping[str, Any]:
     if (
         epoch is None
         or epoch["epoch_kind"] != "BROKER"
@@ -1045,6 +1053,93 @@ def _require_broker_epoch(
     ):
         raise DtsV2ShadowSourceWriterError("DTS_V2_SHADOW_EPOCH_REJECTED")
     return epoch
+
+
+def _require_broker_epoch_and_lock_batch(
+    connection: Connection,
+    *,
+    event: DtsChangeEvent,
+    source_partition_epoch_id: str,
+    source_tables: Sequence[str],
+    identities: Sequence[Sequence[Any]],
+) -> Mapping[str, Any]:
+    """Validate the broker epoch and acquire all batch locks in one request."""
+
+    tables = tuple(sorted(set(source_tables)))
+    identity_lock_ids = tuple(
+        sorted({_identity_lock_id(*parts) for parts in identities})
+    )
+    epoch = connection.execute(
+        text(
+            """
+            WITH incoming_epoch AS MATERIALIZED (
+                SELECT source_partition_epoch_id,topic,partition_id,
+                       epoch_kind,status,epoch_sequence,
+                       predecessor_epoch_id,start_offset,
+                       v2_epoch_bootstrap_floor
+                FROM public.dts_source_partition_epochs
+                WHERE source_region=:source_region
+                  AND source_partition_epoch_id=:epoch_id
+                  AND topic=:topic
+                  AND partition_id=:partition_id
+            ),
+            table_locks AS MATERIALIZED (
+                SELECT source_table,
+                       public.lock_dts_source_table_for_ingest_v3(
+                         :source_region,source_table
+                       ) AS locked
+                FROM unnest(CAST(:source_tables AS text[]))
+                  AS requested(source_table)
+                ORDER BY source_table
+            ),
+            identity_locks AS MATERIALIZED (
+                SELECT lock_id,pg_catalog.pg_advisory_xact_lock(lock_id)
+                  AS acquired
+                FROM unnest(CAST(:identity_lock_ids AS bigint[]))
+                  AS requested(lock_id)
+                ORDER BY lock_id
+            ),
+            active_scope_tables AS MATERIALIZED (
+                SELECT public.dts_active_source_scope_tables_v1(
+                         :source_region,CAST(:source_tables AS text[])
+                       ) AS source_tables
+                FROM (
+                    SELECT count(*) AS acquired_table_lock_count
+                    FROM table_locks
+                ) AS acquired
+            )
+            SELECT incoming_epoch.*,
+                   COALESCE(
+                     (SELECT bool_and(locked) FROM table_locks),true
+                   ) AS source_tables_locked,
+                   (SELECT count(*) FROM table_locks) AS source_table_count,
+                   (SELECT count(*) FROM identity_locks)
+                     AS identity_lock_count,
+                   (SELECT source_tables FROM active_scope_tables)
+                     AS active_source_scope_tables
+            FROM incoming_epoch
+            """
+        ),
+        {
+            "source_region": event.source_region,
+            "epoch_id": source_partition_epoch_id,
+            "topic": event.topic,
+            "partition_id": event.partition,
+            "source_tables": list(tables),
+            "identity_lock_ids": list(identity_lock_ids),
+        },
+    ).mappings().one_or_none()
+    validated = _validate_broker_epoch(epoch, event=event)
+    if (
+        validated.get("source_tables_locked") is not True
+        or int(validated.get("source_table_count", -1)) != len(tables)
+        or int(validated.get("identity_lock_count", -1))
+        != len(identity_lock_ids)
+    ):
+        raise DtsV2ShadowSourceWriterError(
+            "DTS_V2_SHADOW_BATCH_LOCK_INCONSISTENT"
+        )
+    return validated
 
 
 def _require_source_position_advances(
@@ -1890,6 +1985,7 @@ def _apply_cdc_membership_overlays_batch(
     connection: Connection,
     *,
     writes: Sequence[DtsV2ShadowDeferredWrite],
+    active_tables: frozenset[str] | None = None,
 ) -> None:
     if not writes:
         return
@@ -1901,18 +1997,22 @@ def _apply_cdc_membership_overlays_batch(
             if write.route.source_table
         }
     )
-    active_tables = frozenset(
-        connection.execute(
-            text(
-                """
-                SELECT public.dts_active_source_scope_tables_v1(
-                    :source_region,CAST(:source_tables AS text[])
-                )
-                """
-            ),
-            {"source_region": source_region, "source_tables": source_tables},
-        ).scalar_one()
-    )
+    if active_tables is None:
+        active_tables = frozenset(
+            connection.execute(
+                text(
+                    """
+                    SELECT public.dts_active_source_scope_tables_v1(
+                        :source_region,CAST(:source_tables AS text[])
+                    )
+                    """
+                ),
+                {
+                    "source_region": source_region,
+                    "source_tables": source_tables,
+                },
+            ).scalar_one()
+        )
     if not active_tables:
         return
     writes = tuple(
