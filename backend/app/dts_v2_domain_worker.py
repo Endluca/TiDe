@@ -10,6 +10,7 @@ RETRY, or DEAD state.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -82,6 +83,10 @@ class _DtsV2DomainFreshTransactionRetry(RuntimeError):
         self.error_code = error_code
         self.diagnostic = diagnostic
         super().__init__(error_code)
+
+
+_CLAIM_TRANSACTION_MAX_ATTEMPTS = 4
+_CLAIM_TRANSACTION_RETRY_DELAYS = (0.01, 0.025, 0.05)
 
 
 @dataclass
@@ -184,33 +189,52 @@ class DtsV2DomainWorker:
         claim_state: DtsV2RuntimeTransactionState | None,
         result: DtsV2DomainWorkerRunResult,
     ) -> None:
-        try:
-            self._process_one_transaction(
-                claim,
-                claim_state=claim_state,
-                result=result,
-            )
-        except _DtsV2DomainFreshTransactionRetry as exc:
-            # A repeatable-read serialization/deadlock failure invalidates the
-            # processing snapshot.  Queue settlement must therefore happen in
-            # a new transaction; retrying against the old snapshot can fail a
-            # second time and strand the lease.
-            with self.engine.begin() as connection:
-                process_state = self._runtime_state(connection)
-                if self.primary_guard is not None and (
-                    process_state is None or process_state != claim_state
-                ):
-                    return
-                failure = self.queue.fail_domain(
-                    connection,
+        retry: _DtsV2DomainFreshTransactionRetry | None = None
+        for attempt in range(_CLAIM_TRANSACTION_MAX_ATTEMPTS):
+            try:
+                self._process_one_transaction(
                     claim,
-                    error_code=exc.error_code,
+                    claim_state=claim_state,
+                    result=result,
                 )
-            self._record_failure_diagnostic(
-                exc.diagnostic,
-                result=result,
+                return
+            except _DtsV2DomainFreshTransactionRetry as exc:
+                retry = exc
+                if attempt + 1 < _CLAIM_TRANSACTION_MAX_ATTEMPTS:
+                    # PostgreSQL requires the complete failed transaction to
+                    # be retried from a new snapshot.  These retries are
+                    # technical transaction retries and deliberately do not
+                    # consume the dirty key's business attempt_count.
+                    time.sleep(_CLAIM_TRANSACTION_RETRY_DELAYS[attempt])
+                    continue
+                break
+
+        if retry is None:  # pragma: no cover - defensive loop invariant
+            raise DtsV2DomainWorkerError(
+                "DTS_V2_DOMAIN_TRANSACTION_RETRY_STATE_INVALID"
             )
-            self._record_failure_result(failure, result=result)
+
+        # Only after all in-process transaction retries are exhausted is the
+        # key settled once through the queue's bounded technical retry policy.
+        # This settlement itself is a fresh transaction; a conflict here is
+        # allowed to escape to the runtime-level transaction retry loop rather
+        # than terminating the process.
+        with self.engine.begin() as connection:
+            process_state = self._runtime_state(connection)
+            if self.primary_guard is not None and (
+                process_state is None or process_state != claim_state
+            ):
+                return
+            failure = self.queue.fail_domain(
+                connection,
+                claim,
+                error_code=retry.error_code,
+            )
+        self._record_failure_diagnostic(
+            retry.diagnostic,
+            result=result,
+        )
+        self._record_failure_result(failure, result=result)
 
     def _process_one_transaction(
         self,

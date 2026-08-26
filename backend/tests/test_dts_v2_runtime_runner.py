@@ -120,6 +120,69 @@ def test_runtime_skips_idle_delay_only_when_worker_claimed_work() -> None:
     assert runner._run_claimed_work({"claimed": "1"}) is False
 
 
+def test_runtime_retries_serialization_without_stopping_or_business_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SerializationFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("must-not-leak")
+            self.orig = SimpleNamespace(sqlstate="40001")
+
+    attempts = iter(
+        (
+            SerializationFailure(),
+            SerializationFailure(),
+            {"claimed": 3, "completed": 3},
+        )
+    )
+
+    def run_once(_component: str, _worker, _batch_size: int):
+        value = next(attempts)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(runner, "_run_worker_once", run_once)
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+
+    result = runner._run_worker_once_resilient(
+        "domain", object(), 25, keep_watching=True
+    )
+
+    assert result == {
+        "claimed": 3,
+        "completed": 3,
+        "runtime_transaction_retries": 2,
+    }
+
+
+def test_runtime_watch_survives_exhausted_serialization_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DeadlockFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("must-not-leak")
+            self.orig = SimpleNamespace(sqlstate="40P01")
+
+    monkeypatch.setattr(
+        runner,
+        "_run_worker_once",
+        lambda *_args: (_ for _ in ()).throw(DeadlockFailure()),
+    )
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+
+    result = runner._run_worker_once_resilient(
+        "domain", object(), 25, keep_watching=True
+    )
+
+    assert result == {
+        "claimed": 0,
+        "runtime_transaction_retries": 5,
+        "runtime_transaction_retry_exhausted": 1,
+        "failure_diagnostics": {"SQLSTATE_40P01": 5},
+    }
+
+
 @pytest.mark.parametrize(
     ("mode", "generation", "expected"),
     [

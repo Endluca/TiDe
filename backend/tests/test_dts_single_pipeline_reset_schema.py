@@ -50,6 +50,12 @@ DOMAIN_QUEUE_READ_ACL_MIGRATION = (
     / "versions"
     / "20260825_107_domain_queue_read_acl.py"
 )
+DOMAIN_VALIDATOR_ACL_MIGRATION = (
+    ROOT
+    / "migrations"
+    / "versions"
+    / "20260826_108_domain_validator_acl.py"
+)
 PUBLIC_DMS = (
     ROOT
     / "migrations"
@@ -103,6 +109,12 @@ DOMAIN_QUEUE_READ_ACL_DMS = (
     / "migrations"
     / "dms"
     / "20260825_public106_to_107_domain_queue_read_acl.sql"
+)
+DOMAIN_VALIDATOR_ACL_DMS = (
+    ROOT
+    / "migrations"
+    / "dms"
+    / "20260826_public107_to_108_domain_validator_acl.sql"
 )
 TEACHER_DMS = (
     ROOT
@@ -315,6 +327,29 @@ def test_domain_queue_evidence_is_read_only_for_shared_runtime() -> None:
     assert "public rev107 migration requires app stopped" in source
     assert "public rev107 postflight verification failed" in source
     assert "version_num='20260825_107_domain_queue_read_acl'" in source
+    _assert_dms_onequery_compatible(source)
+
+
+def test_domain_runtime_can_execute_only_the_required_id_validator() -> None:
+    migration = DOMAIN_VALIDATOR_ACL_MIGRATION.read_text(encoding="utf-8")
+    source = DOMAIN_VALIDATOR_ACL_DMS.read_text(encoding="utf-8")
+    assert 'revision: str = "20260826_108_domain_validator_acl"' in migration
+    assert "20260825_107_domain_queue_read_acl" in migration
+    for sql_source in (migration, source):
+        assert "dts_v2_typed_id_valid(text,text)" in sql_source
+        assert "GRANT EXECUTE ON FUNCTION" in sql_source
+        assert "TO tit_growth_app" in sql_source
+        assert "has_schema_privilege" in sql_source
+        assert "'public','CREATE'" in sql_source
+    assert "GRANT SELECT" not in source
+    assert "GRANT INSERT" not in source
+    assert "GRANT UPDATE" not in source
+    assert source.count("\nBEGIN;\n") == 1
+    assert source.count("\nCOMMIT;\n") == 1
+    assert "public rev108 DMS requires public head 107" in source
+    assert "public rev108 migration requires app stopped" in source
+    assert "public rev108 postflight verification failed" in source
+    assert "version_num='20260826_108_domain_validator_acl'" in source
     _assert_dms_onequery_compatible(source)
 
 
