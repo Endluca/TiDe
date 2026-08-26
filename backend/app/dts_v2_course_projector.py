@@ -29,9 +29,9 @@ from .dts_course_participation import (
     reduce_course_participations,
 )
 from .dts_source_contract_v2 import (
-    V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE,
-    V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE,
     V2SourceRouteDecision,
+    v2_source_primary_key_type,
+    v2_source_profile_id,
 )
 from .dts_v2_appoint_adapter import adapt_v2_appoint_route
 
@@ -541,8 +541,8 @@ def _adapt_contiguous_versions(
     source_table: str,
     source_appoint_id: str,
 ) -> list[Any]:
-    expected_profile = V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE.get(source_table)
-    expected_key_type = V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE.get(source_table)
+    expected_profile = v2_source_profile_id(source_table)
+    expected_key_type = v2_source_primary_key_type(source_table)
     if expected_profile is None or expected_key_type is None:
         raise DtsV2CourseProjectorError(
             "DTS_V2_COURSE_SOURCE_PROFILE_MISSING"

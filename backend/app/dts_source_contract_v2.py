@@ -146,6 +146,15 @@ V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE: dict[str, str] = {
     table: profile.primary_key_type
     for table, profile in V2_SOURCE_PROFILE_REGISTRY.profiles_by_table.items()
 }
+# Physical source profiles are optional in the fresh-start single pipeline.
+# The appoint identity type, however, is a stable code-owned business contract:
+# course dirty keys and participation facts use the numeric appoint primary key.
+# Keeping this fallback beside the event-field profile fallback prevents the
+# projector from accidentally making an optional physical manifest mandatory.
+V2_EVENT_CONTRACT_PRIMARY_KEY_TYPES_BY_TABLE: dict[str, str] = {
+    "dom_appoint": "NUMERIC",
+    "ovs_appoint": "NUMERIC",
+}
 V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE: dict[str, str] = {
     table: profile.profile_id
     for table, profile in V2_SOURCE_PROFILE_REGISTRY.profiles_by_table.items()
@@ -179,6 +188,14 @@ def v2_source_profile_id(table: str) -> str | None:
     return V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE.get(
         table
     ) or _event_contract_profile_id(table)
+
+
+def v2_source_primary_key_type(table: str) -> str | None:
+    """Return the attested physical key type or code-owned event contract."""
+
+    return V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE.get(
+        table
+    ) or V2_EVENT_CONTRACT_PRIMARY_KEY_TYPES_BY_TABLE.get(table)
 
 
 def _uses_event_field_contract(table: str) -> bool:

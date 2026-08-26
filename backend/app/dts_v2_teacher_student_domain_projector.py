@@ -43,8 +43,9 @@ from .dts_favorite_rules_v2 import (
     select_favorite_attribution_candidate,
 )
 from .dts_v2_course_domain_projector import _read_claim_trigger_evidence
-from .dts_v2_dirty_queue_store import DirtyClaimV2
+from .dts_v2_dirty_queue_store import DirtyClaimV2, DirtyDependencyV2
 from .dts_v2_domain_aggregate import DtsV2DomainRevisionStore
+from .dts_v2_domain_worker import DtsV2DomainDependencyPending
 from .dts_v2_source_repository import (
     DtsV2CurrentSourceRow,
     DtsV2SourceRepository,
@@ -298,11 +299,13 @@ class DtsV2TeacherStudentDomainProjector:
                 student_token=student_token,
             )
         )
+        if not teacher_types:
+            raise DtsV2DomainDependencyPending(
+                (_missing_teacher_type_dependency(claim),)
+            )
         if len(teacher_types) != 1:
             raise DtsV2TeacherStudentDomainProjectorError(
-                "DTS_V2_TEACHER_STUDENT_TEACHER_TYPE_REQUIRED"
-                if not teacher_types
-                else "DTS_V2_TEACHER_STUDENT_TEACHER_TYPE_CONFLICT"
+                "DTS_V2_TEACHER_STUDENT_TEACHER_TYPE_CONFLICT"
             )
         claimed_pair = _Pair(
             region,
@@ -2130,6 +2133,31 @@ def _json_dump(value: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
+    )
+
+
+def _missing_teacher_type_dependency(
+    claim: DirtyClaimV2,
+) -> DirtyDependencyV2:
+    dependency_key = (
+        f"TEACHER_STUDENT:{claim.key.key_part_1}:{claim.key.key_part_2}"
+    )
+    dependency_hash = hashlib.sha256(
+        _json_dump(
+            {
+                "dependency_type": "TEACHER_TYPE_EVIDENCE",
+                "dependency_region": claim.key.source_region,
+                "dependency_key": dependency_key,
+                "claimed_work_revision": claim.claimed_work_revision,
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+    return DirtyDependencyV2(
+        "TEACHER_TYPE_EVIDENCE",
+        claim.key.source_region,
+        dependency_key,
+        claim.claimed_work_revision,
+        dependency_hash,
     )
 
 

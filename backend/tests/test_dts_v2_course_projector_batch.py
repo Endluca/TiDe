@@ -4,10 +4,12 @@ from collections import deque
 
 import pytest
 
+import app.dts_source_contract_v2 as source_contract
 from app.dts_v2_course_projector import (
     DtsV2CourseProjectionResult,
     DtsV2CourseProjector,
     DtsV2CourseProjectorError,
+    _adapt_contiguous_versions,
     _read_source_current,
 )
 
@@ -68,6 +70,28 @@ class _Projector(DtsV2CourseProjector):
             source_row_revision=revision,
             participation_count=revision,
         )
+
+
+def test_course_projection_uses_code_owned_event_contract_without_manifest(
+    monkeypatch,
+) -> None:
+    monkeypatch.delitem(
+        source_contract.V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE,
+        "dom_appoint",
+        raising=False,
+    )
+    monkeypatch.delitem(
+        source_contract.V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE,
+        "dom_appoint",
+        raising=False,
+    )
+
+    assert _adapt_contiguous_versions(
+        [],
+        source_region="dom",
+        source_table="dom_appoint",
+        source_appoint_id="9001",
+    ) == []
 
 
 def test_project_until_current_replays_every_coalesced_revision() -> None:

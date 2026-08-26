@@ -8,6 +8,7 @@ import pytest
 
 from app.dts_favorite_rules_v2 import FavoriteInterval
 from app.dts_v2_dirty_queue_store import DirtyClaimV2, DirtyKeyV2
+from app.dts_v2_domain_worker import DtsV2DomainDependencyPending
 from app.dts_v2_source_repository import DtsV2CurrentSourceRow
 import app.dts_v2_teacher_student_domain_projector as relation_domain
 
@@ -569,6 +570,58 @@ class _RevisionStore:
         del connection
         self.calls.append(dict(kwargs))
         return SimpleNamespace(status="CHANGED")
+
+
+def test_missing_teacher_type_waits_for_dependency_without_retry(
+    monkeypatch,
+) -> None:
+    claim = DirtyClaimV2(
+        key=DirtyKeyV2("dom", "TEACHER_STUDENT", "100", DOM_STUDENT),
+        lease_token="lease-missing-teacher-type",
+        claimed_work_revision=2,
+        row_version=3,
+    )
+    projector = relation_domain.DtsV2TeacherStudentDomainProjector(
+        cutover_coverage_identity={"projection_mode": "SHADOW_BUILD"},
+        source_repository=_Repository(),
+        revision_store=_RevisionStore(),
+    )
+    monkeypatch.setattr(
+        relation_domain,
+        "_read_claim_trigger_evidence",
+        lambda *a, **k: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        relation_domain,
+        "_read_claim_relationship_source_identities",
+        lambda *a, **k: set(),
+    )
+    monkeypatch.setattr(
+        relation_domain,
+        "_read_existing_event_source_identities",
+        lambda *a, **k: set(),
+    )
+    monkeypatch.setattr(
+        relation_domain,
+        "_read_relationship_versions",
+        lambda *a, **k: (),
+    )
+    monkeypatch.setattr(
+        relation_domain,
+        "_read_pair_teacher_types",
+        lambda *a, **k: set(),
+    )
+
+    with pytest.raises(DtsV2DomainDependencyPending) as raised:
+        projector.process_claim(object(), claim)
+
+    assert len(raised.value.dependencies) == 1
+    dependency = raised.value.dependencies[0]
+    assert dependency.dependency_type == "TEACHER_TYPE_EVIDENCE"
+    assert dependency.dependency_region == "dom"
+    assert dependency.dependency_key == f"TEACHER_STUDENT:100:{DOM_STUDENT}"
+    assert dependency.source_revision == 2
+    assert len(dependency.dependency_hash) == 64
 
 
 def test_process_claim_publishes_typed_teacher_student_aggregate(

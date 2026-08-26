@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+import app.dts_source_contract_v2 as source_contract
 from app.dts_course_participation import SourceEventReference, reduce_course_participations
 from app.dts_source_consumer import (
     DtsChangeEvent,
@@ -148,6 +149,45 @@ def _real_dom_appoint_version(
         source_row_revision=revision,
         source_ref=_ref(revision),
     )
+
+
+def test_event_contract_does_not_require_physical_appoint_profile(
+    monkeypatch,
+) -> None:
+    monkeypatch.delitem(
+        source_contract.V2_SOURCE_SCHEMA_PROFILE_IDS_BY_TABLE,
+        "dom_appoint",
+        raising=False,
+    )
+    monkeypatch.delitem(
+        source_contract.V2_SOURCE_PRIMARY_KEY_TYPES_BY_TABLE,
+        "dom_appoint",
+        raising=False,
+    )
+
+    adapted = adapt_v2_appoint_route(
+        _route(
+            after={
+                "id": "100",
+                "t_id": "A",
+                "status": "on",
+                "student_token": "dom:v1:" + "1" * 64,
+            },
+            source_field_types={
+                "id": "NUMERIC",
+                "t_id": "TEXT",
+                "status": "TEXT",
+                "student_token": "TEXT",
+            },
+            profile_id=source_contract.v2_source_profile_id("dom_appoint"),
+        ),
+        source_region="dom",
+        source_row_revision=1,
+        source_ref=_ref(1),
+    )
+
+    assert adapted.source_appoint_id == "100"
+    assert adapted.source_key_type == "NUMERIC"
 
 
 def test_status_on_teacher_change_replays_to_old_absent_and_new_current() -> None:
