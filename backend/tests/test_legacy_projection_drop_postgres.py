@@ -725,7 +725,15 @@ def test_revisions_47_to_49_real_postgresql_upgrade_downgrade_round_trip(
         with engine.begin() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260825_107_domain_queue_read_acl"
+            ).scalar_one() == "20260826_108_domain_validator_acl"
+            assert connection.execute(
+                text(
+                    "SELECT has_function_privilege("
+                    "'tit_growth_app',"
+                    "'public.dts_v2_typed_id_valid(text,text)',"
+                    "'EXECUTE')"
+                )
+            ).scalar_one() is True
             assert connection.execute(
                 text(
                     """

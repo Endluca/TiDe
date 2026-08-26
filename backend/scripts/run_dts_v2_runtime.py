@@ -43,6 +43,9 @@ from app.runtime_settings import operations_database_transport_mode
 
 _STOP = False
 _DEFAULT_RUNTIME_BATCH_SIZE = 100
+_TRANSACTION_MAX_ATTEMPTS = 5
+_TRANSACTION_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2)
+_TRANSIENT_TRANSACTION_SQLSTATES = frozenset({"40001", "40P01"})
 _SAFE_DTS_ERROR_CODE = re.compile(r"\bDTS_[A-Z0-9_]{1,127}\b")
 _URL_ENV = {
     DOMAIN_COMPONENT: "TIT_V2_DOMAIN_DATABASE_URL",
@@ -83,6 +86,18 @@ def _safe_unexpected_error(exc: Exception) -> str:
         "DTS_V2_RUNTIME_UNEXPECTED:"
         f"{type(exc).__name__}:{sqlstate}"
     )
+
+
+def _transaction_sqlstate(exc: Exception) -> str | None:
+    """Return only a retryable transaction SQLSTATE, never SQL or values."""
+
+    original = getattr(exc, "orig", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(
+        original, "pgcode", None
+    )
+    if sqlstate in _TRANSIENT_TRANSACTION_SQLSTATES:
+        return str(sqlstate)
+    return None
 
 
 @dataclass(frozen=True)
@@ -233,6 +248,52 @@ def _run_worker_once(component: str, worker: Any, batch_size: int) -> dict[str, 
             max_observations=batch_size,
             reap_limit=batch_size,
         )
+    )
+
+
+def _run_worker_once_resilient(
+    component: str,
+    worker: Any,
+    batch_size: int,
+    *,
+    keep_watching: bool,
+) -> dict[str, Any]:
+    """Retry whole short transactions without terminating a watch process.
+
+    Domain claim/reap/settlement transactions can race with ongoing DTS
+    ingestion. PostgreSQL 40001/40P01 means the complete transaction must be
+    retried. The retry is intentionally outside the dirty-key state machine so
+    it cannot increment a business attempt or create a dead letter.
+    """
+
+    retry_count = 0
+    for attempt in range(_TRANSACTION_MAX_ATTEMPTS):
+        try:
+            result = _run_worker_once(component, worker, batch_size)
+            result["runtime_transaction_retries"] = retry_count
+            return result
+        except Exception as exc:
+            sqlstate = _transaction_sqlstate(exc)
+            if sqlstate is None:
+                raise
+            retry_count += 1
+            if attempt + 1 < _TRANSACTION_MAX_ATTEMPTS:
+                time.sleep(_TRANSACTION_RETRY_DELAYS[attempt])
+                continue
+            if not keep_watching:
+                raise
+            # A watch process must stay alive during sustained source catch-up.
+            # The next loop starts from fresh database state after the normal
+            # idle interval; no failed transaction or source values are kept.
+            return {
+                "claimed": 0,
+                "runtime_transaction_retries": retry_count,
+                "runtime_transaction_retry_exhausted": 1,
+                "failure_diagnostics": {f"SQLSTATE_{sqlstate}": retry_count},
+            }
+
+    raise DtsV2RuntimeRunnerError(  # pragma: no cover - loop invariant
+        "DTS_V2_RUNTIME_TRANSACTION_RETRY_STATE_INVALID"
     )
 
 
@@ -458,7 +519,12 @@ def run(args: argparse.Namespace) -> int:
                     worker, batch_size = _build_worker(
                         component, engine, identity
                     )
-                result = _run_worker_once(component, worker, batch_size)
+                result = _run_worker_once_resilient(
+                    component,
+                    worker,
+                    batch_size,
+                    keep_watching=args.watch,
+                )
                 snapshot = _runtime_snapshot(
                     engine,
                     component=component,

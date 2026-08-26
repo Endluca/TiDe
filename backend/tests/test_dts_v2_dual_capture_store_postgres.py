@@ -370,6 +370,13 @@ def test_single_pipeline_first_event_missing_update_and_insert(
             / "20260825_public106_to_107_domain_queue_read_acl.sql"
         )
         _execute_dms_onequery_file(psql_url, public_106_107_sql)
+        public_107_108_sql = (
+            backend_dir
+            / "migrations"
+            / "dms"
+            / "20260826_public107_to_108_domain_validator_acl.sql"
+        )
+        _execute_dms_onequery_file(psql_url, public_107_108_sql)
         _run_alembic(backend_dir, admin_url, "check")
 
         application_url = URL.create(
@@ -382,6 +389,12 @@ def test_single_pipeline_first_event_missing_update_and_insert(
         ).render_as_string(hide_password=False)
         application_engine = create_engine(application_url)
         with application_engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT public.dts_v2_typed_id_valid("
+                    "'NUMERIC','1')"
+                )
+            ).scalar_one() is True
             for component in (
                 DOMAIN_COMPONENT,
                 OUTBOX_COMPONENT,
@@ -406,7 +419,15 @@ def test_single_pipeline_first_event_missing_update_and_insert(
         with admin_engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM public.alembic_version")
-            ).scalar_one() == "20260825_107_domain_queue_read_acl"
+            ).scalar_one() == "20260826_108_domain_validator_acl"
+            assert connection.execute(
+                text(
+                    "SELECT has_function_privilege("
+                    "'tit_growth_app',"
+                    "'public.dts_v2_typed_id_valid(text,text)',"
+                    "'EXECUTE')"
+                )
+            ).scalar_one() is True
             assert connection.execute(
                 text(
                     "SELECT has_table_privilege("

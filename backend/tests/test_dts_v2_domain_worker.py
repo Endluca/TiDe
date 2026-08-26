@@ -293,14 +293,40 @@ def test_database_permission_error_fails_fast_with_stable_code() -> None:
     assert not any(value.startswith("fail:") for value in log)
 
 
-def test_serialization_failure_is_settled_from_fresh_transaction() -> None:
+def test_serialization_failure_retries_claim_without_consuming_queue_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class SerializationFailure(RuntimeError):
         def __init__(self) -> None:
             super().__init__("must-not-leak")
             self.orig = type("Original", (), {"sqlstate": "40001"})()
 
+    monkeypatch.setattr("app.dts_v2_domain_worker.time.sleep", lambda _: None)
     worker, log = _worker(
-        outcomes=[SerializationFailure()],
+        outcomes=[SerializationFailure(), {"facts": 1}],
+        terminal_results=[{"status": "COMPLETED"}],
+    )
+
+    result = worker.run_once()
+
+    assert result["completed"] == 1
+    assert result["retry_scheduled"] == 0
+    assert result["failure_diagnostics"] == {}
+    assert log.count("transaction_begin") == 3
+    assert "fail:DB_SERIALIZATION_TRANSIENT" not in log
+
+
+def test_serialization_failure_uses_one_queue_attempt_after_retry_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SerializationFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("must-not-leak")
+            self.orig = type("Original", (), {"sqlstate": "40001"})()
+
+    monkeypatch.setattr("app.dts_v2_domain_worker.time.sleep", lambda _: None)
+    worker, log = _worker(
+        outcomes=[SerializationFailure() for _ in range(4)],
         terminal_results=[{"status": "RETRY"}],
     )
 
@@ -308,12 +334,8 @@ def test_serialization_failure_is_settled_from_fresh_transaction() -> None:
 
     assert result["retry_scheduled"] == 1
     assert result["failure_diagnostics"] == {"SQLSTATE_40001": 1}
-    assert log.count("transaction_begin") == 3
-    assert log[-3:] == [
-        "transaction_begin",
-        "fail:DB_SERIALIZATION_TRANSIENT",
-        "transaction_commit",
-    ]
+    assert log.count("project") == 4
+    assert log.count("fail:DB_SERIALIZATION_TRANSIENT") == 1
 
 
 def test_newer_dirty_input_keeps_current_projection_and_requeues_claim() -> None:
