@@ -36,6 +36,9 @@ _DOMAIN_TYPES = frozenset(
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+# Keep the complete durable code within the 128-character database contract.
+_SAFE_DTS_ERROR_CODE = re.compile(r"\bDTS_[A-Z0-9_]{1,124}\b")
+_TRANSACTION_RETRY_SQLSTATES = frozenset({"40001", "40P01"})
 _OUTBOX_RUNTIME_ROLE = "tit_growth_app"
 _DEFAULT_PRIMARY_GUARD = PostgresDtsV2PrimaryTransactionGuard()
 
@@ -273,12 +276,40 @@ class DtsV2OutboxWorker:
                 result=result,
             )
             return
-        except Exception:
+        except DtsV2OutboxWorkerError:
+            # A worker invariant or orchestration defect is not an event
+            # failure.  Leave the row untouched and fail the runtime instead
+            # of consuming its bounded business retry/dead-letter budget.
             handler.rollback()
+            raise
+        except Exception as exc:
+            sqlstate = _database_sqlstate(exc)
+            try:
+                handler.rollback()
+            except Exception:
+                if sqlstate in _TRANSACTION_RETRY_SQLSTATES:
+                    # Preserve the original serialization/deadlock signal even
+                    # if PostgreSQL refuses a savepoint rollback because the
+                    # complete outer transaction is already aborted.
+                    raise exc
+                raise
+            if sqlstate in _TRANSACTION_RETRY_SQLSTATES:
+                # PostgreSQL requires 40001/40P01 to be retried from a fresh
+                # outer transaction.  Let the runtime transaction retry loop
+                # roll this transaction back and retry it; never persist an
+                # attempt or DEAD_LETTER for ordinary concurrency conflicts.
+                raise
+            if sqlstate == "42501":
+                # Permission failures are deterministic deployment defects,
+                # not source-data failures.  Failing fast preserves the
+                # original PENDING event and exposes only a stable safe code.
+                raise DtsV2OutboxWorkerError(
+                    "DTS_V2_OUTBOX_DATABASE_PERMISSION_REQUIRED"
+                ) from exc
             self._record_failure(
                 connection,
                 event,
-                error_code="DOWNSTREAM_PROJECTION_TRANSIENT",
+                error_code=_safe_projection_error_code(exc),
                 result=result,
             )
             return
@@ -316,6 +347,59 @@ class DtsV2OutboxWorker:
             attempt_count=next_attempt,
         )
         result.retries += 1
+
+
+def _database_sqlstate(exc: Exception) -> str | None:
+    """Return a validated SQLSTATE without exposing SQL or parameters."""
+
+    candidates: list[BaseException | object | None] = [exc]
+    seen: set[int] = set()
+    while candidates:
+        candidate = candidates.pop(0)
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        sqlstate = getattr(candidate, "sqlstate", None) or getattr(
+            candidate, "pgcode", None
+        )
+        if isinstance(sqlstate, str) and re.fullmatch(
+            r"[0-9A-Z]{5}", sqlstate
+        ):
+            return sqlstate
+        candidates.extend(
+            (
+                getattr(candidate, "orig", None),
+                getattr(candidate, "__cause__", None),
+                getattr(candidate, "__context__", None),
+            )
+        )
+    return None
+
+
+def _safe_projection_error_code(exc: Exception) -> str:
+    """Preserve only approved diagnostics; never persist exception details."""
+
+    candidates: list[BaseException | object | None] = [exc]
+    seen: set[int] = set()
+    while candidates:
+        candidate = candidates.pop(0)
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        match = _SAFE_DTS_ERROR_CODE.search(str(candidate))
+        if match is not None:
+            return match.group(0)
+        candidates.extend(
+            (
+                getattr(candidate, "orig", None),
+                getattr(candidate, "__cause__", None),
+                getattr(candidate, "__context__", None),
+            )
+        )
+    sqlstate = _database_sqlstate(exc)
+    if sqlstate is not None:
+        return f"DOWNSTREAM_PROJECTION_SQLSTATE_{sqlstate}"
+    return "DOWNSTREAM_PROJECTION_TRANSIENT"
 
 
 def _assert_runtime_role(connection: Connection) -> None:

@@ -156,10 +156,12 @@ class _Processor:
         error_code: str | None = None,
         *,
         unexpected: bool = False,
+        exception: Exception | None = None,
         counts: dict[str, int] | None = None,
     ):
         self.error_code = error_code
         self.unexpected = unexpected
+        self.exception = exception
         self.counts = counts
 
     def process_event(self, connection: _Connection, event: object) -> dict[str, int]:
@@ -168,6 +170,8 @@ class _Processor:
             raise DtsV2OutboxProcessingError(self.error_code)
         if self.unexpected:
             raise RuntimeError("must not be persisted")
+        if self.exception is not None:
+            raise self.exception
         if self.counts is not None:
             return self.counts
         return {"teachers": 1, "scores": 2}
@@ -366,6 +370,90 @@ def test_unexpected_exception_is_not_persisted_and_uses_public_error_code() -> N
 
     assert connection.domain_writes == []
     assert connection.row["last_error"] == "DOWNSTREAM_PROJECTION_TRANSIENT"
+
+
+@pytest.mark.parametrize("sqlstate", ["40001", "40P01"])
+def test_transaction_conflict_escapes_without_consuming_event_attempt(
+    sqlstate: str,
+) -> None:
+    class TransactionConflict(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("must-not-leak")
+            self.orig = SimpleNamespace(sqlstate=sqlstate)
+
+    worker, connection = _worker(
+        _event(attempt_count=7),
+        processor=_Processor(exception=TransactionConflict()),
+    )
+
+    with pytest.raises(TransactionConflict):
+        worker.run_once(max_events=1)
+
+    assert connection.domain_writes == []
+    assert connection.row["status"] == "PENDING"
+    assert connection.row["attempt_count"] == 7
+    assert connection.row.get("last_error") is None
+    assert "retry" not in connection.log
+    assert "dead" not in connection.log
+
+
+def test_database_permission_error_fails_fast_without_dead_letter() -> None:
+    class PermissionFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("must-not-leak")
+            self.orig = SimpleNamespace(sqlstate="42501")
+
+    worker, connection = _worker(
+        _event(attempt_count=7),
+        processor=_Processor(exception=PermissionFailure()),
+    )
+
+    with pytest.raises(
+        DtsV2OutboxWorkerError,
+        match="DTS_V2_OUTBOX_DATABASE_PERMISSION_REQUIRED",
+    ):
+        worker.run_once(max_events=1)
+
+    assert connection.domain_writes == []
+    assert connection.row["status"] == "PENDING"
+    assert connection.row["attempt_count"] == 7
+    assert "retry" not in connection.log
+    assert "dead" not in connection.log
+
+
+def test_database_error_persists_only_safe_sqlstate() -> None:
+    class ConstraintFailure(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("sensitive row value")
+            self.orig = SimpleNamespace(sqlstate="23514")
+
+    worker, connection = _worker(
+        _event(),
+        processor=_Processor(exception=ConstraintFailure()),
+    )
+
+    result = worker.run_once(max_events=1)
+
+    assert result["retries"] == 1
+    assert connection.row["last_error"] == (
+        "DOWNSTREAM_PROJECTION_SQLSTATE_23514"
+    )
+    assert "sensitive row value" not in str(connection.row)
+
+
+def test_stable_dts_error_is_preserved_without_exception_details() -> None:
+    worker, connection = _worker(
+        _event(),
+        processor=_Processor(
+            exception=RuntimeError(
+                "DTS_V2_TEACHER_STATE_INVALID secret-value"
+            )
+        ),
+    )
+
+    worker.run_once(max_events=1)
+
+    assert connection.row["last_error"] == "DTS_V2_TEACHER_STATE_INVALID"
 
 
 def test_payload_hash_mismatch_fails_before_handler() -> None:
